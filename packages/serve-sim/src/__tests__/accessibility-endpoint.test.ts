@@ -89,6 +89,11 @@ describeWithSim(`serve-sim accessibility endpoint (booted sim ${bootedUdid ?? "<
         // 503 = helper alive but AX not yet ready (sim still warming up).
         // Anything else is a hard failure.
         if (res.status !== 503) break;
+      } catch (err) {
+        // A slow response that blows the per-request budget aborts the fetch;
+        // treat it like a 503 (helper still warming up) and keep polling until
+        // the overall AX_READY_BUDGET_MS deadline rather than failing outright.
+        if ((err as { name?: string }).name !== "AbortError") throw err;
       } finally {
         clearTimeout(timer);
       }

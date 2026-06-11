@@ -112,13 +112,17 @@ const PREVIEW_DEFINE = {
 
 // ─── 3. Middleware ESM (serve-sim/middleware) ─────────────────────────────
 
+// `ws` stays external in the node-target bundles: under Node it resolves to
+// the installed package (a real dependency), and under Bun the module
+// specifier is substituted with Bun's native implementation — inlining the
+// Node implementation would break WebSocket upgrades on Bun.
 const mwResult = await Bun.build({
   entrypoints: [resolve(root, "src/middleware.ts")],
   target: "node",
   format: "esm",
   minify: true,
   outdir: distDir,
-  external: ["fs", "path", "os", "child_process", "url", "net", "tls", "crypto", "stream", "events", "http", "https", "zlib", "buffer", "module"],
+  external: ["fs", "path", "os", "child_process", "url", "net", "tls", "crypto", "stream", "events", "http", "https", "zlib", "buffer", "module", "ws"],
   define: PREVIEW_DEFINE,
 });
 if (!mwResult.success) {
@@ -144,7 +148,7 @@ const binJsResult = await Bun.build({
   minify: true,
   outdir: distDir,
   naming: "serve-sim.js",
-  external: ["fs", "path", "os", "child_process", "url", "net", "tls", "crypto", "stream", "events", "http", "https", "zlib", "buffer", "module"],
+  external: ["fs", "path", "os", "child_process", "url", "net", "tls", "crypto", "stream", "events", "http", "https", "zlib", "buffer", "module", "ws"],
   define: PREVIEW_DEFINE,
 });
 if (!binJsResult.success) {
@@ -169,6 +173,10 @@ const compile = spawnSync(
     resolve(root, "src/index.ts"),
     "--outfile", resolve(distDir, "serve-sim"),
     "--define", `__PREVIEW_HTML_B64__=${JSON.stringify(htmlB64)}`,
+    // `ws` must stay a runtime-resolved specifier so Bun substitutes its
+    // native implementation — bundling the Node implementation breaks
+    // upgrades (raw handshake writes never flush under Bun's node:http).
+    "--external", "ws",
   ],
   { stdio: "inherit" },
 );
@@ -206,5 +214,21 @@ if (helperBuild.status !== 0) {
   process.exit(helperBuild.status ?? 1);
 }
 console.log("dist/simcam/serve-sim-camera-helper");
+
+// ─── 7. sim-ax-settings in-sim CLI (simulator-wide UI settings) ──────────
+
+const axSettingsBuild = spawnSync(
+  "bash",
+  [
+    resolve(root, "Sources/SimAXSettings/build.sh"),
+    resolve(distDir, "simax"),
+  ],
+  { stdio: "inherit" },
+);
+if (axSettingsBuild.status !== 0) {
+  console.error("SimAXSettings build failed.");
+  process.exit(axSettingsBuild.status ?? 1);
+}
+console.log("dist/simax/serve-sim-ax-settings");
 
 console.log("Done.");

@@ -72,13 +72,22 @@ export function Select({
     };
   }, [open]);
 
+  // Focus the selected option once per open — keyed off `pos` because the
+  // popup only exists after placement, but guarded so scroll repositions
+  // don't yank focus back from arrow-key navigation.
+  const focusedThisOpen = useRef(false);
   useEffect(() => {
-    if (!open || !pos) return;
+    if (!open) {
+      focusedThisOpen.current = false;
+      return;
+    }
+    if (!pos || focusedThisOpen.current) return;
     const items = popupRef.current?.querySelectorAll<HTMLButtonElement>("[role=option]");
     if (!items?.length) return;
+    focusedThisOpen.current = true;
     const idx = options.findIndex((o) => o.value === value);
     items[Math.max(idx, 0)]?.focus();
-  }, [open, pos]);
+  }, [open, pos, options, value]);
 
   const onPopupKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const items = [...(popupRef.current?.querySelectorAll<HTMLButtonElement>("[role=option]") ?? [])];

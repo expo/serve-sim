@@ -1,4 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  negotiatedWebRtcCodecFromSdp,
+  type WebRtcCodec,
+} from "../webrtc-codec-fallback";
 
 type IceServer = {
   urls: string[];
@@ -6,11 +10,14 @@ type IceServer = {
   credential?: string;
 };
 
-type WebRtcCodec = "vp8" | "h264";
-
 export type DataChannelTarget = {
   readyState: number;
   send(data: ArrayBuffer): void;
+};
+
+type WebRtcError = {
+  codec: WebRtcCodec;
+  message: string;
 };
 
 const DEFAULT_ICE_SERVERS: IceServer[] = [
@@ -31,7 +38,8 @@ export function useWebRtcStream({
 }) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [connected, setConnected] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<WebRtcError | null>(null);
+  const [negotiatedCodec, setNegotiatedCodec] = useState<WebRtcCodec | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
 
   const dataTarget: DataChannelTarget | null =
@@ -45,13 +53,19 @@ export function useWebRtcStream({
   useEffect(() => {
     if (!enabled || !url) return;
     let stopped = false;
+    setNegotiatedCodec(null);
+    setError(null);
     const servers = iceServers?.length ? iceServers : DEFAULT_ICE_SERVERS;
     const pc = new RTCPeerConnection({ iceServers: servers });
     const dc = pc.createDataChannel("input", { ordered: false, maxRetransmits: 0 });
     dataChannelRef.current = dc;
     const videoTransceiver = pc.addTransceiver("video", { direction: "recvonly" });
     const videoCapabilities = RTCRtpReceiver.getCapabilities("video");
-    const preferredMimeType = codec === "h264" ? "video/H264" : "video/VP8";
+    const preferredMimeType = codec === "h264"
+      ? "video/H264"
+      : codec === "vp9"
+        ? "video/VP9"
+        : "video/VP8";
     if (videoCapabilities?.codecs.length && "setCodecPreferences" in videoTransceiver) {
       videoTransceiver.setCodecPreferences([
         ...videoCapabilities.codecs.filter((candidate) => candidate.mimeType === preferredMimeType),
@@ -74,7 +88,7 @@ export function useWebRtcStream({
     pc.onconnectionstatechange = () => {
       if (stopped) return;
       setConnected(pc.connectionState === "connected");
-      if (pc.connectionState === "failed") setError("WebRTC connection failed");
+      if (pc.connectionState === "failed") setError({ codec, message: "WebRTC connection failed" });
     };
 
     const waitForIce = () =>
@@ -104,15 +118,19 @@ export function useWebRtcStream({
           body: JSON.stringify({
             type: local.type,
             sdp: local.sdp,
+            codec,
             iceServers: servers,
           }),
         });
         if (!response.ok) throw new Error(`WebRTC offer failed: HTTP ${response.status}`);
         const answer = await response.json() as RTCSessionDescriptionInit;
         await pc.setRemoteDescription(answer);
+        if (typeof answer.sdp === "string") {
+          setNegotiatedCodec(negotiatedWebRtcCodecFromSdp(answer.sdp));
+        }
       } catch (err) {
         if (!stopped) {
-          setError(err instanceof Error ? err.message : String(err));
+          setError({ codec, message: err instanceof Error ? err.message : String(err) });
           setConnected(false);
         }
       }
@@ -123,10 +141,11 @@ export function useWebRtcStream({
       dataChannelRef.current = null;
       setStream(null);
       setConnected(false);
+      setNegotiatedCodec(null);
       dc.close();
       pc.close();
     };
   }, [enabled, url, codec, iceServers]);
 
-  return { stream, dataTarget, connected, error };
+  return { stream, dataTarget, connected, error, negotiatedCodec };
 }

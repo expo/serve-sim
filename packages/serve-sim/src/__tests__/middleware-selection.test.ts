@@ -71,6 +71,16 @@ describe("previewConfigForState", () => {
       previewConfigForState(states[0]!, "/preview", "/bin/serve-sim", "token-xyz", "mjpeg").codec,
     ).toBe("mjpeg");
   });
+
+  test("passes WebRTC VP9 preference through to the client config", () => {
+    expect(
+      previewConfigForState({
+        ...states[0]!,
+        transport: "webrtc",
+        webrtcCodec: "vp9",
+      }, "/preview", "/bin/serve-sim", "token-xyz").webrtcCodec,
+    ).toBe("vp9");
+  });
 });
 
 describe("rewriteStateForRequestHost", () => {

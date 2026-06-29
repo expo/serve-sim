@@ -30,7 +30,7 @@ declare global {
        * future values like `"hevc"`/`"av1"`.
        */
       codec?: "auto" | "mjpeg" | "h264";
-      webrtcCodec?: "vp8" | "h264";
+      webrtcCodec?: "vp8" | "vp9" | "h264";
       webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
       /**
        * Set when the server routes helper stream/control + DevTools sockets

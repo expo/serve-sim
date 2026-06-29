@@ -24,7 +24,7 @@ export interface ServeSimDeviceState {
   wsUrl: string;
   transport?: "http" | "webrtc";
   codec?: "auto" | "mjpeg" | "h264";
-  webrtcCodec?: "vp8" | "h264";
+  webrtcCodec?: "vp8" | "vp9" | "h264";
   webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
 }
 

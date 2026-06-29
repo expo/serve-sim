@@ -768,7 +768,7 @@ export function previewConfigForState(
   execToken: string;
   codec?: ServeSimDeviceState["codec"];
   transport?: "http" | "webrtc";
-  webrtcCodec?: "vp8" | "h264";
+  webrtcCodec?: "vp8" | "vp9" | "h264";
   webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
   proxyHelpers?: boolean;
 } {
@@ -1122,7 +1122,7 @@ export interface SimMiddlewareOptions {
    */
   codec?: "auto" | "mjpeg" | "h264";
   transport?: "http" | "webrtc";
-  webrtcCodec?: "vp8" | "h264";
+  webrtcCodec?: "vp8" | "vp9" | "h264";
   webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
   /**
    * Route the browser's helper stream/control and DevTools sockets through the

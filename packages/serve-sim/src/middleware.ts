@@ -12,6 +12,7 @@ import type { Socket } from "net";
 // importing the dependency keeps the proxy working regardless of runtime.
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
+import { readCameraStatus } from "./camera-status";
 import { getDeviceSession, type DeviceSessionOptions, type HidSocket } from "./device-session";
 import { axFrontmostAsync } from "./native";
 import {
@@ -619,6 +620,23 @@ function bridgeWebSocketFrames(req: SimReq, socket: Socket, head: Buffer, upstre
   drainFrames();
 }
 
+async function handleCameraStatus(udid: string, res: SimRes): Promise<void> {
+  try {
+    const status = await readCameraStatus(udid);
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    });
+    res.end(JSON.stringify(status));
+  } catch (e: any) {
+    res.writeHead(500, {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    });
+    res.end(JSON.stringify({ udid, alive: false, error: e?.message ?? String(e) }));
+  }
+}
+
 /**
  * Serve a helper endpoint from an in-process DeviceSession (NativeCapture +
  * NativeHid). Returns false when no session can serve it (device not booted, or
@@ -632,13 +650,18 @@ function serveHelperInProcess(
   options: DeviceSessionOptions = {},
 ): boolean {
   if (!device) return false;
+  const helperPath = upstreamPath.split("?")[0];
+  if (helperPath === "/camera/status") {
+    void handleCameraStatus(device, res);
+    return true;
+  }
   let session;
   try {
     session = getDeviceSession(device, options);
   } catch {
     return false; // not booted / capture unavailable → 404
   }
-  switch (upstreamPath.split("?")[0]) {
+  switch (helperPath) {
     case "/stream.mjpeg": session.handleMjpeg(req, res); return true;
     case "/stream.avcc": session.handleAvcc(req, res); return true;
     case "/stream-settings": void session.handleStreamSettings(req, res); return true;
@@ -777,6 +800,7 @@ export function previewConfigForState(
   basePath: string;
   appStateEndpoint: string;
   axEndpoint: string;
+  cameraStatusEndpoint: string;
   devtoolsEndpoint: string;
   streamSettingsEndpoint: string;
   serveSimBin: string;
@@ -798,6 +822,7 @@ export function previewConfigForState(
     basePath: base,
     appStateEndpoint: endpoint(base, "/appstate", state.device),
     axEndpoint: endpoint(base, "/ax", state.device),
+    cameraStatusEndpoint: endpoint(base, `/helper/${encodeURIComponent(state.device)}/camera/status`, state.device),
     devtoolsEndpoint: endpoint(base, "/devtools", state.device),
     streamSettingsEndpoint: endpoint(base, `/helper/${encodeURIComponent(state.device)}/stream-settings`, state.device),
     serveSimBin,
@@ -986,7 +1011,18 @@ interface SimctlDevice {
   runtime: string;
 }
 
+const SIMULATOR_LIST_CACHE_TTL_MS = 1000;
+let simulatorListSnapshot: { at: number; devices: SimctlDevice[] } | null = null;
+
+function invalidateSimulatorListSnapshot(): void {
+  simulatorListSnapshot = null;
+}
+
 function listAllSimulators(): SimctlDevice[] {
+  const now = Date.now();
+  if (simulatorListSnapshot && now - simulatorListSnapshot.at < SIMULATOR_LIST_CACHE_TTL_MS) {
+    return simulatorListSnapshot.devices;
+  }
   try {
     const output = execSync("xcrun simctl list devices -j", {
       encoding: "utf-8",
@@ -1004,9 +1040,10 @@ function listAllSimulators(): SimctlDevice[] {
         out.push({ ...d, runtime: runtime.replace(/^.*SimRuntime\./, "") });
       }
     }
+    simulatorListSnapshot = { at: now, devices: out };
     return out;
   } catch {
-    return [];
+    return simulatorListSnapshot?.devices ?? [];
   }
 }
 
@@ -1438,6 +1475,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         // Drop the snapshot so the next /grid/api call re-queries simctl
         // and prunes any helper bound to this now-shutdown device.
         bootedSnapshot = { at: 0, booted: null };
+        invalidateSimulatorListSnapshot();
         execFile("xcrun", ["simctl", "shutdown", udid], { timeout: 30_000 }, (err, _stdout, stderr) => {
           if (err) {
             res.writeHead(500, { "Content-Type": "application/json" });
@@ -1489,6 +1527,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
             res.writeHead(500, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: false, error }));
           } else {
+            invalidateSimulatorListSnapshot();
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: true }));
           }

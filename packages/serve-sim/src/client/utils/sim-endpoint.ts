@@ -15,6 +15,7 @@ declare global {
       eventLogEndpoint?: string;
       eventLogEventsEndpoint?: string;
       devtoolsEndpoint?: string;
+      cameraStatusEndpoint?: string;
       gridApiEndpoint?: string;
       gridStartEndpoint?: string;
       gridShutdownEndpoint?: string;

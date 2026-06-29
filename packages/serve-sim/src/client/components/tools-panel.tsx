@@ -24,6 +24,7 @@ export function ToolsPanel({
   eventLogEventsEndpoint,
   axOverlayEnabled,
   onToggleAxOverlay,
+  cameraStatusEndpoint,
   streamSettings,
   onStreamPlaybackSettingsChange,
   onStreamEncoderSettingsChange,
@@ -40,6 +41,7 @@ export function ToolsPanel({
   eventLogEventsEndpoint?: string;
   axOverlayEnabled: boolean;
   onToggleAxOverlay: () => void;
+  cameraStatusEndpoint?: string;
   streamSettings: StreamControlSettings;
   onStreamPlaybackSettingsChange: (patch: Partial<StreamPlaybackSettings>) => void;
   onStreamEncoderSettingsChange: (patch: Partial<StreamEncoderSettings>) => void;
@@ -64,7 +66,12 @@ export function ToolsPanel({
             overlayEnabled={axOverlayEnabled}
             onToggleOverlay={onToggleAxOverlay}
           />
-          <CameraTool udid={udid} bundleId={currentApp?.bundleId ?? null} />
+          <CameraTool
+            key={udid}
+            udid={udid}
+            bundleId={currentApp?.bundleId ?? null}
+            statusEndpoint={cameraStatusEndpoint}
+          />
           <LocationEmulationTool udid={udid} exec={execOnHost} />
           <AppPermissionsTool udid={udid} bundleId={currentApp?.bundleId ?? null} />
           <StreamSettingsTool

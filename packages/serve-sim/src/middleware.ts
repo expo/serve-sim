@@ -12,6 +12,7 @@ import type { Socket } from "net";
 // importing the dependency keeps the proxy working regardless of runtime.
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
+import { readCameraStatus } from "./camera-status";
 import { closeDeviceSession, getDeviceSession, sendCorsPreflight, type HidSocket } from "./device-session";
 import {
   eventLogEventForCommand,
@@ -690,6 +691,36 @@ function bridgeWebSocketFrames(req: SimReq, socket: Socket, head: Buffer, upstre
   drainFrames();
 }
 
+async function handleCameraStatus(udid: string, req: SimReq, res: SimRes): Promise<void> {
+  if (req.method !== "GET") {
+    res.writeHead(405, {
+      Allow: "GET",
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    });
+    res.end(JSON.stringify({ error: "method_not_allowed" }));
+    return;
+  }
+  try {
+    const status = await readCameraStatus(udid);
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    });
+    res.end(JSON.stringify(status));
+  } catch (error) {
+    res.writeHead(500, {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    });
+    res.end(JSON.stringify({
+      udid,
+      alive: false,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+  }
+}
+
 /**
  * Serve a helper endpoint from an in-process DeviceSession (NativeCapture +
  * NativeHid). Returns false when no session can serve it (device not booted, or
@@ -704,6 +735,10 @@ function serveHelperInProcess(
 ): boolean {
   if (!device) return false;
   const endpoint = upstreamPath.split("?")[0];
+  if (endpoint === "/camera/status") {
+    void handleCameraStatus(device, req, res);
+    return true;
+  }
   if (
     (endpoint === "/webrtc/offer" || endpoint === "/webrtc/close" || endpoint === "/stream-settings")
     && req.method === "OPTIONS"
@@ -858,6 +893,7 @@ export function previewConfigForState(
   eventLogEndpoint: string;
   eventLogEventsEndpoint: string;
   axEndpoint: string;
+  cameraStatusEndpoint: string;
   devtoolsEndpoint: string;
   streamSettingsEndpoint: string;
   serveSimBin: string;
@@ -884,6 +920,7 @@ export function previewConfigForState(
     eventLogEndpoint: endpoint(base, "/api/event-log", state.device),
     eventLogEventsEndpoint: endpoint(base, "/api/event-log/events", state.device),
     axEndpoint: endpoint(base, "/ax", state.device),
+    cameraStatusEndpoint: endpoint(base, `/helper/${encodeURIComponent(state.device)}/camera/status`, state.device),
     devtoolsEndpoint: endpoint(base, "/devtools", state.device),
     streamSettingsEndpoint: endpoint(
       base,

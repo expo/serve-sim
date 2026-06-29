@@ -197,9 +197,11 @@ export function CameraInlineBanner({
 export function CameraTool({
   udid,
   bundleId,
+  statusEndpoint,
 }: {
   udid: string;
   bundleId: string | null;
+  statusEndpoint?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [source, setSource] = useState<CamSource>("placeholder");
@@ -238,7 +240,29 @@ export function CameraTool({
     return shellEscape(bin);
   }, []);
 
+  const cameraStatusEndpoint = useMemo(() => {
+    const configured = statusEndpoint ?? window.__SIM_PREVIEW__?.cameraStatusEndpoint;
+    if (configured) return configured;
+    const base = window.__SIM_PREVIEW__?.url?.replace(/\/+$/, "");
+    return base ? `${base}/camera/status` : null;
+  }, [statusEndpoint]);
+
   const fetchCameraStatus = useCallback(async () => {
+    if (cameraStatusEndpoint) {
+      try {
+        const res = await fetch(cameraStatusEndpoint, { cache: "no-store" });
+        if (res.ok) {
+          return await res.json() as {
+            alive?: boolean;
+            source?: string;
+            arg?: string;
+            mirror?: string;
+            helperPid?: number;
+            bundleIds?: string[];
+          };
+        }
+      } catch {}
+    }
     const res = await execOnHost(`${cliPrefix} camera status -d ${udid}`);
     if (res.exitCode !== 0) return null;
     try {
@@ -253,17 +277,26 @@ export function CameraTool({
     } catch {
       return null;
     }
-  }, [cliPrefix, udid]);
+  }, [cameraStatusEndpoint, cliPrefix, udid]);
 
   const refreshWebcamsRef = useRef<() => Promise<void>>(async () => {});
   const bundleIdRef = useRef<string | null>(bundleId);
   useEffect(() => { bundleIdRef.current = bundleId; }, [bundleId]);
 
   useEffect(() => {
+    if (!open) return;
     let cancelled = false;
     void (async () => {
       const reply = await fetchCameraStatus();
-      if (cancelled || !reply || !reply.alive) return;
+      if (cancelled || !reply) return;
+      if (!reply.alive) {
+        setInjected(false);
+        setInjectedBundleIds(new Set());
+        setAttachedHelperPid(null);
+        setPillState("ready");
+        appliedMirrorRef.current = "off";
+        return;
+      }
       skipNextAutoSwapRef.current = true;
       const replySource = reply.source;
       if (replySource === "placeholder" || replySource === "webcam" || replySource === "image" || replySource === "video") {
@@ -283,16 +316,17 @@ export function CameraTool({
       setAttachedHelperPid(reply.helperPid ?? null);
       setInjected(true);
       const replyBundles = Array.isArray(reply.bundleIds) ? reply.bundleIds : [];
-      if (replyBundles.length > 0) setInjectedBundleIds(new Set(replyBundles));
+      setInjectedBundleIds(new Set(replyBundles));
       const fg = bundleIdRef.current;
       const replyHasRealSource = replySource && replySource !== "placeholder";
       setPillState(fg && replyBundles.includes(fg) && replyHasRealSource ? "active" : "ready");
       setStatus(`Reattached → ${replySource ?? "running helper"}${reply.arg ? ` (${reply.arg})` : ""}`);
     })();
     return () => { cancelled = true; };
-  }, [udid, fetchCameraStatus]);
+  }, [udid, fetchCameraStatus, open]);
 
   useEffect(() => {
+    if (!open) return;
     let cancelled = false;
     let inFlight = false;
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -355,7 +389,7 @@ export function CameraTool({
         document.removeEventListener("visibilitychange", onVisibility);
       }
     };
-  }, [fetchCameraStatus, injected, attachedHelperPid, bundleId, injectedBundleIds]);
+  }, [fetchCameraStatus, injected, attachedHelperPid, bundleId, injectedBundleIds, open]);
 
   const refreshWebcams = useCallback(async () => {
     setWebcamLoading(true);

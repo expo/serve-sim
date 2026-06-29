@@ -1170,6 +1170,7 @@ function AppWithConfig({
         deviceRuntime={deviceRuntime}
         currentApp={currentApp}
         eventLogEventsEndpoint={config.eventLogEventsEndpoint}
+        cameraStatusEndpoint={config.cameraStatusEndpoint}
         axOverlayEnabled={axOverlayEnabled}
         onToggleAxOverlay={() => setAxOverlayEnabled((enabled) => !enabled)}
         streamSettings={streamSettings}

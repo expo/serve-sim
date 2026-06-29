@@ -44,6 +44,11 @@ describeIfBuilt("bundle portability", () => {
     expect(existsSync(join(PKG_DIR, "dist/state.js"))).toBe(true);
   });
 
+  test("published middleware types include their camera-status dependency", () => {
+    const pkg = JSON.parse(readFileSync(join(PKG_DIR, "package.json"), "utf8"));
+    expect(pkg.files).toContain("src/camera-status.ts");
+  });
+
   test("the package rejects non-arm64 installations", () => {
     const pkg = JSON.parse(readFileSync(join(PKG_DIR, "package.json"), "utf8"));
     expect(pkg.cpu).toEqual(["arm64"]);

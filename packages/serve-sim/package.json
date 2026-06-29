@@ -37,6 +37,7 @@
     "dist/simax/serve-sim-ax-settings",
     "src/ax-shared.ts",
     "src/ax.ts",
+    "src/camera-status.ts",
     "src/connect-to-fetch.ts",
     "src/middleware.ts",
     "src/native.ts",

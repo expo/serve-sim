@@ -71,6 +71,10 @@ Options:
       --codec <codec> Stream codec for the preview UI: 'auto' (H.264 when the
                       browser can decode it) or 'mjpeg' (force software JPEG —
                       e.g. on VMs without H.264 encode)
+      --transport <http|webrtc>
+                      Stream transport (default: http)
+      --webrtc-codec <vp8|vp9|h264>
+                      WebRTC video codec (default: h264)
       --list [device] List running streams
       --kill [device] Kill running stream(s)
 

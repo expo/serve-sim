@@ -1709,7 +1709,7 @@ program
       return v;
     },
   )
-  .option("--webrtc-codec <vp8|h264>", "WebRTC video codec", "h264")
+  .option("--webrtc-codec <vp8|vp9|h264>", "WebRTC video codec", "h264")
   .option("--stun-url <url[,url...]>", "STUN URL(s) for WebRTC ICE")
   .option("--turn-url <url[,url...]>", "TURN URL(s) for WebRTC ICE")
   .option("--turn-username <username>", "TURN username")
@@ -1748,8 +1748,8 @@ Examples:
       console.error("--transport must be one of: http, webrtc.");
       process.exit(1);
     }
-    if (opts.webrtcCodec !== "vp8" && opts.webrtcCodec !== "h264") {
-      console.error("--webrtc-codec must be one of: vp8, h264.");
+    if (opts.webrtcCodec !== "vp8" && opts.webrtcCodec !== "vp9" && opts.webrtcCodec !== "h264") {
+      console.error("--webrtc-codec must be one of: vp8, vp9, h264.");
       process.exit(1);
     }
     const stunUrls = typeof opts.stunUrl === "string"

@@ -12,6 +12,7 @@ struct WebRTCIceServerPayload: Codable {
 struct WebRTCOfferPayload: Codable {
     let type: String
     let sdp: String
+    let codec: String?
     let iceServers: [WebRTCIceServerPayload]?
 }
 
@@ -103,7 +104,11 @@ final class WebRTCPublisher {
             return
         }
 
-        _ = peerConnection.add(videoTrack, streamIds: ["stream0"])
+        if let transceiver = peerConnection.addTransceiver(with: videoTrack) {
+            applyVideoCodecPreference(request.codec, to: transceiver)
+        } else {
+            _ = peerConnection.add(videoTrack, streamIds: ["stream0"])
+        }
         let session = WebRTCSession(peerConnection: peerConnection, delegate: delegate)
         self.session?.close()
         self.session = session
@@ -152,6 +157,33 @@ final class WebRTCPublisher {
                 credential: server.credential
             )
         }
+    }
+
+    private func applyVideoCodecPreference(_ codec: String?, to transceiver: LKRTCRtpTransceiver) {
+        let preferredName: String
+        switch codec?.lowercased() {
+        case "vp8":
+            preferredName = "VP8"
+        case "vp9":
+            preferredName = "VP9"
+        default:
+            preferredName = "H264"
+        }
+        let capabilities = factory.rtpSenderCapabilities(forKind: "video")
+        let preferredCodecs = capabilities.codecs.filter {
+            $0.name.caseInsensitiveCompare(preferredName) == .orderedSame ||
+                $0.mimeType.caseInsensitiveCompare("video/\(preferredName)") == .orderedSame
+        }
+        guard !preferredCodecs.isEmpty else {
+            print("[webrtc] No sender codec capability found for \(preferredName); using default order")
+            return
+        }
+        let remainingCodecs = capabilities.codecs.filter { capability in
+            !preferredCodecs.contains { $0 === capability }
+        }
+        let orderedCodecs = preferredCodecs + remainingCodecs
+        transceiver.codecPreferences = orderedCodecs
+        print("[webrtc] Preferred video codec: \(preferredName)")
     }
 
     private func makeError(_ message: String) -> Error {

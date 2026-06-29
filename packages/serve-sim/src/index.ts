@@ -39,6 +39,8 @@ function resolveVersion(): string {
 
 type ServerState = ServeSimDeviceState;
 
+type StreamRuntimeOptions = Pick<ServeSimDeviceState, "transport" | "codec" | "webrtcCodec" | "webrtcIceServers">;
+type WebRTCIceServer = NonNullable<ServeSimDeviceState["webrtcIceServers"]>[number];
 function ensureStateDir() {
   if (!existsSync(STATE_DIR)) {
     mkdirSync(STATE_DIR, { recursive: true });
@@ -1581,7 +1583,9 @@ async function serve(
   devices: string[],
   portExplicit: boolean,
   host: string,
-  codec: string | undefined,
+  options: {
+    stream?: StreamRuntimeOptions;
+  } = {},
 ) {
   // Boot the target simulators; the preview server streams them in-process
   // (no spawned helper). Sessions are created lazily on the first stream request.
@@ -1595,7 +1599,15 @@ async function serve(
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
   // it can route helper/DevTools sockets through the single preview port.
-  const middleware = simMiddleware({ basePath: "/", device: targetDevice, codec, proxyHelpers: true });
+  const middleware = simMiddleware({
+    basePath: "/",
+    device: targetDevice,
+    codec: options.stream?.codec,
+    transport: options.stream?.transport,
+    webrtcCodec: options.stream?.webrtcCodec,
+    webrtcIceServers: options.stream?.webrtcIceServers,
+    proxyHelpers: true,
+  });
 
   // Try requested port; if busy and the user didn't pin it, scan forward.
   const maxScan = portExplicit ? 1 : 50;
@@ -1630,7 +1642,7 @@ async function serve(
   // Record in-process state so the preview/grid enumerate these devices and the
   // CLI input subcommands can reach the same-origin /helper ws.
   for (const udid of targetDevices) {
-    writeState(inProcessServeSimState(udid, boundPort, "/", host));
+    writeState(inProcessServeSimState(udid, boundPort, "/", host, options.stream));
   }
   const clearAll = () => {
     for (const udid of targetDevices) {
@@ -1684,19 +1696,29 @@ program
   .option("--detach", "Spawn helper and exit (daemon mode)")
   .option("-q, --quiet", "Suppress human-readable output, JSON only")
   .option("--no-preview", "Skip the web preview server; stream in foreground only")
+  .option("--transport <http|webrtc>", "Stream transport", "http")
   .option(
     "--codec <codec>",
-    "Stream codec for the preview UI: 'auto' (H.264 when the browser can decode " +
-      "it) or 'mjpeg' (force software JPEG — e.g. on VMs without H.264 encode).",
+    "Stream codec for the preview UI: 'auto', 'h264', 'mjpeg', or 'webrtc' as a compatibility alias for --transport webrtc.",
     (value) => {
       const v = value.toLowerCase();
-      const allowed = ["auto", "h264", "mjpeg"];
+      const allowed = ["auto", "h264", "mjpeg", "webrtc"];
       if (!allowed.includes(v)) {
         throw new InvalidArgumentError(`Unsupported codec '${value}'. Supported: ${allowed.join(", ")}.`);
       }
       return v;
     },
   )
+  .option("--webrtc-codec <vp8|h264>", "WebRTC video codec", "h264")
+  .option("--stun-url <url[,url...]>", "STUN URL(s) for WebRTC ICE")
+  .option("--turn-url <url[,url...]>", "TURN URL(s) for WebRTC ICE")
+  .option("--turn-username <username>", "TURN username")
+  .option("--turn-credential <credential>", "TURN credential")
+  .option("--stream-fps <fps>", "Accepted for stream-control compatibility")
+  .option("--stream-quality <quality>", "Accepted for stream-control compatibility")
+  .option("--stream-max-dimension <px>", "Accepted for stream-control compatibility")
+  .option("--h264-bitrate <bps>", "Accepted for stream-control compatibility")
+  .option("--h264-max-fps <fps>", "Accepted for stream-control compatibility")
   .option("-l, --list [device]", "List running streams")
   .option("-k, --kill [device]", "Kill running stream(s)")
   .addHelpText(
@@ -1705,6 +1727,7 @@ program
 Examples:
   serve-sim                              Open simulator preview at localhost:3200
   serve-sim -p 8080                      Preview on a custom port
+  serve-sim --transport webrtc           Stream over WebRTC
   serve-sim --codec mjpeg                Force MJPEG (e.g. on VMs without H.264 encode)
   serve-sim --no-preview                 Auto-detect booted sim, stream in foreground
   serve-sim --no-preview "iPhone 16 Pro" Stream a specific device (no preview)
@@ -1721,6 +1744,34 @@ Examples:
       killStreams(typeof opts.kill === "string" ? opts.kill : undefined);
       return;
     }
+    if (opts.transport !== "http" && opts.transport !== "webrtc") {
+      console.error("--transport must be one of: http, webrtc.");
+      process.exit(1);
+    }
+    if (opts.webrtcCodec !== "vp8" && opts.webrtcCodec !== "h264") {
+      console.error("--webrtc-codec must be one of: vp8, h264.");
+      process.exit(1);
+    }
+    const stunUrls = typeof opts.stunUrl === "string"
+      ? opts.stunUrl.split(",").map((s: string) => s.trim()).filter(Boolean)
+      : [];
+    const webrtcIceServers: WebRTCIceServer[] = [];
+    if (stunUrls.length) webrtcIceServers.push({ urls: stunUrls });
+    if (opts.turnUrl) {
+      webrtcIceServers.push({
+        urls: String(opts.turnUrl).split(",").map((s: string) => s.trim()).filter(Boolean),
+        username: opts.turnUsername,
+        credential: opts.turnCredential,
+      });
+    }
+    const transport = opts.codec === "webrtc" ? "webrtc" : opts.transport;
+    const codec = opts.codec === "webrtc" ? "h264" : opts.codec;
+    const stream: StreamRuntimeOptions = {
+      transport,
+      codec,
+      webrtcCodec: transport === "webrtc" ? opts.webrtcCodec : undefined,
+      webrtcIceServers: webrtcIceServers.length ? webrtcIceServers : undefined,
+    };
     const startPort: number | undefined = opts.port;
     if (opts.detach) {
       const states = await detach(devices, startPort ?? 3100);
@@ -1728,7 +1779,9 @@ Examples:
     } else if (opts.preview === false) {
       await follow(devices, startPort ?? 3100, !!opts.quiet);
     } else {
-      await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, opts.codec);
+      await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, {
+        stream,
+      });
     }
   });
 

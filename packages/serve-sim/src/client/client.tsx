@@ -49,6 +49,7 @@ import { WebKitDevtoolsPanel } from "./components/webkit-devtools-panel";
 import { useMediaDrop } from "./hooks/use-media-drop";
 import { useMjpegStream } from "./hooks/use-mjpeg-stream";
 import { useAvccStream } from "./hooks/use-avcc-stream";
+import { useWebRtcStream } from "./hooks/use-webrtc-stream";
 import { useResizableWidth } from "./hooks/use-resizable-width";
 import { useScreenshotToast } from "./hooks/use-screenshot-toast";
 import { useSimulatorResize } from "./hooks/use-simulator-resize";
@@ -70,7 +71,7 @@ import {
   PANEL_WIDTH,
 } from "./utils/panel-widths";
 import { proxyPreviewConfigForBrowser } from "./utils/preview-config";
-import { simEndpoint, streamConfigFrom } from "./utils/sim-endpoint";
+import { mjpegStreamUrlFrom, simEndpoint, streamConfigFrom } from "./utils/sim-endpoint";
 import {
   SIMULATOR_RESIZE_DRAG_TRANSITION,
   SIMULATOR_RESIZE_LAYOUT_TRANSITION,
@@ -442,6 +443,13 @@ function AppWithConfig({
   // `avccFallback` drives a startup timeout: if AVCC paints nothing in time,
   // drop to MJPEG, which every helper serves. See avcc-fallback.ts.
   const avcc = useAvccStream();
+  const useWebRtcVideo = config.transport === "webrtc";
+  const webrtc = useWebRtcStream({
+    url: config.url,
+    enabled: useWebRtcVideo,
+    codec: config.webrtcCodec,
+    iceServers: config.webrtcIceServers,
+  });
   const [avccFallback, dispatchAvccFallback] = useReducer(
     avccFallbackReducer,
     initialAvccFallback,
@@ -468,8 +476,8 @@ function AppWithConfig({
   // H.264 profiles. Treat that as a hard override the viewer can't switch off.
   const serverForcesMjpeg = config.codec === "mjpeg";
   const useAvccVideo =
-    !serverForcesMjpeg && avcc.supported && !avccFallback.fellBack && !preferMjpeg && !forceMjpeg && codecPreference !== "mjpeg";
-  const mjpeg = useMjpegStream(useAvccVideo ? null : config.streamUrl);
+    !useWebRtcVideo && !serverForcesMjpeg && avcc.supported && !avccFallback.fellBack && !preferMjpeg && !forceMjpeg && codecPreference !== "mjpeg";
+  const mjpeg = useMjpegStream(useAvccVideo || useWebRtcVideo ? null : mjpegStreamUrlFrom(config));
 
   // Re-arm AVCC whenever the target stream changes (device switch / reconnect).
   useEffect(() => {
@@ -588,13 +596,30 @@ function AppWithConfig({
   }, [config.wsUrl]);
 
   const sendWs = useCallback((tag: number, payload: object) => {
+    if (useWebRtcVideo && webrtc.dataTarget) {
+      pendingWsMessagesRef.current = sendOrQueueWsMessage(
+        webrtc.dataTarget,
+        pendingWsMessagesRef.current,
+        tag,
+        payload,
+      );
+      return;
+    }
     pendingWsMessagesRef.current = sendOrQueueWsMessage(
       wsRef.current,
       pendingWsMessagesRef.current,
       tag,
       payload,
     );
-  }, []);
+  }, [useWebRtcVideo, webrtc.dataTarget]);
+
+  useEffect(() => {
+    if (!useWebRtcVideo || !webrtc.dataTarget) return;
+    pendingWsMessagesRef.current = flushWsMessageQueue(
+      webrtc.dataTarget,
+      pendingWsMessagesRef.current,
+    );
+  }, [useWebRtcVideo, webrtc.dataTarget]);
 
   const onStreamTouch = useCallback((data: any) => sendWs(0x03, data), [sendWs]);
   const onStreamMultiTouch = useCallback((data: any) => sendWs(0x05, data), [sendWs]);
@@ -968,7 +993,8 @@ function AppWithConfig({
                 onStreamButton={onStreamButton}
                 onStreamDigitalCrown={onStreamDigitalCrown}
                 onStreamScroll={onStreamScroll}
-                codec={useAvccVideo ? "avcc" : "mjpeg"}
+                codec={useWebRtcVideo ? "webrtc" : useAvccVideo ? "avcc" : "mjpeg"}
+                webRtcStream={webrtc.stream}
                 onAvccError={() => dispatchAvccFallback("error")}
                 subscribeFrame={useAvccVideo ? undefined : mjpeg.subscribeFrame}
                 streamFrame={useAvccVideo ? undefined : mjpeg.frame}

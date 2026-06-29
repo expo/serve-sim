@@ -61,6 +61,17 @@ function avccSeed(jpeg: Buffer): Buffer {
   return out;
 }
 
+function readRequestBody(req: IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer | string) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 const ORIENTATION_BY_NAME: Record<string, number> = {
   portrait: Orientation.portrait,
   portrait_upside_down: Orientation.portraitUpsideDown,
@@ -85,7 +96,11 @@ export class DeviceSession {
 
   constructor(public readonly udid: string) {
     this.hid = new NativeHid(udid);
-    this.capture = new NativeCapture(udid, (f) => this.onFrame(f));
+    this.capture = new NativeCapture(
+      udid,
+      (f) => this.onFrame(f),
+      (data) => this.handleHidMessage(data),
+    );
   }
 
   /** Begin capture. Throws if the device isn't booted. Idempotent. */
@@ -201,6 +216,19 @@ export class DeviceSession {
 
   handleHealth(_req: IncomingMessage, res: ServerResponse): void {
     this.sendJson(res, 200, { status: "ok" });
+  }
+
+  async handleWebRTCOffer(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      const body = await readRequestBody(req);
+      const offer = JSON.parse(body.toString("utf8")) as unknown;
+      this.sendJson(res, 200, this.capture.handleWebRTCOffer(offer));
+    } catch (err) {
+      this.sendJson(res, 500, {
+        error: "webrtc_offer_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   handleAx(_req: IncomingMessage, res: ServerResponse): Promise<void> {

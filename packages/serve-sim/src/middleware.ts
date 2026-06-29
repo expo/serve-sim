@@ -425,6 +425,7 @@ function helperProxyTarget(rawUrl: string, prefix: string): { device: string | n
     "health",
     "stream.avcc",
     "stream.mjpeg",
+    "webrtc",
     "ws",
   ]);
   let device = parsed.searchParams.get("device");
@@ -631,6 +632,7 @@ function serveHelperInProcess(req: SimReq, res: SimRes, device: string | null, u
     case "/stream.avcc": session.handleAvcc(req, res); return true;
     case "/config": session.handleConfig(req, res); return true;
     case "/health": session.handleHealth(req, res); return true;
+    case "/webrtc/offer": void session.handleWebRTCOffer(req, res); return true;
     case "/ax": session.handleAx(req, res); return true;
     case "/foreground": session.handleForeground(req, res); return true;
     default: return false;
@@ -643,7 +645,12 @@ function serveHelperInProcess(req: SimReq, res: SimRes, device: string | null, u
  * preview server itself serves the device's /helper routes in-process. Resolves
  * to an error string on boot failure, or null on success.
  */
-export async function startDeviceInProcess(udid: string, port: number, base: string): Promise<string | null> {
+export async function startDeviceInProcess(
+  udid: string,
+  port: number,
+  base: string,
+  stream?: Pick<ServeSimState, "transport" | "codec" | "webrtcCodec" | "webrtcIceServers">,
+): Promise<string | null> {
   // `simctl boot` errors when already booted — ignore and let bootstatus confirm.
   await new Promise<void>((resolve) => execFile("xcrun", ["simctl", "boot", udid], () => resolve()));
   const ready = await new Promise<boolean>((resolve) => {
@@ -665,7 +672,7 @@ export async function startDeviceInProcess(udid: string, port: number, base: str
     });
     if (!booted) return `Device ${udid} failed to reach booted state`;
   }
-  writeServeSimState(inProcessServeSimState(udid, port, base));
+  writeServeSimState(inProcessServeSimState(udid, port, base, "127.0.0.1", stream));
   return null;
 }
 
@@ -745,7 +752,7 @@ export function previewConfigForState(
   base: string,
   serveSimBin: string,
   execToken: string,
-  codec?: string,
+  codec?: ServeSimDeviceState["codec"],
   proxyHelpers = false,
 ): ServeSimState & {
   basePath: string;
@@ -759,7 +766,10 @@ export function previewConfigForState(
   gridMemoryEndpoint: string;
   previewEndpoint: string;
   execToken: string;
-  codec?: string;
+  codec?: ServeSimDeviceState["codec"];
+  transport?: "http" | "webrtc";
+  webrtcCodec?: "vp8" | "h264";
+  webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
   proxyHelpers?: boolean;
 } {
   const gridApiBase = (base === "" ? "" : base) + "/grid/api";
@@ -1110,7 +1120,10 @@ export interface SimMiddlewareOptions {
    * latency H.264 profiles); `"auto"`/undefined lets the browser pick H.264.
    * Reserved for future values such as `"hevc"`/`"av1"`.
    */
-  codec?: string;
+  codec?: "auto" | "mjpeg" | "h264";
+  transport?: "http" | "webrtc";
+  webrtcCodec?: "vp8" | "h264";
+  webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
   /**
    * Route the browser's helper stream/control and DevTools sockets through the
    * preview's same-origin `/helper` and `/devtools` proxies instead of the
@@ -1413,7 +1426,12 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           return;
         }
         const port = req.socket.localPort ?? 0;
-        void startDeviceInProcess(udid, port, base).then((error) => {
+        void startDeviceInProcess(udid, port, base, {
+          transport: options?.transport,
+          codec: options?.codec,
+          webrtcCodec: options?.webrtcCodec,
+          webrtcIceServers: options?.webrtcIceServers,
+        }).then((error) => {
           if (res.writableEnded) return;
           if (error) {
             res.writeHead(500, { "Content-Type": "application/json" });

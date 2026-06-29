@@ -80,6 +80,11 @@ interface StreamStatsSample {
   webrtcRtpFramesSent: number;
 }
 
+interface AvccClientState {
+  awaitingKeyframe: boolean;
+  hasDescription: boolean;
+}
+
 function streamLog(message: string): void {
   if (STREAM_DEBUG_ENV) console.error(message);
   else debugStream(message);
@@ -178,7 +183,7 @@ export class DeviceSession {
   private latestJpeg: Buffer | null = null;
   private cachedAvccDescription: Buffer | null = null;
   private readonly mjpegClients = new Set<ServerResponse>();
-  private readonly avccClients = new Set<ServerResponse>();
+  private readonly avccClients = new Map<ServerResponse, AvccClientState>();
   private readonly hidSockets = new Set<HidSocket>();
   private avccChunks = 0;
   private avccWrites = 0;
@@ -208,7 +213,7 @@ export class DeviceSession {
 
   close(): void {
     for (const res of this.mjpegClients) res.end();
-    for (const res of this.avccClients) res.end();
+    for (const res of this.avccClients.keys()) res.end();
     for (const ws of this.hidSockets) ws.close();
     this.mjpegClients.clear();
     this.avccClients.clear();
@@ -250,7 +255,21 @@ export class DeviceSession {
           `[stream:avcc] native chunk kind=${kind} bytes=${f.data.length} clients=${this.avccClients.size}`,
         );
       }
-      for (const res of this.avccClients) this.writeAvccFrame(res, f.data, kind);
+      for (const [res, state] of this.avccClients) {
+        if (f.isDescription) {
+          if (this.writeAvccFrame(res, f.data, kind)) state.hasDescription = true;
+          continue;
+        }
+        if (f.isKeyframe) {
+          if (!state.hasDescription && this.cachedAvccDescription) {
+            state.hasDescription = this.writeAvccFrame(res, this.cachedAvccDescription, "description-replay");
+          }
+          if (this.writeAvccFrame(res, f.data, kind)) state.awaitingKeyframe = false;
+          continue;
+        }
+        if (state.awaitingKeyframe) continue;
+        this.writeAvccFrame(res, f.data, kind);
+      }
     }
   }
 
@@ -271,11 +290,12 @@ export class DeviceSession {
    * re-seeded with the cached description + a fresh keyframe, yielding a clean
    * stream instead of a corrupted one.
    */
-  private writeAvccFrame(res: ServerResponse, chunk: Buffer, kind: string): void {
+  private writeAvccFrame(res: ServerResponse, chunk: Buffer, kind: string): boolean {
     if (res.writableEnded) {
       this.avccClients.delete(res);
       streamLog(`[stream:avcc] drop ended client before ${kind}; clients=${this.avccClients.size}`);
-      return;
+      this.syncAvccActive();
+      return false;
     }
     if (res.writableLength > MAX_CLIENT_BACKLOG) {
       this.avccClients.delete(res);
@@ -284,7 +304,8 @@ export class DeviceSession {
           `clients=${this.avccClients.size}`,
       );
       res.end();
-      return;
+      this.syncAvccActive();
+      return false;
     }
     this.avccWrites += 1;
     const ok = res.write(chunk);
@@ -294,6 +315,7 @@ export class DeviceSession {
           `clients=${this.avccClients.size}`,
       );
     }
+    return true;
   }
 
   // ── HTTP handlers ────────────────────────────────────────────────────────
@@ -327,7 +349,11 @@ export class DeviceSession {
       Connection: "keep-alive",
       ...CORS,
     });
-    this.avccClients.add(res);
+    const state: AvccClientState = {
+      awaitingKeyframe: true,
+      hasDescription: false,
+    };
+    this.avccClients.set(res, state);
     streamLog(
       `[stream:avcc] client attached clients=${this.avccClients.size} ` +
         `latestJpeg=${this.latestJpeg?.length ?? 0} cachedDescription=${this.cachedAvccDescription?.length ?? 0}`,
@@ -340,12 +366,14 @@ export class DeviceSession {
       const ok = res.write(seed);
       streamLog(`[stream:avcc] wrote seed bytes=${seed.length} ok=${ok} backlog=${res.writableLength}`);
     }
-    if (this.cachedAvccDescription) this.writeAvccFrame(res, this.cachedAvccDescription, "description-replay");
+    if (this.cachedAvccDescription) {
+      state.hasDescription = this.writeAvccFrame(res, this.cachedAvccDescription, "description-replay");
+    }
     this.capture.requestKeyframe();
     const drop = () => {
       this.avccClients.delete(res);
       streamLog(`[stream:avcc] client detached clients=${this.avccClients.size}`);
-      if (this.avccClients.size === 0) this.capture.setAvccActive(false);
+      this.syncAvccActive();
     };
     res.on("close", drop);
     res.on("error", drop);
@@ -577,6 +605,10 @@ export class DeviceSession {
 
   private syncMjpegActive(): void {
     this.capture.setMjpegActive(this.mjpegClients.size > 0);
+  }
+
+  private syncAvccActive(): void {
+    this.capture.setAvccActive(this.avccClients.size > 0);
   }
 
   private recentStreamStats(native: unknown): Record<string, number> | null {

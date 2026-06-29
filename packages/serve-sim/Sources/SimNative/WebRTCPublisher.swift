@@ -42,6 +42,7 @@ final class WebRTCPublisher {
     private var lastFrameTimestampNs: Int64 = 0
     private let statsStartNs = DispatchTime.now().uptimeNanoseconds
     private var lastFrameSentAtNs: UInt64 = 0
+    private let usesCustomSoftwareH264Encoder: Bool
     private var totalI420Ms = 0.0
     private var lastI420Ms = 0.0
     private var maxI420Ms = 0.0
@@ -53,6 +54,7 @@ final class WebRTCPublisher {
     private var selectedCodecName = "H264"
     private let h264PixelBufferConverter = H264WebRTCPixelBufferConverter()
     private let h264WebRTCSupport: WebRTCH264Support
+    private let h264FrameModeOverride: H264WebRTCFrameMode?
     private var maxFps = 30
     private var targetBitrate = 6_000_000
     private var convertedFrameCount: Int64 = 0
@@ -66,7 +68,12 @@ final class WebRTCPublisher {
 
     init() {
         h264WebRTCSupport = Self.detectH264WebRTCSupport()
-        let encoderFactory = LKRTCDefaultVideoEncoderFactory()
+        h264FrameModeOverride = Self.h264FrameModeOverride()
+        usesCustomSoftwareH264Encoder = h264WebRTCSupport.allowed && h264WebRTCSupport.usesHardware == false
+        let defaultEncoderFactory = LKRTCDefaultVideoEncoderFactory()
+        let encoderFactory: LKRTCVideoEncoderFactory = usesCustomSoftwareH264Encoder
+            ? ServeSimSoftwareH264EncoderFactory(fallback: defaultEncoderFactory)
+            : defaultEncoderFactory
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()
         factory = LKRTCPeerConnectionFactory(
             encoderFactory: encoderFactory,
@@ -81,7 +88,7 @@ final class WebRTCPublisher {
             : "disabled(\(h264WebRTCSupport.reason ?? "unsupported runtime"))"
         print(
             "[webrtc] Publisher ready (default codec factory + screen-cast video source) " +
-            "h264=\(h264Status) senderCodecs=\(senderCodecSummary())"
+            "h264=\(h264Status) h264FrameMode=\(h264FrameModeDescription()) senderCodecs=\(senderCodecSummary())"
         )
     }
 
@@ -147,6 +154,8 @@ final class WebRTCPublisher {
                 "selectedCodec": selectedCodecName,
                 "h264WebRTCEnabled": h264WebRTCSupport.allowed,
                 "h264WebRTCProbe": h264WebRTCSupport.probeSummary,
+                "h264WebRTCCustomEncoder": usesCustomSoftwareH264Encoder,
+                "h264FrameMode": h264FrameModeDescription(),
                 "frameMode": lastFrameMode,
                 "outputWidth": lastOutputWidth,
                 "outputHeight": lastOutputHeight,
@@ -231,26 +240,45 @@ final class WebRTCPublisher {
         var frameMode = usedNativeFrame ? "native" : "i420"
 
         if selectedCodecName == "H264" {
-            if Self.isBiPlanar420(pixelFormat) {
-                usedNativeFrame = true
-                frameMode = "nv12-input"
-            } else if let converted = h264PixelBufferConverter.convert(pixelBuffer) {
-                convertDurationMs = h264PixelBufferConverter.lastDurationMs
-                forwardedPixelFormat = CVPixelBufferGetPixelFormatType(converted)
-                usedFrame = LKRTCVideoFrame(
-                    buffer: LKRTCCVPixelBuffer(pixelBuffer: converted),
-                    rotation: ._0,
-                    timeStampNs: timeNs
-                )
-                usedNativeFrame = true
-                frameMode = "nv12"
-            } else {
-                conversionFailureCount += 1
+            switch h264FrameMode() {
+            case .bgra:
+                usedNativeFrame = useNativePixelBufferFrames ?? false
+                if usedNativeFrame {
+                    frameMode = "bgra-h264"
+                } else {
+                    let convertStartNs = DispatchTime.now().uptimeNanoseconds
+                    usedFrame = sourceFrame.newI420()
+                    convertDurationMs = Double(DispatchTime.now().uptimeNanoseconds - convertStartNs) / 1_000_000.0
+                    frameMode = "i420-fallback"
+                }
+            case .i420:
                 let convertStartNs = DispatchTime.now().uptimeNanoseconds
                 usedFrame = sourceFrame.newI420()
                 convertDurationMs = Double(DispatchTime.now().uptimeNanoseconds - convertStartNs) / 1_000_000.0
                 usedNativeFrame = false
-                frameMode = "i420-fallback"
+                frameMode = "i420-h264"
+            case .nv12:
+                if Self.isBiPlanar420(pixelFormat) {
+                    usedNativeFrame = true
+                    frameMode = "nv12-input"
+                } else if let converted = h264PixelBufferConverter.convert(pixelBuffer) {
+                    convertDurationMs = h264PixelBufferConverter.lastDurationMs
+                    forwardedPixelFormat = CVPixelBufferGetPixelFormatType(converted)
+                    usedFrame = LKRTCVideoFrame(
+                        buffer: LKRTCCVPixelBuffer(pixelBuffer: converted),
+                        rotation: ._0,
+                        timeStampNs: timeNs
+                    )
+                    usedNativeFrame = true
+                    frameMode = "nv12"
+                } else {
+                    conversionFailureCount += 1
+                    let convertStartNs = DispatchTime.now().uptimeNanoseconds
+                    usedFrame = sourceFrame.newI420()
+                    convertDurationMs = Double(DispatchTime.now().uptimeNanoseconds - convertStartNs) / 1_000_000.0
+                    usedNativeFrame = false
+                    frameMode = "i420-fallback"
+                }
             }
         } else if !usedNativeFrame {
             let convertStartNs = DispatchTime.now().uptimeNanoseconds
@@ -303,13 +331,8 @@ final class WebRTCPublisher {
         config.candidateNetworkPolicy = .all
         config.continualGatheringPolicy = .gatherOnce
         config.iceServers = iceServers(from: request.iceServers)
-        if hasCredentialedTurnServer(request.iceServers) {
-            config.iceTransportPolicy = .relay
-            print("[webrtc] ICE transport policy: relay")
-        } else {
-            config.iceTransportPolicy = .all
-            print("[webrtc] ICE transport policy: all")
-        }
+        config.iceTransportPolicy = .all
+        print("[webrtc] ICE transport policy: all (TURN as fallback)")
         print("[webrtc] ICE servers: \(iceServerSummary(request.iceServers))")
 
         let constraints = LKRTCMediaConstraints(
@@ -692,6 +715,18 @@ final class WebRTCPublisher {
             pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
     }
 
+    private func h264FrameMode() -> H264WebRTCFrameMode {
+        if let h264FrameModeOverride {
+            return h264FrameModeOverride
+        }
+        return h264WebRTCSupport.usesHardware == false ? .bgra : .nv12
+    }
+
+    private func h264FrameModeDescription() -> String {
+        let source = h264FrameModeOverride == nil ? "auto" : "env"
+        return "\(h264FrameMode().rawValue)(\(source))"
+    }
+
     private static func detectH264WebRTCSupport() -> WebRTCH264Support {
         let environment = ProcessInfo.processInfo.environment
         if envFlagEnabled(environment["SERVE_SIM_DISABLE_WEBRTC_H264"]) {
@@ -869,6 +904,23 @@ final class WebRTCPublisher {
         return pixelBuffer
     }
 
+    private static func h264FrameModeOverride() -> H264WebRTCFrameMode? {
+        guard let raw = ProcessInfo.processInfo.environment["SERVE_SIM_WEBRTC_H264_FRAME_MODE"]?.lowercased() else {
+            return nil
+        }
+        switch raw {
+        case "bgra", "native-bgra":
+            return .bgra
+        case "i420":
+            return .i420
+        case "nv12", "native", "cvpixelbuffer":
+            return .nv12
+        default:
+            print("[webrtc] Ignoring invalid SERVE_SIM_WEBRTC_H264_FRAME_MODE=\(raw); expected bgra, i420, or nv12")
+            return nil
+        }
+    }
+
     private static func vtSessionStringProperty(_ session: VTCompressionSession, key: CFString) -> String? {
         var value: CFTypeRef?
         let status = withUnsafeMutablePointer(to: &value) { pointer in
@@ -934,6 +986,260 @@ private struct H264VideoToolboxProbe {
     let encoderID: String?
     let usesHardware: Bool?
     let summary: String
+}
+
+private enum H264WebRTCFrameMode: String {
+    case bgra
+    case i420
+    case nv12
+}
+
+private final class ServeSimSoftwareH264EncoderFactory: NSObject, LKRTCVideoEncoderFactory {
+    private let fallback: LKRTCVideoEncoderFactory
+
+    init(fallback: LKRTCVideoEncoderFactory) {
+        self.fallback = fallback
+    }
+
+    func createEncoder(_ info: LKRTCVideoCodecInfo) -> (any LKRTCVideoEncoder)? {
+        if info.name.caseInsensitiveCompare("H264") == .orderedSame {
+            return ServeSimSoftwareH264Encoder(codecInfo: info)
+        }
+        return fallback.createEncoder(info)
+    }
+
+    func supportedCodecs() -> [LKRTCVideoCodecInfo] {
+        fallback.supportedCodecs()
+    }
+
+    func implementations() -> [LKRTCVideoCodecInfo] {
+        fallback.implementations?() ?? supportedCodecs()
+    }
+
+    func encoderSelector() -> (any LKRTCVideoEncoderSelector)? {
+        fallback.encoderSelector?()
+    }
+
+    func queryCodecSupport(
+        _ info: LKRTCVideoCodecInfo,
+        scalabilityMode: String?
+    ) -> LKRTCVideoEncoderCodecSupport {
+        if let queryCodecSupport = fallback.queryCodecSupport {
+            return queryCodecSupport(info, scalabilityMode)
+        }
+        return LKRTCVideoEncoderCodecSupport(supported: true)
+    }
+}
+
+private final class ServeSimSoftwareH264Encoder: NSObject, LKRTCVideoEncoder {
+    private let encoder = H264Encoder()
+    private var callback: RTCVideoEncoderCallback?
+    private var parameterSets = Data()
+    private var width: Int32 = 0
+    private var height: Int32 = 0
+    private var fps: UInt32 = 30
+    private var bitrateKbit: UInt32 = 3_000
+    private var encodedCount: Int64 = 0
+    private let stateQueue = DispatchQueue(label: "serve-sim.webrtc.h264.encoder")
+
+    init(codecInfo: LKRTCVideoCodecInfo) {
+        super.init()
+        streamLog("[webrtc:h264] using serve-sim software VideoToolbox encoder parameters=\(codecInfo.parameters)")
+        encoder.onEncoded = { [weak self] encoded in
+            self?.emit(encoded)
+        }
+    }
+
+    func setCallback(_ callback: RTCVideoEncoderCallback?) {
+        stateQueue.sync {
+            self.callback = callback
+        }
+    }
+
+    func startEncode(
+        with settings: LKRTCVideoEncoderSettings,
+        numberOfCores: Int32
+    ) -> Int {
+        stateQueue.sync {
+            width = Int32(settings.width)
+            height = Int32(settings.height)
+            fps = max(1, settings.maxFramerate)
+            bitrateKbit = max(1, settings.startBitrate)
+            parameterSets.removeAll(keepingCapacity: true)
+            encodedCount = 0
+        }
+        encoder.update(fps: Int(max(1, settings.maxFramerate)), bitrate: Int(max(1, settings.startBitrate)) * 1000)
+        streamLog(
+            "[webrtc:h264] start width=\(settings.width) height=\(settings.height) " +
+            "fps=\(settings.maxFramerate) bitrateKbit=\(settings.startBitrate) cores=\(numberOfCores)"
+        )
+        return 0
+    }
+
+    func release() -> Int {
+        encoder.stop()
+        stateQueue.sync {
+            callback = nil
+            parameterSets.removeAll(keepingCapacity: false)
+            encodedCount = 0
+        }
+        streamLog("[webrtc:h264] release")
+        return 0
+    }
+
+    func encode(
+        _ frame: LKRTCVideoFrame,
+        codecSpecificInfo info: (any LKRTCCodecSpecificInfo)?,
+        frameTypes: [NSNumber]
+    ) -> Int {
+        guard let pixelBuffer = pixelBuffer(from: frame) else {
+            streamLog("[webrtc:h264] drop frame: unsupported frame buffer \(type(of: frame.buffer))")
+            return -1
+        }
+        let forceKeyframe = frameTypes.contains { $0.intValue == LKRTCFrameType.videoFrameKey.rawValue }
+        stateQueue.sync {
+            width = Int32(frame.width)
+            height = Int32(frame.height)
+        }
+        encoder.encode(pixelBuffer, forceKeyframe: forceKeyframe)
+        return 0
+    }
+
+    func setBitrate(_ bitrateKbit: UInt32, framerate: UInt32) -> Int32 {
+        let normalizedBitrateKbit = max(1, bitrateKbit)
+        let normalizedFps = max(1, framerate)
+        let shouldUpdateEncoder = stateQueue.sync { () -> Bool in
+            let previousBitrateKbit = self.bitrateKbit
+            self.bitrateKbit = normalizedBitrateKbit
+            fps = normalizedFps
+            let delta = abs(Int64(normalizedBitrateKbit) - Int64(previousBitrateKbit))
+            return delta * 100 >= Int64(max(1, previousBitrateKbit)) * 25
+        }
+        if shouldUpdateEncoder {
+            encoder.update(fps: Int(normalizedFps), bitrate: Int(normalizedBitrateKbit) * 1000)
+            streamLog("[webrtc:h264] bitrate bitrateKbit=\(normalizedBitrateKbit) fps=\(normalizedFps)")
+        }
+        return 0
+    }
+
+    func implementationName() -> String {
+        "serve-sim-videotoolbox-h264"
+    }
+
+    func scalingSettings() -> LKRTCVideoEncoderQpThresholds? {
+        nil
+    }
+
+    var resolutionAlignment: Int {
+        2
+    }
+
+    var applyAlignmentToAllSimulcastLayers: Bool {
+        true
+    }
+
+    var supportsNativeHandle: Bool {
+        true
+    }
+
+    private func pixelBuffer(from frame: LKRTCVideoFrame) -> CVPixelBuffer? {
+        if let buffer = frame.buffer as? LKRTCCVPixelBuffer {
+            return buffer.pixelBuffer
+        }
+        streamLog("[webrtc:h264] frame buffer is not CVPixelBuffer-backed: \(type(of: frame.buffer))")
+        return nil
+    }
+
+    private func emit(_ encoded: H264Encoder.Encoded) {
+        let imageAndInfo: (LKRTCEncodedImage, LKRTCCodecSpecificInfoH264, Int64)? = stateQueue.sync {
+            if let description = encoded.description {
+                parameterSets = annexBParameterSets(fromAvcC: description)
+            }
+            var annexB = Data()
+            if encoded.kind == .keyframe {
+                annexB.append(parameterSets)
+            }
+            appendAnnexBNals(fromAvcc: encoded.avcc, to: &annexB)
+            guard !annexB.isEmpty else { return nil }
+
+            encodedCount += 1
+            let image = LKRTCEncodedImage()
+            image.buffer = annexB
+            image.encodedWidth = width
+            image.encodedHeight = height
+            image.timeStamp = UInt32(truncatingIfNeeded: encodedCount * 90_000 / Int64(max(1, fps)))
+            image.captureTimeMs = Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000)
+            image.ntpTimeMs = image.captureTimeMs
+            image.frameType = encoded.kind == .keyframe ? .videoFrameKey : .videoFrameDelta
+            image.rotation = ._0
+            image.contentType = .screenshare
+
+            let h264Info = LKRTCCodecSpecificInfoH264()
+            h264Info.packetizationMode = .nonInterleaved
+            return (image, h264Info, encodedCount)
+        }
+        guard let (image, h264Info, nextCount) = imageAndInfo else { return }
+        let callback = stateQueue.sync { self.callback }
+        guard let callback else { return }
+        _ = callback(image, h264Info)
+        if streamShouldLog(nextCount) || image.frameType == .videoFrameKey {
+            let kind = image.frameType == .videoFrameKey ? "keyframe" : "delta"
+            streamLog("[webrtc:h264] emitted \(kind) #\(nextCount) bytes=\(image.buffer.count)")
+        }
+    }
+
+    private func annexBParameterSets(fromAvcC avcC: Data) -> Data {
+        guard avcC.count >= 7 else { return Data() }
+        var offset = 5
+        let spsCount = Int(avcC[offset] & 0x1f)
+        offset += 1
+        var out = Data()
+        for _ in 0..<spsCount {
+            guard offset + 2 <= avcC.count else { return out }
+            let length = (Int(avcC[offset]) << 8) | Int(avcC[offset + 1])
+            offset += 2
+            guard offset + length <= avcC.count else { return out }
+            appendAnnexBStartCode(to: &out)
+            out.append(avcC.subdata(in: offset..<(offset + length)))
+            offset += length
+        }
+        guard offset < avcC.count else { return out }
+        let ppsCount = Int(avcC[offset])
+        offset += 1
+        for _ in 0..<ppsCount {
+            guard offset + 2 <= avcC.count else { return out }
+            let length = (Int(avcC[offset]) << 8) | Int(avcC[offset + 1])
+            offset += 2
+            guard offset + length <= avcC.count else { return out }
+            appendAnnexBStartCode(to: &out)
+            out.append(avcC.subdata(in: offset..<(offset + length)))
+            offset += length
+        }
+        return out
+    }
+
+    private func appendAnnexBNals(fromAvcc avcc: Data, to out: inout Data) {
+        var offset = 0
+        while offset + 4 <= avcc.count {
+            let length =
+                (Int(avcc[offset]) << 24) |
+                (Int(avcc[offset + 1]) << 16) |
+                (Int(avcc[offset + 2]) << 8) |
+                Int(avcc[offset + 3])
+            offset += 4
+            guard length > 0, offset + length <= avcc.count else { return }
+            appendAnnexBStartCode(to: &out)
+            out.append(avcc.subdata(in: offset..<(offset + length)))
+            offset += length
+        }
+    }
+
+    private func appendAnnexBStartCode(to out: inout Data) {
+        out.append(0)
+        out.append(0)
+        out.append(0)
+        out.append(1)
+    }
 }
 
 private final class H264WebRTCPixelBufferConverter {

@@ -64,6 +64,7 @@ export function useAvccStream({
     let stopped = false;
     let painted = false;
     let timestamp = 0;
+    let sawKeyframe = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let decoder: VideoDecoder | null = null;
 
@@ -121,6 +122,7 @@ export function useAvccStream({
 
     const configureDecoder = (description: Uint8Array) => {
       if (!decoder || decoder.state === "closed") decoder = makeDecoder();
+      sawKeyframe = false;
       try {
         decoder.configure({
           codec: avcCodecString(description),
@@ -136,7 +138,9 @@ export function useAvccStream({
 
     const decodeFrame = (type: "keyframe" | "delta", data: Uint8Array) => {
       if (decoder?.state !== "configured") return;
+      if (type === "delta" && !sawKeyframe) return;
       try {
+        if (type === "keyframe") sawKeyframe = true;
         decoder.decode(
           new EncodedVideoChunk({
             type: type === "keyframe" ? "key" : "delta",

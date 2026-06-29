@@ -1,6 +1,7 @@
 import Foundation
 import CoreVideo
 import CoreMedia
+import CoreImage
 
 // The capture + encode engine, reused verbatim from SimStreamHelper. Replicates
 // main.swift's frameHandler: MJPEG always encodes while clients exist; H.264 runs
@@ -20,6 +21,7 @@ struct CaptureEngineOptions {
     let mjpegQuality: Double
     let h264Fps: Int
     let h264Bitrate: Int
+    let maxDimension: Int
 }
 
 final class CaptureEngine {
@@ -33,8 +35,9 @@ final class CaptureEngine {
     private let webRTCPublisher = WebRTCPublisher()
 
     private let frameCapture = FrameCapture()
-    private let videoEncoder: VideoEncoder
+    private var videoEncoder: VideoEncoder
     private let h264Encoder: H264Encoder
+    private let ciContext = CIContext(options: [.workingColorSpace: NSNull()])
     private let encodeQueue = DispatchQueue(label: "napi.encode", qos: .userInteractive)
     private let h264Queue = DispatchQueue(label: "napi.encode.h264", qos: .userInteractive)
     private static let h264EncodeTimeoutMs = 500
@@ -43,6 +46,8 @@ final class CaptureEngine {
     // encode queues. Benign races (same pattern as the standalone helper).
     private var screenWidth = 0
     private var screenHeight = 0
+    private var encodeWidth = 0
+    private var encodeHeight = 0
     private var encoderReady = false
     private var encoding = false       // MJPEG backpressure
     private var h264Encoding = false   // H.264 backpressure
@@ -57,8 +62,9 @@ final class CaptureEngine {
     private var avccNativeEmitCount: Int64 = 0
     private var lastMjpegReservedAtNs: UInt64 = 0
     private var lastH264ReservedAtNs: UInt64 = 0
-    private let mjpegMinFrameIntervalNs: UInt64
-    private let h264MinFrameIntervalNs: UInt64
+    private var mjpegMinFrameIntervalNs: UInt64
+    private var h264MinFrameIntervalNs: UInt64
+    private var maxDimension: Int
     private var started = false
     private var stopped = false
 
@@ -77,6 +83,7 @@ final class CaptureEngine {
         h264Encoder = H264Encoder(fps: h264Fps, bitrate: h264Bitrate)
         mjpegMinFrameIntervalNs = UInt64(1_000_000_000 / mjpegFps)
         h264MinFrameIntervalNs = UInt64(1_000_000_000 / h264Fps)
+        maxDimension = max(0, options.maxDimension)
         webRTCPublisher.onInput = onWebRTCInput
 
         h264Encoder.onEncoded = { [weak self] encoded in
@@ -123,12 +130,15 @@ final class CaptureEngine {
     private func handleFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
         let w = CVPixelBufferGetWidth(pixelBuffer)
         let h = CVPixelBufferGetHeight(pixelBuffer)
+        let encodeSize = encodedSize(width: w, height: h)
 
-        if !encoderReady || w != screenWidth || h != screenHeight {
+        if !encoderReady || w != screenWidth || h != screenHeight || encodeSize.width != encodeWidth || encodeSize.height != encodeHeight {
             screenWidth = w
             screenHeight = h
+            encodeWidth = encodeSize.width
+            encodeHeight = encodeSize.height
             videoEncoder.stop()
-            videoEncoder.setup(width: Int32(w), height: Int32(h), fps: 60) { [weak self] jpeg in
+            videoEncoder.setup(width: Int32(encodeSize.width), height: Int32(encodeSize.height), fps: 60) { [weak self] jpeg in
                 self?.emit(codec: Self.codecMJPEG, data: jpeg, flags: 0)
             }
             encoderReady = true
@@ -139,7 +149,7 @@ final class CaptureEngine {
         let shouldEncodeJpeg = encoderReady && !encoding && reserveMjpegEncodeIfNeeded()
         if !shouldEncodeJpeg && h264Request == nil && !shouldSendWebRTC { return }
 
-        guard let stableFrame = copyPixelBuffer(pixelBuffer) else {
+        guard let stableFrame = copyPixelBuffer(pixelBuffer, targetWidth: encodeSize.width, targetHeight: encodeSize.height) else {
             if let h264Request {
                 streamLog("[stream:avcc] failed to copy capture frame for H.264 token=\(h264Request.token)")
                 finishH264Encode(token: h264Request.token, restoreKeyframe: h264Request.forceKeyframe)
@@ -232,6 +242,50 @@ final class CaptureEngine {
         return dst
     }
 
+    private func encodedSize(width: Int, height: Int) -> (width: Int, height: Int) {
+        guard maxDimension > 0, max(width, height) > maxDimension else {
+            return (width, height)
+        }
+        let scale = Double(maxDimension) / Double(max(width, height))
+        return (evenDimension(width, scale: scale), evenDimension(height, scale: scale))
+    }
+
+    private func evenDimension(_ value: Int, scale: Double) -> Int {
+        let scaled = max(2, Int((Double(value) * scale).rounded()))
+        return scaled.isMultiple(of: 2) ? scaled : max(2, scaled - 1)
+    }
+
+    private func copyPixelBuffer(_ source: CVPixelBuffer, targetWidth: Int, targetHeight: Int) -> CVPixelBuffer? {
+        let width = CVPixelBufferGetWidth(source)
+        let height = CVPixelBufferGetHeight(source)
+        if width == targetWidth && height == targetHeight {
+            return copyPixelBuffer(source)
+        }
+
+        let attrs: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: targetWidth,
+            kCVPixelBufferHeightKey as String: targetHeight,
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+        ]
+        var out: CVPixelBuffer?
+        guard CVPixelBufferCreate(
+            kCFAllocatorDefault, targetWidth, targetHeight, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &out
+        ) == kCVReturnSuccess, let dst = out else { return nil }
+
+        let scaleX = CGFloat(targetWidth) / CGFloat(width)
+        let scaleY = CGFloat(targetHeight) / CGFloat(height)
+        let image = CIImage(cvPixelBuffer: source).transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+        ciContext.render(
+            image,
+            to: dst,
+            bounds: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight),
+            colorSpace: CGColorSpaceCreateDeviceRGB()
+        )
+        return dst
+    }
+
     private func reserveH264EncodeIfNeeded() -> (forceKeyframe: Bool, token: UInt64)? {
         h264Queue.sync {
             guard avccActive else { return nil }
@@ -299,6 +353,35 @@ final class CaptureEngine {
             self?.forceKeyframe = true
             streamLog("[stream:avcc] keyframe requested")
         }
+    }
+
+    func updateSettings(mjpegFps: Int, mjpegQuality: Double, h264Fps: Int, h264Bitrate: Int, maxDimension: Int) {
+        let normalizedMjpegFps = max(1, mjpegFps)
+        let normalizedQuality = CGFloat(min(max(mjpegQuality, 0.0), 1.0))
+        let normalizedH264Fps = max(1, h264Fps)
+        let normalizedBitrate = max(1, h264Bitrate)
+        let normalizedMaxDimension = max(0, maxDimension)
+
+        encodeQueue.sync {
+            self.mjpegMinFrameIntervalNs = UInt64(1_000_000_000 / normalizedMjpegFps)
+            self.maxDimension = normalizedMaxDimension
+            self.videoEncoder.stop()
+            self.videoEncoder = VideoEncoder(quality: normalizedQuality)
+            self.encoderReady = false
+            self.encoding = false
+            self.lastMjpegReservedAtNs = 0
+        }
+        h264Queue.sync {
+            self.h264MinFrameIntervalNs = UInt64(1_000_000_000 / normalizedH264Fps)
+            self.h264Encoder.update(fps: normalizedH264Fps, bitrate: normalizedBitrate)
+            self.forceKeyframe = true
+            self.h264Encoding = false
+            self.lastH264ReservedAtNs = 0
+        }
+        streamLog(
+            "[stream] settings updated mjpegFps=\(normalizedMjpegFps) mjpegQuality=\(normalizedQuality) " +
+            "h264Fps=\(normalizedH264Fps) h264Bitrate=\(normalizedBitrate) maxDimension=\(normalizedMaxDimension)"
+        )
     }
 
     func handleWebRTCOffer(_ offerJson: String) throws -> String {

@@ -229,6 +229,10 @@ export function SimulatorView({
     setScreenSize(next);
     onScreenConfigChangeRef.current?.(next);
   }, []);
+  const updateMediaScreenConfig = useCallback((config: StreamConfig) => {
+    if (screenSizeRef.current) return;
+    updateScreenConfig(config);
+  }, [updateScreenConfig]);
 
   // Notify parent when streaming state changes
   const onStreamingChangeRef = useRef(onStreamingChange);
@@ -886,7 +890,7 @@ export function SimulatorView({
             onLoadedMetadata={(e) => {
               const el = e.currentTarget;
               if (el.videoWidth > 0 && el.videoHeight > 0) {
-                updateScreenConfig({ width: el.videoWidth, height: el.videoHeight });
+                updateMediaScreenConfig({ width: el.videoWidth, height: el.videoHeight });
               }
             }}
             style={streamImageStyle}
@@ -901,7 +905,7 @@ export function SimulatorView({
             onLoad={(e) => {
               const el = e.currentTarget;
               if (el.naturalWidth > 0 && el.naturalHeight > 0) {
-                updateScreenConfig({ width: el.naturalWidth, height: el.naturalHeight });
+                updateMediaScreenConfig({ width: el.naturalWidth, height: el.naturalHeight });
               }
             }}
             style={relayMode ? { display: "none" } : streamImageStyle}
@@ -914,7 +918,7 @@ export function SimulatorView({
             onLoad={(e) => {
               const el = e.currentTarget;
               if (el.naturalWidth > 0 && el.naturalHeight > 0) {
-                updateScreenConfig({ width: el.naturalWidth, height: el.naturalHeight });
+                updateMediaScreenConfig({ width: el.naturalWidth, height: el.naturalHeight });
               }
             }}
             style={streamImageStyle}

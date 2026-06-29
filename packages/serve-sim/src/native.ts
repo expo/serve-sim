@@ -11,6 +11,7 @@ import { createRequire } from "module";
 import { dirname, join } from "path";
 import { existsSync } from "fs";
 import { fileURLToPath } from "url";
+import { DEFAULT_STREAM_SETTINGS } from "./state";
 
 const require = createRequire(import.meta.url);
 
@@ -36,6 +37,13 @@ interface SimCaptureHandle {
   start(): void;
   setAvccActive(active: boolean): void;
   requestKeyframe(): void;
+  updateStreamSettings(
+    mjpegFps: number,
+    mjpegQuality: number,
+    h264Fps: number,
+    h264Bitrate: number,
+    streamMaxDimension: number,
+  ): void;
   handleWebRTCOffer(offerJson: string): string;
   screenSize(): { width: number; height: number };
   stop(): void;
@@ -51,6 +59,7 @@ interface NativeAddon {
     mjpegQuality: number,
     h264Fps: number,
     h264Bitrate: number,
+    streamMaxDimension: number,
   ) => SimCaptureHandle;
   axDescribe(udid: string): Promise<string>;
   axFrontmost(udid: string): Promise<string>;
@@ -77,6 +86,9 @@ export interface NativeFrame {
 }
 
 export interface NativeCaptureOptions {
+  streamFps?: number;
+  streamQuality?: number;
+  streamMaxDimension?: number;
   h264MaxFps?: number;
   h264Bitrate?: number;
 }
@@ -207,16 +219,25 @@ export class NativeCapture {
     onWebRTCInput: (data: Buffer) => void = () => {},
     options: NativeCaptureOptions = {},
   ) {
-    this.handle = new (load().SimCapture)(udid, (codec, data, width, height, flags) => {
-      onFrame({
-        codec: codec === CODEC_AVCC ? "avcc" : "mjpeg",
-        data,
-        width,
-        height,
-        isDescription: (flags & FLAG_DESCRIPTION) !== 0,
-        isKeyframe: (flags & FLAG_KEYFRAME) !== 0,
-      });
-    }, onWebRTCInput, 60, 0.7, options.h264MaxFps ?? 60, options.h264Bitrate ?? 6_000_000);
+    this.handle = new (load().SimCapture)(
+      udid,
+      (codec, data, width, height, flags) => {
+        onFrame({
+          codec: codec === CODEC_AVCC ? "avcc" : "mjpeg",
+          data,
+          width,
+          height,
+          isDescription: (flags & FLAG_DESCRIPTION) !== 0,
+          isKeyframe: (flags & FLAG_KEYFRAME) !== 0,
+        });
+      },
+      onWebRTCInput,
+      options.streamFps ?? DEFAULT_STREAM_SETTINGS.streamFps,
+      options.streamQuality ?? DEFAULT_STREAM_SETTINGS.streamQuality,
+      options.h264MaxFps ?? DEFAULT_STREAM_SETTINGS.h264MaxFps,
+      options.h264Bitrate ?? DEFAULT_STREAM_SETTINGS.h264Bitrate,
+      options.streamMaxDimension ?? DEFAULT_STREAM_SETTINGS.streamMaxDimension,
+    );
   }
 
   /** Begin capturing. Throws if the device isn't booted. */
@@ -232,6 +253,16 @@ export class NativeCapture {
   /** Force the next H.264 frame to a keyframe (e.g. when a new AVCC viewer joins). */
   requestKeyframe(): void {
     this.handle.requestKeyframe();
+  }
+
+  updateStreamSettings(options: NativeCaptureOptions): void {
+    this.handle.updateStreamSettings(
+      options.streamFps ?? DEFAULT_STREAM_SETTINGS.streamFps,
+      options.streamQuality ?? DEFAULT_STREAM_SETTINGS.streamQuality,
+      options.h264MaxFps ?? DEFAULT_STREAM_SETTINGS.h264MaxFps,
+      options.h264Bitrate ?? DEFAULT_STREAM_SETTINGS.h264Bitrate,
+      options.streamMaxDimension ?? DEFAULT_STREAM_SETTINGS.streamMaxDimension,
+    );
   }
 
   handleWebRTCOffer(offer: unknown): unknown {

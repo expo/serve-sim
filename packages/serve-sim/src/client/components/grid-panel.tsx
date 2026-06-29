@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { PanelLeft, Search, X } from "lucide-react";
+import { PanelLeft, RefreshCw, Search, X } from "lucide-react";
 import { Panel, PanelHeader } from "../Panel";
 import { useGridMemory } from "../hooks/use-grid-memory";
 import { type GridDevice, type MemoryReport, runtimeLabel } from "../utils/grid";
@@ -31,6 +31,7 @@ export function GridPanel({
   starting,
   shuttingDown,
   onShutdown,
+  onRefresh,
 }: {
   open: boolean;
   onClose: () => void;
@@ -52,6 +53,7 @@ export function GridPanel({
   starting: Record<string, boolean>;
   shuttingDown: Record<string, boolean>;
   onShutdown: (udid: string) => void;
+  onRefresh: () => void;
 }) {
   const config = typeof window === "undefined" ? undefined : window.__SIM_PREVIEW__;
   const memoryEndpoint =
@@ -107,6 +109,15 @@ export function GridPanel({
           title="Devices"
         >
           <PanelLeft size={18} strokeWidth={1.75} />
+        </button>
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="flex h-[30px] w-[30px] shrink-0 cursor-pointer items-center justify-center rounded-md border-none bg-transparent text-[#8e8e93] [transition:background_0.15s_ease,color_0.15s_ease] hover:bg-white/8 hover:text-white"
+          aria-label="Refresh devices"
+          title="Refresh devices"
+        >
+          <RefreshCw size={16} strokeWidth={1.85} />
         </button>
         <ServeSimBrandLink />
       </PanelHeader>

@@ -39,6 +39,7 @@ describe("GridPanel", () => {
         starting={{}}
         shuttingDown={{}}
         onShutdown={noop}
+        onRefresh={noop}
       />,
     );
 
@@ -61,6 +62,7 @@ describe("GridPanel", () => {
         starting={{}}
         shuttingDown={{}}
         onShutdown={noop}
+        onRefresh={noop}
       />,
     );
 
@@ -84,6 +86,7 @@ describe("GridPanel", () => {
         starting={{}}
         shuttingDown={{}}
         onShutdown={noop}
+        onRefresh={noop}
       />,
     );
 
@@ -93,6 +96,27 @@ describe("GridPanel", () => {
     expect(html).toContain('target="_blank"');
     expect(html).toContain('title="Open serve-sim"');
     expect(html).toContain('aria-label="Open serve-sim"');
+  });
+
+  test("renders a manual device refresh button", () => {
+    const html = renderToStaticMarkup(
+      <GridPanel
+        open
+        onClose={noop}
+        width={320}
+        side="left"
+        devices={devices}
+        selectedUdid="one"
+        onSelect={noop}
+        starting={{}}
+        shuttingDown={{}}
+        onShutdown={noop}
+        onRefresh={noop}
+      />,
+    );
+
+    expect(html).toContain('aria-label="Refresh devices"');
+    expect(html).toContain('title="Refresh devices"');
   });
 
   test("uses the shared panel background variable", () => {
@@ -108,6 +132,7 @@ describe("GridPanel", () => {
         starting={{}}
         shuttingDown={{}}
         onShutdown={noop}
+        onRefresh={noop}
       />,
     );
 
@@ -127,6 +152,7 @@ describe("GridPanel", () => {
         starting={{}}
         shuttingDown={{}}
         onShutdown={noop}
+        onRefresh={noop}
       />,
     );
 

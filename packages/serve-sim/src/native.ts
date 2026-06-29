@@ -36,6 +36,7 @@ interface SimHIDHandle {
 interface SimCaptureHandle {
   start(): void;
   setAvccActive(active: boolean): void;
+  setMjpegActive(active: boolean): void;
   requestKeyframe(): void;
   updateStreamSettings(
     mjpegFps: number,
@@ -46,6 +47,7 @@ interface SimCaptureHandle {
   ): void;
   handleWebRTCOffer(offerJson: string): string;
   screenSize(): { width: number; height: number };
+  streamStats(): string;
   stop(): void;
 }
 
@@ -250,6 +252,11 @@ export class NativeCapture {
     this.handle.setAvccActive(active);
   }
 
+  /** Enable/disable MJPEG encoding while HTTP MJPEG clients are attached. */
+  setMjpegActive(active: boolean): void {
+    this.handle.setMjpegActive(active);
+  }
+
   /** Force the next H.264 frame to a keyframe (e.g. when a new AVCC viewer joins). */
   requestKeyframe(): void {
     this.handle.requestKeyframe();
@@ -271,6 +278,10 @@ export class NativeCapture {
 
   screenSize(): { width: number; height: number } {
     return this.handle.screenSize();
+  }
+
+  streamStats(): unknown {
+    return JSON.parse(this.handle.streamStats());
   }
 
   /** Halt frame production. Full teardown happens when this object is GC'd. */

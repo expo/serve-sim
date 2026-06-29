@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { streamConfigFrom } from "../client/utils/sim-endpoint";
+import {
+  mjpegStreamUrlFrom,
+  streamConfigFrom,
+} from "../client/utils/sim-endpoint";
 
 // The middleware injects a minimal `{basePath, execToken}` __SIM_PREVIEW__
 // when no helper is attached (the empty state needs the exec token before a
@@ -39,5 +42,25 @@ describe("streamConfigFrom", () => {
     expect(
       streamConfigFrom({ ...fullConfig, url: undefined } as never),
     ).toBeNull();
+  });
+});
+
+describe("mjpegStreamUrlFrom", () => {
+  test("keeps local MJPEG helper URLs on the MJPEG endpoint", () => {
+    expect(mjpegStreamUrlFrom(fullConfig)).toBe(
+      "http://127.0.0.1:3100/stream.mjpeg",
+    );
+  });
+
+  test("uses the helper base URL for tunneled AVCC configs", () => {
+    expect(
+      mjpegStreamUrlFrom({
+        ...fullConfig,
+        url: "https://sim-abcd.expo-simulator.ngrok.dev/",
+        streamUrl: "https://sim-abcd.expo-simulator.ngrok.dev/stream.avcc",
+        wsUrl: "wss://sim-abcd.expo-simulator.ngrok.dev/ws",
+        codec: "h264",
+      }),
+    ).toBe("https://sim-abcd.expo-simulator.ngrok.dev/stream.mjpeg");
   });
 });

@@ -15,6 +15,13 @@ import CoreMedia
 typealias SimFrameCallback = (Int32, Data, Int32, Int32, Int32) -> Void
 typealias SimInputCallback = (Data) -> Void
 
+struct CaptureEngineOptions {
+    let mjpegFps: Int
+    let mjpegQuality: Double
+    let h264Fps: Int
+    let h264Bitrate: Int
+}
+
 final class CaptureEngine {
     static let codecMJPEG: Int32 = 0
     static let codecAVCC: Int32 = 1
@@ -26,8 +33,8 @@ final class CaptureEngine {
     private let webRTCPublisher = WebRTCPublisher()
 
     private let frameCapture = FrameCapture()
-    private let videoEncoder = VideoEncoder(quality: 0.7)
-    private let h264Encoder = H264Encoder(fps: 60)
+    private let videoEncoder: VideoEncoder
+    private let h264Encoder: H264Encoder
     private let encodeQueue = DispatchQueue(label: "napi.encode", qos: .userInteractive)
     private let h264Queue = DispatchQueue(label: "napi.encode.h264", qos: .userInteractive)
     private static let h264EncodeTimeoutMs = 500
@@ -42,26 +49,55 @@ final class CaptureEngine {
     private var forceKeyframe = false
     private var avccActive = false
     private var h264FrameToken: UInt64 = 0
+    private var h264ReservedCount: Int64 = 0
+    private var h264SubmittedCount: Int64 = 0
+    private var h264BackpressureSkips: Int64 = 0
+    private var mjpegThrottleSkips: Int64 = 0
+    private var h264ThrottleSkips: Int64 = 0
+    private var avccNativeEmitCount: Int64 = 0
+    private var lastMjpegReservedAtNs: UInt64 = 0
+    private var lastH264ReservedAtNs: UInt64 = 0
+    private let mjpegMinFrameIntervalNs: UInt64
+    private let h264MinFrameIntervalNs: UInt64
     private var started = false
     private var stopped = false
 
-    init(deviceUDID: String, onFrame: @escaping SimFrameCallback, onWebRTCInput: @escaping SimInputCallback) {
+    init(
+        deviceUDID: String,
+        options: CaptureEngineOptions,
+        onFrame: @escaping SimFrameCallback,
+        onWebRTCInput: @escaping SimInputCallback
+    ) {
         self.deviceUDID = deviceUDID
         self.onFrame = onFrame
+        let mjpegFps = max(1, options.mjpegFps)
+        let h264Fps = max(1, options.h264Fps)
+        let h264Bitrate = max(1, options.h264Bitrate)
+        videoEncoder = VideoEncoder(quality: CGFloat(min(max(options.mjpegQuality, 0.0), 1.0)))
+        h264Encoder = H264Encoder(fps: h264Fps, bitrate: h264Bitrate)
+        mjpegMinFrameIntervalNs = UInt64(1_000_000_000 / mjpegFps)
+        h264MinFrameIntervalNs = UInt64(1_000_000_000 / h264Fps)
         webRTCPublisher.onInput = onWebRTCInput
 
         h264Encoder.onEncoded = { [weak self] encoded in
             guard let self else { return }
+            self.avccNativeEmitCount += 1
+            let emitCount = self.avccNativeEmitCount
             if let description = encoded.description {
+                streamLog("[stream:avcc] native emit description bytes=\(description.count)")
                 self.emit(codec: Self.codecAVCC,
                           data: AVCCEnvelope.description(avcc: description),
                           flags: Self.flagDescription)
             }
             switch encoded.kind {
             case .keyframe:
+                streamLog("[stream:avcc] native emit keyframe bytes=\(encoded.avcc.count)")
                 self.emit(codec: Self.codecAVCC, data: AVCCEnvelope.keyframe(avcc: encoded.avcc),
                           flags: Self.flagKeyframe)
             case .delta:
+                if streamShouldLog(emitCount) {
+                    streamLog("[stream:avcc] native emit delta #\(emitCount) bytes=\(encoded.avcc.count)")
+                }
                 self.emit(codec: Self.codecAVCC, data: AVCCEnvelope.delta(avcc: encoded.avcc), flags: 0)
             }
         }
@@ -100,11 +136,12 @@ final class CaptureEngine {
 
         let h264Request = reserveH264EncodeIfNeeded()
         let shouldSendWebRTC = webRTCPublisher.isActive
-        let shouldEncodeJpeg = encoderReady && !encoding
+        let shouldEncodeJpeg = encoderReady && !encoding && reserveMjpegEncodeIfNeeded()
         if !shouldEncodeJpeg && h264Request == nil && !shouldSendWebRTC { return }
 
         guard let stableFrame = copyPixelBuffer(pixelBuffer) else {
             if let h264Request {
+                streamLog("[stream:avcc] failed to copy capture frame for H.264 token=\(h264Request.token)")
                 finishH264Encode(token: h264Request.token, restoreKeyframe: h264Request.forceKeyframe)
             }
             return
@@ -128,12 +165,33 @@ final class CaptureEngine {
         if let h264Request {
             h264Queue.async { [weak self] in
                 guard let self else { return }
+                self.h264SubmittedCount += 1
+                let submitted = self.h264SubmittedCount
+                if streamShouldLog(submitted) || h264Request.forceKeyframe {
+                    streamLog(
+                        "[stream:avcc] send frame to H264Encoder #\(submitted) token=\(h264Request.token) " +
+                        "forceKeyframe=\(h264Request.forceKeyframe)"
+                    )
+                }
                 self.h264Encoder.encode(stableFrame, forceKeyframe: h264Request.forceKeyframe) {
                     self.finishH264Encode(token: h264Request.token)
                 }
                 self.scheduleH264EncodeTimeout(token: h264Request.token)
             }
         }
+    }
+
+    private func reserveMjpegEncodeIfNeeded() -> Bool {
+        let now = DispatchTime.now().uptimeNanoseconds
+        if lastMjpegReservedAtNs != 0 && now - lastMjpegReservedAtNs < mjpegMinFrameIntervalNs {
+            mjpegThrottleSkips += 1
+            if streamShouldLog(mjpegThrottleSkips) {
+                streamLog("[stream:mjpeg] skip frame: fps throttle")
+            }
+            return false
+        }
+        lastMjpegReservedAtNs = now
+        return true
     }
 
     /// Copy the live Simulator IOSurface immediately on the capture queue. The
@@ -176,12 +234,32 @@ final class CaptureEngine {
 
     private func reserveH264EncodeIfNeeded() -> (forceKeyframe: Bool, token: UInt64)? {
         h264Queue.sync {
-            guard avccActive, !h264Encoding else { return nil }
+            guard avccActive else { return nil }
+            let now = DispatchTime.now().uptimeNanoseconds
+            if !forceKeyframe && lastH264ReservedAtNs != 0 && now - lastH264ReservedAtNs < h264MinFrameIntervalNs {
+                h264ThrottleSkips += 1
+                if streamShouldLog(h264ThrottleSkips) {
+                    streamLog("[stream:avcc] skip H.264 frame: fps throttle")
+                }
+                return nil
+            }
+            guard !h264Encoding else {
+                h264BackpressureSkips += 1
+                if streamShouldLog(h264BackpressureSkips) {
+                    streamLog("[stream:avcc] skip H.264 frame: encode pending token=\(h264FrameToken)")
+                }
+                return nil
+            }
             h264Encoding = true
             h264FrameToken &+= 1
             let token = h264FrameToken
             let force = forceKeyframe
             forceKeyframe = false
+            lastH264ReservedAtNs = now
+            h264ReservedCount += 1
+            if streamShouldLog(h264ReservedCount) || force {
+                streamLog("[stream:avcc] reserved H.264 frame #\(h264ReservedCount) token=\(token) forceKeyframe=\(force)")
+            }
             return (forceKeyframe: force, token: token)
         }
     }
@@ -196,8 +274,10 @@ final class CaptureEngine {
 
     private func scheduleH264EncodeTimeout(token: UInt64) {
         h264Queue.asyncAfter(deadline: .now().advanced(by: .milliseconds(Self.h264EncodeTimeoutMs))) { [weak self] in
-            guard let self, self.h264FrameToken == token else { return }
+            guard let self, self.h264FrameToken == token, self.h264Encoding else { return }
             self.h264Encoding = false
+            self.h264Encoder.handleEncodeTimeout()
+            streamLog("[stream:avcc] H.264 encode timed out token=\(token)")
         }
     }
 
@@ -207,12 +287,18 @@ final class CaptureEngine {
         h264Queue.async { [weak self] in
             guard let self else { return }
             if active && !self.avccActive { self.forceKeyframe = true }
+            if active != self.avccActive {
+                streamLog("[stream:avcc] active=\(active) forceKeyframe=\(self.forceKeyframe)")
+            }
             self.avccActive = active
         }
     }
 
     func requestKeyframe() {
-        h264Queue.async { [weak self] in self?.forceKeyframe = true }
+        h264Queue.async { [weak self] in
+            self?.forceKeyframe = true
+            streamLog("[stream:avcc] keyframe requested")
+        }
     }
 
     func handleWebRTCOffer(_ offerJson: String) throws -> String {

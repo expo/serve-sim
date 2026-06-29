@@ -34,6 +34,11 @@ const WS_MSG_MULTI_TOUCH = 0x05;
 const WS_MSG_DIGITAL_CROWN = 0x0a;
 const WS_MSG_SCROLL = 0x0b;
 
+type VideoElementWithFrameCallbacks = HTMLVideoElement & {
+  requestVideoFrameCallback?: (callback: () => void) => number;
+  cancelVideoFrameCallback?: (handle: number) => void;
+};
+
 export interface SimulatorViewProps {
   /** Base URL of the serve-sim server, e.g. "http://localhost:3100" */
   url: string;
@@ -162,6 +167,9 @@ export function SimulatorView({
   }, []);
   const [fps, setFps] = useState(0);
   const frameCountRef = useRef(0);
+  const lastFrameAtRef = useRef(0);
+  const connectedRef = useRef(false);
+  connectedRef.current = connected;
   const [showSlowOverlay, setShowSlowOverlay] = useState(false);
   const slowOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -187,23 +195,6 @@ export function SimulatorView({
   }, [connectionQuality]);
 
   const streamUrl = `${url}/stream.mjpeg`;
-
-  useEffect(() => {
-    if (!useWebRtc) return;
-    const video = videoRef.current;
-    if (!video) return;
-    video.srcObject = webRtcStream ?? null;
-    if (webRtcStream) {
-      setConnected(true);
-      setError(null);
-      void video.play().catch(() => {});
-    } else {
-      setConnected(false);
-    }
-    return () => {
-      video.srcObject = null;
-    };
-  }, [useWebRtc, webRtcStream]);
 
   useEffect(() => {
     screenSizeRef.current = null;
@@ -234,6 +225,93 @@ export function SimulatorView({
     updateScreenConfig(config);
   }, [updateScreenConfig]);
 
+  useEffect(() => {
+    if (!useWebRtc) return;
+    const video = videoRef.current;
+    if (!video) return;
+    const videoWithFrameCallbacks = video as VideoElementWithFrameCallbacks;
+    const supportsFrameCallbacks =
+      typeof videoWithFrameCallbacks.requestVideoFrameCallback === "function";
+    let cancelled = false;
+    let frameCallbackHandle: number | null = null;
+    let startupWatchdog: ReturnType<typeof setTimeout> | null = null;
+    let readinessPoll: ReturnType<typeof setInterval> | null = null;
+
+    const updateVideoDimensions = () => {
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        updateMediaScreenConfig({ width: video.videoWidth, height: video.videoHeight });
+      }
+    };
+    const markFrame = () => {
+      if (cancelled) return;
+      updateVideoDimensions();
+      lastFrameAtRef.current = Date.now();
+      frameCountRef.current++;
+      setConnected(true);
+      setError(null);
+      if (startupWatchdog) {
+        clearTimeout(startupWatchdog);
+        startupWatchdog = null;
+      }
+      if (readinessPoll) {
+        clearInterval(readinessPoll);
+        readinessPoll = null;
+      }
+    };
+    const queueFrameCallback = () => {
+      if (!supportsFrameCallbacks || cancelled) return;
+      frameCallbackHandle = videoWithFrameCallbacks.requestVideoFrameCallback?.(() => {
+        markFrame();
+        queueFrameCallback();
+      }) ?? null;
+    };
+    const markPlayableFrame = () => {
+      updateVideoDimensions();
+      if (video.readyState >= video.HAVE_CURRENT_DATA) {
+        markFrame();
+      }
+    };
+
+    setConnected(false);
+    if (webRtcStream) {
+      setError(null);
+      video.addEventListener("loadedmetadata", updateVideoDimensions);
+      video.addEventListener("loadeddata", markPlayableFrame);
+      video.addEventListener("canplay", markPlayableFrame);
+      video.addEventListener("playing", markPlayableFrame);
+      video.srcObject = webRtcStream;
+      markPlayableFrame();
+      readinessPoll = setInterval(markPlayableFrame, 100);
+      startupWatchdog = setTimeout(() => {
+        markPlayableFrame();
+        if (video.readyState < video.HAVE_CURRENT_DATA) {
+          setConnected(false);
+          setError("Stream is not producing frames. The simulator may have stopped — try reconnecting.");
+        }
+      }, 6000);
+      queueFrameCallback();
+      void video.play().then(markPlayableFrame).catch(() => {});
+    } else {
+      video.srcObject = null;
+    }
+    return () => {
+      cancelled = true;
+      if (
+        frameCallbackHandle !== null &&
+        typeof videoWithFrameCallbacks.cancelVideoFrameCallback === "function"
+      ) {
+        videoWithFrameCallbacks.cancelVideoFrameCallback(frameCallbackHandle);
+      }
+      if (startupWatchdog) clearTimeout(startupWatchdog);
+      if (readinessPoll) clearInterval(readinessPoll);
+      video.removeEventListener("loadedmetadata", updateVideoDimensions);
+      video.removeEventListener("loadeddata", markPlayableFrame);
+      video.removeEventListener("canplay", markPlayableFrame);
+      video.removeEventListener("playing", markPlayableFrame);
+      video.srcObject = null;
+    };
+  }, [useWebRtc, webRtcStream, updateMediaScreenConfig]);
+
   // Notify parent when streaming state changes
   const onStreamingChangeRef = useRef(onStreamingChange);
   onStreamingChangeRef.current = onStreamingChange;
@@ -249,8 +327,6 @@ export function SimulatorView({
   }, [relayMode, streamConfig, updateScreenConfig]);
 
   // In relay mode, subscribe to frames and update img.src directly (bypasses React).
-  const connectedRef = useRef(false);
-  connectedRef.current = connected;
   // Latest received-but-not-yet-painted frame, and the one currently shown.
   // Painting is drained on requestAnimationFrame (latest wins; stale frames
   // are dropped and their blob URLs released) so a browser that can't keep up
@@ -261,8 +337,8 @@ export function SimulatorView({
   const pendingBlobUrlRef = useRef<string | null>(null);
   const paintedBlobUrlRef = useRef<string | null>(null);
   useEffect(() => {
-    // AVCC paints the canvas via useAvccStream; skip the MJPEG relay <img>.
-    if (!relayMode || !subscribeFrame || useAvcc) return;
+    // AVCC/WebRTC paint their own surfaces; skip the MJPEG relay <img>.
+    if (!relayMode || !subscribeFrame || useAvcc || useWebRtc) return;
     // Startup watchdog: flag the stream as broken if no frame arrives within
     // the window. Catches the silent-failure mode where the helper accepts
     // the MJPEG connection but its underlying simulator was shut down —
@@ -317,7 +393,7 @@ export function SimulatorView({
         paintedBlobUrlRef.current = null;
       }
     };
-  }, [relayMode, subscribeFrame, useAvcc]);
+  }, [relayMode, subscribeFrame, useAvcc, useWebRtc]);
 
   // AVCC (H.264) decode → canvas. Inert unless `useAvcc`. Works in both
   // direct and relay mode (it only needs `url`).
@@ -568,9 +644,8 @@ export function SimulatorView({
   // Unlike non-relay mode (where WS close flips connected=false), relay mode
   // only knows the stream is alive when frames arrive. Without this, killing
   // the upstream helper leaves the UI stuck on "live" forever.
-  const lastFrameAtRef = useRef(0);
   useEffect(() => {
-    if (!relayMode) return;
+    if (!relayMode || useWebRtc) return;
     const STALE_MS = 2000;
     const checkStaleness = () => {
       const last = lastFrameAtRef.current;
@@ -591,7 +666,7 @@ export function SimulatorView({
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [relayMode]);
+  }, [relayMode, useWebRtc]);
 
   const getViewElement = useCallback(() => {
     if (useWebRtc) return videoRef.current;

@@ -8,6 +8,7 @@
  *   /ws            binary HID input protocol ([tag][JSON]) → NativeHid
  *   /config        { width, height, orientation }
  *   /health        { status: "ok" }
+ *   /stream-stats  native producer/copy/WebRTC diagnostics
  *   /ax            axe-shaped accessibility JSON (one-shot)
  *   /foreground    { bundleId, pid }
  *
@@ -64,6 +65,21 @@ const WS_MSG_CONFIG = 0x82;
 const MJPEG_TRAILER = Buffer.from("\r\n", "ascii");
 const STREAM_DEBUG_ENV = process.env.SERVE_SIM_DEBUG_STREAM != null || process.env.SERVE_SIM_DEBUG_AVCC != null;
 
+interface StreamStatsSample {
+  atMs: number;
+  captureFrames: number;
+  copyFrames: number;
+  scaleFrames: number;
+  scaleBackpressureSkips: number;
+  mjpegReserved: number;
+  webrtcReserved: number;
+  webrtcDirect: number;
+  webrtcSentFrames: number;
+  webrtcDirectInputFrames: number;
+  webrtcQueuedInputFrames: number;
+  webrtcRtpFramesSent: number;
+}
+
 function streamLog(message: string): void {
   if (STREAM_DEBUG_ENV) console.error(message);
   else debugStream(message);
@@ -83,6 +99,50 @@ function avccSeed(jpeg: Buffer): Buffer {
   out[4] = AVCC_SEED_TAG;
   jpeg.copy(out, 5);
   return out;
+}
+
+function numberAt(value: unknown, path: readonly string[]): number {
+  let current: unknown = value;
+  for (const key of path) {
+    if (!current || typeof current !== "object") return 0;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === "number" && Number.isFinite(current) ? current : 0;
+}
+
+function firstReportNumberAt(value: unknown, path: readonly string[], field: string): number {
+  let current: unknown = value;
+  for (const key of path) {
+    if (!current || typeof current !== "object") return 0;
+    current = (current as Record<string, unknown>)[key];
+  }
+  if (!Array.isArray(current)) return 0;
+  for (const item of current) {
+    const n = numberAt(item, [field]);
+    if (n > 0) return n;
+  }
+  return 0;
+}
+
+function streamStatsSample(native: unknown): StreamStatsSample {
+  return {
+    atMs: Date.now(),
+    captureFrames: numberAt(native, ["capture", "frames"]),
+    copyFrames: numberAt(native, ["copy", "frames"]),
+    scaleFrames: numberAt(native, ["scale", "frames"]),
+    scaleBackpressureSkips: numberAt(native, ["scale", "backpressureSkips"]),
+    mjpegReserved: numberAt(native, ["mjpeg", "reserved"]),
+    webrtcReserved: numberAt(native, ["webrtc", "reserved"]),
+    webrtcDirect: numberAt(native, ["webrtc", "direct"]),
+    webrtcSentFrames: numberAt(native, ["webrtc", "publisher", "sentFrames"]),
+    webrtcDirectInputFrames: numberAt(native, ["webrtc", "publisher", "directInputFrames"]),
+    webrtcQueuedInputFrames: numberAt(native, ["webrtc", "publisher", "queuedInputFrames"]),
+    webrtcRtpFramesSent: firstReportNumberAt(native, ["webrtc", "publisher", "outboundRtp", "reports"], "framesSent"),
+  };
+}
+
+function perSecond(next: number, previous: number, elapsedSeconds: number): number {
+  return elapsedSeconds > 0 ? Math.max(0, next - previous) / elapsedSeconds : 0;
 }
 
 function readRequestBody(req: IncomingMessage): Promise<Buffer> {
@@ -122,6 +182,7 @@ export class DeviceSession {
   private readonly hidSockets = new Set<HidSocket>();
   private avccChunks = 0;
   private avccWrites = 0;
+  private lastStreamStatsSample: StreamStatsSample | null = null;
 
   constructor(
     public readonly udid: string,
@@ -141,6 +202,7 @@ export class DeviceSession {
   start(): void {
     if (this.started) return;
     this.capture.start();
+    this.refreshScreenSizeFromNative();
     this.started = true;
   }
 
@@ -151,6 +213,7 @@ export class DeviceSession {
     this.mjpegClients.clear();
     this.avccClients.clear();
     this.hidSockets.clear();
+    this.capture.setMjpegActive(false);
     this.capture.stop();
   }
 
@@ -168,7 +231,16 @@ export class DeviceSession {
       // Build only the small header once; the JPEG itself is written by
       // reference to every client, avoiding a full-frame copy per frame.
       const header = mjpegHeader(f.data.length);
-      for (const res of this.mjpegClients) this.writeMjpegFrame(res, header, f.data);
+      let dropped = false;
+      for (const res of this.mjpegClients) {
+        if (res.writableEnded || res.destroyed) {
+          this.mjpegClients.delete(res);
+          dropped = true;
+          continue;
+        }
+        this.writeMjpegFrame(res, header, f.data);
+      }
+      if (dropped) this.syncMjpegActive();
     } else {
       if (f.isDescription) this.cachedAvccDescription = f.data;
       this.avccChunks += 1;
@@ -235,8 +307,15 @@ export class DeviceSession {
       ...CORS,
     });
     this.mjpegClients.add(res);
+    this.syncMjpegActive();
     if (this.latestJpeg) this.writeMjpegFrame(res, mjpegHeader(this.latestJpeg.length), this.latestJpeg); // paint immediately
-    const drop = () => this.mjpegClients.delete(res);
+    let dropped = false;
+    const drop = () => {
+      if (dropped) return;
+      dropped = true;
+      this.mjpegClients.delete(res);
+      this.syncMjpegActive();
+    };
     res.on("close", drop);
     res.on("error", drop);
   }
@@ -278,6 +357,22 @@ export class DeviceSession {
 
   handleHealth(_req: IncomingMessage, res: ServerResponse): void {
     this.sendJson(res, 200, { status: "ok" });
+  }
+
+  handleStreamStats(_req: IncomingMessage, res: ServerResponse): void {
+    const native = this.capture.streamStats();
+    this.sendJson(res, 200, {
+      settings: this.streamSettings(),
+      clients: {
+        mjpeg: this.mjpegClients.size,
+        avcc: this.avccClients.size,
+        hid: this.hidSockets.size,
+      },
+      latestJpegBytes: this.latestJpeg?.length ?? 0,
+      config: this.screenConfig(),
+      recent: this.recentStreamStats(native),
+      native,
+    });
   }
 
   async handleStreamSettings(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -340,7 +435,9 @@ export class DeviceSession {
     try {
       const body = await readRequestBody(req);
       const offer = JSON.parse(body.toString("utf8")) as unknown;
-      this.sendJson(res, 200, this.capture.handleWebRTCOffer(offer));
+      const answer = this.capture.handleWebRTCOffer(offer);
+      if (this.refreshScreenSizeFromNative()) this.broadcastConfig();
+      this.sendJson(res, 200, answer);
     } catch (err) {
       this.sendJson(res, 500, {
         error: "webrtc_offer_failed",
@@ -395,6 +492,7 @@ export class DeviceSession {
         return null;
       }
     };
+    this.refreshScreenSizeFromNative();
     const W = this.width;
     const H = this.height;
 
@@ -464,12 +562,49 @@ export class DeviceSession {
   // ── Config ───────────────────────────────────────────────────────────────
 
   screenConfig(): { width: number; height: number; orientation: string } {
+    this.refreshScreenSizeFromNative();
     return { width: this.width, height: this.height, orientation: this.orientation };
   }
 
+  private refreshScreenSizeFromNative(): boolean {
+    const size = this.capture.screenSize();
+    if (size.width <= 0 || size.height <= 0) return false;
+    if (size.width === this.width && size.height === this.height) return false;
+    this.width = size.width;
+    this.height = size.height;
+    return true;
+  }
+
+  private syncMjpegActive(): void {
+    this.capture.setMjpegActive(this.mjpegClients.size > 0);
+  }
+
+  private recentStreamStats(native: unknown): Record<string, number> | null {
+    const sample = streamStatsSample(native);
+    const previous = this.lastStreamStatsSample;
+    this.lastStreamStatsSample = sample;
+    if (!previous) return null;
+    const elapsedSeconds = (sample.atMs - previous.atMs) / 1000;
+    return {
+      elapsedMs: sample.atMs - previous.atMs,
+      captureFps: perSecond(sample.captureFrames, previous.captureFrames, elapsedSeconds),
+      copyFps: perSecond(sample.copyFrames, previous.copyFrames, elapsedSeconds),
+      scaleFps: perSecond(sample.scaleFrames, previous.scaleFrames, elapsedSeconds),
+      scaleBackpressureSkips: sample.scaleBackpressureSkips - previous.scaleBackpressureSkips,
+      mjpegReservedFps: perSecond(sample.mjpegReserved, previous.mjpegReserved, elapsedSeconds),
+      webrtcReservedFps: perSecond(sample.webrtcReserved, previous.webrtcReserved, elapsedSeconds),
+      webrtcDirectFps: perSecond(sample.webrtcDirect, previous.webrtcDirect, elapsedSeconds),
+      webrtcSentFps: perSecond(sample.webrtcSentFrames, previous.webrtcSentFrames, elapsedSeconds),
+      webrtcDirectInputFps: perSecond(sample.webrtcDirectInputFrames, previous.webrtcDirectInputFrames, elapsedSeconds),
+      webrtcQueuedInputFps: perSecond(sample.webrtcQueuedInputFrames, previous.webrtcQueuedInputFrames, elapsedSeconds),
+      webrtcRtpSentFps: perSecond(sample.webrtcRtpFramesSent, previous.webrtcRtpFramesSent, elapsedSeconds),
+    };
+  }
+
   private configFrame(): Buffer | null {
-    if (this.width === 0 && this.height === 0) return null;
-    return Buffer.concat([Buffer.from([WS_MSG_CONFIG]), Buffer.from(JSON.stringify(this.screenConfig()))]);
+    const config = this.screenConfig();
+    if (config.width === 0 && config.height === 0) return null;
+    return Buffer.concat([Buffer.from([WS_MSG_CONFIG]), Buffer.from(JSON.stringify(config))]);
   }
 
   private broadcastConfig(): void {

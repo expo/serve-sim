@@ -20,6 +20,7 @@ final class FrameCapture {
     private var idleTimer: DispatchSourceTimer?
     private let captureQueue = DispatchQueue(label: "frame-capture", qos: .userInteractive)
     private var lastCaptureTimeMs: UInt64 = 0
+    private var idleIntervalMs: UInt64 = 200
     private var lastSeeds: [ObjectIdentifier: UInt32] = [:]
     private var rewireTickCount: Int = 0
     /// Interval at which the idle timer re-emits the current frame even when
@@ -32,7 +33,8 @@ final class FrameCapture {
     ///    one subscriber is due for it — a late-joining relay subscriber on an
     ///    idle sim never gets a cached frame to show.
     /// Re-emitting at ~5 fps fixes both without meaningful CPU cost.
-    private static let idleIntervalMs: UInt64 = 200
+    private static let defaultIdleRefreshFps = 5
+    private static let idleTimerTickMs: UInt64 = 33
 
     private var descriptors: [NSObject] = []
     private var callbackUUIDs: [ObjectIdentifier: NSUUID] = [:]
@@ -59,6 +61,16 @@ final class FrameCapture {
         try wireUpFramebuffer()
         startIdleTimer()
         print("[capture] Frame callbacks registered (event-driven) + 5fps idle floor")
+    }
+
+    func setIdleRefreshFps(_ fps: Int) {
+        let normalizedFps = max(Self.defaultIdleRefreshFps, min(120, fps))
+        let nextIntervalMs = max(1, UInt64(1_000 / normalizedFps))
+        captureQueue.async { [weak self] in
+            guard let self, self.idleIntervalMs != nextIntervalMs else { return }
+            self.idleIntervalMs = nextIntervalMs
+            streamLog("[capture] Idle refresh fps=\(normalizedFps) intervalMs=\(nextIntervalMs)")
+        }
     }
 
     /// Find all framebuffer display descriptors, register callbacks on each,
@@ -191,12 +203,12 @@ final class FrameCapture {
 
     private func startIdleTimer() {
         let timer = DispatchSource.makeTimerSource(queue: captureQueue)
-        timer.schedule(deadline: .now().advanced(by: .milliseconds(Int(Self.idleIntervalMs))),
-                       repeating: .milliseconds(Int(Self.idleIntervalMs)))
+        timer.schedule(deadline: .now().advanced(by: .milliseconds(Int(Self.idleTimerTickMs))),
+                       repeating: .milliseconds(Int(Self.idleTimerTickMs)))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
             let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
-            if (nowMs - self.lastCaptureTimeMs) >= Self.idleIntervalMs {
+            if (nowMs - self.lastCaptureTimeMs) >= self.idleIntervalMs {
                 self.captureFrame()
             }
             // Self-heal: if we've never captured a frame, the cached descriptor
@@ -236,7 +248,7 @@ final class FrameCapture {
         let nowMs = DispatchTime.now().uptimeNanoseconds / 1_000_000
         let sinceLastMs = nowMs &- lastCaptureTimeMs
         let seedChanged = lastSeeds[key] != seed
-        let idleRefreshDue = frameCount > 0 && sinceLastMs >= Self.idleIntervalMs
+        let idleRefreshDue = frameCount > 0 && sinceLastMs >= idleIntervalMs
         if frameCount > 0, !seedChanged, !idleRefreshDue { return }
         lastSeeds[key] = seed
 
@@ -260,7 +272,13 @@ final class FrameCapture {
 
         lastCaptureTimeMs = nowMs
         frameCount += 1
-        let timestamp = CMTime(value: CMTimeValue(frameCount), timescale: 60)
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        let timestamp = CMTime(value: CMTimeValue(nowNs), timescale: 1_000_000_000)
+        if streamShouldLog(Int64(frameCount)) {
+            let reason = seedChanged ? "changed" : "idle"
+            let interval = frameCount == 1 ? 0 : sinceLastMs
+            streamLog("[capture] frame #\(frameCount) reason=\(reason) intervalMs=\(interval) size=\(w)x\(h)")
+        }
         onFrame?(pb, timestamp)
     }
 

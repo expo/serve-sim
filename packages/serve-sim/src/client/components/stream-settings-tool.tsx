@@ -71,7 +71,7 @@ export function StreamSettingsTool({
 }: {
   settings: StreamSettings;
   onSettingsChange: (patch: Partial<StreamSettings>) => void;
-  activeCodec: "webrtc" | "h264" | "mjpeg";
+  activeCodec: string;
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -150,21 +150,21 @@ export function StreamSettingsTool({
             onChange={(v) => onSettingsChange({ streamQuality: Number(v) })}
           />
         </SettingRow>
-        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="H.264 FPS">
+        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="Video FPS">
           <SettingSelect
-            label="H.264 FPS"
+            label="Video FPS"
             value={selectValue(settings.h264MaxFps, FPS_OPTIONS)}
             options={FPS_OPTIONS}
-            disabled={disabled || !httpActive || settings.codec === "mjpeg"}
+            disabled={disabled || (httpActive && settings.codec === "mjpeg")}
             onChange={(v) => onSettingsChange({ h264MaxFps: Number(v) })}
           />
         </SettingRow>
-        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="H.264 bitrate">
+        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="Video bitrate">
           <SettingSelect
-            label="H.264 bitrate"
+            label="Video bitrate"
             value={selectValue(settings.h264Bitrate, BITRATE_OPTIONS)}
             options={BITRATE_OPTIONS}
-            disabled={disabled || !httpActive || settings.codec === "mjpeg"}
+            disabled={disabled || (httpActive && settings.codec === "mjpeg")}
             onChange={(v) => onSettingsChange({ h264Bitrate: Number(v) })}
           />
         </SettingRow>

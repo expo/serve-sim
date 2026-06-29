@@ -32,7 +32,7 @@ export function ToolsPanel({
   onToggleAxOverlay: () => void;
   streamSettings: StreamSettings;
   onStreamSettingsChange: (patch: Partial<StreamSettings>) => void;
-  activeCodec: "webrtc" | "h264" | "mjpeg";
+  activeCodec: string;
   streamSettingsPending: boolean;
   width: number;
 }) {

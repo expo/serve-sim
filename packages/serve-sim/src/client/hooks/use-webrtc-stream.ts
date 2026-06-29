@@ -24,6 +24,8 @@ const DEFAULT_ICE_SERVERS: IceServer[] = [
   { urls: ["stun:stun.l.google.com:19302"] },
   { urls: ["stun:stun1.l.google.com:19302"] },
 ];
+const ICE_GATHERING_TIMEOUT_MS = 3_000;
+const SIGNALING_TIMEOUT_MS = 10_000;
 
 export function useWebRtcStream({
   url,
@@ -52,85 +54,140 @@ export function useWebRtcStream({
 
   useEffect(() => {
     if (!enabled || !url) return;
-    let stopped = false;
-    setNegotiatedCodec(null);
-    setError(null);
-    const servers = iceServers?.length ? iceServers : DEFAULT_ICE_SERVERS;
-    const pc = new RTCPeerConnection({ iceServers: servers });
-    const dc = pc.createDataChannel("input", { ordered: false, maxRetransmits: 0 });
-    dataChannelRef.current = dc;
-    const videoTransceiver = pc.addTransceiver("video", { direction: "recvonly" });
-    const videoCapabilities = RTCRtpReceiver.getCapabilities("video");
-    const preferredMimeType = codec === "h264"
-      ? "video/H264"
-      : codec === "vp9"
-        ? "video/VP9"
-        : "video/VP8";
-    if (videoCapabilities?.codecs.length && "setCodecPreferences" in videoTransceiver) {
-      videoTransceiver.setCodecPreferences([
-        ...videoCapabilities.codecs.filter((candidate) => candidate.mimeType === preferredMimeType),
-        ...videoCapabilities.codecs.filter((candidate) => candidate.mimeType !== preferredMimeType),
-      ]);
+    if (typeof RTCPeerConnection === "undefined" || typeof RTCRtpReceiver === "undefined") {
+      setStream(null);
+      setConnected(false);
+      setNegotiatedCodec(null);
+      setError({ codec, message: "WebRTC is not supported in this browser" });
+      return;
     }
 
-    dc.onopen = () => {
-      if (!stopped) setConnected(true);
-    };
-    dc.onclose = () => {
-      if (!stopped) setConnected(false);
-    };
-    pc.ontrack = (event) => {
-      if (stopped) return;
-      setStream(event.streams[0] ?? new MediaStream([event.track]));
-      setConnected(true);
-      setError(null);
-    };
-    pc.onconnectionstatechange = () => {
-      if (stopped) return;
-      setConnected(pc.connectionState === "connected");
-      if (pc.connectionState === "failed") setError({ codec, message: "WebRTC connection failed" });
-    };
+    let stopped = false;
+    let pc: RTCPeerConnection | null = null;
+    let dc: RTCDataChannel | null = null;
+    let offerController: AbortController | null = null;
+    let offerTimeout: number | undefined;
+    let offerTimedOut = false;
+    const servers = iceServers?.length ? iceServers : DEFAULT_ICE_SERVERS;
+    setStream(null);
+    setConnected(false);
+    setNegotiatedCodec(null);
+    setError(null);
+    dataChannelRef.current = null;
 
-    const waitForIce = () =>
+    const waitForIce = (connection: RTCPeerConnection) =>
       new Promise<void>((resolve) => {
-        if (pc.iceGatheringState === "complete") {
+        if (connection.iceGatheringState === "complete") {
           resolve();
           return;
         }
-        const onState = () => {
-          if (pc.iceGatheringState !== "complete") return;
-          pc.removeEventListener("icegatheringstatechange", onState);
+        let timeout: number | undefined;
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          connection.removeEventListener("icegatheringstatechange", onState);
+          if (timeout !== undefined) window.clearTimeout(timeout);
           resolve();
         };
-        pc.addEventListener("icegatheringstatechange", onState);
+        const onState = () => {
+          if (connection.iceGatheringState !== "complete") return;
+          finish();
+        };
+        connection.addEventListener("icegatheringstatechange", onState);
+        timeout = window.setTimeout(finish, ICE_GATHERING_TIMEOUT_MS);
       });
 
     (async () => {
       try {
+        pc = new RTCPeerConnection({
+          iceServers: servers,
+          iceTransportPolicy: "all",
+        });
+        dc = pc.createDataChannel("input", { ordered: false, maxRetransmits: 0 });
+        dataChannelRef.current = dc;
+
+        const videoTransceiver = pc.addTransceiver("video", { direction: "recvonly" });
+        const videoCapabilities = RTCRtpReceiver.getCapabilities("video");
+        const preferredMimeType = codec === "h264"
+          ? "video/H264"
+          : codec === "vp9"
+            ? "video/VP9"
+            : "video/VP8";
+        if (videoCapabilities?.codecs.length && "setCodecPreferences" in videoTransceiver) {
+          const normalizedPreferredMimeType = preferredMimeType.toLowerCase();
+          videoTransceiver.setCodecPreferences([
+            ...videoCapabilities.codecs.filter((candidate) =>
+              candidate.mimeType.toLowerCase() === normalizedPreferredMimeType
+            ),
+            ...videoCapabilities.codecs.filter((candidate) =>
+              candidate.mimeType.toLowerCase() !== normalizedPreferredMimeType
+            ),
+          ]);
+        }
+
+        dc.onopen = () => {
+          if (!stopped) setConnected(true);
+        };
+        dc.onclose = () => {
+          if (!stopped) setConnected(false);
+        };
+        pc.ontrack = (event) => {
+          if (stopped) return;
+          setStream(event.streams[0] ?? new MediaStream([event.track]));
+          setConnected(true);
+          setError(null);
+        };
+        pc.onconnectionstatechange = () => {
+          if (stopped || !pc) return;
+          setConnected(pc.connectionState === "connected");
+          if (pc.connectionState === "failed") {
+            setError({ codec, message: "WebRTC connection failed" });
+          }
+        };
+
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        await waitForIce();
+        await waitForIce(pc);
         const local = pc.localDescription;
         if (!local) throw new Error("WebRTC offer was not created");
-        const response = await fetch(`${url}/webrtc/offer`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            type: local.type,
-            sdp: local.sdp,
-            codec,
-            iceServers: servers,
-          }),
-        });
+        offerController = new AbortController();
+        offerTimeout = window.setTimeout(() => {
+          offerTimedOut = true;
+          offerController?.abort();
+        }, SIGNALING_TIMEOUT_MS);
+        let response: Response;
+        try {
+          response = await fetch(`${url}/webrtc/offer`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: offerController.signal,
+            body: JSON.stringify({
+              type: local.type,
+              sdp: local.sdp,
+              codec,
+              iceServers: servers,
+            }),
+          });
+        } finally {
+          if (offerTimeout !== undefined) {
+            window.clearTimeout(offerTimeout);
+            offerTimeout = undefined;
+          }
+        }
         if (!response.ok) throw new Error(`WebRTC offer failed: HTTP ${response.status}`);
         const answer = await response.json() as RTCSessionDescriptionInit;
+        if (stopped) return;
         await pc.setRemoteDescription(answer);
         if (typeof answer.sdp === "string") {
           setNegotiatedCodec(negotiatedWebRtcCodecFromSdp(answer.sdp));
         }
       } catch (err) {
         if (!stopped) {
-          setError({ codec, message: err instanceof Error ? err.message : String(err) });
+          setError({
+            codec,
+            message: offerTimedOut ? "WebRTC offer timed out" : err instanceof Error ? err.message : String(err),
+          });
           setConnected(false);
         }
       }
@@ -138,12 +195,14 @@ export function useWebRtcStream({
 
     return () => {
       stopped = true;
+      if (offerTimeout !== undefined) window.clearTimeout(offerTimeout);
+      offerController?.abort();
       dataChannelRef.current = null;
       setStream(null);
       setConnected(false);
       setNegotiatedCodec(null);
-      dc.close();
-      pc.close();
+      dc?.close();
+      pc?.close();
     };
   }, [enabled, url, codec, iceServers]);
 

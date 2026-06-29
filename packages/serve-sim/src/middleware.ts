@@ -662,6 +662,7 @@ export async function startDeviceInProcess(
   port: number,
   base: string,
   stream?: Partial<ServeSimStreamSettings>,
+  host = "127.0.0.1",
 ): Promise<string | null> {
   // `simctl boot` errors when already booted — ignore and let bootstatus confirm.
   await new Promise<void>((resolve) => execFile("xcrun", ["simctl", "boot", udid], () => resolve()));
@@ -684,7 +685,7 @@ export async function startDeviceInProcess(
     });
     if (!booted) return `Device ${udid} failed to reach booted state`;
   }
-  writeServeSimState(inProcessServeSimState(udid, port, base, "127.0.0.1", stream));
+  writeServeSimState(inProcessServeSimState(udid, port, base, host, stream));
   return null;
 }
 
@@ -1150,6 +1151,14 @@ export interface SimMiddlewareOptions {
   webrtcCodec?: "vp8" | "vp9" | "h264";
   webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
   /**
+   * Port/host other processes should use when reading the persisted state file.
+   * When serve-sim owns a front proxy, ordinary HTTP reaches this middleware on
+   * an internal socket, but helper WebSocket upgrades only work on the public
+   * front socket.
+   */
+  publicPort?: number | (() => number | undefined);
+  publicHost?: string;
+  /**
    * Route the browser's helper stream/control and DevTools sockets through the
    * preview's same-origin `/helper` and `/devtools` proxies instead of the
    * helper's own loopback port — so a single exposed preview port is enough for
@@ -1460,7 +1469,10 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           res.end(JSON.stringify({ ok: false, error: "Invalid or missing udid" }));
           return;
         }
-        const port = req.socket.localPort ?? 0;
+        const configuredPublicPort = typeof options?.publicPort === "function"
+          ? options.publicPort()
+          : options?.publicPort;
+        const port = configuredPublicPort ?? req.socket.localPort ?? 0;
         void startDeviceInProcess(udid, port, base, {
           transport: options?.transport,
           codec: options?.codec,
@@ -1471,7 +1483,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           h264MaxFps: options?.h264MaxFps,
           webrtcCodec: options?.webrtcCodec,
           webrtcIceServers: options?.webrtcIceServers,
-        }).then((error) => {
+        }, options?.publicHost ?? "127.0.0.1").then((error) => {
           if (res.writableEnded) return;
           if (error) {
             res.writeHead(500, { "Content-Type": "application/json" });

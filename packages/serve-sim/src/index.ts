@@ -1648,6 +1648,7 @@ async function serve(
   }
   for (const udid of targetDevices) await ensureBooted(udid);
   const targetDevice = targetDevices[0]!;
+  let advertisedPort = servePort;
 
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
@@ -1665,6 +1666,8 @@ async function serve(
     webrtcCodec: options.stream?.webrtcCodec,
     webrtcIceServers: options.stream?.webrtcIceServers,
     proxyHelpers: true,
+    publicPort: () => advertisedPort,
+    publicHost: host,
   });
 
   // Try requested port; if busy and the user didn't pin it, scan forward.
@@ -1677,6 +1680,7 @@ async function serve(
     try {
       await bindPreviewServer(p, middleware, host);
       boundPort = p;
+      advertisedPort = p;
       bound = true;
       break;
     } catch (err: any) {

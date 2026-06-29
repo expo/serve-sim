@@ -156,6 +156,10 @@ private func u32(_ v: Int) -> UInt32 {
         engine.setAvccActive(active)
     }
 
+    @NodeMethod func setMjpegActive(_ active: Bool) {
+        engine.setMjpegActive(active)
+    }
+
     @NodeMethod func requestKeyframe() {
         engine.requestKeyframe()
     }

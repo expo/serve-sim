@@ -12,7 +12,7 @@ import type { Socket } from "net";
 // importing the dependency keeps the proxy working regardless of runtime.
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
-import { getDeviceSession, type HidSocket } from "./device-session";
+import { getDeviceSession, type DeviceSessionOptions, type HidSocket } from "./device-session";
 import { axFrontmostAsync } from "./native";
 import { inProcessServeSimState, writeServeSimState, type ServeSimDeviceState } from "./state";
 import { debugMw } from "./debug";
@@ -619,11 +619,17 @@ function bridgeWebSocketFrames(req: SimReq, socket: Socket, head: Buffer, upstre
  * NativeHid). Returns false when no session can serve it (device not booted, or
  * an endpoint this path doesn't own) so the caller can respond 404.
  */
-function serveHelperInProcess(req: SimReq, res: SimRes, device: string | null, upstreamPath: string): boolean {
+function serveHelperInProcess(
+  req: SimReq,
+  res: SimRes,
+  device: string | null,
+  upstreamPath: string,
+  options: DeviceSessionOptions = {},
+): boolean {
   if (!device) return false;
   let session;
   try {
-    session = getDeviceSession(device);
+    session = getDeviceSession(device, options);
   } catch {
     return false; // not booted / capture unavailable → 404
   }
@@ -649,7 +655,10 @@ export async function startDeviceInProcess(
   udid: string,
   port: number,
   base: string,
-  stream?: Pick<ServeSimState, "transport" | "codec" | "webrtcCodec" | "webrtcIceServers">,
+  stream?: Pick<
+    ServeSimState,
+    "transport" | "codec" | "h264Bitrate" | "h264MaxFps" | "webrtcCodec" | "webrtcIceServers"
+  >,
 ): Promise<string | null> {
   // `simctl boot` errors when already booted — ignore and let bootstatus confirm.
   await new Promise<void>((resolve) => execFile("xcrun", ["simctl", "boot", udid], () => resolve()));
@@ -734,11 +743,17 @@ function rawHidSocket(socket: Socket, head: Buffer): HidSocket {
 }
 
 /** Upgrade an in-process HID `/ws` socket onto a DeviceSession. Returns false when no session can serve it. */
-function attachHidInProcess(req: SimReq, socket: Socket, head: Buffer, device: string | null): boolean {
+function attachHidInProcess(
+  req: SimReq,
+  socket: Socket,
+  head: Buffer,
+  device: string | null,
+  options: DeviceSessionOptions = {},
+): boolean {
   if (!device) return false;
   let session;
   try {
-    session = getDeviceSession(device);
+    session = getDeviceSession(device, options);
   } catch {
     return false;
   }
@@ -1121,6 +1136,8 @@ export interface SimMiddlewareOptions {
    * Reserved for future values such as `"hevc"`/`"av1"`.
    */
   codec?: "auto" | "mjpeg" | "h264";
+  h264Bitrate?: number;
+  h264MaxFps?: number;
   transport?: "http" | "webrtc";
   webrtcCodec?: "vp8" | "vp9" | "h264";
   webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
@@ -1202,7 +1219,10 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       const device = helperTarget.device ?? selectedDevice;
       // The device's helper endpoints are served from an in-process
       // NativeCapture/NativeHid DeviceSession.
-      if (serveHelperInProcess(req, res, device, helperTarget.upstreamPath)) return;
+      if (serveHelperInProcess(req, res, device, helperTarget.upstreamPath, {
+        h264Bitrate: options?.h264Bitrate,
+        h264MaxFps: options?.h264MaxFps,
+      })) return;
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("No serve-sim device");
       return;
@@ -1429,6 +1449,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         void startDeviceInProcess(udid, port, base, {
           transport: options?.transport,
           codec: options?.codec,
+          h264Bitrate: options?.h264Bitrate,
+          h264MaxFps: options?.h264MaxFps,
           webrtcCodec: options?.webrtcCodec,
           webrtcIceServers: options?.webrtcIceServers,
         }).then((error) => {
@@ -1882,7 +1904,10 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     const device = helperTarget.device ?? selectedDevice;
     if (helperTarget.upstreamPath === "/ws") {
       // HID input is delivered to the in-process DeviceSession.
-      if (attachHidInProcess(req, socket, head, device)) return;
+      if (attachHidInProcess(req, socket, head, device, {
+        h264Bitrate: options?.h264Bitrate,
+        h264MaxFps: options?.h264MaxFps,
+      })) return;
       socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
       return;
     }

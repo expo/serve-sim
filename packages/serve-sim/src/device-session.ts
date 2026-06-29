@@ -15,7 +15,16 @@
  * original byte-for-byte so the existing browser client is unchanged.
  */
 import type { IncomingMessage, ServerResponse } from "http";
-import { NativeCapture, NativeHid, Orientation, axDescribeAsync, axFrontmostAsync, type NativeFrame } from "./native";
+import {
+  NativeCapture,
+  NativeHid,
+  Orientation,
+  axDescribeAsync,
+  axFrontmostAsync,
+  type NativeCaptureOptions,
+  type NativeFrame,
+} from "./native";
+import { debugStream } from "./debug";
 
 /**
  * Minimal WebSocket surface the HID input channel needs. Satisfied by both the
@@ -48,6 +57,16 @@ const AVCC_SEED_TAG = 0x04;
 const WS_MSG_CONFIG = 0x82;
 
 const MJPEG_TRAILER = Buffer.from("\r\n", "ascii");
+const STREAM_DEBUG_ENV = process.env.SERVE_SIM_DEBUG_STREAM != null || process.env.SERVE_SIM_DEBUG_AVCC != null;
+
+function streamLog(message: string): void {
+  if (STREAM_DEBUG_ENV) console.error(message);
+  else debugStream(message);
+}
+
+function shouldLogStream(count: number): boolean {
+  return count <= 5 || count % 120 === 0;
+}
 
 function mjpegHeader(jpegLength: number): Buffer {
   return Buffer.from(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpegLength}\r\n\r\n`, "ascii");
@@ -79,6 +98,8 @@ const ORIENTATION_BY_NAME: Record<string, number> = {
   landscape_right: Orientation.landscapeRight,
 };
 
+export type DeviceSessionOptions = NativeCaptureOptions;
+
 export class DeviceSession {
   private readonly capture: NativeCapture;
   private readonly hid: NativeHid;
@@ -93,13 +114,19 @@ export class DeviceSession {
   private readonly mjpegClients = new Set<ServerResponse>();
   private readonly avccClients = new Set<ServerResponse>();
   private readonly hidSockets = new Set<HidSocket>();
+  private avccChunks = 0;
+  private avccWrites = 0;
 
-  constructor(public readonly udid: string) {
+  constructor(
+    public readonly udid: string,
+    options: DeviceSessionOptions = {},
+  ) {
     this.hid = new NativeHid(udid);
     this.capture = new NativeCapture(
       udid,
       (f) => this.onFrame(f),
       (data) => this.handleHidMessage(data),
+      options,
     );
   }
 
@@ -137,7 +164,14 @@ export class DeviceSession {
       for (const res of this.mjpegClients) this.writeMjpegFrame(res, header, f.data);
     } else {
       if (f.isDescription) this.cachedAvccDescription = f.data;
-      for (const res of this.avccClients) this.writeAvccFrame(res, f.data);
+      this.avccChunks += 1;
+      const kind = f.isDescription ? "description" : f.isKeyframe ? "keyframe" : "delta";
+      if (shouldLogStream(this.avccChunks) || f.isDescription || f.isKeyframe) {
+        streamLog(
+          `[stream:avcc] native chunk kind=${kind} bytes=${f.data.length} clients=${this.avccClients.size}`,
+        );
+      }
+      for (const res of this.avccClients) this.writeAvccFrame(res, f.data, kind);
     }
   }
 
@@ -158,17 +192,29 @@ export class DeviceSession {
    * re-seeded with the cached description + a fresh keyframe, yielding a clean
    * stream instead of a corrupted one.
    */
-  private writeAvccFrame(res: ServerResponse, chunk: Buffer): void {
+  private writeAvccFrame(res: ServerResponse, chunk: Buffer, kind: string): void {
     if (res.writableEnded) {
       this.avccClients.delete(res);
+      streamLog(`[stream:avcc] drop ended client before ${kind}; clients=${this.avccClients.size}`);
       return;
     }
     if (res.writableLength > MAX_CLIENT_BACKLOG) {
       this.avccClients.delete(res);
+      streamLog(
+        `[stream:avcc] evict backed-up client before ${kind}; backlog=${res.writableLength} ` +
+          `clients=${this.avccClients.size}`,
+      );
       res.end();
       return;
     }
-    res.write(chunk);
+    this.avccWrites += 1;
+    const ok = res.write(chunk);
+    if (shouldLogStream(this.avccWrites) || kind === "description" || kind === "keyframe" || !ok) {
+      streamLog(
+        `[stream:avcc] wrote ${kind} bytes=${chunk.length} ok=${ok} backlog=${res.writableLength} ` +
+          `clients=${this.avccClients.size}`,
+      );
+    }
   }
 
   // ── HTTP handlers ────────────────────────────────────────────────────────
@@ -196,14 +242,23 @@ export class DeviceSession {
       ...CORS,
     });
     this.avccClients.add(res);
+    streamLog(
+      `[stream:avcc] client attached clients=${this.avccClients.size} ` +
+        `latestJpeg=${this.latestJpeg?.length ?? 0} cachedDescription=${this.cachedAvccDescription?.length ?? 0}`,
+    );
     this.capture.setAvccActive(true);
     // Seed with the current screen, replay the cached decoder config, then force
     // an IDR so the freshly-configured decoder has a keyframe to start from.
-    if (this.latestJpeg) res.write(avccSeed(this.latestJpeg));
-    if (this.cachedAvccDescription) res.write(this.cachedAvccDescription);
+    if (this.latestJpeg) {
+      const seed = avccSeed(this.latestJpeg);
+      const ok = res.write(seed);
+      streamLog(`[stream:avcc] wrote seed bytes=${seed.length} ok=${ok} backlog=${res.writableLength}`);
+    }
+    if (this.cachedAvccDescription) this.writeAvccFrame(res, this.cachedAvccDescription, "description-replay");
     this.capture.requestKeyframe();
     const drop = () => {
       this.avccClients.delete(res);
+      streamLog(`[stream:avcc] client detached clients=${this.avccClients.size}`);
       if (this.avccClients.size === 0) this.capture.setAvccActive(false);
     };
     res.on("close", drop);
@@ -384,10 +439,10 @@ const sessions = new Map<string, DeviceSession>();
  * Get (lazily creating + starting) the in-process session for `udid`. Throws if
  * the device isn't booted. The session lives until `closeDeviceSession`.
  */
-export function getDeviceSession(udid: string): DeviceSession {
+export function getDeviceSession(udid: string, options: DeviceSessionOptions = {}): DeviceSession {
   let session = sessions.get(udid);
   if (!session) {
-    session = new DeviceSession(udid);
+    session = new DeviceSession(udid, options);
     try {
       session.start();
     } catch (err) {

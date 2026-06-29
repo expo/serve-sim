@@ -99,7 +99,15 @@ private func u32(_ v: Int) -> UInt32 {
     private let queue: NodeAsyncQueue
     private let inputQueue: NodeAsyncQueue
 
-    @NodeConstructor init(_ udid: String, _ onFrame: NodeFunction, _ onWebRTCInput: NodeFunction) throws {
+    @NodeConstructor init(
+        _ udid: String,
+        _ onFrame: NodeFunction,
+        _ onWebRTCInput: NodeFunction,
+        _ mjpegFps: Int,
+        _ mjpegQuality: Double,
+        _ h264Fps: Int,
+        _ h264Bitrate: Int
+    ) throws {
         // unref'd by NodeAsyncQueue's init, so the frame pipeline alone won't
         // keep the event loop alive. Bounded queue + blocking AVCC preserves
         // inter-frame ordering; MJPEG is nonblocking and drops under backpressure.
@@ -112,7 +120,12 @@ private func u32(_ v: Int) -> UInt32 {
 
         // Capture the locals (not self) so the closure can be built before the
         // engine property is initialized, and so it holds no strong ref to self.
-        engine = CaptureEngine(deviceUDID: udid, onFrame: { codec, data, w, h, flags in
+        engine = CaptureEngine(deviceUDID: udid, options: CaptureEngineOptions(
+            mjpegFps: mjpegFps,
+            mjpegQuality: mjpegQuality,
+            h264Fps: h264Fps,
+            h264Bitrate: h264Bitrate
+        ), onFrame: { codec, data, w, h, flags in
             // Runs on a native encode thread. AVCC is inter-frame H.264 — dropping
             // a delta corrupts the decoder until the next IDR — so deliver it
             // blocking; MJPEG is stateless and safe to drop. We copy the bytes

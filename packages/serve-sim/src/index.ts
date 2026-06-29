@@ -46,8 +46,19 @@ function resolveVersion(): string {
 
 type ServerState = ServeSimDeviceState;
 
-type StreamRuntimeOptions = Pick<ServeSimDeviceState, "transport" | "codec" | "webrtcCodec" | "webrtcIceServers">;
+type StreamRuntimeOptions = Pick<
+  ServeSimDeviceState,
+  "transport" | "codec" | "h264Bitrate" | "h264MaxFps" | "webrtcCodec" | "webrtcIceServers"
+>;
 type WebRTCIceServer = NonNullable<ServeSimDeviceState["webrtcIceServers"]>[number];
+
+function parsePositiveIntOption(value: string, flag: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new InvalidArgumentError(`${flag} must be a positive integer.`);
+  }
+  return parsed;
+}
 
 const liveTunnels = new Set<Tunnel>();
 function trackTunnel(tunnel: Tunnel): Tunnel {
@@ -1629,6 +1640,8 @@ async function serve(
     basePath: "/",
     device: targetDevice,
     codec: options.stream?.codec,
+    h264Bitrate: options.stream?.h264Bitrate,
+    h264MaxFps: options.stream?.h264MaxFps,
     transport: options.stream?.transport,
     webrtcCodec: options.stream?.webrtcCodec,
     webrtcIceServers: options.stream?.webrtcIceServers,
@@ -1765,8 +1778,8 @@ program
   .option("--stream-fps <fps>", "Accepted for stream-control compatibility")
   .option("--stream-quality <quality>", "Accepted for stream-control compatibility")
   .option("--stream-max-dimension <px>", "Accepted for stream-control compatibility")
-  .option("--h264-bitrate <bps>", "Accepted for stream-control compatibility")
-  .option("--h264-max-fps <fps>", "Accepted for stream-control compatibility")
+  .option("--h264-bitrate <bps>", "H.264 target bitrate", (value) => parsePositiveIntOption(value, "--h264-bitrate"))
+  .option("--h264-max-fps <fps>", "H.264 max frame rate", (value) => parsePositiveIntOption(value, "--h264-max-fps"))
   .option("-l, --list [device]", "List running streams")
   .option("-k, --kill [device]", "Kill running stream(s)")
   .addHelpText(
@@ -1826,6 +1839,8 @@ Examples:
     const stream: StreamRuntimeOptions = {
       transport,
       codec,
+      h264Bitrate: opts.h264Bitrate,
+      h264MaxFps: opts.h264MaxFps,
       webrtcCodec: transport === "webrtc" ? opts.webrtcCodec : undefined,
       webrtcIceServers: webrtcIceServers.length ? webrtcIceServers : undefined,
     };

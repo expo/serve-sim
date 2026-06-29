@@ -13,6 +13,12 @@ import { findBootedDevice, resolveDevice } from "./device";
 import { permissions } from "./permissions";
 import { uiSettings } from "./ui-settings";
 import { debugCli, debugHelper, debugState } from "./debug";
+import {
+  randomTunnelLabel,
+  startTunnel,
+  validateTunnelCliOptions,
+  type Tunnel,
+} from "./tunnel";
 
 // `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
 // CLI works under plain `node` too.
@@ -38,6 +44,20 @@ function resolveVersion(): string {
 // and we extract the bytes to a cached location on first use.
 
 type ServerState = ServeSimDeviceState;
+
+const liveTunnels = new Set<Tunnel>();
+function trackTunnel(tunnel: Tunnel): Tunnel {
+  liveTunnels.add(tunnel);
+  return tunnel;
+}
+
+function shutdownTunnels(): void {
+  for (const tunnel of liveTunnels) {
+    try { tunnel.stop(); } catch {}
+  }
+  liveTunnels.clear();
+}
+process.on("exit", shutdownTunnels);
 
 function ensureStateDir() {
   if (!existsSync(STATE_DIR)) {
@@ -1582,6 +1602,10 @@ async function serve(
   portExplicit: boolean,
   host: string,
   codec: string | undefined,
+  options: {
+    tunnel?: boolean;
+    tunnelDomain?: string;
+  } = {},
 ) {
   // Boot the target simulators; the preview server streams them in-process
   // (no spawned helper). Sessions are created lazily on the first stream request.
@@ -1591,6 +1615,10 @@ async function serve(
   }
   for (const udid of targetDevices) await ensureBooted(udid);
   const targetDevice = targetDevices[0];
+  if (!targetDevice) {
+    console.error("No target simulator was resolved for the preview server.");
+    process.exit(1);
+  }
 
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
@@ -1627,6 +1655,21 @@ async function serve(
     process.exit(1);
   }
 
+  let previewTunnel: Tunnel | undefined;
+  if (options.tunnel) {
+    try {
+      previewTunnel = trackTunnel(await startTunnel(boundPort, {
+        domain: options.tunnelDomain,
+        label: options.tunnelDomain
+          ? randomTunnelLabel(`sim-${targetDevice.replace(/-/g, "").slice(0, 8)}`)
+          : undefined,
+      }));
+    } catch (err) {
+      console.error(`Tunnel failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  }
+
   // Record in-process state so the preview/grid enumerate these devices and the
   // CLI input subcommands can reach the same-origin /helper ws.
   for (const udid of targetDevices) {
@@ -1643,6 +1686,7 @@ async function serve(
   const networkIP = getLocalNetworkIP();
   console.log("");
   console.log(`  - Local:   http://localhost:${boundPort}`);
+  if (previewTunnel) console.log(`  - Tunnel:  ${previewTunnel.url}`);
   if (exposedToLan && networkIP) {
     console.log(`  - Network: http://${networkIP}:${boundPort}`);
   } else if (networkIP) {
@@ -1684,6 +1728,8 @@ program
   .option("--detach", "Spawn helper and exit (daemon mode)")
   .option("-q, --quiet", "Suppress human-readable output, JSON only")
   .option("--no-preview", "Skip the web preview server; stream in foreground only")
+  .option("--tunnel", "Open an ngrok tunnel for the preview port")
+  .option("--tunnel-domain <domain>", "ngrok reserved wildcard domain base, e.g. expo-simulator.ngrok.dev")
   .option(
     "--codec <codec>",
     "Stream codec for the preview UI: 'auto' (H.264 when the browser can decode " +
@@ -1708,6 +1754,7 @@ Examples:
   serve-sim --codec mjpeg                Force MJPEG (e.g. on VMs without H.264 encode)
   serve-sim --no-preview                 Auto-detect booted sim, stream in foreground
   serve-sim --no-preview "iPhone 16 Pro" Stream a specific device (no preview)
+  serve-sim --tunnel                     Expose the preview with ngrok
   serve-sim --detach                     Start streaming in background (daemon)
   serve-sim --list                       Show all running streams
   serve-sim --kill                       Stop all streams`,
@@ -1721,6 +1768,16 @@ Examples:
       killStreams(typeof opts.kill === "string" ? opts.kill : undefined);
       return;
     }
+    const tunnelError = validateTunnelCliOptions({
+      tunnel: opts.tunnel,
+      detach: opts.detach,
+      preview: opts.preview,
+      tunnelDomain: opts.tunnelDomain,
+    });
+    if (tunnelError) {
+      console.error(tunnelError);
+      process.exit(1);
+    }
     const startPort: number | undefined = opts.port;
     if (opts.detach) {
       const states = await detach(devices, startPort ?? 3100);
@@ -1728,7 +1785,10 @@ Examples:
     } else if (opts.preview === false) {
       await follow(devices, startPort ?? 3100, !!opts.quiet);
     } else {
-      await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, opts.codec);
+      await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, opts.codec, {
+        tunnel: opts.tunnel,
+        tunnelDomain: opts.tunnelDomain,
+      });
     }
   });
 

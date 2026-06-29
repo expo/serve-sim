@@ -47,7 +47,8 @@
     "dist/native/serve-sim-native.node",
     "Package.swift",
     "Sources/SimNative/*.swift",
-    "Sources/SimNative/build.sh"
+    "Sources/SimNative/build.sh",
+    "bin/LiveKitWebRTC.framework"
   ],
   "exports": {
     "./middleware": {

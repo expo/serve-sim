@@ -85,8 +85,12 @@ final class WebRTCPublisher {
         config.sdpSemantics = .unifiedPlan
         config.bundlePolicy = .maxBundle
         config.rtcpMuxPolicy = .require
+        config.candidateNetworkPolicy = .all
         config.continualGatheringPolicy = .gatherOnce
         config.iceServers = iceServers(from: request.iceServers)
+        config.iceTransportPolicy = .all
+        print("[webrtc] ICE transport policy: all (TURN as fallback)")
+        print("[webrtc] ICE servers: \(iceServerSummary(request.iceServers))")
 
         let constraints = LKRTCMediaConstraints(
             mandatoryConstraints: nil,
@@ -135,6 +139,12 @@ final class WebRTCPublisher {
                     }
                     session.waitForIceGathering {
                         let local = peerConnection.localDescription ?? answer
+                        let candidateCounts = self.iceCandidateCounts(in: local.sdp)
+                        if self.hasCredentialedTurnServer(request.iceServers), candidateCounts["relay", default: 0] == 0 {
+                            print("[webrtc] WARNING: no relay ICE candidates gathered for credentialed TURN offer; counts=\(candidateCounts)")
+                        } else {
+                            print("[webrtc] ICE candidates gathered: \(candidateCounts)")
+                        }
                         completion(.success(WebRTCAnswerPayload(
                             type: LKRTCSessionDescription.string(for: local.type),
                             sdp: local.sdp
@@ -150,13 +160,58 @@ final class WebRTCPublisher {
             WebRTCIceServerPayload(urls: ["stun:stun.l.google.com:19302"], username: nil, credential: nil),
             WebRTCIceServerPayload(urls: ["stun:stun1.l.google.com:19302"], username: nil, credential: nil),
         ]
-        return servers.map { server in
-            LKRTCIceServer(
-                urlStrings: server.urls,
-                username: server.username,
-                credential: server.credential
-            )
+        return servers.flatMap { server in
+            server.urls.map { url in
+                LKRTCIceServer(
+                    urlStrings: [url],
+                    username: server.username,
+                    credential: server.credential
+                )
+            }
         }
+    }
+
+    private func hasCredentialedTurnServer(_ payload: [WebRTCIceServerPayload]?) -> Bool {
+        (payload ?? []).contains { server in
+            guard
+                let username = server.username, !username.isEmpty,
+                let credential = server.credential, !credential.isEmpty
+            else {
+                return false
+            }
+            return server.urls.contains { $0.lowercased().hasPrefix("turn:") || $0.lowercased().hasPrefix("turns:") }
+        }
+    }
+
+    private func iceServerSummary(_ payload: [WebRTCIceServerPayload]?) -> String {
+        let servers = payload ?? []
+        let stunUrls = servers.flatMap { server in
+            server.urls.filter { $0.lowercased().hasPrefix("stun:") }
+        }.count
+        let turnUrls = servers.flatMap { server in
+            server.urls.filter { $0.lowercased().hasPrefix("turn:") || $0.lowercased().hasPrefix("turns:") }
+        }.count
+        let credentialedTurnServers = servers.filter { server in
+            let hasCredentials = !(server.username ?? "").isEmpty && !(server.credential ?? "").isEmpty
+            return hasCredentials && server.urls.contains {
+                $0.lowercased().hasPrefix("turn:") || $0.lowercased().hasPrefix("turns:")
+            }
+        }.count
+        return "servers=\(servers.count) stunUrls=\(stunUrls) turnUrls=\(turnUrls) credentialedTurnServers=\(credentialedTurnServers)"
+    }
+
+    private func iceCandidateCounts(in sdp: String) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for line in sdp.split(separator: "\n") {
+            guard line.hasPrefix("a=candidate:") else { continue }
+            let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            if let typeIndex = parts.firstIndex(of: "typ"), parts.indices.contains(parts.index(after: typeIndex)) {
+                counts[String(parts[parts.index(after: typeIndex)]), default: 0] += 1
+            } else {
+                counts["unknown", default: 0] += 1
+            }
+        }
+        return counts
     }
 
     private func applyVideoCodecPreference(_ codec: String?, to transceiver: LKRTCRtpTransceiver) {
@@ -229,14 +284,32 @@ private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate
         print("[webrtc] ICE connection state: \(newState.rawValue)")
     }
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didChange newState: LKRTCIceGatheringState) {
+        print("[webrtc] ICE gathering state: \(newState.rawValue)")
         if newState == .complete {
             let completion = onIceGatheringComplete
             onIceGatheringComplete = nil
             completion?()
         }
     }
-    func peerConnection(_ peerConnection: LKRTCPeerConnection, didGenerate candidate: LKRTCIceCandidate) {}
+    func peerConnection(_ peerConnection: LKRTCPeerConnection, didGenerate candidate: LKRTCIceCandidate) {
+        print("[webrtc] ICE candidate gathered: \(candidateSummary(candidate))")
+    }
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didRemove candidates: [LKRTCIceCandidate]) {}
+    func peerConnection(
+        _ peerConnection: LKRTCPeerConnection,
+        didChangeLocalCandidate local: LKRTCIceCandidate,
+        remoteCandidate remote: LKRTCIceCandidate,
+        lastReceivedMs: Int32,
+        changeReason: String
+    ) {
+        print("[webrtc] ICE selected pair: local=\(candidateSummary(local)) remote=\(candidateSummary(remote)) reason=\(changeReason) lastReceivedMs=\(lastReceivedMs)")
+    }
+    func peerConnection(
+        _ peerConnection: LKRTCPeerConnection,
+        didFailToGatherIceCandidate event: LKRTCIceCandidateErrorEvent
+    ) {
+        print("[webrtc] ICE candidate error: url=\(event.url) code=\(event.errorCode) text=\(event.errorText)")
+    }
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didOpen dataChannel: LKRTCDataChannel) {
         print("[webrtc] viewer opened data channel: \(dataChannel.label)")
         dataChannel.delegate = self
@@ -246,5 +319,20 @@ private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate
 
     func dataChannel(_ dataChannel: LKRTCDataChannel, didReceiveMessageWith buffer: LKRTCDataBuffer) {
         onInput(buffer.data)
+    }
+
+    private func candidateSummary(_ candidate: LKRTCIceCandidate) -> String {
+        let parts = candidate.sdp.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        let protocolName = parts.indices.contains(2) ? String(parts[2]).lowercased() : "?"
+        let address = parts.indices.contains(4) ? String(parts[4]) : "?"
+        let port = parts.indices.contains(5) ? String(parts[5]) : "?"
+        let type: String
+        if let typeIndex = parts.firstIndex(of: "typ"), parts.indices.contains(parts.index(after: typeIndex)) {
+            type = String(parts[parts.index(after: typeIndex)])
+        } else {
+            type = "unknown"
+        }
+        let server = candidate.serverUrl?.isEmpty == false ? " server=\(candidate.serverUrl!)" : ""
+        return "type=\(type) protocol=\(protocolName) address=\(address) port=\(port)\(server)"
     }
 }

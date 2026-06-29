@@ -13,6 +13,13 @@ import { findBootedDevice, resolveDevice } from "./device";
 import { permissions } from "./permissions";
 import { uiSettings } from "./ui-settings";
 import { debugCli, debugHelper, debugState } from "./debug";
+import {
+  randomTunnelLabel,
+  startTunnel,
+  type Tunnel,
+  type TunnelProtocol,
+  type TunnelProvider,
+} from "./tunnel";
 
 // `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
 // CLI works under plain `node` too.
@@ -38,6 +45,20 @@ function resolveVersion(): string {
 // and we extract the bytes to a cached location on first use.
 
 type ServerState = ServeSimDeviceState;
+
+const liveTunnels = new Set<Tunnel>();
+function trackTunnel(tunnel: Tunnel): Tunnel {
+  liveTunnels.add(tunnel);
+  return tunnel;
+}
+
+function shutdownTunnels(): void {
+  for (const tunnel of liveTunnels) {
+    try { tunnel.stop(); } catch {}
+  }
+  liveTunnels.clear();
+}
+process.on("exit", shutdownTunnels);
 
 function ensureStateDir() {
   if (!existsSync(STATE_DIR)) {
@@ -1582,6 +1603,12 @@ async function serve(
   portExplicit: boolean,
   host: string,
   codec: string | undefined,
+  options: {
+    tunnel?: boolean;
+    tunnelProvider?: TunnelProvider;
+    tunnelProtocol?: TunnelProtocol;
+    tunnelDomain?: string;
+  } = {},
 ) {
   // Boot the target simulators; the preview server streams them in-process
   // (no spawned helper). Sessions are created lazily on the first stream request.
@@ -1590,7 +1617,7 @@ async function serve(
     console.log("Starting simulator stream...");
   }
   for (const udid of targetDevices) await ensureBooted(udid);
-  const targetDevice = targetDevices[0];
+  const targetDevice = targetDevices[0]!;
 
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
@@ -1627,6 +1654,23 @@ async function serve(
     process.exit(1);
   }
 
+  let previewTunnel: Tunnel | undefined;
+  if (options.tunnel) {
+    try {
+      previewTunnel = trackTunnel(await startTunnel(boundPort, {
+        provider: options.tunnelProvider,
+        protocol: options.tunnelProtocol,
+        domain: options.tunnelDomain,
+        label: options.tunnelDomain
+          ? randomTunnelLabel(`sim-${targetDevice.replace(/-/g, "").slice(0, 8)}`)
+          : undefined,
+      }));
+    } catch (err) {
+      console.error(`Tunnel failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  }
+
   // Record in-process state so the preview/grid enumerate these devices and the
   // CLI input subcommands can reach the same-origin /helper ws.
   for (const udid of targetDevices) {
@@ -1643,6 +1687,7 @@ async function serve(
   const networkIP = getLocalNetworkIP();
   console.log("");
   console.log(`  - Local:   http://localhost:${boundPort}`);
+  if (previewTunnel) console.log(`  - Tunnel:  ${previewTunnel.url}`);
   if (exposedToLan && networkIP) {
     console.log(`  - Network: http://${networkIP}:${boundPort}`);
   } else if (networkIP) {
@@ -1684,6 +1729,10 @@ program
   .option("--detach", "Spawn helper and exit (daemon mode)")
   .option("-q, --quiet", "Suppress human-readable output, JSON only")
   .option("--no-preview", "Skip the web preview server; stream in foreground only")
+  .option("--tunnel", "Open a public tunnel for the preview port")
+  .option("--tunnel-provider <cloudflare|ngrok>", "Tunnel provider", "cloudflare")
+  .option("--tunnel-protocol <auto|quic|http2>", "cloudflared edge protocol (Cloudflare only)", "auto")
+  .option("--tunnel-domain <domain>", "ngrok reserved wildcard domain base, e.g. expo-simulator.ngrok.dev")
   .option(
     "--codec <codec>",
     "Stream codec for the preview UI: 'auto' (H.264 when the browser can decode " +
@@ -1708,6 +1757,9 @@ Examples:
   serve-sim --codec mjpeg                Force MJPEG (e.g. on VMs without H.264 encode)
   serve-sim --no-preview                 Auto-detect booted sim, stream in foreground
   serve-sim --no-preview "iPhone 16 Pro" Stream a specific device (no preview)
+  serve-sim --tunnel                     Expose the preview with Cloudflare Tunnel
+  serve-sim --tunnel --tunnel-provider ngrok
+                                         Expose the preview with ngrok
   serve-sim --detach                     Start streaming in background (daemon)
   serve-sim --list                       Show all running streams
   serve-sim --kill                       Stop all streams`,
@@ -1721,14 +1773,28 @@ Examples:
       killStreams(typeof opts.kill === "string" ? opts.kill : undefined);
       return;
     }
+    if (opts.tunnelProvider !== "cloudflare" && opts.tunnelProvider !== "ngrok") {
+      console.error("--tunnel-provider must be one of: cloudflare, ngrok.");
+      process.exit(1);
+    }
+    if (opts.tunnelProtocol !== "auto" && opts.tunnelProtocol !== "quic" && opts.tunnelProtocol !== "http2") {
+      console.error("--tunnel-protocol must be one of: auto, quic, http2.");
+      process.exit(1);
+    }
     const startPort: number | undefined = opts.port;
+    const tunnelProtocol = opts.tunnelProtocol === "auto" ? undefined : opts.tunnelProtocol as TunnelProtocol;
     if (opts.detach) {
       const states = await detach(devices, startPort ?? 3100);
       printStatesJSON(states);
     } else if (opts.preview === false) {
       await follow(devices, startPort ?? 3100, !!opts.quiet);
     } else {
-      await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, opts.codec);
+      await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, opts.codec, {
+        tunnel: opts.tunnel,
+        tunnelProvider: opts.tunnelProvider,
+        tunnelProtocol,
+        tunnelDomain: opts.tunnelDomain,
+      });
     }
   });
 

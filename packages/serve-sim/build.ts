@@ -23,6 +23,7 @@ import tailwindPlugin from "bun-plugin-tailwind";
 
 const root = import.meta.dir;
 const distDir = resolve(root, "dist");
+const bunExe = process.execPath;
 rmSync(distDir, { recursive: true, force: true });
 mkdirSync(distDir, { recursive: true });
 
@@ -121,13 +122,37 @@ const PREVIEW_DEFINE = {
 // the installed package (a real dependency), and under Bun the module
 // specifier is substituted with Bun's native implementation — inlining the
 // Node implementation would break WebSocket upgrades on Bun.
+//
+// `@ngrok/ngrok` must also stay external because its package chooses a native
+// sidecar at install time. Bundling it into dist/serve-sim.js breaks `npx`
+// installs by separating the JS wrapper from its platform .node file.
+const nodeExternals = [
+  "fs",
+  "path",
+  "os",
+  "child_process",
+  "url",
+  "net",
+  "tls",
+  "crypto",
+  "stream",
+  "events",
+  "http",
+  "https",
+  "zlib",
+  "buffer",
+  "module",
+  "ws",
+  "@ngrok/ngrok",
+];
+
 const mwResult = await Bun.build({
   entrypoints: [resolve(root, "src/middleware.ts")],
   target: "node",
   format: "esm",
   minify: true,
   outdir: distDir,
-  external: ["fs", "path", "os", "child_process", "url", "net", "tls", "crypto", "stream", "events", "http", "https", "zlib", "buffer", "module", "ws"],
+  external: nodeExternals,
   define: PREVIEW_DEFINE,
 });
 if (!mwResult.success) {
@@ -153,7 +178,7 @@ const binJsResult = await Bun.build({
   minify: true,
   outdir: distDir,
   naming: "serve-sim.js",
-  external: ["fs", "path", "os", "child_process", "url", "net", "tls", "crypto", "stream", "events", "http", "https", "zlib", "buffer", "module", "ws"],
+  external: nodeExternals,
   define: PREVIEW_DEFINE,
 });
 if (!binJsResult.success) {
@@ -170,7 +195,7 @@ console.log(`dist/serve-sim.js   ${kb(binJsSize)}`);
 // the base64 HTML (~100 KB) which is well under the macOS ARG_MAX.
 
 const compile = spawnSync(
-  "bun",
+  bunExe,
   [
     "build",
     "--compile",
@@ -183,6 +208,7 @@ const compile = spawnSync(
     // native implementation — bundling the Node implementation breaks
     // upgrades (raw handshake writes never flush under Bun's node:http).
     "--external", "ws",
+    "--external", "@ngrok/ngrok",
   ],
   { stdio: "inherit" },
 );

@@ -25,6 +25,11 @@ import {
   type NativeFrame,
 } from "./native";
 import { debugStream } from "./debug";
+import {
+  mergeStreamSettings,
+  normalizeStreamSettings,
+  type ServeSimStreamSettings,
+} from "./state";
 
 /**
  * Minimal WebSocket surface the HID input channel needs. Satisfied by both the
@@ -41,7 +46,7 @@ export interface HidSocket {
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
@@ -98,11 +103,12 @@ const ORIENTATION_BY_NAME: Record<string, number> = {
   landscape_right: Orientation.landscapeRight,
 };
 
-export type DeviceSessionOptions = NativeCaptureOptions;
+export type DeviceSessionOptions = NativeCaptureOptions & Partial<ServeSimStreamSettings>;
 
 export class DeviceSession {
   private readonly capture: NativeCapture;
   private readonly hid: NativeHid;
+  private settings: ServeSimStreamSettings;
   private started = false;
 
   private width = 0;
@@ -121,12 +127,13 @@ export class DeviceSession {
     public readonly udid: string,
     options: DeviceSessionOptions = {},
   ) {
+    this.settings = normalizeStreamSettings(options);
     this.hid = new NativeHid(udid);
     this.capture = new NativeCapture(
       udid,
       (f) => this.onFrame(f),
       (data) => this.handleHidMessage(data),
-      options,
+      this.settings,
     );
   }
 
@@ -271,6 +278,62 @@ export class DeviceSession {
 
   handleHealth(_req: IncomingMessage, res: ServerResponse): void {
     this.sendJson(res, 200, { status: "ok" });
+  }
+
+  async handleStreamSettings(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, CORS);
+      res.end();
+      return;
+    }
+    if (req.method === "GET" || req.method === "HEAD") {
+      this.sendJson(res, 200, this.streamSettings());
+      return;
+    }
+    if (req.method !== "PATCH" && req.method !== "POST") {
+      this.sendJson(res, 405, { error: "method_not_allowed" });
+      return;
+    }
+    try {
+      const body = await readRequestBody(req);
+      const patch = body.length > 0 ? JSON.parse(body.toString("utf8")) : {};
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+        this.sendJson(res, 400, { error: "invalid_stream_settings" });
+        return;
+      }
+      this.sendJson(res, 200, this.updateStreamSettings(patch as Partial<ServeSimStreamSettings>));
+    } catch (err) {
+      this.sendJson(res, 400, {
+        error: "invalid_stream_settings",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  streamSettings(): ServeSimStreamSettings {
+    return { ...this.settings };
+  }
+
+  private updateStreamSettings(patch: Partial<ServeSimStreamSettings>): ServeSimStreamSettings {
+    const previous = this.settings;
+    const next = mergeStreamSettings(previous, patch);
+    this.settings = next;
+    const nativeSettingsChanged =
+      previous.streamFps !== next.streamFps ||
+      previous.streamQuality !== next.streamQuality ||
+      previous.streamMaxDimension !== next.streamMaxDimension ||
+      previous.h264MaxFps !== next.h264MaxFps ||
+      previous.h264Bitrate !== next.h264Bitrate;
+    if (nativeSettingsChanged) this.capture.updateStreamSettings(next);
+    if (
+      previous.streamMaxDimension !== next.streamMaxDimension ||
+      previous.h264MaxFps !== next.h264MaxFps ||
+      previous.h264Bitrate !== next.h264Bitrate
+    ) {
+      this.cachedAvccDescription = null;
+      this.capture.requestKeyframe();
+    }
+    return this.streamSettings();
   }
 
   async handleWebRTCOffer(req: IncomingMessage, res: ServerResponse): Promise<void> {

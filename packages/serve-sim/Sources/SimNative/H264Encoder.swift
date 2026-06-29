@@ -28,7 +28,7 @@ final class H264Encoder {
     private var pool: CVPixelBufferPool?
     private var width: Int32 = 0
     private var height: Int32 = 0
-    private let fps: Int32
+    private var fps: Int32
     private var bitrate: Int
     private let stateQueue = DispatchQueue(label: "H264Encoder.state")
     private var emittedDescription = false
@@ -39,8 +39,8 @@ final class H264Encoder {
     private var retiredSessions: [VTCompressionSession] = []
 
     init(fps: Int = 60, bitrate: Int = 6_000_000) {
-        self.fps = Int32(fps)
-        self.bitrate = bitrate
+        self.fps = Int32(max(1, fps))
+        self.bitrate = max(1, bitrate)
     }
 
     deinit {
@@ -130,6 +130,28 @@ final class H264Encoder {
 
     func handleEncodeTimeout() {
         fallbackFromLowLatency(reason: "encode timeout")
+    }
+
+    func update(fps nextFps: Int, bitrate nextBitrate: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let normalizedFps = Int32(max(1, nextFps))
+        let normalizedBitrate = max(1, nextBitrate)
+        guard fps != normalizedFps || bitrate != normalizedBitrate else { return }
+        fps = normalizedFps
+        bitrate = normalizedBitrate
+        forceKeyframeAfterReset = true
+        frameCount = 0
+        if let session {
+            retiredSessions.append(session)
+            self.session = nil
+        }
+        pool = nil
+        stateQueue.sync {
+            emittedDescription = false
+            encodedCount = 0
+        }
+        streamLog("[stream:h264] settings updated fps=\(fps) bitrate=\(bitrate)")
     }
 
     func stop() {

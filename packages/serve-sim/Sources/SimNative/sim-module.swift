@@ -106,7 +106,8 @@ private func u32(_ v: Int) -> UInt32 {
         _ mjpegFps: Int,
         _ mjpegQuality: Double,
         _ h264Fps: Int,
-        _ h264Bitrate: Int
+        _ h264Bitrate: Int,
+        _ maxDimension: Int
     ) throws {
         // unref'd by NodeAsyncQueue's init, so the frame pipeline alone won't
         // keep the event loop alive. Bounded queue + blocking AVCC preserves
@@ -124,7 +125,8 @@ private func u32(_ v: Int) -> UInt32 {
             mjpegFps: mjpegFps,
             mjpegQuality: mjpegQuality,
             h264Fps: h264Fps,
-            h264Bitrate: h264Bitrate
+            h264Bitrate: h264Bitrate,
+            maxDimension: maxDimension
         ), onFrame: { codec, data, w, h, flags in
             // Runs on a native encode thread. AVCC is inter-frame H.264 — dropping
             // a delta corrupts the decoder until the next IDR — so deliver it
@@ -156,6 +158,22 @@ private func u32(_ v: Int) -> UInt32 {
 
     @NodeMethod func requestKeyframe() {
         engine.requestKeyframe()
+    }
+
+    @NodeMethod func updateStreamSettings(
+        _ mjpegFps: Int,
+        _ mjpegQuality: Double,
+        _ h264Fps: Int,
+        _ h264Bitrate: Int,
+        _ maxDimension: Int
+    ) {
+        engine.updateSettings(
+            mjpegFps: mjpegFps,
+            mjpegQuality: mjpegQuality,
+            h264Fps: h264Fps,
+            h264Bitrate: h264Bitrate,
+            maxDimension: maxDimension
+        )
     }
 
     @NodeMethod func handleWebRTCOffer(_ offerJson: String) throws -> String {

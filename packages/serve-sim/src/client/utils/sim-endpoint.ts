@@ -11,6 +11,7 @@ declare global {
       axEndpoint?: string;
       appStateEndpoint?: string;
       devtoolsEndpoint?: string;
+      streamSettingsEndpoint?: string;
       gridApiEndpoint?: string;
       gridStartEndpoint?: string;
       gridShutdownEndpoint?: string;
@@ -30,6 +31,11 @@ declare global {
        * future values like `"hevc"`/`"av1"`.
        */
       codec?: "auto" | "mjpeg" | "h264";
+      streamFps?: number;
+      streamQuality?: number;
+      streamMaxDimension?: number;
+      h264Bitrate?: number;
+      h264MaxFps?: number;
       webrtcCodec?: "vp8" | "vp9" | "h264";
       webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
       /**

@@ -48,7 +48,15 @@ type ServerState = ServeSimDeviceState;
 
 type StreamRuntimeOptions = Pick<
   ServeSimDeviceState,
-  "transport" | "codec" | "h264Bitrate" | "h264MaxFps" | "webrtcCodec" | "webrtcIceServers"
+  | "transport"
+  | "codec"
+  | "streamFps"
+  | "streamQuality"
+  | "streamMaxDimension"
+  | "h264Bitrate"
+  | "h264MaxFps"
+  | "webrtcCodec"
+  | "webrtcIceServers"
 >;
 type WebRTCIceServer = NonNullable<ServeSimDeviceState["webrtcIceServers"]>[number];
 
@@ -56,6 +64,14 @@ function parsePositiveIntOption(value: string, flag: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new InvalidArgumentError(`${flag} must be a positive integer.`);
+  }
+  return parsed;
+}
+
+function parseQualityOption(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new InvalidArgumentError("--stream-quality must be a number between 0 and 1.");
   }
   return parsed;
 }
@@ -1640,6 +1656,9 @@ async function serve(
     basePath: "/",
     device: targetDevice,
     codec: options.stream?.codec,
+    streamFps: options.stream?.streamFps,
+    streamQuality: options.stream?.streamQuality,
+    streamMaxDimension: options.stream?.streamMaxDimension,
     h264Bitrate: options.stream?.h264Bitrate,
     h264MaxFps: options.stream?.h264MaxFps,
     transport: options.stream?.transport,
@@ -1775,9 +1794,9 @@ program
   .option("--turn-url <url[,url...]>", "TURN URL(s) for WebRTC ICE")
   .option("--turn-username <username>", "TURN username")
   .option("--turn-credential <credential>", "TURN credential")
-  .option("--stream-fps <fps>", "Accepted for stream-control compatibility")
-  .option("--stream-quality <quality>", "Accepted for stream-control compatibility")
-  .option("--stream-max-dimension <px>", "Accepted for stream-control compatibility")
+  .option("--stream-fps <fps>", "MJPEG stream frame rate", (value) => parsePositiveIntOption(value, "--stream-fps"))
+  .option("--stream-quality <quality>", "MJPEG JPEG quality, from 0 to 1", parseQualityOption)
+  .option("--stream-max-dimension <px>", "Maximum encoded stream dimension", (value) => parsePositiveIntOption(value, "--stream-max-dimension"))
   .option("--h264-bitrate <bps>", "H.264 target bitrate", (value) => parsePositiveIntOption(value, "--h264-bitrate"))
   .option("--h264-max-fps <fps>", "H.264 max frame rate", (value) => parsePositiveIntOption(value, "--h264-max-fps"))
   .option("-l, --list [device]", "List running streams")
@@ -1839,6 +1858,9 @@ Examples:
     const stream: StreamRuntimeOptions = {
       transport,
       codec,
+      streamFps: opts.streamFps,
+      streamQuality: opts.streamQuality,
+      streamMaxDimension: opts.streamMaxDimension,
       h264Bitrate: opts.h264Bitrate,
       h264MaxFps: opts.h264MaxFps,
       webrtcCodec: transport === "webrtc" ? opts.webrtcCodec : undefined,

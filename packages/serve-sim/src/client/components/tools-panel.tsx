@@ -7,7 +7,7 @@ import { AxTreeTool } from "./ax-tree-tool";
 import { CameraTool } from "./camera-tool";
 import { PANEL_BACKGROUND } from "./panel-colors";
 import { SimulatorSettingsTool } from "./simulator-settings-tool";
-import { StreamSettingsTool, type CodecPreference } from "./stream-settings-tool";
+import { StreamSettingsTool, type StreamSettings } from "./stream-settings-tool";
 
 export function ToolsPanel({
   open,
@@ -17,10 +17,10 @@ export function ToolsPanel({
   currentApp,
   axOverlayEnabled,
   onToggleAxOverlay,
-  codecPreference,
-  onCodecPreferenceChange,
+  streamSettings,
+  onStreamSettingsChange,
   activeCodec,
-  avccSupported,
+  streamSettingsPending,
   width,
 }: {
   open: boolean;
@@ -30,10 +30,10 @@ export function ToolsPanel({
   currentApp: { bundleId: string; isReactNative: boolean; pid?: number } | null;
   axOverlayEnabled: boolean;
   onToggleAxOverlay: () => void;
-  codecPreference: CodecPreference;
-  onCodecPreferenceChange: (next: CodecPreference) => void;
-  activeCodec: "h264" | "mjpeg";
-  avccSupported: boolean;
+  streamSettings: StreamSettings;
+  onStreamSettingsChange: (patch: Partial<StreamSettings>) => void;
+  activeCodec: "webrtc" | "h264" | "mjpeg";
+  streamSettingsPending: boolean;
   width: number;
 }) {
   return (
@@ -55,10 +55,10 @@ export function ToolsPanel({
           <LocationEmulationTool udid={udid} exec={execOnHost} />
           <AppPermissionsTool udid={udid} bundleId={currentApp?.bundleId ?? null} />
           <StreamSettingsTool
-            preference={codecPreference}
-            onPreferenceChange={onCodecPreferenceChange}
+            settings={streamSettings}
+            onSettingsChange={onStreamSettingsChange}
             activeCodec={activeCodec}
-            avccSupported={avccSupported}
+            disabled={streamSettingsPending}
           />
         </div>
       )}

@@ -22,6 +22,10 @@ export interface ServeSimDeviceState {
   url: string;
   streamUrl: string;
   wsUrl: string;
+  transport?: "http" | "webrtc";
+  codec?: "auto" | "mjpeg" | "h264";
+  webrtcCodec?: "vp8" | "h264";
+  webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
 }
 
 /**
@@ -35,6 +39,7 @@ export function inProcessServeSimState(
   port: number,
   base = "/",
   host = "127.0.0.1",
+  stream?: Pick<ServeSimDeviceState, "transport" | "codec" | "webrtcCodec" | "webrtcIceServers">,
 ): ServeSimDeviceState {
   const h = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   // Normalize to a leading-slash, no-trailing-slash prefix so a base without a
@@ -48,6 +53,7 @@ export function inProcessServeSimState(
     url: `http://${h}:${port}`,
     streamUrl: `http://${h}:${port}${prefix}/helper/${udid}/stream.mjpeg`,
     wsUrl: `ws://${h}:${port}${prefix}/helper/${udid}/ws`,
+    ...stream,
   };
 }
 

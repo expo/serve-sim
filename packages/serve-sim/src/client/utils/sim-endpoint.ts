@@ -22,13 +22,16 @@ declare global {
       serveSimBin?: string;
       /** Bearer token required by the /exec shell-exec route. */
       execToken?: string;
+      transport?: "http" | "webrtc";
       /**
        * Server-pinned stream codec. `"mjpeg"` forces the software JPEG path
        * (for hosts whose hardware can't encode H.264); `"auto"`/undefined lets
        * the client pick H.264 when the browser can decode it. Reserved for
        * future values like `"hevc"`/`"av1"`.
        */
-      codec?: string;
+      codec?: "auto" | "mjpeg" | "h264";
+      webrtcCodec?: "vp8" | "h264";
+      webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
       /**
        * Set when the server routes helper stream/control + DevTools sockets
        * through its same-origin `/helper` and `/devtools` proxies. The browser
@@ -54,6 +57,10 @@ export function streamConfigFrom(
   return raw && typeof raw.device === "string" && typeof raw.url === "string"
     ? raw
     : null;
+}
+
+export function mjpegStreamUrlFrom(config: NonNullable<Window["__SIM_PREVIEW__"]>): string {
+  return `${config.url.replace(/\/+$/, "")}/stream.mjpeg`;
 }
 
 export function simEndpoint(path: string): string {

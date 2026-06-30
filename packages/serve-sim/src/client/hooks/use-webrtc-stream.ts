@@ -3,7 +3,7 @@ import {
   negotiatedWebRtcCodecFromSdp,
   type WebRtcCodec,
 } from "../webrtc-codec-fallback";
-import { webRtcIceTransportPolicy, type IceServer } from "../webrtc-ice";
+import { WEBRTC_ICE_TRANSPORT_POLICY, type IceServer } from "../webrtc-ice";
 
 export type DataChannelTarget = {
   readyState: number;
@@ -99,7 +99,7 @@ export function useWebRtcStream({
       try {
         pc = new RTCPeerConnection({
           iceServers: servers,
-          iceTransportPolicy: webRtcIceTransportPolicy(servers),
+          iceTransportPolicy: WEBRTC_ICE_TRANSPORT_POLICY,
         });
         dc = pc.createDataChannel("input");
         dataChannelRef.current = dc;

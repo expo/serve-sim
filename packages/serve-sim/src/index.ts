@@ -13,6 +13,7 @@ import { findBootedDevice, resolveDevice } from "./device";
 import { permissions } from "./permissions";
 import { uiSettings } from "./ui-settings";
 import { debugCli, debugHelper, debugState } from "./debug";
+import { streamRuntimeArgs } from "./stream-runtime-args";
 
 // `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
 // CLI works under plain `node` too.
@@ -342,7 +343,7 @@ async function waitForStateFile(udid: string, timeoutMs = 150_000): Promise<Serv
 async function startHelper(
   udid: string,
   port: number,
-  opts: { detach: boolean },
+  opts: { detach: boolean; stream?: StreamRuntimeOptions },
 ): Promise<{ pid: number; child?: ChildProcess }> {
   debugHelper("startHelper udid=%s port=%d detach=%s", udid, port, opts.detach);
 
@@ -353,7 +354,14 @@ async function startHelper(
 
   const logFile = join(STATE_DIR, `server-${udid}.log`);
   const logFd = openSync(logFile, "w");
-  const { command, args } = reExecArgs([udid, "--port", String(port), "--host", host]);
+  const { command, args } = reExecArgs([
+    udid,
+    "--port",
+    String(port),
+    "--host",
+    host,
+    ...streamRuntimeArgs(opts.stream),
+  ]);
   const child = nodeSpawn(command, args, {
     detached: opts.detach,
     stdio: ["ignore", logFd, logFd],
@@ -376,7 +384,12 @@ async function startHelper(
 // ─── Commands ───
 
 /** Foreground follow mode (default). Stays attached, cleans up on Ctrl+C. */
-async function follow(devices: string[], startPort: number, quiet: boolean) {
+async function follow(
+  devices: string[],
+  startPort: number,
+  quiet: boolean,
+  stream?: StreamRuntimeOptions,
+) {
   debugCli("follow devices=%o startPort=%d", devices, startPort);
   const udids = devices.length > 0
     ? devices.map(resolveDevice)
@@ -414,7 +427,7 @@ async function follow(devices: string[], startPort: number, quiet: boolean) {
     }
 
     port = await findAvailablePort(port);
-    const { child } = await startHelper(udid, port, { detach: false });
+    const { child } = await startHelper(udid, port, { detach: false, stream });
 
     if (child) {
       children.set(udid, child);
@@ -498,7 +511,11 @@ async function follow(devices: string[], startPort: number, quiet: boolean) {
 }
 
 /** Detach mode (--detach). Spawns helpers and returns their states. */
-async function detach(devices: string[], startPort: number): Promise<ServerState[]> {
+async function detach(
+  devices: string[],
+  startPort: number,
+  stream?: StreamRuntimeOptions,
+): Promise<ServerState[]> {
   debugCli("detach devices=%o startPort=%d", devices, startPort);
   const udids = devices.length > 0
     ? devices.map(resolveDevice)
@@ -524,7 +541,7 @@ async function detach(devices: string[], startPort: number): Promise<ServerState
     }
 
     port = await findAvailablePort(port);
-    await startHelper(udid, port, { detach: true });
+    await startHelper(udid, port, { detach: true, stream });
 
     // Reuse the detached server's own in-process state (same-origin /helper URLs).
     states.push(readState(udid) ?? inProcessServeSimState(udid, port, "/", "127.0.0.1"));
@@ -1774,10 +1791,10 @@ Examples:
     };
     const startPort: number | undefined = opts.port;
     if (opts.detach) {
-      const states = await detach(devices, startPort ?? 3100);
+      const states = await detach(devices, startPort ?? 3100, stream);
       printStatesJSON(states);
     } else if (opts.preview === false) {
-      await follow(devices, startPort ?? 3100, !!opts.quiet);
+      await follow(devices, startPort ?? 3100, !!opts.quiet, stream);
     } else {
       await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, {
         stream,

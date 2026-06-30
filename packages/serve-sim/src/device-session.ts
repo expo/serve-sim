@@ -8,7 +8,6 @@
  *   /ws            binary HID input protocol ([tag][JSON]) → NativeHid
  *   /config        { width, height, orientation }
  *   /health        { status: "ok" }
- *   /stream-stats  native producer/copy/WebRTC diagnostics
  *   /ax            axe-shaped accessibility JSON (one-shot)
  *   /foreground    { bundleId, pid }
  *
@@ -22,15 +21,8 @@ import {
   Orientation,
   axDescribeAsync,
   axFrontmostAsync,
-  type NativeCaptureOptions,
   type NativeFrame,
 } from "./native";
-import { debugStream } from "./debug";
-import {
-  mergeStreamSettings,
-  normalizeStreamSettings,
-  type ServeSimStreamSettings,
-} from "./state";
 
 /**
  * Minimal WebSocket surface the HID input channel needs. Satisfied by both the
@@ -65,21 +57,6 @@ const WS_MSG_CONFIG = 0x82;
 const MJPEG_TRAILER = Buffer.from("\r\n", "ascii");
 const STREAM_DEBUG_ENV = process.env.SERVE_SIM_DEBUG_STREAM != null || process.env.SERVE_SIM_DEBUG_AVCC != null;
 
-interface StreamStatsSample {
-  atMs: number;
-  captureFrames: number;
-  copyFrames: number;
-  scaleFrames: number;
-  scaleBackpressureSkips: number;
-  mjpegReserved: number;
-  webrtcReserved: number;
-  webrtcDirect: number;
-  webrtcSentFrames: number;
-  webrtcDirectInputFrames: number;
-  webrtcQueuedInputFrames: number;
-  webrtcRtpFramesSent: number;
-}
-
 interface AvccClientState {
   awaitingKeyframe: boolean;
   hasDescription: boolean;
@@ -87,7 +64,6 @@ interface AvccClientState {
 
 function streamLog(message: string): void {
   if (STREAM_DEBUG_ENV) console.error(message);
-  else debugStream(message);
 }
 
 function shouldLogStream(count: number): boolean {
@@ -104,50 +80,6 @@ function avccSeed(jpeg: Buffer): Buffer {
   out[4] = AVCC_SEED_TAG;
   jpeg.copy(out, 5);
   return out;
-}
-
-function numberAt(value: unknown, path: readonly string[]): number {
-  let current: unknown = value;
-  for (const key of path) {
-    if (!current || typeof current !== "object") return 0;
-    current = (current as Record<string, unknown>)[key];
-  }
-  return typeof current === "number" && Number.isFinite(current) ? current : 0;
-}
-
-function firstReportNumberAt(value: unknown, path: readonly string[], field: string): number {
-  let current: unknown = value;
-  for (const key of path) {
-    if (!current || typeof current !== "object") return 0;
-    current = (current as Record<string, unknown>)[key];
-  }
-  if (!Array.isArray(current)) return 0;
-  for (const item of current) {
-    const n = numberAt(item, [field]);
-    if (n > 0) return n;
-  }
-  return 0;
-}
-
-function streamStatsSample(native: unknown): StreamStatsSample {
-  return {
-    atMs: Date.now(),
-    captureFrames: numberAt(native, ["capture", "frames"]),
-    copyFrames: numberAt(native, ["copy", "frames"]),
-    scaleFrames: numberAt(native, ["scale", "frames"]),
-    scaleBackpressureSkips: numberAt(native, ["scale", "backpressureSkips"]),
-    mjpegReserved: numberAt(native, ["mjpeg", "reserved"]),
-    webrtcReserved: numberAt(native, ["webrtc", "reserved"]),
-    webrtcDirect: numberAt(native, ["webrtc", "direct"]),
-    webrtcSentFrames: numberAt(native, ["webrtc", "publisher", "sentFrames"]),
-    webrtcDirectInputFrames: numberAt(native, ["webrtc", "publisher", "directInputFrames"]),
-    webrtcQueuedInputFrames: numberAt(native, ["webrtc", "publisher", "queuedInputFrames"]),
-    webrtcRtpFramesSent: firstReportNumberAt(native, ["webrtc", "publisher", "outboundRtp", "reports"], "framesSent"),
-  };
-}
-
-function perSecond(next: number, previous: number, elapsedSeconds: number): number {
-  return elapsedSeconds > 0 ? Math.max(0, next - previous) / elapsedSeconds : 0;
 }
 
 function readRequestBody(req: IncomingMessage): Promise<Buffer> {
@@ -168,12 +100,11 @@ const ORIENTATION_BY_NAME: Record<string, number> = {
   landscape_right: Orientation.landscapeRight,
 };
 
-export type DeviceSessionOptions = NativeCaptureOptions & Partial<ServeSimStreamSettings>;
+export type DeviceSessionOptions = Record<string, never>;
 
 export class DeviceSession {
   private readonly capture: NativeCapture;
   private readonly hid: NativeHid;
-  private settings: ServeSimStreamSettings;
   private started = false;
 
   private width = 0;
@@ -187,19 +118,16 @@ export class DeviceSession {
   private readonly hidSockets = new Set<HidSocket>();
   private avccChunks = 0;
   private avccWrites = 0;
-  private lastStreamStatsSample: StreamStatsSample | null = null;
 
   constructor(
     public readonly udid: string,
-    options: DeviceSessionOptions = {},
+    _options: DeviceSessionOptions = {},
   ) {
-    this.settings = normalizeStreamSettings(options);
     this.hid = new NativeHid(udid);
     this.capture = new NativeCapture(
       udid,
       (f) => this.onFrame(f),
       (data) => this.handleHidMessage(data),
-      this.settings,
     );
   }
 
@@ -218,7 +146,6 @@ export class DeviceSession {
     this.mjpegClients.clear();
     this.avccClients.clear();
     this.hidSockets.clear();
-    this.capture.setMjpegActive(false);
     this.capture.stop();
   }
 
@@ -245,7 +172,7 @@ export class DeviceSession {
         }
         this.writeMjpegFrame(res, header, f.data);
       }
-      if (dropped) this.syncMjpegActive();
+      if (dropped) streamLog(`[stream:mjpeg] dropped ended clients; clients=${this.mjpegClients.size}`);
     } else {
       if (f.isDescription) this.cachedAvccDescription = f.data;
       this.avccChunks += 1;
@@ -329,14 +256,12 @@ export class DeviceSession {
       ...CORS,
     });
     this.mjpegClients.add(res);
-    this.syncMjpegActive();
     if (this.latestJpeg) this.writeMjpegFrame(res, mjpegHeader(this.latestJpeg.length), this.latestJpeg); // paint immediately
     let dropped = false;
     const drop = () => {
       if (dropped) return;
       dropped = true;
       this.mjpegClients.delete(res);
-      this.syncMjpegActive();
     };
     res.on("close", drop);
     res.on("error", drop);
@@ -385,78 +310,6 @@ export class DeviceSession {
 
   handleHealth(_req: IncomingMessage, res: ServerResponse): void {
     this.sendJson(res, 200, { status: "ok" });
-  }
-
-  handleStreamStats(_req: IncomingMessage, res: ServerResponse): void {
-    const native = this.capture.streamStats();
-    this.sendJson(res, 200, {
-      settings: this.streamSettings(),
-      clients: {
-        mjpeg: this.mjpegClients.size,
-        avcc: this.avccClients.size,
-        hid: this.hidSockets.size,
-      },
-      latestJpegBytes: this.latestJpeg?.length ?? 0,
-      config: this.screenConfig(),
-      recent: this.recentStreamStats(native),
-      native,
-    });
-  }
-
-  async handleStreamSettings(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (req.method === "OPTIONS") {
-      res.writeHead(204, CORS);
-      res.end();
-      return;
-    }
-    if (req.method === "GET" || req.method === "HEAD") {
-      this.sendJson(res, 200, this.streamSettings());
-      return;
-    }
-    if (req.method !== "PATCH" && req.method !== "POST") {
-      this.sendJson(res, 405, { error: "method_not_allowed" });
-      return;
-    }
-    try {
-      const body = await readRequestBody(req);
-      const patch = body.length > 0 ? JSON.parse(body.toString("utf8")) : {};
-      if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
-        this.sendJson(res, 400, { error: "invalid_stream_settings" });
-        return;
-      }
-      this.sendJson(res, 200, this.updateStreamSettings(patch as Partial<ServeSimStreamSettings>));
-    } catch (err) {
-      this.sendJson(res, 400, {
-        error: "invalid_stream_settings",
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  streamSettings(): ServeSimStreamSettings {
-    return { ...this.settings };
-  }
-
-  private updateStreamSettings(patch: Partial<ServeSimStreamSettings>): ServeSimStreamSettings {
-    const previous = this.settings;
-    const next = mergeStreamSettings(previous, patch);
-    this.settings = next;
-    const nativeSettingsChanged =
-      previous.streamFps !== next.streamFps ||
-      previous.streamQuality !== next.streamQuality ||
-      previous.streamMaxDimension !== next.streamMaxDimension ||
-      previous.h264MaxFps !== next.h264MaxFps ||
-      previous.h264Bitrate !== next.h264Bitrate;
-    if (nativeSettingsChanged) this.capture.updateStreamSettings(next);
-    if (
-      previous.streamMaxDimension !== next.streamMaxDimension ||
-      previous.h264MaxFps !== next.h264MaxFps ||
-      previous.h264Bitrate !== next.h264Bitrate
-    ) {
-      this.cachedAvccDescription = null;
-      this.capture.requestKeyframe();
-    }
-    return this.streamSettings();
   }
 
   async handleWebRTCOffer(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -603,34 +456,8 @@ export class DeviceSession {
     return true;
   }
 
-  private syncMjpegActive(): void {
-    this.capture.setMjpegActive(this.mjpegClients.size > 0);
-  }
-
   private syncAvccActive(): void {
     this.capture.setAvccActive(this.avccClients.size > 0);
-  }
-
-  private recentStreamStats(native: unknown): Record<string, number> | null {
-    const sample = streamStatsSample(native);
-    const previous = this.lastStreamStatsSample;
-    this.lastStreamStatsSample = sample;
-    if (!previous) return null;
-    const elapsedSeconds = (sample.atMs - previous.atMs) / 1000;
-    return {
-      elapsedMs: sample.atMs - previous.atMs,
-      captureFps: perSecond(sample.captureFrames, previous.captureFrames, elapsedSeconds),
-      copyFps: perSecond(sample.copyFrames, previous.copyFrames, elapsedSeconds),
-      scaleFps: perSecond(sample.scaleFrames, previous.scaleFrames, elapsedSeconds),
-      scaleBackpressureSkips: sample.scaleBackpressureSkips - previous.scaleBackpressureSkips,
-      mjpegReservedFps: perSecond(sample.mjpegReserved, previous.mjpegReserved, elapsedSeconds),
-      webrtcReservedFps: perSecond(sample.webrtcReserved, previous.webrtcReserved, elapsedSeconds),
-      webrtcDirectFps: perSecond(sample.webrtcDirect, previous.webrtcDirect, elapsedSeconds),
-      webrtcSentFps: perSecond(sample.webrtcSentFrames, previous.webrtcSentFrames, elapsedSeconds),
-      webrtcDirectInputFps: perSecond(sample.webrtcDirectInputFrames, previous.webrtcDirectInputFrames, elapsedSeconds),
-      webrtcQueuedInputFps: perSecond(sample.webrtcQueuedInputFrames, previous.webrtcQueuedInputFrames, elapsedSeconds),
-      webrtcRtpSentFps: perSecond(sample.webrtcRtpFramesSent, previous.webrtcRtpFramesSent, elapsedSeconds),
-    };
   }
 
   private configFrame(): Buffer | null {

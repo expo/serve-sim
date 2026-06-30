@@ -28,15 +28,15 @@ final class H264Encoder {
     private var pool: CVPixelBufferPool?
     private var width: Int32 = 0
     private var height: Int32 = 0
-    private let fps: Int32
+    private var fps: Int32
     private var bitrate: Int
     private let stateQueue = DispatchQueue(label: "H264Encoder.state")
     private var emittedDescription = false
     private var frameCount: Int64 = 0
 
     init(fps: Int = 60, bitrate: Int = 6_000_000) {
-        self.fps = Int32(fps)
-        self.bitrate = bitrate
+        self.fps = Int32(max(1, fps))
+        self.bitrate = max(1, bitrate)
     }
 
     deinit {
@@ -80,6 +80,25 @@ final class H264Encoder {
         }
         if status != noErr {
             completion?()
+        }
+    }
+
+    func update(fps nextFps: Int, bitrate nextBitrate: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let normalizedFps = Int32(max(1, nextFps))
+        let normalizedBitrate = max(1, nextBitrate)
+        guard fps != normalizedFps || bitrate != normalizedBitrate else { return }
+        fps = normalizedFps
+        bitrate = normalizedBitrate
+        if let session {
+            VTCompressionSessionInvalidate(session)
+            self.session = nil
+        }
+        pool = nil
+        frameCount = 0
+        stateQueue.sync {
+            emittedDescription = false
         }
     }
 

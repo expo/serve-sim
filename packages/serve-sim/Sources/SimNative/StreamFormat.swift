@@ -1,5 +1,19 @@
 import Foundation
 
+private let streamDebugEnabled =
+    ProcessInfo.processInfo.environment["SERVE_SIM_DEBUG_STREAM"] != nil ||
+    ProcessInfo.processInfo.environment["SERVE_SIM_DEBUG_AVCC"] != nil
+
+func streamLog(_ message: String) {
+    if streamDebugEnabled {
+        fputs(message + "\n", stderr)
+    }
+}
+
+func streamShouldLog(_ count: Int64) -> Bool {
+    count <= 5 || count % 120 == 0
+}
+
 /// Wire format a viewer can request for the screen stream.
 ///
 /// - `mjpeg`: stateless JPEG-per-frame inside a `multipart/x-mixed-replace`

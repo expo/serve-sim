@@ -1716,10 +1716,10 @@ program
   .option("--transport <http|webrtc>", "Stream transport", "http")
   .option(
     "--codec <codec>",
-    "Stream codec for the preview UI: 'auto', 'h264', 'mjpeg', or 'webrtc' as a compatibility alias for --transport webrtc.",
+    "Stream codec for the preview UI: 'auto', 'h264', or 'mjpeg'. Use --transport webrtc for WebRTC.",
     (value) => {
       const v = value.toLowerCase();
-      const allowed = ["auto", "h264", "mjpeg", "webrtc"];
+      const allowed = ["auto", "h264", "mjpeg"];
       if (!allowed.includes(v)) {
         throw new InvalidArgumentError(`Unsupported codec '${value}'. Supported: ${allowed.join(", ")}.`);
       }
@@ -1776,12 +1776,10 @@ Examples:
         credential: opts.turnCredential,
       });
     }
-    const transport = opts.codec === "webrtc" ? "webrtc" : opts.transport;
-    const codec = opts.codec === "webrtc" ? "h264" : opts.codec;
     const stream: StreamRuntimeOptions = {
-      transport,
-      codec,
-      webrtcCodec: transport === "webrtc" ? opts.webrtcCodec : undefined,
+      transport: opts.transport,
+      codec: opts.codec,
+      webrtcCodec: opts.transport === "webrtc" ? opts.webrtcCodec : undefined,
       webrtcIceServers: webrtcIceServers.length ? webrtcIceServers : undefined,
     };
     const startPort: number | undefined = opts.port;

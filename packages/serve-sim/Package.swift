@@ -28,6 +28,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "node_modules/node-swift"),
+        .package(url: "https://github.com/livekit/webrtc-xcframework.git", exact: "144.7559.10"),
     ],
     targets: [
         .target(
@@ -35,6 +36,7 @@ let package = Package(
             dependencies: [
                 .product(name: "NodeAPI", package: "node-swift"),
                 .product(name: "NodeModuleSupport", package: "node-swift"),
+                .product(name: "LiveKitWebRTC", package: "webrtc-xcframework"),
             ],
             exclude: [
                 "build.sh",
@@ -43,7 +45,15 @@ let package = Package(
                 .unsafeFlags([
                     "-Xlinker", "-undefined",
                     "-Xlinker", "dynamic_lookup",
-                ])
+                ]),
+                .linkedFramework("CoreVideo"),
+                .linkedFramework("CoreMedia"),
+                .linkedFramework("IOSurface"),
+                .linkedFramework("CoreGraphics"),
+                .linkedFramework("VideoToolbox"),
+                .linkedFramework("ImageIO"),
+                .linkedFramework("AppKit"),
+                .linkedFramework("Accelerate"),
             ]
         ),
     ],

@@ -1011,7 +1011,7 @@ function AppWithConfig({
                 onStreamButton={onStreamButton}
                 onStreamDigitalCrown={onStreamDigitalCrown}
                 onStreamScroll={onStreamScroll}
-                codec={useWebRtcVideo ? "webrtc" : useAvccVideo ? "avcc" : "mjpeg"}
+                streamMode={useWebRtcVideo ? "webrtc" : useAvccVideo ? "avcc" : "mjpeg"}
                 webRtcStream={webrtc.stream}
                 onAvccError={() => dispatchAvccFallback("error")}
                 subscribeFrame={useAvccVideo ? undefined : mjpeg.subscribeFrame}

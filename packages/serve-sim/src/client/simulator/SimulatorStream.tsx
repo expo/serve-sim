@@ -25,7 +25,7 @@ export interface SimulatorStreamProps {
   /**
    * Video codec preference: "avcc" (default, H.264 via WebCodecs with MJPEG
    * fallback) or "mjpeg" to force JPEG. Relay mode still may use AVCC because
-   * SimulatorView's `useAvcc` and `useAvccStream` can read `/stream.avcc`
+   * SimulatorView's AVCC path can read `/stream.avcc`
    * directly while input is relayed.
    */
   codec?: "mjpeg" | "avcc";
@@ -142,7 +142,7 @@ export function SimulatorStream({ exec, device, style, imageStyle, className, st
           hideControls={headerless}
           onStreamingChange={onStreamingChange}
           onScreenConfigChange={onScreenConfigChange}
-          codec={codec}
+          streamMode={codec}
           connectionQuality={relayMode ? stream.connectionQuality ?? undefined : undefined}
           {...(relayMode ? {
             onStreamTouch: stream.sendTouch,

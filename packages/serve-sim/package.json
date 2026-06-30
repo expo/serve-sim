@@ -45,10 +45,10 @@
     "Sources/SimAXSettings/sim-ax-settings.m",
     "Sources/SimAXSettings/build.sh",
     "dist/native/serve-sim-native.node",
+    "dist/bin/LiveKitWebRTC.framework",
     "Package.swift",
     "Sources/SimNative/*.swift",
-    "Sources/SimNative/build.sh",
-    "bin/LiveKitWebRTC.framework"
+    "Sources/SimNative/build.sh"
   ],
   "exports": {
     "./middleware": {

@@ -1,6 +1,0 @@
-framework module LiveKitWebRTC {
-  umbrella header "LiveKitWebRTC.h"
-
-  export *
-  module * { export * }
-}

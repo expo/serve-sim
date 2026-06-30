@@ -14,11 +14,7 @@
 // arch only, and cross-compiling per-arch with `--triple` breaks the
 // `#NodeModule` macro.
 
-import Foundation
 import PackageDescription
-
-let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
-let liveKitWebRTCFrameworkSearchPath = "\(packageRoot)/bin"
 
 let package = Package(
     name: "serve-sim-native",
@@ -32,6 +28,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "node_modules/node-swift"),
+        .package(url: "https://github.com/livekit/webrtc-xcframework.git", exact: "144.7559.10"),
     ],
     targets: [
         .target(
@@ -39,19 +36,13 @@ let package = Package(
             dependencies: [
                 .product(name: "NodeAPI", package: "node-swift"),
                 .product(name: "NodeModuleSupport", package: "node-swift"),
+                .product(name: "LiveKitWebRTC", package: "webrtc-xcframework"),
             ],
             exclude: [
                 "build.sh",
             ],
-            swiftSettings: [
-                .unsafeFlags(["-F", liveKitWebRTCFrameworkSearchPath]),
-            ],
             linkerSettings: [
                 .unsafeFlags([
-                    "-F", liveKitWebRTCFrameworkSearchPath,
-                    "-framework", "LiveKitWebRTC",
-                    "-Xlinker", "-rpath",
-                    "-Xlinker", "@loader_path/../bin",
                     "-Xlinker", "-undefined",
                     "-Xlinker", "dynamic_lookup",
                 ]),

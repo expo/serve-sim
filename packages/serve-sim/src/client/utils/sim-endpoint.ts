@@ -11,6 +11,7 @@ declare global {
       axEndpoint?: string;
       appStateEndpoint?: string;
       devtoolsEndpoint?: string;
+      cameraStatusEndpoint?: string;
       streamSettingsEndpoint?: string;
       gridApiEndpoint?: string;
       gridStartEndpoint?: string;

@@ -49,6 +49,7 @@ describe("previewConfigForState", () => {
       basePath: "/preview",
       appStateEndpoint: "/preview/appstate?device=DEVICE-B",
       axEndpoint: "/preview/ax?device=DEVICE-B",
+      cameraStatusEndpoint: "/preview/helper/DEVICE-B/camera/status?device=DEVICE-B",
       devtoolsEndpoint: "/preview/devtools?device=DEVICE-B",
       streamSettingsEndpoint: "/preview/helper/DEVICE-B/stream-settings?device=DEVICE-B",
       serveSimBin: "/bin/serve-sim",

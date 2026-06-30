@@ -29,6 +29,13 @@ export function nextCameraPillState(
   return current;
 }
 
+export function shouldPollCameraStatus(input: {
+  sectionOpen: boolean;
+  documentVisibility?: string;
+}): boolean {
+  return input.sectionOpen && input.documentVisibility !== "hidden";
+}
+
 export type CameraPrimaryKind = "play" | "stop" | "attach";
 
 export function selectCameraPrimaryKind(input: {
@@ -238,7 +245,29 @@ export function CameraTool({
     return shellEscape(bin);
   }, []);
 
+  const cameraStatusEndpoint = useMemo(() => {
+    const configured = window.__SIM_PREVIEW__?.cameraStatusEndpoint;
+    if (configured) return configured;
+    const base = window.__SIM_PREVIEW__?.url?.replace(/\/+$/, "");
+    return base ? `${base}/camera/status` : null;
+  }, []);
+
   const fetchCameraStatus = useCallback(async () => {
+    if (cameraStatusEndpoint) {
+      try {
+        const res = await fetch(cameraStatusEndpoint, { cache: "no-store" });
+        if (res.ok) {
+          return await res.json() as {
+            alive?: boolean;
+            source?: string;
+            arg?: string;
+            mirror?: string;
+            helperPid?: number;
+            bundleIds?: string[];
+          };
+        }
+      } catch {}
+    }
     const res = await execOnHost(`${cliPrefix} camera status -d ${udid}`);
     if (res.exitCode !== 0) return null;
     try {
@@ -253,13 +282,14 @@ export function CameraTool({
     } catch {
       return null;
     }
-  }, [cliPrefix, udid]);
+  }, [cameraStatusEndpoint, cliPrefix, udid]);
 
   const refreshWebcamsRef = useRef<() => Promise<void>>(async () => {});
   const bundleIdRef = useRef<string | null>(bundleId);
   useEffect(() => { bundleIdRef.current = bundleId; }, [bundleId]);
 
   useEffect(() => {
+    if (!open) return;
     let cancelled = false;
     void (async () => {
       const reply = await fetchCameraStatus();
@@ -290,16 +320,20 @@ export function CameraTool({
       setStatus(`Reattached → ${replySource ?? "running helper"}${reply.arg ? ` (${reply.arg})` : ""}`);
     })();
     return () => { cancelled = true; };
-  }, [udid, fetchCameraStatus]);
+  }, [udid, fetchCameraStatus, open]);
 
   useEffect(() => {
+    if (!open) return;
     let cancelled = false;
     let inFlight = false;
     let timer: ReturnType<typeof setInterval> | null = null;
 
     const tick = async () => {
       if (cancelled || inFlight) return;
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (!shouldPollCameraStatus({
+        sectionOpen: open,
+        documentVisibility: typeof document === "undefined" ? undefined : document.visibilityState,
+      })) return;
       inFlight = true;
       try {
         const reply = await fetchCameraStatus();
@@ -355,7 +389,7 @@ export function CameraTool({
         document.removeEventListener("visibilitychange", onVisibility);
       }
     };
-  }, [fetchCameraStatus, injected, attachedHelperPid, bundleId, injectedBundleIds]);
+  }, [fetchCameraStatus, injected, attachedHelperPid, bundleId, injectedBundleIds, open]);
 
   const refreshWebcams = useCallback(async () => {
     setWebcamLoading(true);

@@ -15,6 +15,7 @@ import {
   nextCameraPillState,
   parseWebcamListOutput,
   selectCameraPrimaryKind,
+  shouldPollCameraStatus,
 } from "../client/components/camera-tool";
 
 describe("nextCameraPillState", () => {
@@ -237,6 +238,20 @@ describe("CAMERA_POLL_INTERVAL_MS", () => {
   test("falls in the requested 2–5s window", () => {
     expect(CAMERA_POLL_INTERVAL_MS).toBeGreaterThanOrEqual(2000);
     expect(CAMERA_POLL_INTERVAL_MS).toBeLessThanOrEqual(5000);
+  });
+});
+
+describe("shouldPollCameraStatus", () => {
+  test("does not poll while the camera section is collapsed", () => {
+    expect(shouldPollCameraStatus({ sectionOpen: false, documentVisibility: "visible" })).toBe(false);
+  });
+
+  test("does not poll while the document is hidden", () => {
+    expect(shouldPollCameraStatus({ sectionOpen: true, documentVisibility: "hidden" })).toBe(false);
+  });
+
+  test("polls only when the section is open and the page is visible", () => {
+    expect(shouldPollCameraStatus({ sectionOpen: true, documentVisibility: "visible" })).toBe(true);
   });
 });
 

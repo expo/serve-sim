@@ -5,6 +5,7 @@
   "scripts": {
     "build": "bun run --filter '*' build",
     "build:swift": "cd packages/serve-sim && ./build.sh",
+    "dev": "bun run --filter '@expo/serve-sim' dev",
     "knip": "knip",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint"

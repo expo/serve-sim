@@ -86,8 +86,9 @@ final class WebRTCPublisher {
         let h264Status = h264WebRTCSupport.allowed
             ? "enabled(\(h264WebRTCSupport.probeSummary))"
             : "disabled(\(h264WebRTCSupport.reason ?? "unsupported runtime"))"
+        let encoderFactoryStatus = usesCustomSoftwareH264Encoder ? "serve-sim H.264 encoder factory" : "default codec factory"
         print(
-            "[webrtc] Publisher ready (default codec factory + screen-cast video source) " +
+            "[webrtc] Publisher ready (\(encoderFactoryStatus) + screen-cast video source) " +
             "h264=\(h264Status) h264FrameMode=\(h264FrameModeDescription()) senderCodecs=\(senderCodecSummary())"
         )
     }

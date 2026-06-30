@@ -1731,11 +1731,6 @@ program
   .option("--turn-url <url[,url...]>", "TURN URL(s) for WebRTC ICE")
   .option("--turn-username <username>", "TURN username")
   .option("--turn-credential <credential>", "TURN credential")
-  .option("--stream-fps <fps>", "Accepted for stream-control compatibility")
-  .option("--stream-quality <quality>", "Accepted for stream-control compatibility")
-  .option("--stream-max-dimension <px>", "Accepted for stream-control compatibility")
-  .option("--h264-bitrate <bps>", "Accepted for stream-control compatibility")
-  .option("--h264-max-fps <fps>", "Accepted for stream-control compatibility")
   .option("-l, --list [device]", "List running streams")
   .option("-k, --kill [device]", "Kill running stream(s)")
   .addHelpText(

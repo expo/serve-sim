@@ -100,8 +100,6 @@ const ORIENTATION_BY_NAME: Record<string, number> = {
   landscape_right: Orientation.landscapeRight,
 };
 
-export type DeviceSessionOptions = Record<string, never>;
-
 export class DeviceSession {
   private readonly capture: NativeCapture;
   private readonly hid: NativeHid;
@@ -119,10 +117,7 @@ export class DeviceSession {
   private avccChunks = 0;
   private avccWrites = 0;
 
-  constructor(
-    public readonly udid: string,
-    _options: DeviceSessionOptions = {},
-  ) {
+  constructor(public readonly udid: string) {
     this.hid = new NativeHid(udid);
     this.capture = new NativeCapture(
       udid,
@@ -496,10 +491,10 @@ const sessions = new Map<string, DeviceSession>();
  * Get (lazily creating + starting) the in-process session for `udid`. Throws if
  * the device isn't booted. The session lives until `closeDeviceSession`.
  */
-export function getDeviceSession(udid: string, options: DeviceSessionOptions = {}): DeviceSession {
+export function getDeviceSession(udid: string): DeviceSession {
   let session = sessions.get(udid);
   if (!session) {
-    session = new DeviceSession(udid, options);
+    session = new DeviceSession(udid);
     try {
       session.start();
     } catch (err) {

@@ -75,6 +75,14 @@ Options:
                       Stream transport (default: http)
       --webrtc-codec <vp8|vp9|h264>
                       WebRTC video codec (default: h264)
+      --stun-url <url[,url...]>
+                      STUN URL(s) for WebRTC ICE
+      --turn-url <url[,url...]>
+                      TURN URL(s) for WebRTC ICE
+      --turn-username <username>
+                      TURN username
+      --turn-credential <credential>
+                      TURN credential
       --list [device] List running streams
       --kill [device] Kill running stream(s)
 
@@ -89,6 +97,10 @@ Camera options (used with `serve-sim camera <bundle-id>`):
       --no-mirror            Shortcut for --mirror off
       --build                Rebuild the dylib + helper from source
 ```
+
+WebRTC uses the HTTP/WebSocket server only for signaling. ICE still prefers a
+direct UDP path when one is reachable, even if the page was loaded through a
+tunnel URL; TURN is used as a fallback when direct/STUN candidates fail.
 
 ### Examples
 

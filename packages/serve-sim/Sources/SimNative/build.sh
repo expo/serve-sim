@@ -15,7 +15,10 @@ PKG="$(cd "$HERE/../.." && pwd)"          # packages/serve-sim (Package.swift ro
 OUT_DIR="${1:-$PKG/dist/native}"
 BUILD_DIR="$PKG/.build"
 PRODUCT="serve-sim-native"
+WEBRTC_FRAMEWORK_NAME="LiveKitWebRTC.framework"
 mkdir -p "$OUT_DIR"
+WEBRTC_RUNTIME_DIR="$(cd "$OUT_DIR/.." && pwd)/bin"
+WEBRTC_RUNTIME_FRAMEWORK="$WEBRTC_RUNTIME_DIR/$WEBRTC_FRAMEWORK_NAME"
 
 if [ ! -d "$PKG/node_modules/node-swift" ]; then
   echo "node-swift not found at $PKG/node_modules/node-swift (run: bun install)" >&2
@@ -36,9 +39,26 @@ if [ ! -f "$DYLIB" ]; then
   exit 1
 fi
 
+WEBRTC_ARTIFACT_FRAMEWORK="$(find "$BUILD_DIR/artifacts" -path "*/macos-arm64_x86_64/$WEBRTC_FRAMEWORK_NAME" -type d -print -quit)"
+if [ -z "$WEBRTC_ARTIFACT_FRAMEWORK" ]; then
+  WEBRTC_ARTIFACT_FRAMEWORK="$(find "$BUILD_DIR/artifacts" -name "$WEBRTC_FRAMEWORK_NAME" -type d -print -quit)"
+fi
+if [ -z "$WEBRTC_ARTIFACT_FRAMEWORK" ]; then
+  echo "Expected LiveKitWebRTC framework artifact not found under $BUILD_DIR/artifacts" >&2
+  exit 1
+fi
+
+rm -rf "$WEBRTC_RUNTIME_FRAMEWORK"
+mkdir -p "$WEBRTC_RUNTIME_DIR"
+cp -a "$WEBRTC_ARTIFACT_FRAMEWORK" "$WEBRTC_RUNTIME_FRAMEWORK"
+
 OUT="$OUT_DIR/${PRODUCT}.node"
 cp -a "$DYLIB" "$OUT"
 strip -x "$OUT"
+install_name_tool \
+  -change "@rpath/LiveKitWebRTC.framework/LiveKitWebRTC" \
+  "@loader_path/../bin/LiveKitWebRTC.framework/Versions/A/LiveKitWebRTC" \
+  "$OUT"
 codesign -s - -f "$OUT" 2>/dev/null || true
 
 echo "Built: $OUT"

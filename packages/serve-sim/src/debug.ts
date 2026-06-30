@@ -6,7 +6,9 @@ import createDebug from "debug";
 //   serve-sim:helper   — helper spawn / readiness / exit
 //   serve-sim:mw       — middleware state selection + stale-helper recycling
 //   serve-sim:cli      — top-level command dispatch
+//   serve-sim:stream   — AVCC/H.264 stream attach/encode/broadcast diagnostics
 export const debugCli = createDebug("serve-sim:cli");
 export const debugHelper = createDebug("serve-sim:helper");
 export const debugState = createDebug("serve-sim:state");
 export const debugMw = createDebug("serve-sim:mw");
+export const debugStream = createDebug("serve-sim:stream");

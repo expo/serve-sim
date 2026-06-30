@@ -21,7 +21,7 @@ const LOAD_ALL_LIMIT = 1000;
 export function useGridDevices(
   endpoint: string | undefined,
   enabled: boolean,
-  fast: boolean,
+  pollWhilePending: boolean,
   pageSize: number = DEFAULT_PAGE_SIZE,
 ) {
   const [devices, setDevices] = useState<GridDevice[] | null>(null);
@@ -44,9 +44,12 @@ export function useGridDevices(
       }
     };
     tick();
-    const id = setInterval(tick, fast ? 750 : 3000);
+    if (!pollWhilePending) {
+      return () => { cancelled = true; };
+    }
+    const id = setInterval(tick, 750);
     return () => { cancelled = true; clearInterval(id); };
-  }, [endpoint, enabled, refreshKey, fast, limit]);
+  }, [endpoint, enabled, refreshKey, pollWhilePending, limit]);
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
   const loadMore = useCallback(() => setLimit((l) => l + pageSize), [pageSize]);
   const loadAll = useCallback(() => setLimit(LOAD_ALL_LIMIT), []);

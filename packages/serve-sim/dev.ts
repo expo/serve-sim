@@ -55,7 +55,13 @@ const EXEC_TOKEN = randomBytes(32).toString("base64url");
 // endpoints we inject into the dev HTML shell below.
 // The dev server owns its HTTP server and forwards upgrades (below), so it
 // proxies helper/DevTools sockets through the single port like production.
-const middleware = simMiddleware({ basePath: "/", execToken: EXEC_TOKEN, proxyHelpers: true });
+const middleware = simMiddleware({
+  basePath: "/",
+  execToken: EXEC_TOKEN,
+  proxyHelpers: true,
+  publicPort: PORT,
+  publicHost: "127.0.0.1",
+});
 
 // The dev server serves at the root (empty base), so endpoints look like
 // `/logs`, `/grid/api`, etc. We point the advertised CLI binary at our local
@@ -269,6 +275,13 @@ function devMiddleware(req: IncomingMessage, res: ServerResponse, next: () => vo
 devMiddleware.handleUpgrade = (req: IncomingMessage, socket: Socket, head: Buffer): void =>
   middleware.handleUpgrade(req, socket, head);
 
-await servePreview({ port: PORT, middleware: devMiddleware });
+const previewServer = await servePreview({ port: PORT, middleware: devMiddleware });
+const keepAlive = setInterval(() => {}, 60_000);
+const devGlobal = globalThis as unknown as {
+  __SERVE_SIM_DEV_SERVER__?: typeof previewServer;
+  __SERVE_SIM_DEV_KEEP_ALIVE__?: typeof keepAlive;
+};
+devGlobal.__SERVE_SIM_DEV_SERVER__ = previewServer;
+devGlobal.__SERVE_SIM_DEV_KEEP_ALIVE__ = keepAlive;
 
 console.log(`\n  \x1b[36mserve-sim dev\x1b[0m  http://localhost:${PORT}\n`);

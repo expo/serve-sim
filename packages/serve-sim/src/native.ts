@@ -11,6 +11,7 @@ import { createRequire } from "module";
 import { dirname, join } from "path";
 import { existsSync } from "fs";
 import { fileURLToPath } from "url";
+import { DEFAULT_STREAM_SETTINGS } from "./state";
 
 const require = createRequire(import.meta.url);
 
@@ -35,9 +36,18 @@ interface SimHIDHandle {
 interface SimCaptureHandle {
   start(): void;
   setAvccActive(active: boolean): void;
+  setMjpegActive(active: boolean): void;
   requestKeyframe(): void;
+  updateStreamSettings(
+    mjpegFps: number,
+    mjpegQuality: number,
+    h264Fps: number,
+    h264Bitrate: number,
+    streamMaxDimension: number,
+  ): void;
   handleWebRTCOffer(offerJson: string): string;
   screenSize(): { width: number; height: number };
+  streamStats(): string;
   stop(): void;
 }
 
@@ -47,6 +57,11 @@ interface NativeAddon {
     udid: string,
     onFrame: RawFrameCallback,
     onWebRTCInput: (data: Buffer) => void,
+    mjpegFps: number,
+    mjpegQuality: number,
+    h264Fps: number,
+    h264Bitrate: number,
+    streamMaxDimension: number,
   ) => SimCaptureHandle;
   axDescribe(udid: string): Promise<string>;
   axFrontmost(udid: string): Promise<string>;
@@ -70,6 +85,14 @@ export interface NativeFrame {
   isDescription: boolean;
   /** AVCC only: this chunk is an IDR keyframe (a decoder can start here). */
   isKeyframe: boolean;
+}
+
+export interface NativeCaptureOptions {
+  streamFps?: number;
+  streamQuality?: number;
+  streamMaxDimension?: number;
+  h264MaxFps?: number;
+  h264Bitrate?: number;
 }
 
 export type TouchType = "begin" | "move" | "end";
@@ -196,17 +219,27 @@ export class NativeCapture {
     udid: string,
     onFrame: (frame: NativeFrame) => void,
     onWebRTCInput: (data: Buffer) => void = () => {},
+    options: NativeCaptureOptions = {},
   ) {
-    this.handle = new (load().SimCapture)(udid, (codec, data, width, height, flags) => {
-      onFrame({
-        codec: codec === CODEC_AVCC ? "avcc" : "mjpeg",
-        data,
-        width,
-        height,
-        isDescription: (flags & FLAG_DESCRIPTION) !== 0,
-        isKeyframe: (flags & FLAG_KEYFRAME) !== 0,
-      });
-    }, onWebRTCInput);
+    this.handle = new (load().SimCapture)(
+      udid,
+      (codec, data, width, height, flags) => {
+        onFrame({
+          codec: codec === CODEC_AVCC ? "avcc" : "mjpeg",
+          data,
+          width,
+          height,
+          isDescription: (flags & FLAG_DESCRIPTION) !== 0,
+          isKeyframe: (flags & FLAG_KEYFRAME) !== 0,
+        });
+      },
+      onWebRTCInput,
+      options.streamFps ?? DEFAULT_STREAM_SETTINGS.streamFps,
+      options.streamQuality ?? DEFAULT_STREAM_SETTINGS.streamQuality,
+      options.h264MaxFps ?? DEFAULT_STREAM_SETTINGS.h264MaxFps,
+      options.h264Bitrate ?? DEFAULT_STREAM_SETTINGS.h264Bitrate,
+      options.streamMaxDimension ?? DEFAULT_STREAM_SETTINGS.streamMaxDimension,
+    );
   }
 
   /** Begin capturing. Throws if the device isn't booted. */
@@ -219,9 +252,24 @@ export class NativeCapture {
     this.handle.setAvccActive(active);
   }
 
+  /** Enable/disable MJPEG encoding while HTTP MJPEG clients are attached. */
+  setMjpegActive(active: boolean): void {
+    this.handle.setMjpegActive(active);
+  }
+
   /** Force the next H.264 frame to a keyframe (e.g. when a new AVCC viewer joins). */
   requestKeyframe(): void {
     this.handle.requestKeyframe();
+  }
+
+  updateStreamSettings(options: NativeCaptureOptions): void {
+    this.handle.updateStreamSettings(
+      options.streamFps ?? DEFAULT_STREAM_SETTINGS.streamFps,
+      options.streamQuality ?? DEFAULT_STREAM_SETTINGS.streamQuality,
+      options.h264MaxFps ?? DEFAULT_STREAM_SETTINGS.h264MaxFps,
+      options.h264Bitrate ?? DEFAULT_STREAM_SETTINGS.h264Bitrate,
+      options.streamMaxDimension ?? DEFAULT_STREAM_SETTINGS.streamMaxDimension,
+    );
   }
 
   handleWebRTCOffer(offer: unknown): unknown {
@@ -230,6 +278,10 @@ export class NativeCapture {
 
   screenSize(): { width: number; height: number } {
     return this.handle.screenSize();
+  }
+
+  streamStats(): unknown {
+    return JSON.parse(this.handle.streamStats());
   }
 
   /** Halt frame production. Full teardown happens when this object is GC'd. */

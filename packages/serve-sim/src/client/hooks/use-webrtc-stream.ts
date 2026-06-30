@@ -37,10 +37,11 @@ export function useWebRtcStream({
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<WebRtcError | null>(null);
   const [negotiatedCodec, setNegotiatedCodec] = useState<WebRtcCodec | null>(null);
+  const [dataChannelOpen, setDataChannelOpen] = useState(false);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
 
   const dataTarget: DataChannelTarget | null =
-    dataChannelRef.current && dataChannelRef.current.readyState === "open"
+    dataChannelOpen && dataChannelRef.current && dataChannelRef.current.readyState === "open"
       ? {
           readyState: 1,
           send: (data) => dataChannelRef.current?.send(data),
@@ -68,6 +69,7 @@ export function useWebRtcStream({
     setConnected(false);
     setNegotiatedCodec(null);
     setError(null);
+    setDataChannelOpen(false);
     dataChannelRef.current = null;
 
     const waitForIce = (connection: RTCPeerConnection) =>
@@ -99,7 +101,7 @@ export function useWebRtcStream({
           iceServers: servers,
           iceTransportPolicy: webRtcIceTransportPolicy(servers),
         });
-        dc = pc.createDataChannel("input", { ordered: false, maxRetransmits: 0 });
+        dc = pc.createDataChannel("input");
         dataChannelRef.current = dc;
 
         const videoTransceiver = pc.addTransceiver("video", { direction: "recvonly" });
@@ -122,10 +124,16 @@ export function useWebRtcStream({
         }
 
         dc.onopen = () => {
-          if (!stopped) setConnected(true);
+          if (!stopped) {
+            setConnected(true);
+            setDataChannelOpen(true);
+          }
         };
         dc.onclose = () => {
-          if (!stopped) setConnected(false);
+          if (!stopped) {
+            setConnected(false);
+            setDataChannelOpen(false);
+          }
         };
         pc.ontrack = (event) => {
           if (stopped) return;
@@ -195,6 +203,7 @@ export function useWebRtcStream({
       dataChannelRef.current = null;
       setStream(null);
       setConnected(false);
+      setDataChannelOpen(false);
       setNegotiatedCodec(null);
       dc?.close();
       pc?.close();

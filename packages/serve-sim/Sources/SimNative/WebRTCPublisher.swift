@@ -1460,6 +1460,9 @@ private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate
     private var latestOutboundStatsLabel = "none"
     private var latestOutboundStatsAtNs: UInt64 = 0
     private var latestOutboundStats: [[String: Any]] = []
+    // RTCDataChannel.delegate is weak; retain opened channels until close so input callbacks keep firing.
+    private let retainedDataChannelsLock = NSLock()
+    private var retainedDataChannels: [ObjectIdentifier: LKRTCDataChannel] = [:]
 
     init(onInput: @escaping (Data) -> Void, onClosed: @escaping (LKRTCPeerConnection) -> Void) {
         self.onInput = onInput
@@ -1515,13 +1518,25 @@ private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate
     }
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didOpen dataChannel: LKRTCDataChannel) {
         print("[webrtc] viewer opened data channel: \(dataChannel.label)")
+        retainedDataChannelsLock.lock()
+        defer { retainedDataChannelsLock.unlock() }
+        retainedDataChannels[ObjectIdentifier(dataChannel)] = dataChannel
         dataChannel.delegate = self
     }
 
-    func dataChannelDidChangeState(_ dataChannel: LKRTCDataChannel) {}
+    func dataChannelDidChangeState(_ dataChannel: LKRTCDataChannel) {
+        streamLog("[webrtc] data channel state label=\(dataChannel.label) state=\(dataChannel.readyState.rawValue)")
+        if dataChannel.readyState == .closed {
+            retainedDataChannelsLock.lock()
+            defer { retainedDataChannelsLock.unlock() }
+            retainedDataChannels.removeValue(forKey: ObjectIdentifier(dataChannel))
+        }
+    }
 
     func dataChannel(_ dataChannel: LKRTCDataChannel, didReceiveMessageWith buffer: LKRTCDataBuffer) {
-        onInput(buffer.data)
+        let data = Data(buffer.data)
+        streamLog("[webrtc] received input data-channel bytes=\(data.count) binary=\(buffer.isBinary)")
+        onInput(data)
     }
 
     func generatedCandidatesSnapshot() -> [LKRTCIceCandidate] {

@@ -496,12 +496,12 @@ function AppWithConfig({
       setWebRtcCodecOverride(null);
       return;
     }
-    if (!webrtc.error) return;
+    if (!webrtc.failedCodec) return;
     const requestedCodec = config.webrtcCodec ?? "h264";
-    const nextCodec = nextWebRtcFallbackCodec(requestedCodec, webrtc.error.codec);
+    const nextCodec = nextWebRtcFallbackCodec(requestedCodec, webrtc.failedCodec);
     if (!nextCodec || nextCodec === effectiveWebRtcCodec) return;
     setWebRtcCodecOverride(nextCodec);
-  }, [config.webrtcCodec, effectiveWebRtcCodec, useWebRtcVideo, webrtc.error]);
+  }, [config.webrtcCodec, effectiveWebRtcCodec, useWebRtcVideo, webrtc.failedCodec]);
   // `streaming` flips true on the first painted AVCC frame (JPEG seed decodes
   // sub-second on a healthy helper), which cancels the fallback.
   useEffect(() => {

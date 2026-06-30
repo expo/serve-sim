@@ -1,18 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  negotiatedWebRtcCodecFromSdp,
-  type WebRtcCodec,
-} from "../webrtc-codec-fallback";
+import type { WebRtcCodec } from "../webrtc-codec-fallback";
 import { WEBRTC_ICE_TRANSPORT_POLICY, type IceServer } from "../webrtc-ice";
 
 export type DataChannelTarget = {
   readyState: number;
   send(data: ArrayBuffer): void;
-};
-
-type WebRtcError = {
-  codec: WebRtcCodec;
-  message: string;
 };
 
 const DEFAULT_ICE_SERVERS: IceServer[] = [
@@ -34,9 +26,7 @@ export function useWebRtcStream({
   iceServers?: IceServer[];
 }) {
   const [stream, setStream] = useState<MediaStream | null>(null);
-  const [connected, setConnected] = useState(false);
-  const [error, setError] = useState<WebRtcError | null>(null);
-  const [negotiatedCodec, setNegotiatedCodec] = useState<WebRtcCodec | null>(null);
+  const [failedCodec, setFailedCodec] = useState<WebRtcCodec | null>(null);
   const [dataChannelOpen, setDataChannelOpen] = useState(false);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
 
@@ -52,9 +42,7 @@ export function useWebRtcStream({
     if (!enabled || !url) return;
     if (typeof RTCPeerConnection === "undefined" || typeof RTCRtpReceiver === "undefined") {
       setStream(null);
-      setConnected(false);
-      setNegotiatedCodec(null);
-      setError({ codec, message: "WebRTC is not supported in this browser" });
+      setFailedCodec(codec);
       return;
     }
 
@@ -63,12 +51,9 @@ export function useWebRtcStream({
     let dc: RTCDataChannel | null = null;
     let offerController: AbortController | null = null;
     let offerTimeout: number | undefined;
-    let offerTimedOut = false;
     const servers = iceServers?.length ? iceServers : DEFAULT_ICE_SERVERS;
     setStream(null);
-    setConnected(false);
-    setNegotiatedCodec(null);
-    setError(null);
+    setFailedCodec(null);
     setDataChannelOpen(false);
     dataChannelRef.current = null;
 
@@ -125,27 +110,23 @@ export function useWebRtcStream({
 
         dc.onopen = () => {
           if (!stopped) {
-            setConnected(true);
             setDataChannelOpen(true);
           }
         };
         dc.onclose = () => {
           if (!stopped) {
-            setConnected(false);
             setDataChannelOpen(false);
           }
         };
         pc.ontrack = (event) => {
           if (stopped) return;
           setStream(event.streams[0] ?? new MediaStream([event.track]));
-          setConnected(true);
-          setError(null);
+          setFailedCodec(null);
         };
         pc.onconnectionstatechange = () => {
           if (stopped || !pc) return;
-          setConnected(pc.connectionState === "connected");
           if (pc.connectionState === "failed") {
-            setError({ codec, message: "WebRTC connection failed" });
+            setFailedCodec(codec);
           }
         };
 
@@ -156,7 +137,6 @@ export function useWebRtcStream({
         if (!local) throw new Error("WebRTC offer was not created");
         offerController = new AbortController();
         offerTimeout = window.setTimeout(() => {
-          offerTimedOut = true;
           offerController?.abort();
         }, SIGNALING_TIMEOUT_MS);
         let response: Response;
@@ -182,16 +162,9 @@ export function useWebRtcStream({
         const answer = await response.json() as RTCSessionDescriptionInit;
         if (stopped) return;
         await pc.setRemoteDescription(answer);
-        if (typeof answer.sdp === "string") {
-          setNegotiatedCodec(negotiatedWebRtcCodecFromSdp(answer.sdp));
-        }
-      } catch (err) {
+      } catch {
         if (!stopped) {
-          setError({
-            codec,
-            message: offerTimedOut ? "WebRTC offer timed out" : err instanceof Error ? err.message : String(err),
-          });
-          setConnected(false);
+          setFailedCodec(codec);
         }
       }
     })();
@@ -202,13 +175,11 @@ export function useWebRtcStream({
       offerController?.abort();
       dataChannelRef.current = null;
       setStream(null);
-      setConnected(false);
       setDataChannelOpen(false);
-      setNegotiatedCodec(null);
       dc?.close();
       pc?.close();
     };
   }, [enabled, url, codec, iceServers]);
 
-  return { stream, dataTarget, connected, error, negotiatedCodec };
+  return { stream, dataTarget, failedCodec };
 }

@@ -12,7 +12,7 @@
       },
     },
     "packages/serve-sim": {
-      "name": "serve-sim",
+      "name": "@expo/serve-sim",
       "version": "0.1.34",
       "bin": {
         "serve-sim": "dist/serve-sim.js",
@@ -268,7 +268,7 @@
 
     "scheduler": ["scheduler@0.27.0", "", {}, "sha512-eNv+WrVbKu1f3vbYJT/xtiF5syA5HPIMtf9IgY/nKg0sWqzAUEvqY/xm7OcZc/qafLx/iO9FgOmeSAp4v5ti/Q=="],
 
-    "serve-sim": ["serve-sim@workspace:packages/serve-sim"],
+    "@expo/serve-sim": ["@expo/serve-sim@workspace:packages/serve-sim"],
 
     "smol-toml": ["smol-toml@1.6.1", "", {}, "sha512-dWUG8F5sIIARXih1DTaQAX4SsiTXhInKf1buxdY9DIg4ZYPZK5nGM1VRIYmEbDbsHt7USo99xSLFu5Q1IqTmsg=="],
 

@@ -447,14 +447,16 @@ function AppWithConfig({
   // `avccFallback` drives a startup timeout: if AVCC paints nothing in time,
   // drop to MJPEG, which every helper serves. See avcc-fallback.ts.
   const avcc = useAvccStream();
-  const useWebRtcVideo = config.transport === "webrtc";
+  const streamSettings = config.streamSettings;
+  const useWebRtcVideo = streamSettings?.transport === "webrtc";
   const [webRtcCodecOverride, setWebRtcCodecOverride] = useState<WebRtcCodec | null>(null);
-  const effectiveWebRtcCodec = webRtcCodecOverride ?? config.webrtcCodec ?? "h264";
+  const configuredWebRtcCodec = streamSettings?.transport === "webrtc" ? streamSettings.codec : "h264";
+  const effectiveWebRtcCodec = webRtcCodecOverride ?? configuredWebRtcCodec;
   const webrtc = useWebRtcStream({
     url: config.url,
     enabled: useWebRtcVideo,
     codec: effectiveWebRtcCodec,
-    iceServers: config.webrtcIceServers,
+    iceServers: streamSettings?.transport === "webrtc" ? streamSettings.iceServers : undefined,
   });
   const [avccFallback, dispatchAvccFallback] = useReducer(
     avccFallbackReducer,
@@ -480,7 +482,7 @@ function AppWithConfig({
   // The server can pin the stream codec (`serve-sim --codec mjpeg`) for hosts
   // whose hardware can't encode H.264 — e.g. VMs lacking the high/low-latency
   // H.264 profiles. Treat that as a hard override the viewer can't switch off.
-  const serverForcesMjpeg = config.codec === "mjpeg";
+  const serverForcesMjpeg = streamSettings?.transport === "http" && streamSettings.codec === "mjpeg";
   const useAvccVideo =
     !useWebRtcVideo && !serverForcesMjpeg && avcc.supported && !avccFallback.fellBack && !preferMjpeg && !forceMjpeg && codecPreference !== "mjpeg";
   const mjpeg = useMjpegStream(useAvccVideo || useWebRtcVideo ? null : mjpegStreamUrlFrom(config));
@@ -497,11 +499,10 @@ function AppWithConfig({
       return;
     }
     if (!webrtc.failedCodec) return;
-    const requestedCodec = config.webrtcCodec ?? "h264";
-    const nextCodec = nextWebRtcFallbackCodec(requestedCodec, webrtc.failedCodec);
+    const nextCodec = nextWebRtcFallbackCodec(configuredWebRtcCodec, webrtc.failedCodec);
     if (!nextCodec || nextCodec === effectiveWebRtcCodec) return;
     setWebRtcCodecOverride(nextCodec);
-  }, [config.webrtcCodec, effectiveWebRtcCodec, useWebRtcVideo, webrtc.failedCodec]);
+  }, [configuredWebRtcCodec, effectiveWebRtcCodec, useWebRtcVideo, webrtc.failedCodec]);
   // `streaming` flips true on the first painted AVCC frame (JPEG seed decodes
   // sub-second on a healthy helper), which cancels the fallback.
   useEffect(() => {

@@ -74,16 +74,7 @@ export interface SimulatorViewProps {
   onStreamingChange?: (streaming: boolean) => void;
   /** Connection quality indicator: green (good), yellow (degraded), red (poor). */
   connectionQuality?: "good" | "degraded" | "poor" | null;
-  /**
-   * Video codec preference for the stream:
-   * - "avcc" (default): H.264 over `/stream.avcc` decoded with WebCodecs into
-   *   a `<canvas>`. Automatically falls back to MJPEG when the browser lacks
-   *   `VideoDecoder`.
-   * - "mjpeg": force JPEG-per-frame painted into an `<img>`.
-   *
-   * In relay mode, input is relayed but video can still use AVCC because
-   * `useAvcc` and `useAvccStream` only need `url` to read `/stream.avcc`.
-   */
+  /** Video render mode. "avcc" falls back to MJPEG when WebCodecs is unavailable. */
   streamMode?: "mjpeg" | "avcc" | "webrtc";
   /** WebRTC media stream when `streamMode="webrtc"`. */
   webRtcStream?: MediaStream | null;
@@ -129,12 +120,9 @@ export function SimulatorView({
   onAvccError,
 }: SimulatorViewProps) {
   const relayMode = !!onStreamTouch;
-  const useWebRtc = streamMode === "webrtc";
-  // AVCC decode is independent of input relay: the H.264 pipeline only needs
-  // `url`, so it runs in both direct and relay mode (input still forwards
-  // through `onStreamTouch`). Falls back to the <img> when WebCodecs is
-  // unavailable or `streamMode="mjpeg"`.
-  const useAvcc = !useWebRtc && streamMode === "avcc" && isAvccSupported();
+  const effectiveStreamMode = streamMode === "avcc" && !isAvccSupported() ? "mjpeg" : streamMode;
+  const useWebRtc = effectiveStreamMode === "webrtc";
+  const useAvcc = effectiveStreamMode === "avcc";
   const imgRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);

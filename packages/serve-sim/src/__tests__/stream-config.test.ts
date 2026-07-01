@@ -59,7 +59,7 @@ describe("mjpegStreamUrlFrom", () => {
         url: "https://sim-abcd.expo-simulator.ngrok.dev/",
         streamUrl: "https://sim-abcd.expo-simulator.ngrok.dev/stream.avcc",
         wsUrl: "wss://sim-abcd.expo-simulator.ngrok.dev/ws",
-        codec: "h264",
+        streamSettings: { transport: "http", codec: "h264" },
       }),
     ).toBe("https://sim-abcd.expo-simulator.ngrok.dev/stream.mjpeg");
   });

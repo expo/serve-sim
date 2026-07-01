@@ -6,9 +6,8 @@ describe("streamRuntimeArgs", () => {
     expect(
       streamRuntimeArgs({
         transport: "webrtc",
-        codec: "h264",
-        webrtcCodec: "vp8",
-        webrtcIceServers: [
+        codec: "vp8",
+        iceServers: [
           { urls: ["stun:stun.example.com:19302"] },
           {
             urls: ["turn:turn.example.com:3478", "turns:turn.example.com:5349"],
@@ -20,8 +19,6 @@ describe("streamRuntimeArgs", () => {
     ).toEqual([
       "--transport",
       "webrtc",
-      "--codec",
-      "h264",
       "--webrtc-codec",
       "vp8",
       "--stun-url",

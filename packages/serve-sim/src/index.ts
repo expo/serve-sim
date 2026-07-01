@@ -5,7 +5,15 @@ import { existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unl
 import { createHash } from "crypto";
 import { networkInterfaces } from "os";
 import { join, resolve } from "path";
-import { STATE_DIR, stateFileForDevice, listStateFiles, inProcessServeSimState, type ServeSimDeviceState } from "./state";
+import {
+  STATE_DIR,
+  stateFileForDevice,
+  listStateFiles,
+  inProcessServeSimState,
+  type ServeSimDeviceState,
+  type StreamSettings,
+  type WebRtcIceServer,
+} from "./state";
 import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from "./text-to-keys";
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
 import { killPortHolder } from "./ports";
@@ -40,8 +48,6 @@ function resolveVersion(): string {
 
 type ServerState = ServeSimDeviceState;
 
-type StreamRuntimeOptions = Pick<ServeSimDeviceState, "transport" | "codec" | "webrtcCodec" | "webrtcIceServers">;
-type WebRTCIceServer = NonNullable<ServeSimDeviceState["webrtcIceServers"]>[number];
 function ensureStateDir() {
   if (!existsSync(STATE_DIR)) {
     mkdirSync(STATE_DIR, { recursive: true });
@@ -343,7 +349,7 @@ async function waitForStateFile(udid: string, timeoutMs = 150_000): Promise<Serv
 async function startHelper(
   udid: string,
   port: number,
-  opts: { detach: boolean; stream?: StreamRuntimeOptions },
+  opts: { detach: boolean; streamSettings?: StreamSettings },
 ): Promise<{ pid: number; child?: ChildProcess }> {
   debugHelper("startHelper udid=%s port=%d detach=%s", udid, port, opts.detach);
 
@@ -360,7 +366,7 @@ async function startHelper(
     String(port),
     "--host",
     host,
-    ...streamRuntimeArgs(opts.stream),
+    ...streamRuntimeArgs(opts.streamSettings),
   ]);
   const child = nodeSpawn(command, args, {
     detached: opts.detach,
@@ -388,7 +394,7 @@ async function follow(
   devices: string[],
   startPort: number,
   quiet: boolean,
-  stream?: StreamRuntimeOptions,
+  streamSettings?: StreamSettings,
 ) {
   debugCli("follow devices=%o startPort=%d", devices, startPort);
   const udids = devices.length > 0
@@ -427,7 +433,7 @@ async function follow(
     }
 
     port = await findAvailablePort(port);
-    const { child } = await startHelper(udid, port, { detach: false, stream });
+    const { child } = await startHelper(udid, port, { detach: false, streamSettings });
 
     if (child) {
       children.set(udid, child);
@@ -514,7 +520,7 @@ async function follow(
 async function detach(
   devices: string[],
   startPort: number,
-  stream?: StreamRuntimeOptions,
+  streamSettings?: StreamSettings,
 ): Promise<ServerState[]> {
   debugCli("detach devices=%o startPort=%d", devices, startPort);
   const udids = devices.length > 0
@@ -541,7 +547,7 @@ async function detach(
     }
 
     port = await findAvailablePort(port);
-    await startHelper(udid, port, { detach: true, stream });
+    await startHelper(udid, port, { detach: true, streamSettings });
 
     // Reuse the detached server's own in-process state (same-origin /helper URLs).
     states.push(readState(udid) ?? inProcessServeSimState(udid, port, "/", "127.0.0.1"));
@@ -1601,7 +1607,7 @@ async function serve(
   portExplicit: boolean,
   host: string,
   options: {
-    stream?: StreamRuntimeOptions;
+    streamSettings?: StreamSettings;
   } = {},
 ) {
   // Boot the target simulators; the preview server streams them in-process
@@ -1619,10 +1625,7 @@ async function serve(
   const middleware = simMiddleware({
     basePath: "/",
     device: targetDevice,
-    codec: options.stream?.codec,
-    transport: options.stream?.transport,
-    webrtcCodec: options.stream?.webrtcCodec,
-    webrtcIceServers: options.stream?.webrtcIceServers,
+    streamSettings: options.streamSettings,
     proxyHelpers: true,
   });
 
@@ -1659,7 +1662,7 @@ async function serve(
   // Record in-process state so the preview/grid enumerate these devices and the
   // CLI input subcommands can reach the same-origin /helper ws.
   for (const udid of targetDevices) {
-    writeState(inProcessServeSimState(udid, boundPort, "/", host, options.stream));
+    writeState(inProcessServeSimState(udid, boundPort, "/", host, options.streamSettings));
   }
   const clearAll = () => {
     for (const udid of targetDevices) {
@@ -1767,7 +1770,7 @@ Examples:
     const stunUrls = typeof opts.stunUrl === "string"
       ? opts.stunUrl.split(",").map((s: string) => s.trim()).filter(Boolean)
       : [];
-    const webrtcIceServers: WebRTCIceServer[] = [];
+    const webrtcIceServers: WebRtcIceServer[] = [];
     if (stunUrls.length) webrtcIceServers.push({ urls: stunUrls });
     if (opts.turnUrl) {
       webrtcIceServers.push({
@@ -1776,21 +1779,25 @@ Examples:
         credential: opts.turnCredential,
       });
     }
-    const stream: StreamRuntimeOptions = {
-      transport: opts.transport,
-      codec: opts.codec,
-      webrtcCodec: opts.transport === "webrtc" ? opts.webrtcCodec : undefined,
-      webrtcIceServers: webrtcIceServers.length ? webrtcIceServers : undefined,
-    };
+    const streamSettings: StreamSettings = opts.transport === "webrtc"
+      ? {
+          transport: "webrtc",
+          codec: opts.webrtcCodec,
+          ...(webrtcIceServers.length ? { iceServers: webrtcIceServers } : {}),
+        }
+      : {
+          transport: "http",
+          codec: opts.codec,
+        };
     const startPort: number | undefined = opts.port;
     if (opts.detach) {
-      const states = await detach(devices, startPort ?? 3100, stream);
+      const states = await detach(devices, startPort ?? 3100, streamSettings);
       printStatesJSON(states);
     } else if (opts.preview === false) {
-      await follow(devices, startPort ?? 3100, !!opts.quiet, stream);
+      await follow(devices, startPort ?? 3100, !!opts.quiet, streamSettings);
     } else {
       await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, {
-        stream,
+        streamSettings,
       });
     }
   });

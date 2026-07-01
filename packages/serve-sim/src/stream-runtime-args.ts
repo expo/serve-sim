@@ -1,12 +1,7 @@
-import type { ServeSimDeviceState } from "./state";
-
-type StreamRuntimeOptions = Pick<
-  ServeSimDeviceState,
-  "transport" | "codec" | "webrtcCodec" | "webrtcIceServers"
->;
+import type { StreamSettings, WebRtcIceServer } from "./state";
 
 function urlsWithPrefix(
-  servers: StreamRuntimeOptions["webrtcIceServers"],
+  servers: WebRtcIceServer[] | undefined,
   prefixes: string[],
 ): string[] {
   const urls: string[] = [];
@@ -20,29 +15,33 @@ function urlsWithPrefix(
 }
 
 function firstTurnServer(
-  servers: StreamRuntimeOptions["webrtcIceServers"],
-): NonNullable<StreamRuntimeOptions["webrtcIceServers"]>[number] | null {
+  servers: WebRtcIceServer[] | undefined,
+): WebRtcIceServer | null {
   for (const server of servers ?? []) {
     if (server.urls.some((url) => /^turns?:/i.test(url))) return server;
   }
   return null;
 }
 
-export function streamRuntimeArgs(stream?: StreamRuntimeOptions): string[] {
-  if (!stream) return [];
+export function streamRuntimeArgs(settings?: StreamSettings): string[] {
+  if (!settings) return [];
 
   const args: string[] = [];
-  if (stream.transport) args.push("--transport", stream.transport);
-  if (stream.codec) args.push("--codec", stream.codec);
-  if (stream.webrtcCodec) args.push("--webrtc-codec", stream.webrtcCodec);
+  args.push("--transport", settings.transport);
+  if (settings.transport === "http") {
+    if (settings.codec) args.push("--codec", settings.codec);
+    return args;
+  }
 
-  const stunUrls = urlsWithPrefix(stream.webrtcIceServers, ["stun:", "stuns:"]);
+  args.push("--webrtc-codec", settings.codec);
+
+  const stunUrls = urlsWithPrefix(settings.iceServers, ["stun:", "stuns:"]);
   if (stunUrls.length) args.push("--stun-url", stunUrls.join(","));
 
-  const turnUrls = urlsWithPrefix(stream.webrtcIceServers, ["turn:", "turns:"]);
+  const turnUrls = urlsWithPrefix(settings.iceServers, ["turn:", "turns:"]);
   if (turnUrls.length) {
     args.push("--turn-url", turnUrls.join(","));
-    const turnServer = firstTurnServer(stream.webrtcIceServers);
+    const turnServer = firstTurnServer(settings.iceServers);
     if (turnServer?.username) args.push("--turn-username", turnServer.username);
     if (turnServer?.credential) args.push("--turn-credential", turnServer.credential);
   }

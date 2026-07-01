@@ -1,3 +1,5 @@
+import type { StreamSettings } from "../../state";
+
 declare global {
   interface Window {
     __SIM_PREVIEW__?: {
@@ -22,16 +24,7 @@ declare global {
       serveSimBin?: string;
       /** Bearer token required by the /exec shell-exec route. */
       execToken?: string;
-      transport?: "http" | "webrtc";
-      /**
-       * Server-pinned stream codec. `"mjpeg"` forces the software JPEG path
-       * (for hosts whose hardware can't encode H.264); `"auto"`/undefined lets
-       * the client pick H.264 when the browser can decode it. Reserved for
-       * future values like `"hevc"`/`"av1"`.
-       */
-      codec?: "auto" | "mjpeg" | "h264";
-      webrtcCodec?: "vp8" | "vp9" | "h264";
-      webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
+      streamSettings?: StreamSettings;
       /**
        * Set when the server routes helper stream/control + DevTools sockets
        * through its same-origin `/helper` and `/devtools` proxies. The browser

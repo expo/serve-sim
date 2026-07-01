@@ -14,7 +14,7 @@ import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { getDeviceSession, type HidSocket } from "./device-session";
 import { axFrontmostAsync } from "./native";
-import { inProcessServeSimState, writeServeSimState, type ServeSimDeviceState } from "./state";
+import { inProcessServeSimState, writeServeSimState, type ServeSimDeviceState, type StreamSettings } from "./state";
 import { debugMw } from "./debug";
 import {
   resolveDevicePlaceholderAsset,
@@ -649,7 +649,7 @@ export async function startDeviceInProcess(
   udid: string,
   port: number,
   base: string,
-  stream?: Pick<ServeSimState, "transport" | "codec" | "webrtcCodec" | "webrtcIceServers">,
+  streamSettings?: StreamSettings,
 ): Promise<string | null> {
   // `simctl boot` errors when already booted — ignore and let bootstatus confirm.
   await new Promise<void>((resolve) => execFile("xcrun", ["simctl", "boot", udid], () => resolve()));
@@ -672,7 +672,7 @@ export async function startDeviceInProcess(
     });
     if (!booted) return `Device ${udid} failed to reach booted state`;
   }
-  writeServeSimState(inProcessServeSimState(udid, port, base, "127.0.0.1", stream));
+  writeServeSimState(inProcessServeSimState(udid, port, base, "127.0.0.1", streamSettings));
   return null;
 }
 
@@ -752,7 +752,7 @@ export function previewConfigForState(
   base: string,
   serveSimBin: string,
   execToken: string,
-  codec?: ServeSimDeviceState["codec"],
+  streamSettings?: StreamSettings,
   proxyHelpers = false,
 ): ServeSimState & {
   basePath: string;
@@ -766,10 +766,7 @@ export function previewConfigForState(
   gridMemoryEndpoint: string;
   previewEndpoint: string;
   execToken: string;
-  codec?: ServeSimDeviceState["codec"];
-  transport?: "http" | "webrtc";
-  webrtcCodec?: "vp8" | "vp9" | "h264";
-  webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
+  streamSettings?: StreamSettings;
   proxyHelpers?: boolean;
 } {
   const gridApiBase = (base === "" ? "" : base) + "/grid/api";
@@ -786,7 +783,7 @@ export function previewConfigForState(
     gridMemoryEndpoint: gridApiBase + "/memory",
     previewEndpoint: base === "" ? "/" : base,
     execToken,
-    ...(codec ? { codec } : {}),
+    ...(streamSettings ? { streamSettings } : {}),
     ...(proxyHelpers ? { proxyHelpers: true } : {}),
   };
 }
@@ -1114,16 +1111,8 @@ export interface SimMiddlewareOptions {
    * cross-origin pages cannot read it.
    */
   execToken?: string;
-  /**
-   * Pin the preview stream codec. `"mjpeg"` forces the software JPEG path for
-   * hosts whose hardware can't encode H.264 (e.g. VMs without the high/low-
-   * latency H.264 profiles); `"auto"`/undefined lets the browser pick H.264.
-   * Reserved for future values such as `"hevc"`/`"av1"`.
-   */
-  codec?: "auto" | "mjpeg" | "h264";
-  transport?: "http" | "webrtc";
-  webrtcCodec?: "vp8" | "vp9" | "h264";
-  webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
+  /** Stream transport and codec settings for the preview. */
+  streamSettings?: StreamSettings;
   /**
    * Route the browser's helper stream/control and DevTools sockets through the
    * preview's same-origin `/helper` and `/devtools` proxies instead of the
@@ -1261,7 +1250,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
       if (state) {
         const remoteState = rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers);
-        const config = JSON.stringify(previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.codec, proxyHelpers));
+        const config = JSON.stringify(previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.streamSettings, proxyHelpers));
         const configScript = `<script>window.__SIM_PREVIEW__=${config}</script>`;
         html = html.replace("<!--__SIM_PREVIEW_CONFIG__-->", configScript);
       }
@@ -1426,12 +1415,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           return;
         }
         const port = req.socket.localPort ?? 0;
-        void startDeviceInProcess(udid, port, base, {
-          transport: options?.transport,
-          codec: options?.codec,
-          webrtcCodec: options?.webrtcCodec,
-          webrtcIceServers: options?.webrtcIceServers,
-        }).then((error) => {
+        void startDeviceInProcess(udid, port, base, options?.streamSettings).then((error) => {
           if (res.writableEnded) return;
           if (error) {
             res.writeHead(500, { "Content-Type": "application/json" });
@@ -1575,7 +1559,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         "Cache-Control": "no-store",
       });
       const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
-      res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.codec, proxyHelpers) : null));
+      res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.streamSettings, proxyHelpers) : null));
       return;
     }
 
@@ -1589,7 +1573,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         const state = selectServeSimState(states, selectedDevice);
         const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
         return JSON.stringify(
-          remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.codec, proxyHelpers) : null,
+          remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.streamSettings, proxyHelpers) : null,
         );
       };
 

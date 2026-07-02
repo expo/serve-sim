@@ -24,7 +24,31 @@ struct WebRTCAnswerPayload: Codable {
     let sdp: String
 }
 
+private final class WebRTCSignalingCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+    private let body: (Result<WebRTCAnswerPayload, Error>) -> Void
+
+    init(_ body: @escaping (Result<WebRTCAnswerPayload, Error>) -> Void) {
+        self.body = body
+    }
+
+    func resume(with result: Result<WebRTCAnswerPayload, Error>) -> Bool {
+        lock.lock()
+        if completed {
+            lock.unlock()
+            return false
+        }
+        completed = true
+        lock.unlock()
+        body(result)
+        return true
+    }
+}
+
 final class WebRTCPublisher {
+    private static let signalingTimeoutMs = 10_000
+
     var onInput: ((Data) -> Void)?
     var onActiveChanged: ((Bool) -> Void)?
 
@@ -114,25 +138,23 @@ final class WebRTCPublisher {
         }
     }
 
-    func handleOffer(_ request: WebRTCOfferPayload) throws -> WebRTCAnswerPayload {
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: Result<WebRTCAnswerPayload, Error>?
-        queue.async {
-            self.createAnswer(request) { answerResult in
-                result = answerResult
-                semaphore.signal()
-            }
-        }
-        semaphore.wait()
-        return try result!.get()
-    }
-
     func handleOffer(_ request: WebRTCOfferPayload) async throws -> WebRTCAnswerPayload {
         try await withCheckedThrowingContinuation { continuation in
+            let completion = WebRTCSignalingCompletion { result in
+                continuation.resume(with: result)
+            }
             queue.async {
                 self.createAnswer(request) { result in
-                    continuation.resume(with: result)
+                    _ = completion.resume(with: result)
                 }
+            }
+            queue.asyncAfter(deadline: .now().advanced(by: .milliseconds(Self.signalingTimeoutMs))) {
+                guard completion.resume(with: .failure(self.makeError("WebRTC signaling timed out"))) else {
+                    return
+                }
+                self.session?.close()
+                self.session = nil
+                self.onActiveChanged?(false)
             }
         }
     }

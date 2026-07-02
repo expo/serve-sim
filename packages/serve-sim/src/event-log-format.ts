@@ -1,11 +1,14 @@
 import type { EventLogEntry } from "./event-log";
 
-export function formatEventLogLine(entry: EventLogEntry): string {
+export function formatEventLogLine(
+  entry: EventLogEntry,
+  options: { deviceLabel?: string | null } = {},
+): string {
   const time = new Date(entry.timestamp);
   const stamp = Number.isNaN(time.getTime())
     ? entry.timestamp
     : time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const device = entry.device ? entry.device.slice(0, 8) : null;
+  const device = options.deviceLabel ?? (entry.device ? entry.device.slice(0, 8) : null);
   const status = entry.status === "error" ? " failed" : "";
   return [stamp, device, `${humanEventLogSummary(entry)}${status ? ` (${status.trim()})` : ""}`]
     .filter(Boolean)

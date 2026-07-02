@@ -21,8 +21,8 @@ describe("formatEventLogLine", () => {
         kind: "tap",
         summary: "Tap 0.214,0.585",
         details: { current: { x: 0.214, y: 0.585 } },
-      })),
-    ).toContain("AC78FEE5  Tap at 21%, 59%");
+      }), { deviceLabel: "iPhone 17" }),
+    ).toContain("iPhone 17  Tap at 21%, 59%");
   });
 
   test("formats drags as a sentence", () => {

@@ -659,8 +659,11 @@ async function eventLog(
     console.log("No events.");
     return;
   }
+  const deviceLabels = deviceLabelsForEvents(payload.events);
   for (const entry of payload.events) {
-    console.log(formatEventLogLine(entry));
+    console.log(formatEventLogLine(entry, {
+      deviceLabel: entry.device ? deviceLabels.get(entry.device) : null,
+    }));
   }
 }
 
@@ -672,6 +675,25 @@ function parseEventLogLimit(value: string | undefined): number | undefined {
     process.exit(1);
   }
   return Math.floor(limit);
+}
+
+function deviceLabelsForEvents(events: EventLogEntry[]): Map<string, string> {
+  const devices = [...new Set(events.map((event) => event.device).filter((device): device is string => !!device))];
+  const names = new Map<string, string>();
+  for (const device of devices) {
+    names.set(device, getDeviceName(device) ?? device.slice(0, 8));
+  }
+
+  const counts = new Map<string, number>();
+  for (const name of names.values()) {
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+
+  const labels = new Map<string, string>();
+  for (const [device, name] of names) {
+    labels.set(device, counts.get(name)! > 1 ? `${name} (${device.slice(0, 8)})` : name);
+  }
+  return labels;
 }
 
 async function gesture(jsonStr: string, deviceArg?: string) {

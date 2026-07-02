@@ -166,45 +166,46 @@ Create a `.claude/launch.json` and define a server:
 
 ### Expo
 
-Automatically start the serve-sim process with `npx expo start` and access the URL at `http://localhost:8081/.sim`.
+Expo apps don't need to touch `metro.config.js` — the [`expo-device-hub`](https://github.com/expo/expo-device-hub) plugin uses `@expo/serve-sim` and sets up the device streaming for you.
 
-First, customize the `metro.config.js` file (`bunx expo customize`):
-
-```js
-// Learn more https://docs.expo.io/guides/customizing-metro
-const { getDefaultConfig } = require("expo/metro-config");
-const connect = require("connect");
-const { simMiddleware } = require("serve-sim/middleware");
-
-/** @type {import('expo/metro-config').MetroConfig} */
-const config = getDefaultConfig(__dirname);
-
-config.server = config.server || {};
-const originalEnhanceMiddleware = config.server.enhanceMiddleware;
-config.server.enhanceMiddleware = (metroMiddleware, server) => {
-  const middleware = originalEnhanceMiddleware
-    ? originalEnhanceMiddleware(metroMiddleware, server)
-    : metroMiddleware;
-  const app = connect();
-  app.use(simMiddleware({ basePath: "/.sim" }));
-  app.use(middleware);
-  return app;
-};
-
-module.exports = config;
+```sh
+npx expo install expo-device-hub
 ```
+
+Then run `npx expo start` and open the simulator preview at:
+
+```
+http://localhost:8081/_expo/plugins/expo-device-hub
+```
+
+No other configuration needed.
 
 ## Embed in your dev server
 
-`serve-sim/middleware` is a Connect-style middleware that mounts the same preview UI inside your existing dev server (Metro, Vite, Next, plain Express, etc.). Run `serve-sim --detach` once to start the streaming helper, then add the middleware:
+`serve-sim/middleware` is a **fetch-style** middleware. `simMiddleware(options)` returns a Web-standard request handler with a `.handleWebSocket` hook, so it mounts in any server that speaks `Request`/`Response` (Bun, Deno, Hono, a Node adapter, …). Run `serve-sim --detach` once to start the streaming helper, then wire the two entry points:
 
 ```ts
 import { simMiddleware } from "serve-sim/middleware";
 
-app.use(simMiddleware({ basePath: "/.sim" }));
-// → preview HTML at /.sim
-// → state JSON  at /.sim/api
-// → SSE logs    at /.sim/logs
+const middleware = simMiddleware({ basePath: "/.sim" });
+
+// `server` is a stand-in for your runtime (Bun.serve, node:http + ws, Deno, …).
+
+// HTTP — run every request through the middleware. It returns a Response for
+// serve-sim's own routes (preview at /.sim, state at /.sim/api, SSE logs at
+// /.sim/logs), or `undefined` — meaning "not mine", so fall through.
+server.onRequest(async (request) => {
+  return (await middleware(request)) ?? new Response("Not found", { status: 404 });
+});
+
+// WebSocket — the preview client runs execs, simulator settings, and the SSE
+// side-channels over one socket at `<basePath>/exec-ws`, with no HTTP fallback.
+// On upgrade, hand the request + accepted socket to handleWebSocket; it returns
+// true once it owns the socket. `socket` is a `ws`-style WebSocket (Node's `ws`
+// works as-is; other runtimes need a small adapter).
+server.onUpgrade((request, socket) => {
+  if (!middleware.handleWebSocket?.(request, socket)) socket.close();
+});
 ```
 
 The middleware reads the helper's state from `$TMPDIR/serve-sim/` and forwards the user's browser to the live MJPEG + WebSocket endpoints. CORS is wide-open on the helper, so the page renders without a proxy.

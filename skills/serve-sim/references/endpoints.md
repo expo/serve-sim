@@ -76,12 +76,15 @@ This is a Node middleware that serves the preview UI and proxies state. It can b
 | `POST` | `/grid/api/shutdown` | Shut down a specific device. |
 | `POST` | `/grid/api/memory` | Memory usage report. |
 
-When embedding the middleware in another dev server (Metro, Vite, Express), the `basePath` is configurable:
+`simMiddleware(options)` is a fetch-style handler — `(Request) => Response | undefined` plus a `.handleWebSocket(request, socket)` hook — for fetch-native servers (Bun, Deno, Hono). The `basePath` is configurable:
 
 ```ts
-import { simMiddleware } from "serve-sim/middleware";
-app.use(simMiddleware({ basePath: "/.sim" }));
+import { simMiddleware } from "@expo/serve-sim/middleware";
+const middleware = simMiddleware({ basePath: "/.sim" });
+// Bun.serve({ fetch: (req) => middleware(req) ?? new Response(null, { status: 404 }), websocket: {...} })
 ```
+
+The preview client is WS-only: execs, simulator settings, and the SSE side-channels all ride `<basePath>/exec-ws`, so wire the upgrade to `.handleWebSocket`. On a Connect-based host (Metro/Express) adapt the request/response to Node's `IncomingMessage`/`ServerResponse`, or just run `@expo/serve-sim` standalone.
 
 ## Authentication
 

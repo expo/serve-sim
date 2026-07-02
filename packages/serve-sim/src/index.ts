@@ -14,6 +14,7 @@ import { permissions } from "./permissions";
 import { uiSettings } from "./ui-settings";
 import { debugCli, debugHelper, debugState } from "./debug";
 import type { EventLogEntry } from "./event-log";
+import { formatEventLogLine } from "./event-log-format";
 
 // `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
 // CLI works under plain `node` too.
@@ -671,16 +672,6 @@ function parseEventLogLimit(value: string | undefined): number | undefined {
     process.exit(1);
   }
   return Math.floor(limit);
-}
-
-function formatEventLogLine(entry: EventLogEntry): string {
-  const time = new Date(entry.timestamp);
-  const stamp = Number.isNaN(time.getTime())
-    ? entry.timestamp
-    : time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const device = entry.device ? ` ${entry.device.slice(0, 8)}` : "";
-  const status = entry.status && entry.status !== "ok" ? ` [${entry.status}]` : "";
-  return `${stamp}${device} ${entry.source}/${entry.kind}${status} ${entry.summary}`;
 }
 
 async function gesture(jsonStr: string, deviceArg?: string) {

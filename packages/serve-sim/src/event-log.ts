@@ -33,7 +33,14 @@ export function recordEventLogEvent(draft: EventLogDraft): EventLogEntry {
   if (entries.length > EVENT_LOG_MAX_ENTRIES) {
     entries = entries.slice(entries.length - EVENT_LOG_MAX_ENTRIES);
   }
-  for (const subscriber of subscribers) subscriber(entry);
+  for (const subscriber of subscribers) {
+    try {
+      subscriber(entry);
+    } catch {
+      // Event log observers are diagnostic side-channels. A broken stream must
+      // not make the simulator input/command path fail.
+    }
+  }
   return entry;
 }
 

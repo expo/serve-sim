@@ -9,6 +9,8 @@ type EventLogPayload = {
   event?: EventLogEntry;
 };
 
+const MAX_EVENT_LOG_ROWS = 500;
+
 export function EventLogTool({
   udid,
   eventsEndpoint,
@@ -34,9 +36,12 @@ export function EventLogTool({
         const payload = JSON.parse(data) as EventLogPayload;
         setErrored(false);
         if (Array.isArray(payload.events)) {
-          setEvents(payload.events);
+          setEvents(payload.events.slice(-MAX_EVENT_LOG_ROWS));
         } else if (payload.event) {
-          setEvents((prev) => [...prev.filter((entry) => entry.id !== payload.event!.id), payload.event!]);
+          setEvents((prev) => {
+            const next = [...prev.filter((entry) => entry.id !== payload.event!.id), payload.event!];
+            return next.slice(-MAX_EVENT_LOG_ROWS);
+          });
         }
       } catch {}
     };

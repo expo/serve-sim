@@ -17,7 +17,7 @@ const TOKEN = "exec-ws-test-token";
 let server: PreviewServer;
 
 beforeAll(async () => {
-  const middleware = simMiddleware({ basePath: "/", execToken: TOKEN });
+  const middleware = simMiddleware({ basePath: "/", execToken: TOKEN, device: "DEVICE-A" });
   server = await servePreview({ port: PORT, middleware, host: "127.0.0.1" });
 });
 
@@ -153,6 +153,30 @@ describe("exec-ws control channel", () => {
     expect(res.status).toBe(200);
     const payload = await res.json() as { events: Array<{ summary: string }> };
     expect(payload.events.map((event) => event.summary)).toEqual(["Button volume-up"]);
+  });
+
+  test("event log endpoint only filters when a device query is present", async () => {
+    clearEventLogForTests();
+    recordEventLogEvent({
+      device: "DEVICE-A",
+      source: "hid",
+      kind: "button",
+      summary: "Button home",
+    });
+    recordEventLogEvent({
+      device: "DEVICE-B",
+      source: "hid",
+      kind: "button",
+      summary: "Button volume-up",
+    });
+
+    const res = await fetch(`http://127.0.0.1:${PORT}/api/event-log`);
+    expect(res.status).toBe(200);
+    const payload = await res.json() as { events: Array<{ summary: string }> };
+    expect(payload.events.map((event) => event.summary)).toEqual([
+      "Button home",
+      "Button volume-up",
+    ]);
   });
 
   test("event log sse route is available over the control socket", async () => {

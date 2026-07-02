@@ -1270,7 +1270,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     const rawUrl: string = req.url ?? "";
     const qIndex = rawUrl.indexOf("?");
     const url = qIndex === -1 ? rawUrl : rawUrl.slice(0, qIndex);
-    const selectedDevice = queryDevice(rawUrl) ?? options?.device ?? null;
+    const requestedDevice = queryDevice(rawUrl);
+    const selectedDevice = requestedDevice ?? options?.device ?? null;
     const devtoolsFrontendBase = base === "/" ? "/devtools-frontend" : `${base}/devtools-frontend`;
 
     const helperTarget = helperProxyTarget(rawUrl, helperPrefix);
@@ -1659,7 +1660,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       });
       res.end(JSON.stringify({
         events: readEventLog({
-          device: selectedDevice,
+          device: requestedDevice,
           sinceId: eventLogSinceId(rawUrl),
           limit: eventLogLimit(rawUrl),
         }),
@@ -1679,14 +1680,14 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       res.write(":\n\n");
       res.write("data: " + JSON.stringify({
         events: readEventLog({
-          device: selectedDevice,
+          device: requestedDevice,
           sinceId: eventLogSinceId(rawUrl),
           limit: eventLogLimit(rawUrl),
         }),
       }) + "\n\n");
 
       const unsubscribe = subscribeEventLog((event) => {
-        if (selectedDevice && event.device !== selectedDevice) return;
+        if (requestedDevice && event.device !== requestedDevice) return;
         if (res.writableEnded) return;
         res.write("data: " + JSON.stringify({ event }) + "\n\n");
       });

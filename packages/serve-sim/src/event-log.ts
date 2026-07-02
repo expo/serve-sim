@@ -23,6 +23,17 @@ let nextEventId = 1;
 let entries: EventLogEntry[] = [];
 const subscribers = new Set<(entry: EventLogEntry) => void>();
 
+function notifyEventLogSubscribers(entry: EventLogEntry): void {
+  for (const subscriber of subscribers) {
+    try {
+      subscriber(entry);
+    } catch {
+      // Event log observers are diagnostic side-channels. A broken stream must
+      // not make the simulator input/command path fail.
+    }
+  }
+}
+
 export function recordEventLogEvent(draft: EventLogDraft): EventLogEntry {
   const entry: EventLogEntry = {
     ...draft,
@@ -33,14 +44,19 @@ export function recordEventLogEvent(draft: EventLogDraft): EventLogEntry {
   if (entries.length > EVENT_LOG_MAX_ENTRIES) {
     entries = entries.slice(entries.length - EVENT_LOG_MAX_ENTRIES);
   }
-  for (const subscriber of subscribers) {
-    try {
-      subscriber(entry);
-    } catch {
-      // Event log observers are diagnostic side-channels. A broken stream must
-      // not make the simulator input/command path fail.
-    }
-  }
+  notifyEventLogSubscribers(entry);
+  return entry;
+}
+
+export function updateEventLogEvent(
+  id: number,
+  patch: Partial<Omit<EventLogEntry, "id">>,
+): EventLogEntry | null {
+  const index = entries.findIndex((entry) => entry.id === id);
+  if (index < 0) return null;
+  const entry = { ...entries[index]!, ...patch, id };
+  entries[index] = entry;
+  notifyEventLogSubscribers(entry);
   return entry;
 }
 
@@ -355,13 +371,15 @@ export function eventLogEventForCommand(
       };
     }
     if (verb === "camera") {
+      const action = cameraAction(args);
+      if (action === "status" || action === "list-webcams") return null;
       return {
         device,
         source: "exec",
         kind: "camera",
-        action: firstPositional(args) ?? "start",
+        action: action ?? "start",
         status,
-        summary: "Camera",
+        summary: action ? `Camera ${action}` : "Camera",
         details: commandDetail,
       };
     }
@@ -525,6 +543,12 @@ function firstPositional(args: string[]): string | undefined {
     return arg;
   }
   return undefined;
+}
+
+function cameraAction(args: string[]): string | undefined {
+  if (args.includes("--list-webcams")) return "list-webcams";
+  if (args.includes("--stop-webcam")) return "stop-webcam";
+  return firstPositional(args);
 }
 
 function basename(path: string | undefined): string {

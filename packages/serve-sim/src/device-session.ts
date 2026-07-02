@@ -23,7 +23,7 @@ import {
   axFrontmostAsync,
   type MjpegFrame,
 } from "./native";
-import { eventLogEventForHidMessage, recordEventLogEvent } from "./event-log";
+import { eventLogEventForHidMessage, recordEventLogEvent, updateEventLogEvent } from "./event-log";
 
 /**
  * Minimal WebSocket surface the HID input channel needs. Satisfied by both the
@@ -52,6 +52,37 @@ const AVCC_SEED_TAG = 0x04;
 const WS_MSG_CONFIG = 0x82;
 
 const MJPEG_TRAILER = Buffer.from("\r\n", "ascii");
+const TOUCH_TAP_MAX_DISTANCE = 0.004;
+
+type TouchGestureLog = {
+  eventId: number;
+  startX: number;
+  startY: number;
+  lastX: number;
+  lastY: number;
+  moveCount: number;
+  edge?: number;
+};
+
+function formatEventLogPoint(x: number, y: number): string {
+  return `${formatEventLogNumber(x)},${formatEventLogNumber(y)}`;
+}
+
+function formatEventLogNumber(value: number): string {
+  if (!Number.isFinite(value)) return "";
+  return value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function touchGestureSummary(gesture: TouchGestureLog): string {
+  const moveLabel = gesture.moveCount === 1 ? "1 move" : `${gesture.moveCount} moves`;
+  return `Drag ${formatEventLogPoint(gesture.startX, gesture.startY)} -> ${formatEventLogPoint(gesture.lastX, gesture.lastY)} (${moveLabel})`;
+}
+
+function touchGestureMoved(gesture: TouchGestureLog): boolean {
+  const dx = gesture.lastX - gesture.startX;
+  const dy = gesture.lastY - gesture.startY;
+  return Math.hypot(dx, dy) > TOUCH_TAP_MAX_DISTANCE;
+}
 
 function mjpegHeader(jpegLength: number): Buffer {
   return Buffer.from(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpegLength}\r\n\r\n`, "ascii");
@@ -104,6 +135,7 @@ export class DeviceSession {
   private latestJpegBuffer: Buffer | null = null;
   private latestJpegLength = 0;
   private readonly hidSockets = new Set<HidSocket>();
+  private touchGestureLog?: TouchGestureLog;
 
   constructor(public readonly udid: string) {
     this.hid = new NativeHid(udid);
@@ -274,7 +306,7 @@ export class DeviceSession {
       case 0x03: {
         const m = json<{ type: string; x: number; y: number; edge?: number }>();
         if (m) {
-          this.recordHidEvent(tag, m);
+          this.recordTouchEvent(m);
           this.hid.touch(m.type as "begin" | "move" | "end", m.x, m.y, W, H, m.edge ?? 0);
         }
         break;
@@ -355,12 +387,124 @@ export class DeviceSession {
     }
   }
 
+  private recordTouchEvent(payload: { type: string; x: number; y: number; edge?: number }): void {
+    if (payload.type === "begin") {
+      const event = eventLogEventForHidMessage(
+        this.udid,
+        0x03,
+        payload,
+        this.eventLogScreen(),
+      );
+      if (!event) return;
+      const entry = recordEventLogEvent(event);
+      this.touchGestureLog = {
+        eventId: entry.id,
+        startX: payload.x,
+        startY: payload.y,
+        lastX: payload.x,
+        lastY: payload.y,
+        moveCount: 0,
+        edge: payload.edge,
+      };
+      return;
+    }
+
+    if (payload.type === "move") {
+      let gesture = this.touchGestureLog;
+      if (!gesture) {
+        const entry = recordEventLogEvent({
+          device: this.udid,
+          source: "hid",
+          kind: "drag",
+          action: "move",
+          summary: `Drag ${formatEventLogPoint(payload.x, payload.y)}`,
+          details: this.touchGestureDetails({
+            eventId: 0,
+            startX: payload.x,
+            startY: payload.y,
+            lastX: payload.x,
+            lastY: payload.y,
+            moveCount: 1,
+            edge: payload.edge,
+          }, "move"),
+        });
+        gesture = {
+          eventId: entry.id,
+          startX: payload.x,
+          startY: payload.y,
+          lastX: payload.x,
+          lastY: payload.y,
+          moveCount: 0,
+          edge: payload.edge,
+        };
+        this.touchGestureLog = gesture;
+      }
+
+      gesture.lastX = payload.x;
+      gesture.lastY = payload.y;
+      gesture.moveCount++;
+      if (payload.edge != null) gesture.edge = payload.edge;
+      updateEventLogEvent(gesture.eventId, {
+        kind: "drag",
+        action: "move",
+        summary: touchGestureSummary(gesture),
+        details: this.touchGestureDetails(gesture, "move"),
+      });
+      return;
+    }
+
+    if (payload.type === "end") {
+      const gesture = this.touchGestureLog;
+      if (gesture) {
+        gesture.lastX = payload.x;
+        gesture.lastY = payload.y;
+        if (payload.edge != null) gesture.edge = payload.edge;
+        if (gesture.moveCount > 0 && touchGestureMoved(gesture)) {
+          updateEventLogEvent(gesture.eventId, {
+            kind: "drag",
+            action: "end",
+            summary: touchGestureSummary(gesture),
+            details: this.touchGestureDetails(gesture, "end"),
+          });
+        } else {
+          updateEventLogEvent(gesture.eventId, {
+            kind: "tap",
+            action: "tap",
+            summary: `Tap ${formatEventLogPoint(payload.x, payload.y)}`,
+            details: this.touchGestureDetails(gesture, "tap"),
+          });
+        }
+        this.touchGestureLog = undefined;
+        return;
+      }
+    }
+
+    this.recordHidEvent(0x03, payload);
+  }
+
+  private eventLogScreen(): { width: number; height: number } | undefined {
+    return this.width > 0 && this.height > 0
+      ? { width: this.width, height: this.height }
+      : undefined;
+  }
+
+  private touchGestureDetails(gesture: TouchGestureLog, type: string): Record<string, unknown> {
+    return {
+      type,
+      start: { x: gesture.startX, y: gesture.startY },
+      current: { x: gesture.lastX, y: gesture.lastY },
+      moveCount: gesture.moveCount,
+      ...(gesture.edge != null ? { edge: gesture.edge } : {}),
+      ...(this.eventLogScreen() ? { screen: this.eventLogScreen() } : {}),
+    };
+  }
+
   private recordHidEvent(tag: number, payload: Record<string, unknown>): void {
     const event = eventLogEventForHidMessage(
       this.udid,
       tag,
       payload,
-      { width: this.width, height: this.height },
+      this.eventLogScreen(),
     );
     if (event) recordEventLogEvent(event);
   }

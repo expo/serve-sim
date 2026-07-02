@@ -27,7 +27,6 @@ export function EventLogTool({
   );
 
   useEffect(() => {
-    if (!open) return;
     setErrored(false);
     setEvents([]);
     const stream = openHostEventStream(path);
@@ -47,7 +46,7 @@ export function EventLogTool({
     };
     stream.onerror = () => setErrored(true);
     return () => stream.close();
-  }, [open, path]);
+  }, [path]);
 
   const visibleEvents = useMemo(() => events.slice().reverse(), [events]);
 

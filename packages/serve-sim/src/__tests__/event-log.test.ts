@@ -6,6 +6,7 @@ import {
   readEventLog,
   recordEventLogEvent,
   subscribeEventLog,
+  updateEventLogEvent,
 } from "../event-log";
 
 beforeEach(() => {
@@ -55,6 +56,29 @@ describe("event log store", () => {
     unsubscribe();
     recordEventLogEvent({ source: "exec", kind: "button", summary: "Ignored" });
     expect(seen).toEqual(["Home"]);
+  });
+
+  test("updates entries in place and notifies subscribers", () => {
+    const seen: string[] = [];
+    const unsubscribe = subscribeEventLog((event) => seen.push(event.summary));
+    const entry = recordEventLogEvent({
+      source: "hid",
+      kind: "touch",
+      action: "begin",
+      summary: "Touch begin 0.1,0.2",
+    });
+
+    updateEventLogEvent(entry.id, {
+      kind: "tap",
+      action: "tap",
+      summary: "Tap 0.1,0.2",
+    });
+    unsubscribe();
+
+    expect(readEventLog()).toMatchObject([
+      { id: entry.id, kind: "tap", action: "tap", summary: "Tap 0.1,0.2" },
+    ]);
+    expect(seen).toEqual(["Touch begin 0.1,0.2", "Tap 0.1,0.2"]);
   });
 });
 
@@ -136,5 +160,14 @@ describe("eventLogEventForCommand", () => {
       action: "volume-up",
       summary: "Button volume-up",
     });
+  });
+
+  test("does not log read-only camera polling commands", () => {
+    expect(
+      eventLogEventForCommand("node /tmp/dist/serve-sim.js camera status -d DEVICE-A", { exitCode: 0 }),
+    ).toBeNull();
+    expect(
+      eventLogEventForCommand("node /tmp/dist/serve-sim.js camera --list-webcams", { exitCode: 0 }),
+    ).toBeNull();
   });
 });

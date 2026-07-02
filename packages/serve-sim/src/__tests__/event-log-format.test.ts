@@ -16,7 +16,7 @@ function entry(overrides: Partial<EventLogEntry>): EventLogEntry {
 }
 
 describe("formatEventLogLine", () => {
-  test("hides internal source/kind and formats tap coordinates as percentages", () => {
+  test("hides internal source/kind and formats tap coordinates as normalized values", () => {
     expect(
       formatEventLogLine(entry({
         device: "AC78FEE5-C665-4295-889B-F6BCB1A618D5",
@@ -24,7 +24,7 @@ describe("formatEventLogLine", () => {
         summary: "Tap 0.214,0.585",
         details: { current: { x: 0.214, y: 0.585 } },
       }), { deviceLabel: "iPhone 17" }),
-    ).toContain("iPhone 17  Tap at 21%, 59%");
+    ).toContain("iPhone 17  Tap at 0.21, 0.59");
   });
 
   test("formats drags as a sentence", () => {
@@ -38,7 +38,7 @@ describe("formatEventLogLine", () => {
           moveCount: 74,
         },
       })),
-    ).toContain("Drag from 85%, 54% to 100%, 51%");
+    ).toContain("Drag from 0.85, 0.54 to 1.00, 0.51");
   });
 
   test("humanizes key and rotation labels", () => {

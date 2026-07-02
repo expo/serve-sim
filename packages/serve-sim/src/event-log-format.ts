@@ -18,13 +18,13 @@ export function formatEventLogLine(
 export function humanEventLogSummary(entry: EventLogEntry): string {
   if (entry.kind === "tap") {
     const point = pointFromDetails(entry.details, "current") ?? pointFromDetails(entry.details, "start");
-    return point ? `Tap at ${formatPercentPoint(point)}` : "Tap";
+    return point ? `Tap at ${formatNormalizedPoint(point)}` : "Tap";
   }
   if (entry.kind === "drag") {
     const start = pointFromDetails(entry.details, "start");
     const current = pointFromDetails(entry.details, "current");
     if (start && current) {
-      return `Drag from ${formatPercentPoint(start)} to ${formatPercentPoint(current)}`;
+      return `Drag from ${formatNormalizedPoint(start)} to ${formatNormalizedPoint(current)}`;
     }
     return "Drag";
   }
@@ -57,13 +57,13 @@ function stringDetail(details: Record<string, unknown> | undefined, key: string)
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function formatPercentPoint(point: { x: number; y: number }): string {
-  return `${formatPercent(point.x)}, ${formatPercent(point.y)}`;
+function formatNormalizedPoint(point: { x: number; y: number }): string {
+  return `${formatNormalized(point.x)}, ${formatNormalized(point.y)}`;
 }
 
-function formatPercent(value: number): string {
+function formatNormalized(value: number): string {
   if (!Number.isFinite(value)) return "?";
-  return `${Math.round(clamp(value, 0, 1) * 100)}%`;
+  return (Math.round((clamp(value, 0, 1) + Number.EPSILON) * 100) / 100).toFixed(2);
 }
 
 function clamp(value: number, min: number, max: number): number {

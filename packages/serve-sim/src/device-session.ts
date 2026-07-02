@@ -74,8 +74,7 @@ function formatEventLogNumber(value: number): string {
 }
 
 function touchGestureSummary(gesture: TouchGestureLog): string {
-  const moveLabel = gesture.moveCount === 1 ? "1 move" : `${gesture.moveCount} moves`;
-  return `Drag ${formatEventLogPoint(gesture.startX, gesture.startY)} -> ${formatEventLogPoint(gesture.lastX, gesture.lastY)} (${moveLabel})`;
+  return `Drag ${formatEventLogPoint(gesture.startX, gesture.startY)} -> ${formatEventLogPoint(gesture.lastX, gesture.lastY)}`;
 }
 
 function touchGestureMoved(gesture: TouchGestureLog): boolean {

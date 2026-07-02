@@ -94,14 +94,23 @@ private func u32(_ v: Int) -> UInt32 {
 @NodeClass @NodeActor final class SimCapture {
     private let engine: CaptureEngine
     private let queue: NodeAsyncQueue
+    private let inputQueue: NodeAsyncQueue
+    private let onWebRTCInput: NodeFunction
 
-    @NodeConstructor init(_ udid: String) throws {
+    @NodeConstructor init(_ udid: String, _ onWebRTCInput: NodeFunction) throws {
         // unref'd by NodeAsyncQueue's init, so the frame pipeline alone won't
         // keep the event loop alive. Bounded queue + blocking AVCC preserves
         // inter-frame ordering; MJPEG is nonblocking and drops under backpressure.
         let queue = try NodeAsyncQueue(label: "simCapture", maxQueueSize: 16)
+        let inputQueue = try NodeAsyncQueue(label: "simCaptureWebRTCInput", maxQueueSize: 64)
         self.queue = queue
-        self.engine = CaptureEngine(deviceUDID: udid)
+        self.inputQueue = inputQueue
+        self.onWebRTCInput = onWebRTCInput
+        self.engine = CaptureEngine(deviceUDID: udid, onWebRTCInput: { data in
+            try? inputQueue.run(blocking: false) {
+                _ = try? await onWebRTCInput.call([try NodeBuffer(copying: data)]).as(NodePromise.self)?.value
+            }
+        })
     }
 
     // returns a function that can be called to unsubscribe
@@ -151,7 +160,17 @@ private func u32(_ v: Int) -> UInt32 {
         await engine.stop()
     }
 
+    @NodeMethod func handleWebRTCOffer(_ offerJson: String) async throws -> String {
+        try await engine.handleWebRTCOffer(offerJson)
+    }
+
+    @NodeMethod func screenSize() async -> [String: any NodePropertyConvertible] {
+        let dimensions = await engine.currentScreenSize()
+        return ["width": dimensions.width, "height": dimensions.height]
+    }
+
     deinit {
+        try? inputQueue.close()
         Task { [engine] in await engine.stop() }
     }
 

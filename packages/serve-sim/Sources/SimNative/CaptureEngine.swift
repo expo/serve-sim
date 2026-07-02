@@ -13,6 +13,7 @@ import os
 struct Frame: Identifiable {
     let id = UUID()
     let pixelBuffer: CVPixelBuffer
+    let timestamp: CMTime
 }
 
 protocol FrameEncoder {
@@ -71,6 +72,7 @@ actor CaptureEngine {
     }
 
     private let deviceUDID: String
+    private let onWebRTCInput: @Sendable (Data) -> Void
     private let frameCapture = FrameCapture()
     private var phase = Phase.unstarted
 
@@ -79,9 +81,12 @@ actor CaptureEngine {
 
     private(set) var screenSize = Dimensions(width: 0, height: 0)
     private var consumers = [UUID: CaptureConsuming]()
+    private var webRTCPublisher: WebRTCPublisher?
+    private var webRTCConsumerID: UUID?
 
-    init(deviceUDID: String) {
+    init(deviceUDID: String, onWebRTCInput: @escaping @Sendable (Data) -> Void = { _ in }) {
         self.deviceUDID = deviceUDID
+        self.onWebRTCInput = onWebRTCInput
     }
 
     func start() async throws {
@@ -94,8 +99,8 @@ actor CaptureEngine {
             // drop old frames if there's backpressure
             bufferingPolicy: .bufferingNewest(1)
         )
-        try await frameCapture.start(deviceUDID: deviceUDID) { pixelBuffer, _ in
-            frameContinuation.yield(Frame(pixelBuffer: pixelBuffer))
+        try await frameCapture.start(deviceUDID: deviceUDID) { pixelBuffer, timestamp in
+            frameContinuation.yield(Frame(pixelBuffer: pixelBuffer, timestamp: timestamp))
         }
         Task {
             for await frame in frames {
@@ -173,11 +178,66 @@ actor CaptureEngine {
         }
     }
 
+    func handleWebRTCOffer(_ offerJson: String) async throws -> String {
+        let request = try JSONDecoder().decode(WebRTCOfferPayload.self, from: Data(offerJson.utf8))
+        let answer = try getWebRTCPublisher().handleOffer(request)
+        let data = try JSONEncoder().encode(answer)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    func currentScreenSize() -> Dimensions {
+        screenSize
+    }
+
     func stop() {
         if phase == .stopped { return }
         phase = .stopped
         Task { [frameCapture] in await frameCapture.stop() }
+        webRTCPublisher?.stop()
+        webRTCPublisher = nil
+        webRTCConsumerID = nil
         consumers.removeAll()
+    }
+
+    private func getWebRTCPublisher() -> WebRTCPublisher {
+        if let webRTCPublisher {
+            return webRTCPublisher
+        }
+
+        let publisher = WebRTCPublisher()
+        publisher.onInput = { [onWebRTCInput] data in
+            onWebRTCInput(data)
+        }
+        publisher.onActiveChanged = { [weak self] active in
+            Task { await self?.setWebRTCActive(active) }
+        }
+        webRTCPublisher = publisher
+        return publisher
+    }
+
+    private func setWebRTCActive(_ active: Bool) {
+        if active {
+            guard webRTCConsumerID == nil else { return }
+            let publisher = getWebRTCPublisher()
+            let id = UUID()
+            consumers[id] = WebRTCConsumer(publisher: publisher)
+            webRTCConsumerID = id
+        } else if let id = webRTCConsumerID {
+            consumers.removeValue(forKey: id)
+            webRTCConsumerID = nil
+        }
+    }
+}
+
+final class WebRTCConsumer: CaptureConsuming, @unchecked Sendable {
+    private let publisher: WebRTCPublisher
+
+    init(publisher: WebRTCPublisher) {
+        self.publisher = publisher
+    }
+
+    func handleFrame(_ frame: Frame) {
+        publisher.sendFrame(frame.pixelBuffer, timestamp: frame.timestamp)
     }
 }
 

@@ -148,7 +148,7 @@ export class DeviceSession {
 
   constructor(public readonly udid: string) {
     this.hid = new NativeHid(udid);
-    this.capture = new NativeCapture(udid);
+    this.capture = new NativeCapture(udid, (data) => this.handleHidMessage(Buffer.from(data)));
   }
 
   /** Begin capture. Throws if the device isn't booted. Idempotent. */
@@ -267,7 +267,7 @@ export class DeviceSession {
       const body = await readRequestBody(req);
       const offer = JSON.parse(body.toString("utf8")) as unknown;
       const answer = await this.capture.handleWebRTCOffer(offer);
-      if (this.refreshScreenSizeFromNative()) this.broadcastConfig();
+      if (await this.refreshScreenSizeFromNative()) this.broadcastConfig();
       this.sendJson(res, 200, answer);
     } catch (err) {
       this.sendJson(res, 500, {
@@ -543,6 +543,14 @@ export class DeviceSession {
   private configFrame(): Buffer | null {
     if (this.width === 0 && this.height === 0) return null;
     return Buffer.concat([Buffer.from([WS_MSG_CONFIG]), Buffer.from(JSON.stringify(this.screenConfig()))]);
+  }
+
+  private async refreshScreenSizeFromNative(): Promise<boolean> {
+    const { width, height } = await this.capture.screenSize();
+    if (!width || !height || (width === this.width && height === this.height)) return false;
+    this.width = width;
+    this.height = height;
+    return true;
   }
 
   private broadcastConfig(): void {

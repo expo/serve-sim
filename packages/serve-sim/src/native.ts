@@ -34,13 +34,15 @@ interface SimHIDHandle {
 
 interface SimCaptureHandle {
   start(): void;
+  handleWebRTCOffer(offerJson: string): Promise<string>;
+  screenSize(): Promise<{ width: number; height: number }>;
   stop(): void;
   subscribe(codec: number, onFrame: RawFrameCallback): Promise<() => void>;
 }
 
 interface NativeAddon {
   SimHID: new (udid: string) => SimHIDHandle;
-  SimCapture: new (udid: string) => SimCaptureHandle;
+  SimCapture: new (udid: string, onWebRTCInput: (data: Uint8Array) => Promise<void> | void) => SimCaptureHandle;
   axDescribe(udid: string): Promise<string>;
   axFrontmost(udid: string): Promise<string>;
 }
@@ -192,8 +194,8 @@ export class NativeHid {
 export class NativeCapture {
   private readonly handle: SimCaptureHandle;
 
-  constructor(udid: string) {
-    this.handle = new (load().SimCapture)(udid);
+  constructor(udid: string, onWebRTCInput: (data: Uint8Array) => Promise<void> | void = () => {}) {
+    this.handle = new (load().SimCapture)(udid, onWebRTCInput);
   }
 
   /** Begin capturing. Throws if the device isn't booted. */
@@ -217,6 +219,14 @@ export class NativeCapture {
         isKeyframe: (flags & FLAG_KEYFRAME) !== 0,
       });
     });
+  }
+
+  async handleWebRTCOffer(offer: unknown): Promise<unknown> {
+    return JSON.parse(await this.handle.handleWebRTCOffer(JSON.stringify(offer)));
+  }
+
+  screenSize(): Promise<{ width: number; height: number }> {
+    return this.handle.screenSize();
   }
 
   /** Halt frame production. Full teardown happens when this object is GC'd. */

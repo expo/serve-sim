@@ -127,6 +127,16 @@ final class WebRTCPublisher {
         return try result!.get()
     }
 
+    func handleOffer(_ request: WebRTCOfferPayload) async throws -> WebRTCAnswerPayload {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                self.createAnswer(request) { result in
+                    continuation.resume(with: result)
+                }
+            }
+        }
+    }
+
     func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
         queue.async {
             guard self.session != nil else { return }
@@ -1004,17 +1014,21 @@ private final class ServeSimSoftwareH264EncoderFactory: NSObject, LKRTCVideoEnco
 
     func createEncoder(_ info: LKRTCVideoCodecInfo) -> (any LKRTCVideoEncoder)? {
         if info.name.caseInsensitiveCompare("H264") == .orderedSame {
+            guard Self.isServeSimH264Profile(info) else {
+                streamLog("[webrtc:h264] rejecting unsupported H.264 profile parameters=\(info.parameters)")
+                return nil
+            }
             return ServeSimSoftwareH264Encoder(codecInfo: info)
         }
         return fallback.createEncoder(info)
     }
 
     func supportedCodecs() -> [LKRTCVideoCodecInfo] {
-        fallback.supportedCodecs()
+        fallback.supportedCodecs().filter(Self.isSupportedCodec)
     }
 
     func implementations() -> [LKRTCVideoCodecInfo] {
-        fallback.implementations?() ?? supportedCodecs()
+        (fallback.implementations?() ?? fallback.supportedCodecs()).filter(Self.isSupportedCodec)
     }
 
     func encoderSelector() -> (any LKRTCVideoEncoderSelector)? {
@@ -1026,9 +1040,30 @@ private final class ServeSimSoftwareH264EncoderFactory: NSObject, LKRTCVideoEnco
         scalabilityMode: String?
     ) -> LKRTCVideoEncoderCodecSupport {
         if let queryCodecSupport = fallback.queryCodecSupport {
+            if Self.codecInfo(info, matches: "H264"), !Self.isServeSimH264Profile(info) {
+                return LKRTCVideoEncoderCodecSupport(supported: false)
+            }
             return queryCodecSupport(info, scalabilityMode)
         }
-        return LKRTCVideoEncoderCodecSupport(supported: true)
+        return LKRTCVideoEncoderCodecSupport(supported: Self.isSupportedCodec(info))
+    }
+
+    private static func isSupportedCodec(_ info: LKRTCVideoCodecInfo) -> Bool {
+        !codecInfo(info, matches: "H264") || isServeSimH264Profile(info)
+    }
+
+    private static func isServeSimH264Profile(_ info: LKRTCVideoCodecInfo) -> Bool {
+        guard let profileLevelId = info.parameters["profile-level-id"]?.lowercased() else {
+            return false
+        }
+        // H264Encoder configures VideoToolbox for High profile. Do not advertise
+        // baseline/constrained-baseline variants, because browsers may negotiate
+        // those and then reject the High-profile SPS/PPS the encoder emits.
+        return profileLevelId.hasPrefix("64")
+    }
+
+    private static func codecInfo(_ info: LKRTCVideoCodecInfo, matches name: String) -> Bool {
+        info.name.caseInsensitiveCompare(name) == .orderedSame
     }
 }
 

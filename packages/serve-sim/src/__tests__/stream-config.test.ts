@@ -3,6 +3,7 @@ import {
   mjpegStreamUrlFrom,
   streamConfigFrom,
 } from "../client/utils/sim-endpoint";
+import { inProcessServeSimState } from "../state";
 
 // The middleware injects a minimal `{basePath, execToken}` __SIM_PREVIEW__
 // when no helper is attached (the empty state needs the exec token before a
@@ -62,5 +63,19 @@ describe("mjpegStreamUrlFrom", () => {
         streamSettings: { transport: "http", codec: "h264" },
       }),
     ).toBe("https://sim-abcd.expo-simulator.ngrok.dev/stream.mjpeg");
+  });
+
+  test("preserves in-process helper paths for embedded preview fallback", () => {
+    const config = {
+      ...fullConfig,
+      ...inProcessServeSimState("DEVICE-A", 3200, "/preview", "127.0.0.1", {
+        transport: "webrtc",
+        codec: "h264",
+      }),
+    } as NonNullable<Window["__SIM_PREVIEW__"]>;
+
+    expect(mjpegStreamUrlFrom(config)).toBe(
+      "http://127.0.0.1:3200/preview/helper/DEVICE-A/stream.mjpeg",
+    );
   });
 });

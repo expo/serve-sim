@@ -38,12 +38,20 @@ export interface HidSocket {
   close(): void;
 }
 
-const CORS = {
+export const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
+export function sendCorsPreflight(res: ServerResponse): void {
+  res.writeHead(204, CORS);
+  res.end();
+}
+
+// Don't let a stalled viewer's socket buffer grow without bound — drop frames
+// for a client that's this far behind rather than balloon memory.
+const MAX_CLIENT_BACKLOG = 8 * 1024 * 1024;
 // AVCC seed tag (StreamFormat.AVCCEnvelope.seedTag). description/keyframe/delta
 // envelopes are framed natively; only the on-connect JPEG seed is built here.
 const AVCC_SEED_TAG = 0x04;
@@ -252,6 +260,25 @@ export class DeviceSession {
 
   handleHealth(_req: IncomingMessage, res: ServerResponse): void {
     this.sendJson(res, 200, { status: "ok" });
+  }
+
+  async handleWebRTCOffer(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      const body = await readRequestBody(req);
+      const offer = JSON.parse(body.toString("utf8")) as unknown;
+      const answer = await this.capture.handleWebRTCOffer(offer);
+      if (this.refreshScreenSizeFromNative()) this.broadcastConfig();
+      this.sendJson(res, 200, answer);
+    } catch (err) {
+      this.sendJson(res, 500, {
+        error: "webrtc_offer_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  handleOptions(_req: IncomingMessage, res: ServerResponse): void {
+    sendCorsPreflight(res);
   }
 
   handleAx(_req: IncomingMessage, res: ServerResponse): Promise<void> {

@@ -13,6 +13,12 @@ import type { Socket } from "net";
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { getDeviceSession, closeDeviceSession, type HidSocket } from "./device-session";
+import {
+  eventLogEventForCommand,
+  readEventLog,
+  recordEventLogEvent,
+  subscribeEventLog,
+} from "./event-log";
 import { axFrontmostAsync } from "./native";
 import { inProcessServeSimState, writeServeSimState, type ServeSimDeviceState } from "./state";
 import { debugMw } from "./debug";
@@ -107,6 +113,25 @@ const axStreamerCache = createAxStreamerCache();
 // the partial line is dropped rather than retained indefinitely.
 const SSE_LINE_BUFFER_LIMIT = 1024 * 1024;
 let inspectWebKitBridge: Promise<WebKitBridge> | null = null;
+
+function eventLogLimit(rawUrl: string): number | undefined {
+  const value = new URL(rawUrl, "http://x").searchParams.get("limit");
+  if (!value) return undefined;
+  const limit = Number(value);
+  return Number.isFinite(limit) ? limit : undefined;
+}
+
+function eventLogSinceId(rawUrl: string): number | undefined {
+  const value = new URL(rawUrl, "http://x").searchParams.get("since");
+  if (!value) return undefined;
+  const since = Number(value);
+  return Number.isFinite(since) ? since : undefined;
+}
+
+function recordCommandEvent(command: string, result: { exitCode?: number }): void {
+  const event = eventLogEventForCommand(command, result);
+  if (event) recordEventLogEvent(event);
+}
 
 // Known bundle IDs that are always React Native shells (used as a fallback
 // before the app-container path resolves, since simctl can lag after launch).
@@ -796,6 +821,8 @@ export function previewConfigForState(
 ): ServeSimState & {
   basePath: string;
   appStateEndpoint: string;
+  eventLogEndpoint: string;
+  eventLogEventsEndpoint: string;
   axEndpoint: string;
   devtoolsEndpoint: string;
   serveSimBin: string;
@@ -813,6 +840,8 @@ export function previewConfigForState(
     ...state,
     basePath: base,
     appStateEndpoint: endpoint(base, "/appstate", state.device),
+    eventLogEndpoint: endpoint(base, "/api/event-log", state.device),
+    eventLogEventsEndpoint: endpoint(base, "/api/event-log/events", state.device),
     axEndpoint: endpoint(base, "/ax", state.device),
     devtoolsEndpoint: endpoint(base, "/devtools", state.device),
     serveSimBin,
@@ -1225,6 +1254,15 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     const value = typeof p.value === "string" ? normalizeUiValue(p.option, p.value) : null;
     if (value === null) throw new Error(`invalid value for ${p.option}: ${p.value}`);
     await setUiOption(p.device, p.option, value);
+    recordEventLogEvent({
+      device: p.device,
+      source: "ui",
+      kind: "ui-setting",
+      action: p.option,
+      status: "ok",
+      summary: `UI ${p.option} ${value}`,
+      details: { option: p.option, value },
+    });
     return { ok: true };
   };
 
@@ -1612,6 +1650,56 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       return;
     }
 
+    // JSON API: recent simulator action log. This is intentionally in-memory and
+    // bounded; it is for live debugging/agent observability, not archival audit.
+    if (url === base + "/api/event-log") {
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      res.end(JSON.stringify({
+        events: readEventLog({
+          device: selectedDevice,
+          sinceId: eventLogSinceId(rawUrl),
+          limit: eventLogLimit(rawUrl),
+        }),
+      }));
+      return;
+    }
+
+    // SSE: action log stream. Sends a snapshot first, then individual new
+    // entries. The exec-ws control channel proxies this route for the browser UI.
+    if (url === base + "/api/event-log/events") {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      res.write(":\n\n");
+      res.write("data: " + JSON.stringify({
+        events: readEventLog({
+          device: selectedDevice,
+          sinceId: eventLogSinceId(rawUrl),
+          limit: eventLogLimit(rawUrl),
+        }),
+      }) + "\n\n");
+
+      const unsubscribe = subscribeEventLog((event) => {
+        if (selectedDevice && event.device !== selectedDevice) return;
+        if (res.writableEnded) return;
+        res.write("data: " + JSON.stringify({ event }) + "\n\n");
+      });
+      const heartbeat = setInterval(() => {
+        if (!res.writableEnded) res.write(":\n\n");
+      }, 15000);
+      req.on("close", () => {
+        clearInterval(heartbeat);
+        unsubscribe();
+      });
+      return;
+    }
+
     // SSE: serve-sim state stream. Push replacement for the web UI's old ~1.5s
     // /api poll — the PreviewConfig only changes when a helper boots/shuts down
     // or the device selection changes, so we watch the state dir and emit only
@@ -1786,11 +1874,13 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           return;
         }
         exec(command, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+          const exitCode = err ? (err as ExecException).code ?? 1 : 0;
+          recordCommandEvent(command, { exitCode });
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({
             stdout: stdout.toString(),
             stderr: stderr.toString(),
-            exitCode: err ? (err as ExecException).code ?? 1 : 0,
+            exitCode,
           }));
         });
       });
@@ -1930,10 +2020,12 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     execToken,
     ssePrefixes: [
       `${base}/api/events`,
+      `${base}/api/event-log/events`,
       `${base}/appstate`,
       `${base}/ax`,
     ],
     onUiRequest: handleUiRequest,
+    onCommandResult: (command, result) => recordCommandEvent(command, result),
   });
 
   // WebSocket upgrades owned by the preview: the authenticated exec/control

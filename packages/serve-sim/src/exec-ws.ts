@@ -54,6 +54,10 @@ interface ExecMessage {
 
 /** In-process handler for `{id, ui}` requests; resolves to the reply body. */
 export type UiRequestHandler = (payload: unknown) => Promise<Record<string, unknown>>;
+export type CommandResultHandler = (
+  command: string,
+  result: { stdout: string; stderr: string; exitCode: number },
+) => void;
 
 interface ExecChannelOptions {
   path: string;
@@ -62,6 +66,8 @@ interface ExecChannelOptions {
   ssePrefixes?: string[];
   /** In-process handler for `{id, ui}` simulator-settings requests. */
   onUiRequest?: UiRequestHandler;
+  /** Optional observer for completed shell commands. */
+  onCommandResult?: CommandResultHandler;
 }
 
 function wireExecSocket(
@@ -166,12 +172,16 @@ function wireExecSocket(
     }
     const { id, command } = msg;
     exec(command, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      send({
+      const result = {
         id,
         stdout: stdout.toString(),
         stderr: stderr.toString(),
         exitCode: err ? ((err as ExecException).code ?? 1) : 0,
-      });
+      };
+      try {
+        opts.onCommandResult?.(command, result);
+      } catch {}
+      send(result);
     });
   });
 

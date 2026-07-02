@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { clearEventLogForTests, recordEventLogEvent } from "../event-log";
 import { simMiddleware } from "../middleware";
 import { servePreview, type PreviewServer } from "../runtime";
 
@@ -32,6 +33,7 @@ interface Reply {
   error?: string;
   sub?: number;
   end?: boolean;
+  data?: string;
 }
 
 function connect(token: string): Promise<{
@@ -129,6 +131,53 @@ describe("exec-ws control channel", () => {
     expect(reply.sub).toBe(8);
     expect(typeof (reply as { data?: string }).data).toBe("string");
     channel.send({ unsub: 8 });
+    channel.close();
+  });
+
+  test("event log endpoint filters by device", async () => {
+    clearEventLogForTests();
+    recordEventLogEvent({
+      device: "DEVICE-A",
+      source: "hid",
+      kind: "button",
+      summary: "Button home",
+    });
+    recordEventLogEvent({
+      device: "DEVICE-B",
+      source: "hid",
+      kind: "button",
+      summary: "Button volume-up",
+    });
+
+    const res = await fetch(`http://127.0.0.1:${PORT}/api/event-log?device=DEVICE-B`);
+    expect(res.status).toBe(200);
+    const payload = await res.json() as { events: Array<{ summary: string }> };
+    expect(payload.events.map((event) => event.summary)).toEqual(["Button volume-up"]);
+  });
+
+  test("event log sse route is available over the control socket", async () => {
+    clearEventLogForTests();
+    recordEventLogEvent({
+      device: "DEVICE-A",
+      source: "hid",
+      kind: "button",
+      summary: "Button home",
+    });
+
+    const channel = await connect(TOKEN);
+    await channel.next(); // ready
+    channel.send({ sub: 9, path: "/api/event-log/events?device=DEVICE-A" });
+    let reply = await channel.next();
+    let data = /^data: (.*)$/m.exec(reply.data ?? "")?.[1];
+    if (!data) {
+      reply = await channel.next();
+      data = /^data: (.*)$/m.exec(reply.data ?? "")?.[1];
+    }
+    expect(reply.sub).toBe(9);
+    expect(data).toBeTruthy();
+    const payload = JSON.parse(data!) as { events?: Array<{ summary: string }> };
+    expect(payload.events?.map((event) => event.summary)).toEqual(["Button home"]);
+    channel.send({ unsub: 9 });
     channel.close();
   });
 });

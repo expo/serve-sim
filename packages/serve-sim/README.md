@@ -19,6 +19,7 @@ https://github.com/user-attachments/assets/fbf890f4-c8c7-4684-82be-d677b8a188f8
 - Swipe from the bottom to go home.
 - gestures like pinch to zoom by holding the option key.
 - Simulator logs are forwarded to the browser for browser-use MCP tools to read from.
+- Recent simulator actions are available in the browser tools panel and `serve-sim event-log`.
 - Drag and drop videos and images to add them to the simulator device. 
 - Keyboard commands and hot keys are forwarded to the simulator, including CMD+SHIFT+H to go home.
 - Apple Watch, iPad, and iOS support.
@@ -51,6 +52,7 @@ serve-sim ca-debug <option> <on|off> [-d udid]
                                       Toggle a CoreAnimation debug flag
                                       (blended|copies|misaligned|offscreen|slow-animations)
 serve-sim memory-warning [-d udid]    Simulate a memory warning
+serve-sim event-log [-d udid]         Show recent simulator events
 
 serve-sim camera <bundle-id> [-d udid] [source-options]
                                       Inject a synthetic camera feed and (re)launch the app

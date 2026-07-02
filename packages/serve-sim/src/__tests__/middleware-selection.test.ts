@@ -48,6 +48,8 @@ describe("previewConfigForState", () => {
       ...state,
       basePath: "/preview",
       appStateEndpoint: "/preview/appstate?device=DEVICE-B",
+      eventLogEndpoint: "/preview/api/event-log?device=DEVICE-B",
+      eventLogEventsEndpoint: "/preview/api/event-log/events?device=DEVICE-B",
       axEndpoint: "/preview/ax?device=DEVICE-B",
       devtoolsEndpoint: "/preview/devtools?device=DEVICE-B",
       serveSimBin: "/bin/serve-sim",

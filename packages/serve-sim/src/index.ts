@@ -13,6 +13,7 @@ import { findBootedDevice, resolveDevice } from "./device";
 import { permissions } from "./permissions";
 import { uiSettings } from "./ui-settings";
 import { debugCli, debugHelper, debugState } from "./debug";
+import type { EventLogEntry } from "./event-log";
 
 // `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
 // CLI works under plain `node` too.
@@ -621,6 +622,65 @@ function killStreams(deviceArg?: string) {
     clearState();
     console.log(JSON.stringify({ disconnected: true, devices }));
   }
+}
+
+async function eventLog(
+  deviceArg?: string,
+  opts: { json?: boolean; limit?: string } = {},
+) {
+  const udid = deviceArg ? resolveDevice(deviceArg) : undefined;
+  const state = readState(udid);
+  if (!state) {
+    console.error("No serve-sim server running. Run `serve-sim` first.");
+    process.exit(1);
+  }
+
+  const url = new URL("/api/event-log", state.url);
+  if (udid) url.searchParams.set("device", state.device);
+  const limit = parseEventLogLimit(opts.limit);
+  if (limit != null) url.searchParams.set("limit", String(limit));
+
+  let payload: { events: EventLogEntry[] };
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    payload = await res.json() as { events: EventLogEntry[] };
+  } catch (err) {
+    console.error(`Failed to read event log: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+
+  if (opts.json) {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+  if (payload.events.length === 0) {
+    console.log("No events.");
+    return;
+  }
+  for (const entry of payload.events) {
+    console.log(formatEventLogLine(entry));
+  }
+}
+
+function parseEventLogLimit(value: string | undefined): number | undefined {
+  if (value == null) return undefined;
+  const limit = Number(value);
+  if (!Number.isFinite(limit) || limit <= 0) {
+    console.error("event-log --limit must be a positive number");
+    process.exit(1);
+  }
+  return Math.floor(limit);
+}
+
+function formatEventLogLine(entry: EventLogEntry): string {
+  const time = new Date(entry.timestamp);
+  const stamp = Number.isNaN(time.getTime())
+    ? entry.timestamp
+    : time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const device = entry.device ? ` ${entry.device.slice(0, 8)}` : "";
+  const status = entry.status && entry.status !== "ok" ? ` [${entry.status}]` : "";
+  return `${stamp}${device} ${entry.source}/${entry.kind}${status} ${entry.summary}`;
 }
 
 async function gesture(jsonStr: string, deviceArg?: string) {
@@ -1802,6 +1862,14 @@ program
   .description("Simulate a memory warning on the device")
   .option(...deviceOpt)
   .action((opts) => memoryWarning(opts.device));
+
+program
+  .command("event-log")
+  .description("Show recent simulator events")
+  .option(...deviceOpt)
+  .option("-j, --json", "Print JSON")
+  .option("-n, --limit <count>", "Maximum number of events")
+  .action((opts) => eventLog(opts.device, { json: opts.json, limit: opts.limit }));
 
 // `camera` and `permissions` keep their own dedicated argument parsers (the
 // camera verb has nested sub-verbs and source flags; permissions has a

@@ -23,6 +23,7 @@ import {
   axFrontmostAsync,
   type MjpegFrame,
 } from "./native";
+import { eventLogEventForHidMessage, recordEventLogEvent } from "./event-log";
 
 /**
  * Minimal WebSocket surface the HID input channel needs. Satisfied by both the
@@ -272,12 +273,16 @@ export class DeviceSession {
     switch (tag) {
       case 0x03: {
         const m = json<{ type: string; x: number; y: number; edge?: number }>();
-        if (m) this.hid.touch(m.type as "begin" | "move" | "end", m.x, m.y, W, H, m.edge ?? 0);
+        if (m) {
+          this.recordHidEvent(tag, m);
+          this.hid.touch(m.type as "begin" | "move" | "end", m.x, m.y, W, H, m.edge ?? 0);
+        }
         break;
       }
       case 0x04: {
         const m = json<{ button: string; page?: number; usage?: number; phase?: string }>();
         if (!m) break;
+        this.recordHidEvent(tag, m);
         if (m.page != null && m.usage != null) {
           this.hid.buttonHid(m.page, m.usage, (m.phase as "down" | "up" | "press") ?? "press");
         } else {
@@ -287,12 +292,18 @@ export class DeviceSession {
       }
       case 0x05: {
         const m = json<{ type: string; x1: number; y1: number; x2: number; y2: number }>();
-        if (m) this.hid.multiTouch(m.type as "begin" | "move" | "end", m.x1, m.y1, m.x2, m.y2, W, H);
+        if (m) {
+          this.recordHidEvent(tag, m);
+          this.hid.multiTouch(m.type as "begin" | "move" | "end", m.x1, m.y1, m.x2, m.y2, W, H);
+        }
         break;
       }
       case 0x06: {
         const m = json<{ type: string; usage: number }>();
-        if (m) this.hid.key(m.type as "down" | "up", m.usage);
+        if (m) {
+          this.recordHidEvent(tag, m);
+          this.hid.key(m.type as "down" | "up", m.usage);
+        }
         break;
       }
       case 0x07: {
@@ -300,6 +311,7 @@ export class DeviceSession {
         if (!m) break;
         const value = ORIENTATION_BY_NAME[m.orientation];
         if (value != null && await this.hid.orientation(value)) {
+          this.recordHidEvent(tag, m);
           if (m.orientation !== this.orientation) {
             this.orientation = m.orientation;
             this.broadcastConfig();
@@ -309,27 +321,48 @@ export class DeviceSession {
       }
       case 0x08: {
         const m = json<{ option: string; enabled: boolean }>();
-        if (m) this.hid.caDebug(m.option, m.enabled);
+        if (m) {
+          this.recordHidEvent(tag, m);
+          this.hid.caDebug(m.option, m.enabled);
+        }
         break;
       }
       case 0x09:
+        this.recordHidEvent(tag, {});
         this.hid.memoryWarning();
         break;
       case 0x0a: {
         const m = json<{ delta: number }>();
-        if (m) this.hid.digitalCrown(m.delta);
+        if (m) {
+          this.recordHidEvent(tag, m);
+          this.hid.digitalCrown(m.delta);
+        }
         break;
       }
       case 0x0b: {
         // Payload deltas are a fraction of the display; scale to device pixels.
         const m = json<{ dx: number; dy: number; x?: number; y?: number }>();
-        if (m) this.hid.scroll(m.dx * W, m.dy * H, W, H, m.x, m.y);
+        if (m) {
+          this.recordHidEvent(tag, m);
+          this.hid.scroll(m.dx * W, m.dy * H, W, H, m.x, m.y);
+        }
         break;
       }
       case 0x0c:
+        this.recordHidEvent(tag, {});
         this.hid.softwareKeyboard();
         break;
     }
+  }
+
+  private recordHidEvent(tag: number, payload: Record<string, unknown>): void {
+    const event = eventLogEventForHidMessage(
+      this.udid,
+      tag,
+      payload,
+      { width: this.width, height: this.height },
+    );
+    if (event) recordEventLogEvent(event);
   }
 
   // ── Config ───────────────────────────────────────────────────────────────

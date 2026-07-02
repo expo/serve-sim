@@ -10,6 +10,8 @@ declare global {
       basePath: string;
       axEndpoint?: string;
       appStateEndpoint?: string;
+      eventLogEndpoint?: string;
+      eventLogEventsEndpoint?: string;
       devtoolsEndpoint?: string;
       gridApiEndpoint?: string;
       gridStartEndpoint?: string;

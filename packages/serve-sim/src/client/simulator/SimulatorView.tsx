@@ -78,6 +78,10 @@ export interface SimulatorViewProps {
   streamMode?: "mjpeg" | "avcc" | "webrtc";
   /** WebRTC media stream when `streamMode="webrtc"`. */
   webRtcStream?: MediaStream | null;
+  /** Called when the WebRTC <video> has decoded its first frame. */
+  onWebRtcFrame?: () => void;
+  /** Explicit stream failure message from the parent transport controller. */
+  streamError?: string | null;
   /**
    * Called when the AVCC (H.264) WebCodecs decoder fails fatally, so the parent
    * can downgrade to MJPEG instead of retrying hardware decode forever. Fires
@@ -117,6 +121,8 @@ export function SimulatorView({
   connectionQuality,
   streamMode = "avcc",
   webRtcStream,
+  onWebRtcFrame,
+  streamError,
   onAvccError,
 }: SimulatorViewProps) {
   const relayMode = !!onStreamTouch;
@@ -151,6 +157,16 @@ export function SimulatorView({
   const [fps, setFps] = useState(0);
   const frameCountRef = useRef(0);
   const [showSlowOverlay, setShowSlowOverlay] = useState(false);
+
+  useEffect(() => {
+    if (!useWebRtc) return;
+    if (streamError) {
+      setConnected(false);
+      setError(streamError);
+    } else {
+      setError(null);
+    }
+  }, [streamError, useWebRtc]);
   const slowOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Show "Slow connection" overlay briefly when quality drops to poor
@@ -180,18 +196,38 @@ export function SimulatorView({
     if (!useWebRtc) return;
     const video = videoRef.current;
     if (!video) return;
-    video.srcObject = webRtcStream ?? null;
-    if (webRtcStream) {
+    let settled = false;
+    let videoFrameCallback = 0;
+    const onFirstFrame = () => {
+      if (settled) return;
+      settled = true;
+      lastFrameAtRef.current = Date.now();
+      onWebRtcFrame?.();
       setConnected(true);
       setError(null);
+    };
+    video.srcObject = webRtcStream ?? null;
+    if (webRtcStream) {
+      setConnected(false);
+      video.addEventListener("loadeddata", onFirstFrame, { once: true });
+      if ("requestVideoFrameCallback" in video) {
+        videoFrameCallback = video.requestVideoFrameCallback(onFirstFrame);
+      }
+      if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        onFirstFrame();
+      }
       void video.play().catch(() => {});
     } else {
       setConnected(false);
     }
     return () => {
+      video.removeEventListener("loadeddata", onFirstFrame);
+      if (videoFrameCallback && "cancelVideoFrameCallback" in video) {
+        video.cancelVideoFrameCallback(videoFrameCallback);
+      }
       video.srcObject = null;
     };
-  }, [useWebRtc, webRtcStream]);
+  }, [useWebRtc, webRtcStream, onWebRtcFrame]);
 
   useEffect(() => {
     screenSizeRef.current = null;

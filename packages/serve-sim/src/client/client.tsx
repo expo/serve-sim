@@ -450,6 +450,7 @@ function AppWithConfig({
   const streamSettings = config.streamSettings;
   const useWebRtcVideo = streamSettings?.transport === "webrtc";
   const [webRtcCodecOverride, setWebRtcCodecOverride] = useState<WebRtcCodec | null>(null);
+  const [webRtcFailed, setWebRtcFailed] = useState(false);
   const configuredWebRtcCodec = streamSettings?.transport === "webrtc" ? streamSettings.codec : "h264";
   const effectiveWebRtcCodec = webRtcCodecOverride ?? configuredWebRtcCodec;
   const webrtc = useWebRtcStream({
@@ -492,15 +493,22 @@ function AppWithConfig({
     setStreaming(false);
     dispatchAvccFallback("reset");
     setWebRtcCodecOverride(null);
+    setWebRtcFailed(false);
   }, [config.streamUrl, setStreaming]);
   useEffect(() => {
     if (!useWebRtcVideo) {
       setWebRtcCodecOverride(null);
+      setWebRtcFailed(false);
       return;
     }
     if (!webrtc.failedCodec) return;
+    if (webrtc.failedCodec !== effectiveWebRtcCodec) return;
     const nextCodec = nextWebRtcFallbackCodec(configuredWebRtcCodec, webrtc.failedCodec);
-    if (!nextCodec || nextCodec === effectiveWebRtcCodec) return;
+    if (!nextCodec || nextCodec === effectiveWebRtcCodec) {
+      setWebRtcFailed(true);
+      return;
+    }
+    setWebRtcFailed(false);
     setWebRtcCodecOverride(nextCodec);
   }, [configuredWebRtcCodec, effectiveWebRtcCodec, useWebRtcVideo, webrtc.failedCodec]);
   // `streaming` flips true on the first painted AVCC frame (JPEG seed decodes
@@ -1014,6 +1022,8 @@ function AppWithConfig({
                 onStreamScroll={onStreamScroll}
                 streamMode={useWebRtcVideo ? "webrtc" : useAvccVideo ? "avcc" : "mjpeg"}
                 webRtcStream={webrtc.stream}
+                onWebRtcFrame={webrtc.markFrameDecoded}
+                streamError={webRtcFailed ? "WebRTC stream failed after trying all configured codecs." : null}
                 onAvccError={() => dispatchAvccFallback("error")}
                 subscribeFrame={useAvccVideo ? undefined : mjpeg.subscribeFrame}
                 streamFrame={useAvccVideo ? undefined : mjpeg.frame}

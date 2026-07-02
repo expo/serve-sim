@@ -420,17 +420,17 @@ export class DeviceSession {
             device: this.udid,
             source: "hid",
             kind: "drag",
-            action: "move",
+            action: "drag",
             summary: touchGestureSummary(gesture),
-            details: this.touchGestureDetails(gesture, "move"),
+            details: this.touchGestureDetails(gesture, "drag", "move"),
           });
           gesture.eventId = entry.id;
         } else {
           updateEventLogEvent(gesture.eventId, {
             kind: "drag",
-            action: "move",
+            action: "drag",
             summary: touchGestureSummary(gesture),
-            details: this.touchGestureDetails(gesture, "move"),
+            details: this.touchGestureDetails(gesture, "drag", "move"),
           });
         }
       }
@@ -449,16 +449,16 @@ export class DeviceSession {
               device: this.udid,
               source: "hid",
               kind: "drag",
-              action: "end",
+              action: "drag",
               summary: touchGestureSummary(gesture),
-              details: this.touchGestureDetails(gesture, "end"),
+              details: this.touchGestureDetails(gesture, "drag", "end"),
             });
           } else {
             updateEventLogEvent(gesture.eventId, {
               kind: "drag",
-              action: "end",
+              action: "drag",
               summary: touchGestureSummary(gesture),
-              details: this.touchGestureDetails(gesture, "end"),
+              details: this.touchGestureDetails(gesture, "drag", "end"),
             });
           }
         } else {
@@ -485,9 +485,14 @@ export class DeviceSession {
       : undefined;
   }
 
-  private touchGestureDetails(gesture: TouchGestureLog, type: string): Record<string, unknown> {
+  private touchGestureDetails(
+    gesture: TouchGestureLog,
+    type: "drag" | "tap",
+    phase?: "move" | "end",
+  ): Record<string, unknown> {
     return {
       type,
+      ...(phase ? { phase } : {}),
       start: { x: gesture.startX, y: gesture.startY },
       current: { x: gesture.lastX, y: gesture.lastY },
       moveCount: gesture.moveCount,

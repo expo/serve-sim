@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, existsSync, unlinkSync, watch, type FSWatcher } from "fs";
 import { execSync, spawn, exec, execFile, type ChildProcess, type ExecException } from "child_process";
+import { EventEmitter } from "events";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createServer as createNetServer } from "net";
@@ -22,14 +23,15 @@ import {
   serveDeviceKitChromeAsset,
   serveDevicePlaceholderAsset,
 } from "./devicekit-chrome";
-import { createExecUpgradeHandler, type UiRequestHandler } from "./exec-ws";
+import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
+import { type ExecWebSocket } from "./exec-ws-utils";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
+import { type WebMiddleware } from "./runtime-utils";
 
 type SimReq = IncomingMessage;
 type SimRes = ServerResponse;
 type SimNext = (err?: unknown) => Promise<void>;
-export type SimMiddleware = {
-  (req: SimReq, res: SimRes, next?: SimNext): Promise<void>;
+export type SimMiddleware = WebMiddleware & {
   handleUpgrade(req: SimReq, socket: Socket, head: Buffer): void;
 };
 
@@ -1191,6 +1193,172 @@ function isJsonContentType(value: string | undefined): boolean {
   return mediaType === "application/json";
 }
 
+type ConnectMiddleware = {
+  (req: SimReq, res: SimRes, next?: SimNext): Promise<void>;
+  handleUpgrade?: (req: SimReq, socket: Socket, head: Buffer) => void;
+};
+
+function headersFromRequest(request: Request): Record<string, string> {
+  const headers: Record<string, string> = {};
+  request.headers.forEach((value, key) => {
+    headers[key.toLowerCase()] = value;
+  });
+  if (!headers.host) {
+    headers.host = new URL(request.url).host;
+  }
+  return headers;
+}
+
+function connectToFetch(
+  handler: ConnectMiddleware,
+  request: Request,
+): Promise<Response | undefined> {
+  const requestUrl = new URL(request.url);
+  const rawUrl = `${requestUrl.pathname}${requestUrl.search}`;
+  const requestEvents = new EventEmitter();
+  const abortController = new AbortController();
+  const fakeReq = Object.assign(requestEvents, {
+    method: request.method,
+    url: rawUrl,
+    headers: headersFromRequest(request),
+    socket: {
+      localPort: Number(requestUrl.port) || undefined,
+    },
+    destroy() {
+      abortController.abort();
+      requestEvents.emit("close");
+    },
+  }) as SimReq;
+
+  let status = 200;
+  let responseHeaders = new Headers();
+  let headersSent = false;
+  let writableEnded = false;
+  let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+  let resolveResponse!: (response: Response | undefined) => void;
+  let rejectResponse!: (error: unknown) => void;
+  let resolved = false;
+  const encoder = new TextEncoder();
+
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controllerRef = controller;
+    },
+    cancel() {
+      requestEvents.emit("close");
+    },
+  });
+
+  const resolveOnce = (response: Response | undefined) => {
+    if (resolved) return;
+    resolved = true;
+    resolveResponse(response);
+  };
+
+  const ensureResponse = () => {
+    if (headersSent) return;
+    headersSent = true;
+    resolveOnce(new Response(body, { status, headers: responseHeaders }));
+  };
+
+  const writeChunk = (chunk: Buffer | string | Uint8Array) => {
+    ensureResponse();
+    if (!controllerRef || writableEnded) return true;
+    const data = typeof chunk === "string"
+      ? encoder.encode(chunk)
+      : chunk instanceof Uint8Array
+        ? chunk
+        : new Uint8Array(chunk);
+    try {
+      controllerRef.enqueue(data);
+    } catch {
+      return false;
+    }
+    return true;
+  };
+
+  const fakeRes = {
+    get headersSent() {
+      return headersSent;
+    },
+    get writableEnded() {
+      return writableEnded;
+    },
+    statusCode: 200,
+    writeHead(nextStatus: number, headers?: Record<string, string | number | string[]>) {
+      status = nextStatus;
+      fakeRes.statusCode = nextStatus;
+      if (headers) {
+        responseHeaders = new Headers();
+        for (const [key, value] of Object.entries(headers)) {
+          if (Array.isArray(value)) {
+            for (const item of value) responseHeaders.append(key, item);
+          } else {
+            responseHeaders.set(key, String(value));
+          }
+        }
+      }
+      ensureResponse();
+    },
+    write(chunk: Buffer | string | Uint8Array) {
+      return writeChunk(chunk);
+    },
+    end(chunk?: Buffer | string | Uint8Array) {
+      if (chunk !== undefined) writeChunk(chunk);
+      ensureResponse();
+      writableEnded = true;
+      try {
+        controllerRef?.close();
+      } catch {}
+      requestEvents.emit("close");
+    },
+    on() {
+      return fakeRes;
+    },
+    once() {
+      return fakeRes;
+    },
+    off() {
+      return fakeRes;
+    },
+  } as unknown as SimRes;
+
+  const responsePromise = new Promise<Response | undefined>((resolve, reject) => {
+    resolveResponse = resolve;
+    rejectResponse = reject;
+  });
+
+  void (async () => {
+    try {
+      await handler(fakeReq, fakeRes, async () => {
+        resolveOnce(undefined);
+      });
+      if (!resolved && writableEnded) resolveOnce(new Response(null, { status, headers: responseHeaders }));
+    } catch (error) {
+      rejectResponse(error);
+    }
+  })();
+
+  void (async () => {
+    try {
+      if (request.body) {
+        const reader = request.body.getReader();
+        while (!abortController.signal.aborted) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          requestEvents.emit("data", Buffer.from(value));
+        }
+        reader.releaseLock();
+      }
+      if (!abortController.signal.aborted) requestEvents.emit("end");
+    } catch {
+      requestEvents.emit("close");
+    }
+  })();
+
+  return responsePromise;
+}
+
 /**
  * Connect-style middleware that serves the simulator preview UI.
  *
@@ -1228,7 +1396,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     return { ok: true };
   };
 
-  const middleware = (async (req: SimReq, res: SimRes, next?: SimNext) => {
+  const connectMiddleware = (async (req: SimReq, res: SimRes, next?: SimNext) => {
     const rawUrl: string = req.url ?? "";
     const qIndex = rawUrl.indexOf("?");
     const url = qIndex === -1 ? rawUrl : rawUrl.slice(0, qIndex);
@@ -1888,8 +2056,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     // Not ours — pass through
     if (next) return next();
-  }) as SimMiddleware;
-  middleware.handleUpgrade = (req: SimReq, socket: Socket, head: Buffer) => {
+  }) as ConnectMiddleware;
+  connectMiddleware.handleUpgrade = (req: SimReq, socket: Socket, head: Buffer) => {
     const rawUrl = req.url ?? "";
     const selectedDevice = queryDevice(rawUrl) ?? options?.device ?? null;
     const helperTarget = helperProxyTarget(rawUrl, helperPrefix);
@@ -1925,23 +2093,32 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   // mounting this middleware should forward `upgrade` events here (the
   // built-in preview server does); the client falls back to POST /exec when
   // the upgrade never completes.
-  const handleExecUpgrade = createExecUpgradeHandler({
+  const fetchMiddleware = (async (request: Request) => {
+    return connectToFetch(connectMiddleware, request);
+  }) as SimMiddleware;
+
+  fetchMiddleware.handleWebSocket = createExecWebSocketHandler({
     path: `${base}/exec-ws`,
     execToken,
     ssePrefixes: [
       `${base}/api/events`,
       `${base}/appstate`,
+      `${base}/logs`,
       `${base}/ax`,
     ],
     onUiRequest: handleUiRequest,
+    onSseRequest(path, websocketRequest) {
+      const url = new URL(path, websocketRequest.url);
+      return fetchMiddleware(new Request(url, {
+        headers: { accept: "text/event-stream" },
+      }));
+    },
   });
 
   // WebSocket upgrades owned by the preview: the authenticated exec/control
   // channel plus same-origin helper/devtools proxy sockets.
-  const handleProxyUpgrade = middleware.handleUpgrade;
-  middleware.handleUpgrade = (req: SimReq, socket: Socket, head: Buffer) => {
-    if (handleExecUpgrade(req, socket, head)) return;
-    handleProxyUpgrade(req, socket, head);
+  fetchMiddleware.handleUpgrade = (req: SimReq, socket: Socket, head: Buffer) => {
+    connectMiddleware.handleUpgrade?.(req, socket, head);
   };
-  return middleware;
+  return fetchMiddleware;
 }

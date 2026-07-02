@@ -86,10 +86,9 @@ describe("/exec auth", () => {
   });
 
   test("runtime adapter accepts same-origin POST with bearer token", async () => {
-    const port = 3462;
-    const origin = `http://127.0.0.1:${port}`;
     const middleware = simMiddleware({ basePath: "/", execToken: TOKEN });
-    const server = await servePreview({ port, middleware, host: "127.0.0.1" });
+    const server = await servePreview({ port: 0, middleware, host: "127.0.0.1" });
+    const origin = `http://127.0.0.1:${server.port}`;
     try {
       const r = await fetch(`${origin}/exec`, {
         method: "POST",

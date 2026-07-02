@@ -27,6 +27,8 @@ export async function isPortFree(port: number): Promise<boolean> {
 }
 
 export interface PreviewServer {
+  /** The port the server actually bound to (resolves `port: 0` to the OS-assigned port). */
+  port: number;
   stop(force?: boolean): void;
 }
 
@@ -98,7 +100,11 @@ export async function servePreview(opts: {
     server.listen(opts.port, opts.host ?? "127.0.0.1");
   });
 
+  const address = server.address();
+  const boundPort = typeof address === "object" && address ? address.port : opts.port;
+
   return {
+    port: boundPort,
     stop: () => {
       wss.close();
       server.close();

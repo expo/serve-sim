@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { WebRtcCodec } from "../webrtc-codec-fallback";
 import { WEBRTC_ICE_TRANSPORT_POLICY, type IceServer } from "../webrtc-ice";
 
@@ -13,6 +13,7 @@ const DEFAULT_ICE_SERVERS: IceServer[] = [
 ];
 const ICE_GATHERING_TIMEOUT_MS = 3_000;
 const SIGNALING_TIMEOUT_MS = 10_000;
+const FIRST_FRAME_TIMEOUT_MS = 4_000;
 
 export function useWebRtcStream({
   url,
@@ -29,6 +30,8 @@ export function useWebRtcStream({
   const [failedCodec, setFailedCodec] = useState<WebRtcCodec | null>(null);
   const [dataChannelOpen, setDataChannelOpen] = useState(false);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
+  const firstFrameTimeoutRef = useRef<number | undefined>(undefined);
+  const firstFrameDecodedRef = useRef(false);
 
   const dataTarget: DataChannelTarget | null =
     dataChannelOpen && dataChannelRef.current && dataChannelRef.current.readyState === "open"
@@ -37,6 +40,15 @@ export function useWebRtcStream({
           send: (data) => dataChannelRef.current?.send(data),
         }
       : null;
+
+  const markFrameDecoded = useCallback(() => {
+    firstFrameDecodedRef.current = true;
+    if (firstFrameTimeoutRef.current !== undefined) {
+      window.clearTimeout(firstFrameTimeoutRef.current);
+      firstFrameTimeoutRef.current = undefined;
+    }
+    setFailedCodec(null);
+  }, []);
 
   useEffect(() => {
     if (!enabled || !url) return;
@@ -55,6 +67,11 @@ export function useWebRtcStream({
     setStream(null);
     setFailedCodec(null);
     setDataChannelOpen(false);
+    firstFrameDecodedRef.current = false;
+    if (firstFrameTimeoutRef.current !== undefined) {
+      window.clearTimeout(firstFrameTimeoutRef.current);
+      firstFrameTimeoutRef.current = undefined;
+    }
     dataChannelRef.current = null;
 
     const waitForIce = (connection: RTCPeerConnection) =>
@@ -120,8 +137,18 @@ export function useWebRtcStream({
         };
         pc.ontrack = (event) => {
           if (stopped) return;
+          firstFrameDecodedRef.current = false;
           setStream(event.streams[0] ?? new MediaStream([event.track]));
-          setFailedCodec(null);
+          if (firstFrameTimeoutRef.current !== undefined) {
+            window.clearTimeout(firstFrameTimeoutRef.current);
+          }
+          firstFrameTimeoutRef.current = window.setTimeout(() => {
+            firstFrameTimeoutRef.current = undefined;
+            if (stopped || firstFrameDecodedRef.current) return;
+            setStream(null);
+            setFailedCodec(codec);
+            pc?.close();
+          }, FIRST_FRAME_TIMEOUT_MS);
         };
         pc.onconnectionstatechange = () => {
           if (stopped || !pc) return;
@@ -172,6 +199,10 @@ export function useWebRtcStream({
     return () => {
       stopped = true;
       if (offerTimeout !== undefined) window.clearTimeout(offerTimeout);
+      if (firstFrameTimeoutRef.current !== undefined) {
+        window.clearTimeout(firstFrameTimeoutRef.current);
+        firstFrameTimeoutRef.current = undefined;
+      }
       offerController?.abort();
       dataChannelRef.current = null;
       setStream(null);
@@ -181,5 +212,5 @@ export function useWebRtcStream({
     };
   }, [enabled, url, codec, iceServers]);
 
-  return { stream, dataTarget, failedCodec };
+  return { stream, dataTarget, failedCodec, markFrameDecoded };
 }

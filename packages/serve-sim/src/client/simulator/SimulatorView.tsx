@@ -74,17 +74,14 @@ export interface SimulatorViewProps {
   onStreamingChange?: (streaming: boolean) => void;
   /** Connection quality indicator: green (good), yellow (degraded), red (poor). */
   connectionQuality?: "good" | "degraded" | "poor" | null;
-  /**
-   * Video codec preference for the stream:
-   * - "avcc" (default): H.264 over `/stream.avcc` decoded with WebCodecs into
-   *   a `<canvas>`. Automatically falls back to MJPEG when the browser lacks
-   *   `VideoDecoder`.
-   * - "mjpeg": force JPEG-per-frame painted into an `<img>`.
-   *
-   * In relay mode, input is relayed but video can still use AVCC because
-   * `useAvcc` and `useAvccStream` only need `url` to read `/stream.avcc`.
-   */
-  codec?: "mjpeg" | "avcc";
+  /** Video render mode. "avcc" falls back to MJPEG when WebCodecs is unavailable. */
+  streamMode?: "mjpeg" | "avcc" | "webrtc";
+  /** WebRTC media stream when `streamMode="webrtc"`. */
+  webRtcStream?: MediaStream | null;
+  /** Called when the WebRTC <video> has decoded its first frame. */
+  onWebRtcFrame?: () => void;
+  /** Explicit stream failure message from the parent transport controller. */
+  streamError?: string | null;
   /**
    * Called when the AVCC (H.264) WebCodecs decoder fails fatally, so the parent
    * can downgrade to MJPEG instead of retrying hardware decode forever. Fires
@@ -122,17 +119,19 @@ export function SimulatorView({
   hideControls,
   onStreamingChange,
   connectionQuality,
-  codec = "avcc",
+  streamMode = "avcc",
+  webRtcStream,
+  onWebRtcFrame,
+  streamError,
   onAvccError,
 }: SimulatorViewProps) {
   const relayMode = !!onStreamTouch;
-  // AVCC decode is independent of input relay: the H.264 pipeline only needs
-  // `url`, so it runs in both direct and relay mode (input still forwards
-  // through `onStreamTouch`). Falls back to the <img> when WebCodecs is
-  // unavailable or `codec="mjpeg"`.
-  const useAvcc = codec === "avcc" && isAvccSupported();
+  const effectiveStreamMode = streamMode === "avcc" && !isAvccSupported() ? "mjpeg" : streamMode;
+  const useWebRtc = effectiveStreamMode === "webrtc";
+  const useAvcc = effectiveStreamMode === "avcc";
   const imgRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const relayImgRef = useRef<HTMLImageElement | null>(null);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const inputLayerRef = useRef<HTMLDivElement | null>(null);
@@ -158,6 +157,16 @@ export function SimulatorView({
   const [fps, setFps] = useState(0);
   const frameCountRef = useRef(0);
   const [showSlowOverlay, setShowSlowOverlay] = useState(false);
+
+  useEffect(() => {
+    if (!useWebRtc) return;
+    if (streamError) {
+      setConnected(false);
+      setError(streamError);
+    } else {
+      setError(null);
+    }
+  }, [streamError, useWebRtc]);
   const slowOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Show "Slow connection" overlay briefly when quality drops to poor
@@ -182,6 +191,43 @@ export function SimulatorView({
   }, [connectionQuality]);
 
   const streamUrl = `${url}/stream.mjpeg`;
+
+  useEffect(() => {
+    if (!useWebRtc) return;
+    const video = videoRef.current;
+    if (!video) return;
+    let settled = false;
+    let videoFrameCallback = 0;
+    const onFirstFrame = () => {
+      if (settled) return;
+      settled = true;
+      lastFrameAtRef.current = Date.now();
+      onWebRtcFrame?.();
+      setConnected(true);
+      setError(null);
+    };
+    video.srcObject = webRtcStream ?? null;
+    if (webRtcStream) {
+      setConnected(false);
+      video.addEventListener("loadeddata", onFirstFrame, { once: true });
+      if ("requestVideoFrameCallback" in video) {
+        videoFrameCallback = video.requestVideoFrameCallback(onFirstFrame);
+      }
+      if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        onFirstFrame();
+      }
+      void video.play().catch(() => {});
+    } else {
+      setConnected(false);
+    }
+    return () => {
+      video.removeEventListener("loadeddata", onFirstFrame);
+      if (videoFrameCallback && "cancelVideoFrameCallback" in video) {
+        video.cancelVideoFrameCallback(videoFrameCallback);
+      }
+      video.srcObject = null;
+    };
+  }, [useWebRtc, webRtcStream, onWebRtcFrame]);
 
   useEffect(() => {
     screenSizeRef.current = null;
@@ -441,8 +487,9 @@ export function SimulatorView({
   );
 
   useEffect(() => {
-    // In relay mode, skip direct WS/MJPEG connections
-    if (relayMode) return;
+    // In relay mode, skip direct WS/MJPEG connections. WebRTC owns video and
+    // receives input via the parent-provided data channel.
+    if (relayMode || useWebRtc) return;
 
     // Connect WebSocket for touch input. The same socket also carries
     // server->client screen-config pushes (tag 0x82), so direct consumers follow
@@ -535,7 +582,7 @@ export function SimulatorView({
       ws.close();
       wsRef.current = null;
     };
-  }, [url, streamUrl, relayMode, updateScreenConfig, wsUrlProp, useAvcc]);
+  }, [url, streamUrl, relayMode, updateScreenConfig, wsUrlProp, useAvcc, useWebRtc]);
 
   // FPS counter + stale-frame detection for relay mode.
   // Unlike non-relay mode (where WS close flips connected=false), relay mode
@@ -567,9 +614,10 @@ export function SimulatorView({
   }, [relayMode]);
 
   const getViewElement = useCallback(() => {
+    if (useWebRtc) return videoRef.current;
     if (useAvcc) return canvasRef.current;
     return relayMode ? relayImgRef.current : imgRef.current;
-  }, [relayMode, useAvcc]);
+  }, [relayMode, useAvcc, useWebRtc]);
 
   const getInputRect = useCallback(() => {
     return surfaceRef.current?.getBoundingClientRect()
@@ -853,7 +901,21 @@ export function SimulatorView({
             cornerShape: clipStyle?.cornerShape,
           } as CSSProperties}
         >
-        {useAvcc ? (
+        {useWebRtc ? (
+          <video
+            ref={videoRef}
+            muted
+            playsInline
+            autoPlay
+            onLoadedMetadata={(e) => {
+              const el = e.currentTarget;
+              if (el.videoWidth > 0 && el.videoHeight > 0) {
+                updateScreenConfig({ width: el.videoWidth, height: el.videoHeight });
+              }
+            }}
+            style={streamImageStyle}
+          />
+        ) : useAvcc ? (
           <canvas ref={canvasRef} style={canvasStyle} />
         ) : (
           <img
@@ -869,7 +931,7 @@ export function SimulatorView({
             style={relayMode ? { display: "none" } : streamImageStyle}
           />
         )}
-        {relayMode && !useAvcc && (
+        {relayMode && !useAvcc && !useWebRtc && (
           <img
             ref={relayImgRef}
             draggable={false}

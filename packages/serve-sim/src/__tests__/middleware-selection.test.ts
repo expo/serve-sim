@@ -60,16 +60,28 @@ describe("previewConfigForState", () => {
     });
   });
 
-  test("omits codec when none is pinned", () => {
+  test("omits stream settings when none are pinned", () => {
     expect(
-      "codec" in previewConfigForState(states[0]!, "/preview", "/bin/serve-sim", "token-xyz"),
+      "streamSettings" in previewConfigForState(states[0]!, "/preview", "/bin/serve-sim", "token-xyz"),
     ).toBe(false);
   });
 
   test("pins the stream codec in the client config", () => {
     expect(
-      previewConfigForState(states[0]!, "/preview", "/bin/serve-sim", "token-xyz", "mjpeg").codec,
-    ).toBe("mjpeg");
+      previewConfigForState(states[0]!, "/preview", "/bin/serve-sim", "token-xyz", {
+        transport: "http",
+        codec: "mjpeg",
+      }).streamSettings,
+    ).toEqual({ transport: "http", codec: "mjpeg" });
+  });
+
+  test("passes WebRTC VP9 preference through to the client config", () => {
+    expect(
+      previewConfigForState(states[0]!, "/preview", "/bin/serve-sim", "token-xyz", {
+        transport: "webrtc",
+        codec: "vp9",
+      }).streamSettings,
+    ).toEqual({ transport: "webrtc", codec: "vp9" });
   });
 });
 

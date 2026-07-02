@@ -36,13 +36,18 @@ interface SimCaptureHandle {
   start(): void;
   setAvccActive(active: boolean): void;
   requestKeyframe(): void;
+  handleWebRTCOffer(offerJson: string): Promise<string>;
   screenSize(): { width: number; height: number };
   stop(): void;
 }
 
 interface NativeAddon {
   SimHID: new (udid: string) => SimHIDHandle;
-  SimCapture: new (udid: string, onFrame: RawFrameCallback) => SimCaptureHandle;
+  SimCapture: new (
+    udid: string,
+    onFrame: RawFrameCallback,
+    onWebRTCInput: (data: Buffer) => void,
+  ) => SimCaptureHandle;
   axDescribe(udid: string): Promise<string>;
   axFrontmost(udid: string): Promise<string>;
 }
@@ -187,7 +192,11 @@ export class NativeHid {
 export class NativeCapture {
   private readonly handle: SimCaptureHandle;
 
-  constructor(udid: string, onFrame: (frame: NativeFrame) => void) {
+  constructor(
+    udid: string,
+    onFrame: (frame: NativeFrame) => void,
+    onWebRTCInput: (data: Buffer) => void = () => {},
+  ) {
     this.handle = new (load().SimCapture)(udid, (codec, data, width, height, flags) => {
       onFrame({
         codec: codec === CODEC_AVCC ? "avcc" : "mjpeg",
@@ -197,7 +206,7 @@ export class NativeCapture {
         isDescription: (flags & FLAG_DESCRIPTION) !== 0,
         isKeyframe: (flags & FLAG_KEYFRAME) !== 0,
       });
-    });
+    }, onWebRTCInput);
   }
 
   /** Begin capturing. Throws if the device isn't booted. */
@@ -213,6 +222,10 @@ export class NativeCapture {
   /** Force the next H.264 frame to a keyframe (e.g. when a new AVCC viewer joins). */
   requestKeyframe(): void {
     this.handle.requestKeyframe();
+  }
+
+  async handleWebRTCOffer(offer: unknown): Promise<unknown> {
+    return JSON.parse(await this.handle.handleWebRTCOffer(JSON.stringify(offer)));
   }
 
   screenSize(): { width: number; height: number } {

@@ -49,6 +49,7 @@ import { WebKitDevtoolsPanel } from "./components/webkit-devtools-panel";
 import { useMediaDrop } from "./hooks/use-media-drop";
 import { useMjpegStream } from "./hooks/use-mjpeg-stream";
 import { useAvccStream } from "./hooks/use-avcc-stream";
+import { useWebRtcStream } from "./hooks/use-webrtc-stream";
 import { useResizableWidth } from "./hooks/use-resizable-width";
 import { useScreenshotToast } from "./hooks/use-screenshot-toast";
 import { useSimulatorResize } from "./hooks/use-simulator-resize";
@@ -70,7 +71,7 @@ import {
   PANEL_WIDTH,
 } from "./utils/panel-widths";
 import { proxyPreviewConfigForBrowser } from "./utils/preview-config";
-import { simEndpoint, streamConfigFrom } from "./utils/sim-endpoint";
+import { mjpegStreamUrlFrom, simEndpoint, streamConfigFrom } from "./utils/sim-endpoint";
 import {
   SIMULATOR_RESIZE_DRAG_TRANSITION,
   SIMULATOR_RESIZE_LAYOUT_TRANSITION,
@@ -81,6 +82,10 @@ import {
   sendOrQueueWsMessage,
   type QueuedWsMessage,
 } from "./utils/ws-send-queue";
+import {
+  nextWebRtcFallbackCodec,
+  type WebRtcCodec,
+} from "./webrtc-codec-fallback";
 
 // ─── App ───
 
@@ -442,6 +447,18 @@ function AppWithConfig({
   // `avccFallback` drives a startup timeout: if AVCC paints nothing in time,
   // drop to MJPEG, which every helper serves. See avcc-fallback.ts.
   const avcc = useAvccStream();
+  const streamSettings = config.streamSettings;
+  const useWebRtcVideo = streamSettings?.transport === "webrtc";
+  const [webRtcCodecOverride, setWebRtcCodecOverride] = useState<WebRtcCodec | null>(null);
+  const [webRtcFailed, setWebRtcFailed] = useState(false);
+  const configuredWebRtcCodec = streamSettings?.transport === "webrtc" ? streamSettings.codec : "h264";
+  const effectiveWebRtcCodec = webRtcCodecOverride ?? configuredWebRtcCodec;
+  const webrtc = useWebRtcStream({
+    url: config.url,
+    enabled: useWebRtcVideo,
+    codec: effectiveWebRtcCodec,
+    iceServers: streamSettings?.transport === "webrtc" ? streamSettings.iceServers : undefined,
+  });
   const [avccFallback, dispatchAvccFallback] = useReducer(
     avccFallbackReducer,
     initialAvccFallback,
@@ -466,16 +483,34 @@ function AppWithConfig({
   // The server can pin the stream codec (`serve-sim --codec mjpeg`) for hosts
   // whose hardware can't encode H.264 — e.g. VMs lacking the high/low-latency
   // H.264 profiles. Treat that as a hard override the viewer can't switch off.
-  const serverForcesMjpeg = config.codec === "mjpeg";
+  const serverForcesMjpeg = streamSettings?.transport === "http" && streamSettings.codec === "mjpeg";
   const useAvccVideo =
-    !serverForcesMjpeg && avcc.supported && !avccFallback.fellBack && !preferMjpeg && !forceMjpeg && codecPreference !== "mjpeg";
-  const mjpeg = useMjpegStream(useAvccVideo ? null : config.streamUrl);
+    !useWebRtcVideo && !serverForcesMjpeg && avcc.supported && !avccFallback.fellBack && !preferMjpeg && !forceMjpeg && codecPreference !== "mjpeg";
+  const mjpeg = useMjpegStream(useAvccVideo || useWebRtcVideo ? null : mjpegStreamUrlFrom(config));
 
   // Re-arm AVCC whenever the target stream changes (device switch / reconnect).
   useEffect(() => {
     setStreaming(false);
     dispatchAvccFallback("reset");
+    setWebRtcCodecOverride(null);
+    setWebRtcFailed(false);
   }, [config.streamUrl, setStreaming]);
+  useEffect(() => {
+    if (!useWebRtcVideo) {
+      setWebRtcCodecOverride(null);
+      setWebRtcFailed(false);
+      return;
+    }
+    if (!webrtc.failedCodec) return;
+    if (webrtc.failedCodec !== effectiveWebRtcCodec) return;
+    const nextCodec = nextWebRtcFallbackCodec(configuredWebRtcCodec, webrtc.failedCodec);
+    if (!nextCodec || nextCodec === effectiveWebRtcCodec) {
+      setWebRtcFailed(true);
+      return;
+    }
+    setWebRtcFailed(false);
+    setWebRtcCodecOverride(nextCodec);
+  }, [configuredWebRtcCodec, effectiveWebRtcCodec, useWebRtcVideo, webrtc.failedCodec]);
   // `streaming` flips true on the first painted AVCC frame (JPEG seed decodes
   // sub-second on a healthy helper), which cancels the fallback.
   useEffect(() => {
@@ -588,13 +623,30 @@ function AppWithConfig({
   }, [config.wsUrl]);
 
   const sendWs = useCallback((tag: number, payload: object) => {
+    if (useWebRtcVideo && webrtc.dataTarget) {
+      pendingWsMessagesRef.current = sendOrQueueWsMessage(
+        webrtc.dataTarget,
+        pendingWsMessagesRef.current,
+        tag,
+        payload,
+      );
+      return;
+    }
     pendingWsMessagesRef.current = sendOrQueueWsMessage(
       wsRef.current,
       pendingWsMessagesRef.current,
       tag,
       payload,
     );
-  }, []);
+  }, [useWebRtcVideo, webrtc.dataTarget]);
+
+  useEffect(() => {
+    if (!useWebRtcVideo || !webrtc.dataTarget) return;
+    pendingWsMessagesRef.current = flushWsMessageQueue(
+      webrtc.dataTarget,
+      pendingWsMessagesRef.current,
+    );
+  }, [useWebRtcVideo, webrtc.dataTarget]);
 
   const onStreamTouch = useCallback((data: any) => sendWs(0x03, data), [sendWs]);
   const onStreamMultiTouch = useCallback((data: any) => sendWs(0x05, data), [sendWs]);
@@ -968,7 +1020,10 @@ function AppWithConfig({
                 onStreamButton={onStreamButton}
                 onStreamDigitalCrown={onStreamDigitalCrown}
                 onStreamScroll={onStreamScroll}
-                codec={useAvccVideo ? "avcc" : "mjpeg"}
+                streamMode={useWebRtcVideo ? "webrtc" : useAvccVideo ? "avcc" : "mjpeg"}
+                webRtcStream={webrtc.stream}
+                onWebRtcFrame={webrtc.markFrameDecoded}
+                streamError={webRtcFailed ? "WebRTC stream failed after trying all configured codecs." : null}
                 onAvccError={() => dispatchAvccFallback("error")}
                 subscribeFrame={useAvccVideo ? undefined : mjpeg.subscribeFrame}
                 streamFrame={useAvccVideo ? undefined : mjpeg.frame}

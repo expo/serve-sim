@@ -71,6 +71,18 @@ Options:
       --codec <codec> Stream codec for the preview UI: 'auto' (H.264 when the
                       browser can decode it) or 'mjpeg' (force software JPEG —
                       e.g. on VMs without H.264 encode)
+      --transport <http|webrtc>
+                      Stream transport (default: http)
+      --webrtc-codec <vp8|vp9|h264>
+                      WebRTC video codec (default: h264)
+      --stun-url <url[,url...]>
+                      STUN URL(s) for WebRTC ICE
+      --turn-url <url[,url...]>
+                      TURN URL(s) for WebRTC ICE
+      --turn-username <username>
+                      TURN username
+      --turn-credential <credential>
+                      TURN credential
       --list [device] List running streams
       --kill [device] Kill running stream(s)
 
@@ -85,6 +97,10 @@ Camera options (used with `serve-sim camera <bundle-id>`):
       --no-mirror            Shortcut for --mirror off
       --build                Rebuild the dylib + helper from source
 ```
+
+WebRTC uses the HTTP/WebSocket server only for signaling. ICE still prefers a
+direct UDP path when one is reachable, even if the page was loaded through a
+tunnel URL; TURN is used as a fallback when direct/STUN candidates fail.
 
 ### Examples
 
@@ -142,9 +158,7 @@ Sources:
 An [Agent Skill](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview) ships in [`skills/serve-sim`](skills/serve-sim) — it teaches AI coding agents (Claude Code, Cursor, Codex CLI, Gemini CLI, and any host implementing the open Agent Skills standard) how to drive a simulator through the CLI: taps, gestures, hardware buttons, rotation, camera injection, and handing the stream off to the host's preview pane.
 
 ```sh
-bunx add-skill EvanBacon/serve-sim
-# in Claude Code:
-/plugin marketplace add EvanBacon/serve-sim
+bunx add-skill expo/serve-sim
 ```
 
 See [`skills/serve-sim/README.md`](skills/serve-sim/README.md) for the full capability list.

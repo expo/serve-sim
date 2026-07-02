@@ -15,7 +15,14 @@
  * original byte-for-byte so the existing browser client is unchanged.
  */
 import type { IncomingMessage, ServerResponse } from "http";
-import { NativeCapture, NativeHid, Orientation, axDescribeAsync, axFrontmostAsync, type NativeFrame } from "./native";
+import {
+  NativeCapture,
+  NativeHid,
+  Orientation,
+  axDescribeAsync,
+  axFrontmostAsync,
+  type NativeFrame,
+} from "./native";
 
 /**
  * Minimal WebSocket surface the HID input channel needs. Satisfied by both the
@@ -30,11 +37,16 @@ export interface HidSocket {
   close(): void;
 }
 
-const CORS = {
+export const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
+
+export function sendCorsPreflight(res: ServerResponse): void {
+  res.writeHead(204, CORS);
+  res.end();
+}
 
 // Don't let a stalled viewer's socket buffer grow without bound — drop frames
 // for a client that's this far behind rather than balloon memory.
@@ -48,6 +60,20 @@ const AVCC_SEED_TAG = 0x04;
 const WS_MSG_CONFIG = 0x82;
 
 const MJPEG_TRAILER = Buffer.from("\r\n", "ascii");
+const STREAM_DEBUG_ENV = process.env.SERVE_SIM_DEBUG_STREAM != null || process.env.SERVE_SIM_DEBUG_AVCC != null;
+
+interface AvccClientState {
+  awaitingKeyframe: boolean;
+  hasDescription: boolean;
+}
+
+function streamLog(message: string): void {
+  if (STREAM_DEBUG_ENV) console.error(message);
+}
+
+function shouldLogStream(count: number): boolean {
+  return count <= 5 || count % 120 === 0;
+}
 
 function mjpegHeader(jpegLength: number): Buffer {
   return Buffer.from(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpegLength}\r\n\r\n`, "ascii");
@@ -59,6 +85,17 @@ function avccSeed(jpeg: Buffer): Buffer {
   out[4] = AVCC_SEED_TAG;
   jpeg.copy(out, 5);
   return out;
+}
+
+function readRequestBody(req: IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer | string) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
 }
 
 const ORIENTATION_BY_NAME: Record<string, number> = {
@@ -80,24 +117,31 @@ export class DeviceSession {
   private latestJpeg: Buffer | null = null;
   private cachedAvccDescription: Buffer | null = null;
   private readonly mjpegClients = new Set<ServerResponse>();
-  private readonly avccClients = new Set<ServerResponse>();
+  private readonly avccClients = new Map<ServerResponse, AvccClientState>();
   private readonly hidSockets = new Set<HidSocket>();
+  private avccChunks = 0;
+  private avccWrites = 0;
 
   constructor(public readonly udid: string) {
     this.hid = new NativeHid(udid);
-    this.capture = new NativeCapture(udid, (f) => this.onFrame(f));
+    this.capture = new NativeCapture(
+      udid,
+      (f) => this.onFrame(f),
+      (data) => this.handleHidMessage(data),
+    );
   }
 
   /** Begin capture. Throws if the device isn't booted. Idempotent. */
   start(): void {
     if (this.started) return;
     this.capture.start();
+    this.refreshScreenSizeFromNative();
     this.started = true;
   }
 
   close(): void {
     for (const res of this.mjpegClients) res.end();
-    for (const res of this.avccClients) res.end();
+    for (const res of this.avccClients.keys()) res.end();
     for (const ws of this.hidSockets) ws.close();
     this.mjpegClients.clear();
     this.avccClients.clear();
@@ -119,10 +163,40 @@ export class DeviceSession {
       // Build only the small header once; the JPEG itself is written by
       // reference to every client, avoiding a full-frame copy per frame.
       const header = mjpegHeader(f.data.length);
-      for (const res of this.mjpegClients) this.writeMjpegFrame(res, header, f.data);
+      let dropped = false;
+      for (const res of this.mjpegClients) {
+        if (res.writableEnded || res.destroyed) {
+          this.mjpegClients.delete(res);
+          dropped = true;
+          continue;
+        }
+        this.writeMjpegFrame(res, header, f.data);
+      }
+      if (dropped) streamLog(`[stream:mjpeg] dropped ended clients; clients=${this.mjpegClients.size}`);
     } else {
       if (f.isDescription) this.cachedAvccDescription = f.data;
-      for (const res of this.avccClients) this.writeAvccFrame(res, f.data);
+      this.avccChunks += 1;
+      const kind = f.isDescription ? "description" : f.isKeyframe ? "keyframe" : "delta";
+      if (shouldLogStream(this.avccChunks) || f.isDescription || f.isKeyframe) {
+        streamLog(
+          `[stream:avcc] native chunk kind=${kind} bytes=${f.data.length} clients=${this.avccClients.size}`,
+        );
+      }
+      for (const [res, state] of this.avccClients) {
+        if (f.isDescription) {
+          if (this.writeAvccFrame(res, f.data, kind)) state.hasDescription = true;
+          continue;
+        }
+        if (f.isKeyframe) {
+          if (!state.hasDescription && this.cachedAvccDescription) {
+            state.hasDescription = this.writeAvccFrame(res, this.cachedAvccDescription, "description-replay");
+          }
+          if (this.writeAvccFrame(res, f.data, kind)) state.awaitingKeyframe = false;
+          continue;
+        }
+        if (state.awaitingKeyframe) continue;
+        this.writeAvccFrame(res, f.data, kind);
+      }
     }
   }
 
@@ -143,17 +217,32 @@ export class DeviceSession {
    * re-seeded with the cached description + a fresh keyframe, yielding a clean
    * stream instead of a corrupted one.
    */
-  private writeAvccFrame(res: ServerResponse, chunk: Buffer): void {
+  private writeAvccFrame(res: ServerResponse, chunk: Buffer, kind: string): boolean {
     if (res.writableEnded) {
       this.avccClients.delete(res);
-      return;
+      streamLog(`[stream:avcc] drop ended client before ${kind}; clients=${this.avccClients.size}`);
+      this.syncAvccActive();
+      return false;
     }
     if (res.writableLength > MAX_CLIENT_BACKLOG) {
       this.avccClients.delete(res);
+      streamLog(
+        `[stream:avcc] evict backed-up client before ${kind}; backlog=${res.writableLength} ` +
+          `clients=${this.avccClients.size}`,
+      );
       res.end();
-      return;
+      this.syncAvccActive();
+      return false;
     }
-    res.write(chunk);
+    this.avccWrites += 1;
+    const ok = res.write(chunk);
+    if (shouldLogStream(this.avccWrites) || kind === "description" || kind === "keyframe" || !ok) {
+      streamLog(
+        `[stream:avcc] wrote ${kind} bytes=${chunk.length} ok=${ok} backlog=${res.writableLength} ` +
+          `clients=${this.avccClients.size}`,
+      );
+    }
+    return true;
   }
 
   // ── HTTP handlers ────────────────────────────────────────────────────────
@@ -168,7 +257,12 @@ export class DeviceSession {
     });
     this.mjpegClients.add(res);
     if (this.latestJpeg) this.writeMjpegFrame(res, mjpegHeader(this.latestJpeg.length), this.latestJpeg); // paint immediately
-    const drop = () => this.mjpegClients.delete(res);
+    let dropped = false;
+    const drop = () => {
+      if (dropped) return;
+      dropped = true;
+      this.mjpegClients.delete(res);
+    };
     res.on("close", drop);
     res.on("error", drop);
   }
@@ -180,16 +274,31 @@ export class DeviceSession {
       Connection: "keep-alive",
       ...CORS,
     });
-    this.avccClients.add(res);
+    const state: AvccClientState = {
+      awaitingKeyframe: true,
+      hasDescription: false,
+    };
+    this.avccClients.set(res, state);
+    streamLog(
+      `[stream:avcc] client attached clients=${this.avccClients.size} ` +
+        `latestJpeg=${this.latestJpeg?.length ?? 0} cachedDescription=${this.cachedAvccDescription?.length ?? 0}`,
+    );
     this.capture.setAvccActive(true);
     // Seed with the current screen, replay the cached decoder config, then force
     // an IDR so the freshly-configured decoder has a keyframe to start from.
-    if (this.latestJpeg) res.write(avccSeed(this.latestJpeg));
-    if (this.cachedAvccDescription) res.write(this.cachedAvccDescription);
+    if (this.latestJpeg) {
+      const seed = avccSeed(this.latestJpeg);
+      const ok = res.write(seed);
+      streamLog(`[stream:avcc] wrote seed bytes=${seed.length} ok=${ok} backlog=${res.writableLength}`);
+    }
+    if (this.cachedAvccDescription) {
+      state.hasDescription = this.writeAvccFrame(res, this.cachedAvccDescription, "description-replay");
+    }
     this.capture.requestKeyframe();
     const drop = () => {
       this.avccClients.delete(res);
-      if (this.avccClients.size === 0) this.capture.setAvccActive(false);
+      streamLog(`[stream:avcc] client detached clients=${this.avccClients.size}`);
+      this.syncAvccActive();
     };
     res.on("close", drop);
     res.on("error", drop);
@@ -201,6 +310,25 @@ export class DeviceSession {
 
   handleHealth(_req: IncomingMessage, res: ServerResponse): void {
     this.sendJson(res, 200, { status: "ok" });
+  }
+
+  async handleWebRTCOffer(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      const body = await readRequestBody(req);
+      const offer = JSON.parse(body.toString("utf8")) as unknown;
+      const answer = await this.capture.handleWebRTCOffer(offer);
+      if (this.refreshScreenSizeFromNative()) this.broadcastConfig();
+      this.sendJson(res, 200, answer);
+    } catch (err) {
+      this.sendJson(res, 500, {
+        error: "webrtc_offer_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  handleOptions(_req: IncomingMessage, res: ServerResponse): void {
+    sendCorsPreflight(res);
   }
 
   handleAx(_req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -249,6 +377,7 @@ export class DeviceSession {
         return null;
       }
     };
+    this.refreshScreenSizeFromNative();
     const W = this.width;
     const H = this.height;
 
@@ -318,12 +447,27 @@ export class DeviceSession {
   // ── Config ───────────────────────────────────────────────────────────────
 
   screenConfig(): { width: number; height: number; orientation: string } {
+    this.refreshScreenSizeFromNative();
     return { width: this.width, height: this.height, orientation: this.orientation };
   }
 
+  private refreshScreenSizeFromNative(): boolean {
+    const size = this.capture.screenSize();
+    if (size.width <= 0 || size.height <= 0) return false;
+    if (size.width === this.width && size.height === this.height) return false;
+    this.width = size.width;
+    this.height = size.height;
+    return true;
+  }
+
+  private syncAvccActive(): void {
+    this.capture.setAvccActive(this.avccClients.size > 0);
+  }
+
   private configFrame(): Buffer | null {
-    if (this.width === 0 && this.height === 0) return null;
-    return Buffer.concat([Buffer.from([WS_MSG_CONFIG]), Buffer.from(JSON.stringify(this.screenConfig()))]);
+    const config = this.screenConfig();
+    if (config.width === 0 && config.height === 0) return null;
+    return Buffer.concat([Buffer.from([WS_MSG_CONFIG]), Buffer.from(JSON.stringify(config))]);
   }
 
   private broadcastConfig(): void {

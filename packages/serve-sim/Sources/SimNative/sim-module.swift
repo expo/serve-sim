@@ -90,23 +90,29 @@ private func u32(_ v: Int) -> UInt32 {
 /// produced; H.264/AVCC runs only while `setAvccActive(true)`. Encoded frames are
 /// produced on a native encode thread and marshalled onto the JS thread through a
 /// NodeAsyncQueue (threadsafe function), then handed to `onFrame` as
-/// (codec, Buffer, width, height, flags).
+/// (codec, Buffer, width, height, flags). WebRTC data-channel input is handed
+/// to `onWebRTCInput` as the same binary HID protocol used by `/ws`.
 @NodeClass @NodeActor final class SimCapture {
     private let engine: CaptureEngine
     private let onFrame: NodeFunction
+    private let onWebRTCInput: NodeFunction
     private let queue: NodeAsyncQueue
+    private let inputQueue: NodeAsyncQueue
 
-    @NodeConstructor init(_ udid: String, _ onFrame: NodeFunction) throws {
+    @NodeConstructor init(_ udid: String, _ onFrame: NodeFunction, _ onWebRTCInput: NodeFunction) throws {
         // unref'd by NodeAsyncQueue's init, so the frame pipeline alone won't
         // keep the event loop alive. Bounded queue + blocking AVCC preserves
         // inter-frame ordering; MJPEG is nonblocking and drops under backpressure.
         let queue = try NodeAsyncQueue(label: "simCapture", maxQueueSize: 16)
+        let inputQueue = try NodeAsyncQueue(label: "simCaptureWebRTCInput", maxQueueSize: 64)
         self.onFrame = onFrame
+        self.onWebRTCInput = onWebRTCInput
         self.queue = queue
+        self.inputQueue = inputQueue
 
         // Capture the locals (not self) so the closure can be built before the
         // engine property is initialized, and so it holds no strong ref to self.
-        engine = CaptureEngine(deviceUDID: udid) { codec, data, w, h, flags in
+        engine = CaptureEngine(deviceUDID: udid, onFrame: { codec, data, w, h, flags in
             // Runs on a native encode thread. AVCC is inter-frame H.264 — dropping
             // a delta corrupts the decoder until the next IDR — so deliver it
             // blocking; MJPEG is stateless and safe to drop. We copy the bytes
@@ -120,7 +126,11 @@ private func u32(_ v: Int) -> UInt32 {
                     Int(w), Int(h), Int(flags),
                 ])
             }
-        }
+        }, onWebRTCInput: { data in
+            try? inputQueue.run(blocking: false) {
+                _ = try? onWebRTCInput.call([try NodeBuffer(copying: data)])
+            }
+        })
     }
 
     @NodeMethod func start() throws {
@@ -133,6 +143,10 @@ private func u32(_ v: Int) -> UInt32 {
 
     @NodeMethod func requestKeyframe() {
         engine.requestKeyframe()
+    }
+
+    @NodeMethod func handleWebRTCOffer(_ offerJson: String) async throws -> String {
+        try await engine.handleWebRTCOffer(offerJson)
     }
 
     @NodeMethod func screenSize() -> [String: any NodePropertyConvertible] {
@@ -150,6 +164,7 @@ private func u32(_ v: Int) -> UInt32 {
         // encoders so nothing can fire afterwards. The tsfn is released when
         // `queue` deinitializes after this body.
         try? queue.close()
+        try? inputQueue.close()
         engine.stop()
     }
 }

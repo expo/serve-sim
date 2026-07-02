@@ -13,6 +13,7 @@ import CoreMedia
 /// thread. codec: 0 = MJPEG, 1 = AVCC. flags (AVCC): bit0 = description,
 /// bit1 = keyframe. `data` is a freshly-copied value safe to retain.
 typealias SimFrameCallback = (Int32, Data, Int32, Int32, Int32) -> Void
+typealias SimInputCallback = (Data) -> Void
 
 final class CaptureEngine {
     static let codecMJPEG: Int32 = 0
@@ -22,6 +23,8 @@ final class CaptureEngine {
 
     private let deviceUDID: String
     private let onFrame: SimFrameCallback
+    private let onWebRTCInput: SimInputCallback
+    private var webRTCPublisher: WebRTCPublisher?
 
     private let frameCapture = FrameCapture()
     private let videoEncoder = VideoEncoder(quality: 0.7)
@@ -39,13 +42,15 @@ final class CaptureEngine {
     private var h264Encoding = false   // H.264 backpressure
     private var forceKeyframe = false
     private var avccActive = false
+    private var webRTCActive = false
     private var h264FrameToken: UInt64 = 0
     private var started = false
     private var stopped = false
 
-    init(deviceUDID: String, onFrame: @escaping SimFrameCallback) {
+    init(deviceUDID: String, onFrame: @escaping SimFrameCallback, onWebRTCInput: @escaping SimInputCallback) {
         self.deviceUDID = deviceUDID
         self.onFrame = onFrame
+        self.onWebRTCInput = onWebRTCInput
 
         h264Encoder.onEncoded = { [weak self] encoded in
             guard let self else { return }
@@ -64,6 +69,19 @@ final class CaptureEngine {
         }
     }
 
+    private func getWebRTCPublisher() -> WebRTCPublisher {
+        if let webRTCPublisher {
+            return webRTCPublisher
+        }
+        let publisher = WebRTCPublisher()
+        publisher.onInput = onWebRTCInput
+        publisher.onActiveChanged = { [weak self] active in
+            self?.webRTCActive = active
+        }
+        webRTCPublisher = publisher
+        return publisher
+    }
+
     /// Hand encoded bytes to the binding. Gated by `stopped` so no callback fires
     /// once teardown has begun.
     private func emit(codec: Int32, data: Data, flags: Int32) {
@@ -75,13 +93,13 @@ final class CaptureEngine {
         guard !started else { return }
         // Latch `started` only after capture actually begins: if start() throws
         // (e.g. device not booted), a later retry should still be allowed.
-        try frameCapture.start(deviceUDID: deviceUDID) { [weak self] pixelBuffer, _ in
-            self?.handleFrame(pixelBuffer)
+        try frameCapture.start(deviceUDID: deviceUDID) { [weak self] pixelBuffer, timestamp in
+            self?.handleFrame(pixelBuffer, timestamp: timestamp)
         }
         started = true
     }
 
-    private func handleFrame(_ pixelBuffer: CVPixelBuffer) {
+    private func handleFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
         let w = CVPixelBufferGetWidth(pixelBuffer)
         let h = CVPixelBufferGetHeight(pixelBuffer)
 
@@ -96,14 +114,19 @@ final class CaptureEngine {
         }
 
         let h264Request = reserveH264EncodeIfNeeded()
+        let shouldSendWebRTC = webRTCActive
         let shouldEncodeJpeg = encoderReady && !encoding
-        if !shouldEncodeJpeg && h264Request == nil { return }
+        if !shouldEncodeJpeg && h264Request == nil && !shouldSendWebRTC { return }
 
         guard let stableFrame = copyPixelBuffer(pixelBuffer) else {
             if let h264Request {
                 finishH264Encode(token: h264Request.token, restoreKeyframe: h264Request.forceKeyframe)
             }
             return
+        }
+
+        if shouldSendWebRTC {
+            webRTCPublisher?.sendFrame(stableFrame, timestamp: timestamp)
         }
 
         if shouldEncodeJpeg {
@@ -207,6 +230,13 @@ final class CaptureEngine {
         h264Queue.async { [weak self] in self?.forceKeyframe = true }
     }
 
+    func handleWebRTCOffer(_ offerJson: String) async throws -> String {
+        let request = try JSONDecoder().decode(WebRTCOfferPayload.self, from: Data(offerJson.utf8))
+        let answer = try await getWebRTCPublisher().handleOffer(request)
+        let data = try JSONEncoder().encode(answer)
+        return String(decoding: data, as: UTF8.self)
+    }
+
     func screenSize() -> (Int, Int) { (screenWidth, screenHeight) }
 
     /// Halt frame production and drain the encode queues so no callback can fire
@@ -218,6 +248,7 @@ final class CaptureEngine {
         frameCapture.stop()
         encodeQueue.sync {}
         h264Queue.sync {}
+        webRTCPublisher?.stop()
         videoEncoder.stop()
         h264Encoder.stop()
     }

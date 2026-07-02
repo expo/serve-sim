@@ -1,7 +1,5 @@
 export const EXEC_WS_MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 
-export const textDecoder = new TextDecoder();
-
 export interface ExecWebSocket {
   readonly OPEN: number;
   readonly readyState: number;
@@ -18,6 +16,7 @@ export type SseRequestHandler = (
 ) => Response | undefined | Promise<Response | undefined>;
 
 export function messageToString(data: unknown): string {
+  const textDecoder = new TextDecoder();
   if (typeof data === "string") return data;
   if (data instanceof ArrayBuffer) return textDecoder.decode(new Uint8Array(data));
   if (ArrayBuffer.isView(data)) {

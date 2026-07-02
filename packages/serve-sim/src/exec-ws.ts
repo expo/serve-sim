@@ -3,7 +3,6 @@ import { createHash, timingSafeEqual } from "crypto";
 import {
   messageToString,
   requestHost,
-  textDecoder,
   type ExecWebSocket,
   type SseRequestHandler,
 } from "./exec-ws-utils";
@@ -123,11 +122,18 @@ function wireExecSocket(
           sendEnd();
           return;
         }
+        const textDecoder = new TextDecoder();
         reader = response.body.getReader();
         while (active) {
           const { done, value } = await reader.read();
           if (done) break;
           send({ sub, data: textDecoder.decode(value, { stream: true }) });
+        }
+
+        // Flush bytes held back mid-multibyte-sequence when the stream ends.
+        if (active) {
+          const tail = textDecoder.decode();
+          if (tail) send({ sub, data: tail });
         }
       } catch {
         if (active) sendEnd();

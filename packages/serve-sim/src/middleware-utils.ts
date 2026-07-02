@@ -1,5 +1,3 @@
-const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
 
 export type SseSink = {
   readonly closed: boolean;
@@ -35,6 +33,8 @@ export function noStoreJsonResponse(value: unknown, status = 200): Response {
 }
 
 export function sseResponse(setup: (sink: SseSink) => void | (() => void)): Response {
+  const textEncoder = new TextEncoder();
+
   let cleanup: (() => void) | undefined;
   let closed = false;
 
@@ -90,6 +90,7 @@ export async function readTextBody(request: Request, maxBytes?: number): Promise
   { ok: true; text: string } | { ok: false; response: Response }
 > {
   if (!request.body) return { ok: true, text: "" };
+  const textDecoder = new TextDecoder();
   const reader = request.body.getReader();
   let size = 0;
   let text = "";

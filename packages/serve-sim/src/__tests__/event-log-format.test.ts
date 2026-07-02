@@ -3,12 +3,14 @@ import { formatEventLogLine } from "../event-log-format";
 import type { EventLogEntry } from "../event-log";
 
 function entry(overrides: Partial<EventLogEntry>): EventLogEntry {
+  const summary = overrides.summary ?? "Tap 0.214,0.585";
   return {
     id: 1,
     timestamp: "2026-07-02T14:24:38.000Z",
     source: "hid",
     kind: "tap",
-    summary: "Tap 0.214,0.585",
+    msg: overrides.msg ?? summary,
+    summary,
     ...overrides,
   };
 }

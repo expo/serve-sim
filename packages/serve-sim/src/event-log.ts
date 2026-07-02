@@ -6,6 +6,7 @@ export type EventLogEntry = {
   timestamp: string;
   source: EventLogSource;
   kind: string;
+  msg: string;
   summary: string;
   device?: string;
   action?: string;
@@ -13,8 +14,9 @@ export type EventLogEntry = {
   details?: Record<string, unknown>;
 };
 
-export type EventLogDraft = Omit<EventLogEntry, "id" | "timestamp"> & {
+export type EventLogDraft = Omit<EventLogEntry, "id" | "timestamp" | "msg"> & {
   timestamp?: string;
+  msg?: string;
 };
 
 export const EVENT_LOG_MAX_ENTRIES = 500;
@@ -110,6 +112,7 @@ export function recordEventLogEvent(draft: EventLogDraft): EventLogEntry {
     ...draft,
     id: nextEventId++,
     timestamp: draft.timestamp ?? new Date().toISOString(),
+    msg: draft.msg ?? draft.summary,
   };
   entries.push(entry);
   if (entries.length > EVENT_LOG_MAX_ENTRIES) {
@@ -125,7 +128,12 @@ export function updateEventLogEvent(
 ): EventLogEntry | null {
   const index = entries.findIndex((entry) => entry.id === id);
   if (index < 0) return null;
-  const entry = { ...entries[index]!, ...patch, id };
+  const entry = {
+    ...entries[index]!,
+    ...patch,
+    id,
+    ...(patch.summary != null && patch.msg == null ? { msg: patch.summary } : {}),
+  };
   entries[index] = entry;
   notifyEventLogSubscribers(entry);
   return entry;

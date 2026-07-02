@@ -90,6 +90,7 @@ export function EventLogTool({
 function EventLogRow({ event }: { event: EventLogEntry }) {
   const time = formatTime(event.timestamp);
   const detail = [event.source, event.kind, event.action].filter(Boolean).join(" / ");
+  const message = event.msg ?? event.summary;
   const statusClass = event.status === "error"
     ? "border-[#ff453a]/50 bg-[#ff453a]/10 text-[#ffb3ad]"
     : "border-white/8 bg-white/[0.04] text-white/50";
@@ -103,7 +104,7 @@ function EventLogRow({ event }: { event: EventLogEntry }) {
       <span className="font-mono text-[10px] text-white/45">{time}</span>
       <span className="min-w-0">
         <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-white/90">
-          {event.summary}
+          {message}
         </span>
         <span className="mt-0.5 block overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[10px] text-white/40">
           {detail}

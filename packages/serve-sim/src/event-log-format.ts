@@ -37,7 +37,7 @@ export function humanEventLogSummary(entry: EventLogEntry): string {
     const orientation = entry.action ? humanizeToken(entry.action) : "";
     return orientation ? `Rotate ${orientation}` : "Rotate";
   }
-  return humanizeSummary(entry.summary);
+  return humanizeSummary(entry.msg ?? entry.summary);
 }
 
 function pointFromDetails(

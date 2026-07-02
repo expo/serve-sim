@@ -31,8 +31,30 @@ describe("event log store", () => {
     });
 
     expect(readEventLog().map((event) => event.id)).toEqual([1, 2]);
+    expect(readEventLog().map((event) => event.msg)).toEqual(["Home", "Button volume-up"]);
     expect(readEventLog({ device: "DEVICE-B" }).map((event) => event.summary)).toEqual([
       "Button volume-up",
+    ]);
+  });
+
+  test("keeps a bunyan-style msg field on recorded entries", () => {
+    recordEventLogEvent({
+      source: "exec",
+      kind: "button",
+      action: "home",
+      summary: "Home",
+    });
+    recordEventLogEvent({
+      source: "exec",
+      kind: "button",
+      action: "home",
+      summary: "Home",
+      msg: "Pressed Home",
+    });
+
+    expect(readEventLog()).toMatchObject([
+      { summary: "Home", msg: "Home" },
+      { summary: "Home", msg: "Pressed Home" },
     ]);
   });
 
@@ -76,7 +98,7 @@ describe("event log store", () => {
     unsubscribe();
 
     expect(readEventLog()).toMatchObject([
-      { id: entry.id, kind: "tap", action: "tap", summary: "Tap 0.1,0.2" },
+      { id: entry.id, kind: "tap", action: "tap", summary: "Tap 0.1,0.2", msg: "Tap 0.1,0.2" },
     ]);
     expect(seen).toEqual(["Touch begin 0.1,0.2", "Tap 0.1,0.2"]);
   });

@@ -36,7 +36,7 @@ interface SimCaptureHandle {
   start(): void;
   setAvccActive(active: boolean): void;
   requestKeyframe(): void;
-  handleWebRTCOffer(offerJson: string): string;
+  handleWebRTCOffer(offerJson: string): Promise<string>;
   screenSize(): { width: number; height: number };
   stop(): void;
 }
@@ -224,8 +224,8 @@ export class NativeCapture {
     this.handle.requestKeyframe();
   }
 
-  handleWebRTCOffer(offer: unknown): unknown {
-    return JSON.parse(this.handle.handleWebRTCOffer(JSON.stringify(offer)));
+  async handleWebRTCOffer(offer: unknown): Promise<unknown> {
+    return JSON.parse(await this.handle.handleWebRTCOffer(JSON.stringify(offer)));
   }
 
   screenSize(): { width: number; height: number } {

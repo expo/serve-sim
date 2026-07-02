@@ -145,8 +145,8 @@ private func u32(_ v: Int) -> UInt32 {
         engine.requestKeyframe()
     }
 
-    @NodeMethod func handleWebRTCOffer(_ offerJson: String) throws -> String {
-        try engine.handleWebRTCOffer(offerJson)
+    @NodeMethod func handleWebRTCOffer(_ offerJson: String) async throws -> String {
+        try await engine.handleWebRTCOffer(offerJson)
     }
 
     @NodeMethod func screenSize() -> [String: any NodePropertyConvertible] {

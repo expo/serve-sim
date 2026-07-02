@@ -5,6 +5,14 @@ import CoreGraphics
 import IOSurface
 import ObjectiveC
 
+private typealias ScreenCallback = @convention(block) () -> Void
+
+private struct ScreenCallbackBlocks {
+    let frame: ScreenCallback
+    let surfaces: ScreenCallback
+    let properties: ScreenCallback
+}
+
 /// Headless simulator frame capture via direct IOSurface access.
 ///
 /// Uses SimulatorKit frame callbacks (via objc_msgSend on the IO port descriptor)
@@ -19,6 +27,7 @@ final class FrameCapture {
     private(set) var capturedHeight: Int = 0
     private var idleTimer: DispatchSourceTimer?
     private let captureQueue = DispatchQueue(label: "frame-capture", qos: .userInteractive)
+    private let captureQueueKey = DispatchSpecificKey<Void>()
     private var lastCaptureTimeMs: UInt64 = 0
     private var lastSeeds: [ObjectIdentifier: UInt32] = [:]
     private var rewireTickCount: Int = 0
@@ -36,7 +45,12 @@ final class FrameCapture {
 
     private var descriptors: [NSObject] = []
     private var callbackUUIDs: [ObjectIdentifier: NSUUID] = [:]
+    private var callbackBlocks: [ObjectIdentifier: ScreenCallbackBlocks] = [:]
     private var ioClient: NSObject?
+
+    init() {
+        captureQueue.setSpecific(key: captureQueueKey, value: ())
+    }
 
     func start(deviceUDID: String, onFrame: @escaping (CVPixelBuffer, CMTime) -> Void) throws {
         self.onFrame = onFrame
@@ -87,6 +101,7 @@ final class FrameCapture {
             }
         }
         callbackUUIDs.removeAll()
+        callbackBlocks.removeAll()
         lastSeeds.removeAll()
         descriptors = candidates
 
@@ -172,15 +187,21 @@ final class FrameCapture {
         let msgSend = unsafeBitCast(msgSendPtr, to: MsgSendFunc.self)
 
         let uuid = NSUUID()
-        callbackUUIDs[ObjectIdentifier(desc)] = uuid
+        let key = ObjectIdentifier(desc)
+        callbackUUIDs[key] = uuid
 
-        let frameCallback: @convention(block) () -> Void = { [weak self] in
+        let frameCallback: ScreenCallback = { [weak self] in
             self?.captureQueue.async { self?.captureFrame() }
         }
-        let surfacesCallback: @convention(block) () -> Void = { [weak self] in
+        let surfacesCallback: ScreenCallback = { [weak self] in
             self?.captureQueue.async { self?.captureFrame() }
         }
-        let propsCallback: @convention(block) () -> Void = {}
+        let propsCallback: ScreenCallback = {}
+        callbackBlocks[key] = ScreenCallbackBlocks(
+            frame: frameCallback,
+            surfaces: surfacesCallback,
+            properties: propsCallback
+        )
 
         msgSend(
             desc, regSel,
@@ -270,20 +291,29 @@ final class FrameCapture {
     }
 
     func stop() {
-        idleTimer?.cancel()
-        idleTimer = nil
+        let cleanup = {
+            self.idleTimer?.cancel()
+            self.idleTimer = nil
 
-        let unregSel = NSSelectorFromString("unregisterScreenCallbacksWithUUID:")
-        for desc in descriptors {
-            if let uuid = callbackUUIDs[ObjectIdentifier(desc)],
-               desc.responds(to: unregSel) {
-                desc.perform(unregSel, with: uuid)
+            let unregSel = NSSelectorFromString("unregisterScreenCallbacksWithUUID:")
+            for desc in self.descriptors {
+                if let uuid = self.callbackUUIDs[ObjectIdentifier(desc)],
+                   desc.responds(to: unregSel) {
+                    desc.perform(unregSel, with: uuid)
+                }
             }
+            self.callbackUUIDs.removeAll()
+            self.callbackBlocks.removeAll()
+            self.descriptors.removeAll()
+            self.lastSeeds.removeAll()
+            self.ioClient = nil
         }
-        callbackUUIDs.removeAll()
-        descriptors.removeAll()
-        lastSeeds.removeAll()
-        ioClient = nil
+
+        if DispatchQueue.getSpecific(key: captureQueueKey) != nil {
+            cleanup()
+        } else {
+            captureQueue.sync(execute: cleanup)
+        }
     }
 
     // MARK: - Helpers

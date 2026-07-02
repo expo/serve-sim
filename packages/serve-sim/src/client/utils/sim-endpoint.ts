@@ -53,7 +53,11 @@ export function streamConfigFrom(
 }
 
 export function mjpegStreamUrlFrom(config: NonNullable<Window["__SIM_PREVIEW__"]>): string {
-  return `${config.url.replace(/\/+$/, "")}/stream.mjpeg`;
+  const streamUrl = new URL(config.streamUrl);
+  streamUrl.pathname = streamUrl.pathname.replace(/\/stream\.[^/]+$/, "/stream.mjpeg");
+  streamUrl.search = "";
+  streamUrl.hash = "";
+  return streamUrl.toString();
 }
 
 export function simEndpoint(path: string): string {

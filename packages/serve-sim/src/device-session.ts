@@ -37,11 +37,16 @@ export interface HidSocket {
   close(): void;
 }
 
-const CORS = {
+export const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
+
+export function sendCorsPreflight(res: ServerResponse): void {
+  res.writeHead(204, CORS);
+  res.end();
+}
 
 // Don't let a stalled viewer's socket buffer grow without bound — drop frames
 // for a client that's this far behind rather than balloon memory.
@@ -311,7 +316,7 @@ export class DeviceSession {
     try {
       const body = await readRequestBody(req);
       const offer = JSON.parse(body.toString("utf8")) as unknown;
-      const answer = this.capture.handleWebRTCOffer(offer);
+      const answer = await this.capture.handleWebRTCOffer(offer);
       if (this.refreshScreenSizeFromNative()) this.broadcastConfig();
       this.sendJson(res, 200, answer);
     } catch (err) {
@@ -320,6 +325,10 @@ export class DeviceSession {
         message: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  handleOptions(_req: IncomingMessage, res: ServerResponse): void {
+    sendCorsPreflight(res);
   }
 
   handleAx(_req: IncomingMessage, res: ServerResponse): Promise<void> {

@@ -12,7 +12,7 @@ import type { Socket } from "net";
 // importing the dependency keeps the proxy working regardless of runtime.
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
-import { getDeviceSession, type HidSocket } from "./device-session";
+import { getDeviceSession, sendCorsPreflight, type HidSocket } from "./device-session";
 import { axFrontmostAsync } from "./native";
 import { inProcessServeSimState, writeServeSimState, type ServeSimDeviceState, type StreamSettings } from "./state";
 import { debugMw } from "./debug";
@@ -621,13 +621,18 @@ function bridgeWebSocketFrames(req: SimReq, socket: Socket, head: Buffer, upstre
  */
 function serveHelperInProcess(req: SimReq, res: SimRes, device: string | null, upstreamPath: string): boolean {
   if (!device) return false;
+  const endpoint = upstreamPath.split("?")[0];
+  if (endpoint === "/webrtc/offer" && req.method === "OPTIONS") {
+    sendCorsPreflight(res);
+    return true;
+  }
   let session;
   try {
     session = getDeviceSession(device);
   } catch {
     return false; // not booted / capture unavailable → 404
   }
-  switch (upstreamPath.split("?")[0]) {
+  switch (endpoint) {
     case "/stream.mjpeg": session.handleMjpeg(req, res); return true;
     case "/stream.avcc": session.handleAvcc(req, res); return true;
     case "/config": session.handleConfig(req, res); return true;

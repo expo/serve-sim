@@ -1,8 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "crypto";
 import { mkdirSync, unlinkSync, writeFileSync } from "fs";
-import { createServer as createHttpServer } from "http";
-import { createServer as createNetServer, type AddressInfo } from "net";
+import { createServer as createNetServer } from "net";
 import { dirname } from "path";
 import {
   cameraHelperBundlesFile,
@@ -30,21 +29,16 @@ afterAll(() => {
   }
 });
 
-async function withMiddlewareServer<T>(fn: (origin: string) => Promise<T>): Promise<T> {
+async function withMiddleware<T>(
+  fn: (request: (path: string, init?: RequestInit) => Promise<Response>) => Promise<T>,
+): Promise<T> {
   const middleware = simMiddleware({ basePath: "/", proxyHelpers: true });
-  const server = createHttpServer((req, res) => {
-    void middleware(req, res, async () => {
-      res.writeHead(404);
-      res.end("Not found");
-    });
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
-  try {
-    return await fn(`http://127.0.0.1:${port}`);
-  } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
+  const request = async (path: string, init?: RequestInit) => {
+    const response = await middleware(new Request(`http://localhost${path}`, init));
+    if (!response) throw new Error(`Unhandled request: ${path}`);
+    return response;
+  };
+  return fn(request);
 }
 
 describe("camera status", () => {
@@ -103,8 +97,8 @@ describe("camera status", () => {
 
   test("serves status without opening a simulator session", async () => {
     try { unlinkSync(cameraHelperPidFile(udid)); } catch {}
-    await withMiddlewareServer(async (origin) => {
-      const response = await fetch(`${origin}/helper/${udid}/camera/status`);
+    await withMiddleware(async (request) => {
+      const response = await request(`/helper/${udid}/camera/status`);
       expect(response.status).toBe(200);
       expect(response.headers.get("cache-control")).toBe("no-store");
       expect(await response.json()).toEqual({ udid, alive: false });
@@ -112,14 +106,14 @@ describe("camera status", () => {
   });
 
   test("rejects writes and malformed device IDs", async () => {
-    await withMiddlewareServer(async (origin) => {
-      const writeResponse = await fetch(`${origin}/helper/${udid}/camera/status`, {
+    await withMiddleware(async (request) => {
+      const writeResponse = await request(`/helper/${udid}/camera/status`, {
         method: "POST",
       });
       expect(writeResponse.status).toBe(405);
       expect(writeResponse.headers.get("allow")).toBe("GET");
 
-      const invalidResponse = await fetch(`${origin}/helper/not-a-udid/camera/status`);
+      const invalidResponse = await request("/helper/not-a-udid/camera/status");
       expect(invalidResponse.status).toBe(400);
       expect(await invalidResponse.json()).toEqual({ error: "invalid_device" });
     });

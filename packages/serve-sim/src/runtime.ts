@@ -1,9 +1,12 @@
 /** Node runtime helpers for the bundled CLI. */
 import { fileURLToPath } from "url";
 import { dirname } from "path";
-import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "http";
+import { createServer as createHttpServer, type IncomingMessage } from "http";
 import type { Socket } from "net";
 import { createConnection, createServer as createNetServer, type Server as NetServer } from "net";
+import { WebSocketServer } from "ws";
+import { EXEC_WS_MAX_MESSAGE_BYTES, type ExecWebSocket } from "./exec-ws-utils";
+import { nodeRequestToWeb, writeWebResponse, type WebMiddleware } from "./runtime-utils";
 
 export function dirnameOf(metaUrl: string): string {
   return dirname(fileURLToPath(metaUrl));
@@ -25,17 +28,12 @@ export async function isPortFree(port: number): Promise<boolean> {
 }
 
 export interface PreviewServer {
+  /** The port the server actually bound to (resolves `port: 0` to the OS-assigned port). */
+  port: number;
   stop(force?: boolean): void;
 }
 
-/** Connect-style middleware signature, matching what `simMiddleware` returns. */
-type ConnectMiddleware = (
-  req: IncomingMessage,
-  res: ServerResponse,
-  next: () => Promise<void>,
-) => Promise<void>;
-
-type PreviewMiddleware = ConnectMiddleware & {
+type PreviewMiddleware = WebMiddleware & {
   handleUpgrade?: (req: IncomingMessage, socket: Socket, head: Buffer) => void;
 };
 
@@ -83,6 +81,11 @@ function isWebSocketUpgrade(headers: Record<string, string | string[]>): boolean
   return /websocket/i.test(upgradeValue) && /upgrade/i.test(connectionValue);
 }
 
+function isExecWebSocketPath(url: string): boolean {
+  const pathname = new URL(url, "http://serve-sim.local").pathname;
+  return pathname === "/exec-ws" || pathname.endsWith("/exec-ws");
+}
+
 function proxyTcpToHttpServer(socket: Socket, firstChunk: Buffer, port: number): void {
   const upstream = createConnection(port, "127.0.0.1");
   const destroyBoth = () => {
@@ -113,9 +116,7 @@ function createPreviewFrontServer(
       const parsed = parseHttpRequestHead(buffered);
       if (!parsed) return;
       socket.removeListener("data", onData);
-      const pathname = new URL(parsed.url, "http://serve-sim.local").pathname;
-      const isExecUpgrade = pathname === "/exec-ws" || pathname.endsWith("/exec-ws");
-      if (middleware.handleUpgrade && isWebSocketUpgrade(parsed.headers) && !isExecUpgrade) {
+      if (middleware.handleUpgrade && isWebSocketUpgrade(parsed.headers) && !isExecWebSocketPath(parsed.url)) {
         const head = buffered.subarray(parsed.headEnd);
         const req = {
           method: parsed.method,
@@ -134,7 +135,7 @@ function createPreviewFrontServer(
   });
 }
 
-/** Run a Connect-style middleware as an HTTP server. */
+/** Run a fetch-style middleware as an HTTP server. */
 export async function servePreview(opts: {
   port: number;
   middleware: PreviewMiddleware;
@@ -146,42 +147,57 @@ export async function servePreview(opts: {
    */
   host?: string;
 }): Promise<PreviewServer> {
-  const isBun = !!process.versions.bun
+  const isBun = !!process.versions.bun;
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: EXEC_WS_MAX_MESSAGE_BYTES,
+  });
 
   const internalServer = createHttpServer(
     {
       highWaterMark: 1024 * 1024 * 5,
     },
-    async (req, res) => {
-      try {
-        return await opts.middleware(req, res, async () => {
-          if (!res.headersSent) res.statusCode = 404;
-          res.end("Not found");
-        });
-      } catch (err) {
-        console.error("Middleware error:", err);
-        if (!res.headersSent) {
-          res.statusCode = 500;
-          res.end("Internal Server Error");
-        } else {
-          res.end();
+    (req, res) => {
+      void (async () => {
+        const request = nodeRequestToWeb(req, res);
+        const response = await opts.middleware(request);
+        await writeWebResponse(req, res, response);
+      })().catch((error) => {
+        console.error("Middleware error:", error);
+        if (res.headersSent) {
+          if (!res.destroyed) res.destroy(error instanceof Error ? error : undefined);
+          return;
         }
-      }
-    }
+        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end(error instanceof Error ? error.message : "Internal Server Error");
+      });
+    },
   );
-  // MJPEG streams + SSE log channel are long-lived; clear the default 2-min
-  // socket timeout so they don't get torn down mid-stream.
-  internalServer.keepAliveTimeout = 0;
-  internalServer.headersTimeout = 0;
-  internalServer.requestTimeout = 0;
-  internalServer.timeout = 0;
   internalServer.on("upgrade", (req, socket, head) => {
+    const request = nodeRequestToWeb(req);
+    if (opts.middleware.handleWebSocket && isExecWebSocketPath(req.url ?? "")) {
+      wss.handleUpgrade(req, socket, head, (websocket) => {
+        const handled = opts.middleware.handleWebSocket?.(
+          request,
+          websocket as unknown as ExecWebSocket,
+        );
+        if (!handled) websocket.close();
+      });
+      return;
+    }
     if (opts.middleware.handleUpgrade) {
       opts.middleware.handleUpgrade(req, socket as Socket, head);
       return;
     }
     socket.destroy();
   });
+
+  // MJPEG streams + SSE channels are long-lived; clear the default 2-min
+  // socket timeout so they don't get torn down mid-stream.
+  internalServer.keepAliveTimeout = 0;
+  internalServer.headersTimeout = 0;
+  internalServer.requestTimeout = 0;
+  internalServer.timeout = 0;
 
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error & { code?: string }) => {
@@ -208,17 +224,15 @@ export async function servePreview(opts: {
   }
 
   let maybeFrontServer: NetServer | undefined;
+  let publicPort = internalAddress.port;
   if (isBun) {
-    // works around a bug where Bun fails to proxy websockets
-    // https://github.com/oven-sh/bun/issues/14522
+    // Work around Bun node:http upgrade forwarding issues by binding the public
+    // port with a small TCP front server and proxying regular HTTP internally.
     const frontServer = createPreviewFrontServer(opts.middleware, internalAddress.port);
     maybeFrontServer = frontServer;
     await new Promise<void>((resolve, reject) => {
       const onError = (err: Error & { code?: string }) => {
         frontServer.removeListener("listening", onListening);
-        // The internal server is already listening; if the front fails to bind
-        // (e.g. EADDRINUSE during the port-scan retry loop), close it too so we
-        // don't leak a listener per attempt.
         internalServer.close(() => reject(err));
       };
       const onListening = () => {
@@ -229,12 +243,18 @@ export async function servePreview(opts: {
       frontServer.once("listening", onListening);
       frontServer.listen(opts.port, opts.host ?? "127.0.0.1");
     });
+    const frontAddress = frontServer.address();
+    if (frontAddress && typeof frontAddress !== "string") {
+      publicPort = frontAddress.port;
+    }
   }
 
   return {
+    port: publicPort,
     stop: () => {
-      internalServer.close()
-      maybeFrontServer?.close()
+      wss.close();
+      internalServer.close();
+      maybeFrontServer?.close();
     },
   };
 }

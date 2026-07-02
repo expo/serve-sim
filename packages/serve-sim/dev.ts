@@ -18,7 +18,7 @@
  */
 import { readdirSync, readFileSync, existsSync, watch } from "fs";
 import { randomBytes } from "crypto";
-import type { IncomingMessage, ServerResponse } from "http";
+import type { IncomingMessage } from "http";
 import type { Socket } from "net";
 import { join, resolve } from "path";
 import tailwindPlugin from "bun-plugin-tailwind";
@@ -69,7 +69,7 @@ function devPreviewConfig(state: ServeSimState) {
 let clientJs = "";
 let clientError = "";
 let tailwindCss = "";
-const reloadClients = new Set<ServerResponse>();
+const reloadClients = new Set<{ write(chunk: string): void }>();
 let lastTailwindContentSignature = "";
 let pendingClientBuild = false;
 let pendingTailwindBuild = false;
@@ -235,15 +235,30 @@ ${clientError ? `<pre style="position:fixed;inset:0;z-index:9999;background:#1a0
 
 // Browser auto-reload channel: each open page holds one of these and reloads
 // when a rebuild calls signalReload().
-function handleDevReload(req: IncomingMessage, res: ServerResponse): void {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
+function handleDevReload(): Response {
+  const encoder = new TextEncoder();
+  let client: { write(chunk: string): void } | null = null;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      client = {
+        write(chunk: string) {
+          controller.enqueue(encoder.encode(chunk));
+        },
+      };
+      client.write(":\n\n");
+      reloadClients.add(client);
+    },
+    cancel() {
+      if (client) reloadClients.delete(client);
+    },
   });
-  res.write(":\n\n");
-  reloadClients.add(res);
-  req.on("close", () => reloadClients.delete(res));
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
 }
 
 // ─── Server ───
@@ -251,24 +266,32 @@ function handleDevReload(req: IncomingMessage, res: ServerResponse): void {
 // Dev-only routes intercept first; everything else falls through to the
 // production middleware — including `/grid/api/start`, which now boots + serves
 // the device in-process (no spawned helper), so no dev override is needed.
-async function devMiddleware(req: IncomingMessage, res: ServerResponse, next: () => Promise<void>): Promise<void> {
-  const path = (req.url ?? "").split("?")[0];
+async function devMiddleware(request: Request): Promise<Response | undefined> {
+  const url = new URL(request.url);
+  const path = url.pathname;
 
-  if (path === "/__dev/reload") return handleDevReload(req, res);
+  if (path === "/__dev/reload") return handleDevReload();
   if (path === "/" || path === "") {
-    const device = new URLSearchParams((req.url ?? "").split("?")[1] ?? "").get("device");
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-    res.end(await buildHtml(device));
-    return;
+    const device = url.searchParams.get("device");
+    return new Response(await buildHtml(device), {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    });
   }
 
-  middleware(req, res, next);
+  return middleware(request);
 }
 // Forward WebSocket upgrades (exec control + helper/DevTools proxy sockets) to
-// the production middleware's handler.
-devMiddleware.handleUpgrade = (req: IncomingMessage, socket: Socket, head: Buffer): void =>
-  middleware.handleUpgrade(req, socket, head);
+// the production middleware's handlers.
+const devMiddlewareWithSockets = Object.assign(devMiddleware, {
+  handleWebSocket: middleware.handleWebSocket,
+  handleUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): void {
+    middleware.handleUpgrade(req, socket, head);
+  },
+});
 
-await servePreview({ port: PORT, middleware: devMiddleware });
+await servePreview({ port: PORT, middleware: devMiddlewareWithSockets });
 
 console.log(`\n  \x1b[36mserve-sim dev\x1b[0m  http://localhost:${PORT}\n`);

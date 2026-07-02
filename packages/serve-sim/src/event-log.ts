@@ -19,6 +19,77 @@ export type EventLogDraft = Omit<EventLogEntry, "id" | "timestamp"> & {
 
 export const EVENT_LOG_MAX_ENTRIES = 500;
 
+const KEY_LABEL_BY_USAGE: Record<number, string> = {
+  0x28: "Enter",
+  0x29: "Escape",
+  0x2a: "Backspace",
+  0x2b: "Tab",
+  0x2c: "Space",
+  0x2d: "-",
+  0x2e: "=",
+  0x2f: "[",
+  0x30: "]",
+  0x31: "\\",
+  0x32: "#",
+  0x33: ";",
+  0x34: "'",
+  0x35: "`",
+  0x36: ",",
+  0x37: ".",
+  0x38: "/",
+  0x39: "CapsLock",
+  0x3a: "F1",
+  0x3b: "F2",
+  0x3c: "F3",
+  0x3d: "F4",
+  0x3e: "F5",
+  0x3f: "F6",
+  0x40: "F7",
+  0x41: "F8",
+  0x42: "F9",
+  0x43: "F10",
+  0x44: "F11",
+  0x45: "F12",
+  0x46: "PrintScreen",
+  0x47: "ScrollLock",
+  0x48: "Pause",
+  0x49: "Insert",
+  0x4a: "Home",
+  0x4b: "PageUp",
+  0x4c: "Delete",
+  0x4d: "End",
+  0x4e: "PageDown",
+  0x4f: "ArrowRight",
+  0x50: "ArrowLeft",
+  0x51: "ArrowDown",
+  0x52: "ArrowUp",
+  0x53: "NumLock",
+  0x54: "NumpadDivide",
+  0x55: "NumpadMultiply",
+  0x56: "NumpadSubtract",
+  0x57: "NumpadAdd",
+  0x58: "NumpadEnter",
+  0x59: "Numpad1",
+  0x5a: "Numpad2",
+  0x5b: "Numpad3",
+  0x5c: "Numpad4",
+  0x5d: "Numpad5",
+  0x5e: "Numpad6",
+  0x5f: "Numpad7",
+  0x60: "Numpad8",
+  0x61: "Numpad9",
+  0x62: "Numpad0",
+  0x63: "NumpadDecimal",
+  0xe0: "ControlLeft",
+  0xe1: "ShiftLeft",
+  0xe2: "AltLeft",
+  0xe3: "MetaLeft",
+  0xe4: "ControlRight",
+  0xe5: "ShiftRight",
+  0xe6: "AltRight",
+  0xe7: "MetaRight",
+};
+
 let nextEventId = 1;
 let entries: EventLogEntry[] = [];
 const subscribers = new Set<(entry: EventLogEntry) => void>();
@@ -140,13 +211,14 @@ export function eventLogEventForHidMessage(
       const type = stringValue(details.type);
       const usage = numberValue(details.usage);
       if (!type || usage == null) return null;
+      const key = keyLabelForUsage(usage);
       return {
         device,
         source: "hid",
         kind: "key",
         action: type,
-        summary: `Key ${type} ${usage}`,
-        details: { ...details, usage },
+        summary: `Key ${type} ${key}`,
+        details: { ...details, usage, key },
       };
     }
     case 0x07: {
@@ -431,6 +503,17 @@ function numberValue(value: unknown): number | null {
 
 function booleanValue(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
+}
+
+function keyLabelForUsage(usage: number): string {
+  if (usage >= 0x04 && usage <= 0x1d) {
+    return String.fromCharCode(0x61 + usage - 0x04);
+  }
+  if (usage >= 0x1e && usage <= 0x26) {
+    return String(usage - 0x1d);
+  }
+  if (usage === 0x27) return "0";
+  return KEY_LABEL_BY_USAGE[usage] ?? `usage ${usage}`;
 }
 
 function withScreen(

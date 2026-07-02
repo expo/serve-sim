@@ -115,6 +115,25 @@ describe("eventLogEventForHidMessage", () => {
       details: { screen: { width: 390, height: 844 } },
     });
   });
+
+  test("maps key HID usages to readable labels", () => {
+    expect(
+      eventLogEventForHidMessage("UDID", 0x06, { type: "up", usage: 23 }),
+    ).toMatchObject({
+      device: "UDID",
+      source: "hid",
+      kind: "key",
+      action: "up",
+      summary: "Key up t",
+      details: { usage: 23, key: "t" },
+    });
+    expect(
+      eventLogEventForHidMessage("UDID", 0x06, { type: "down", usage: 0x28 }),
+    ).toMatchObject({
+      summary: "Key down Enter",
+      details: { usage: 0x28, key: "Enter" },
+    });
+  });
 });
 
 describe("eventLogEventForCommand", () => {

@@ -55,7 +55,7 @@ const MJPEG_TRAILER = Buffer.from("\r\n", "ascii");
 const TOUCH_TAP_MAX_DISTANCE = 0.004;
 
 type TouchGestureLog = {
-  eventId: number;
+  eventId?: number;
   startX: number;
   startY: number;
   lastX: number;
@@ -81,6 +81,17 @@ function touchGestureMoved(gesture: TouchGestureLog): boolean {
   const dx = gesture.lastX - gesture.startX;
   const dy = gesture.lastY - gesture.startY;
   return Math.hypot(dx, dy) > TOUCH_TAP_MAX_DISTANCE;
+}
+
+function newTouchGesture(payload: { x: number; y: number; edge?: number }): TouchGestureLog {
+  return {
+    startX: payload.x,
+    startY: payload.y,
+    lastX: payload.x,
+    lastY: payload.y,
+    moveCount: 0,
+    edge: payload.edge,
+  };
 }
 
 function mjpegHeader(jpegLength: number): Buffer {
@@ -388,54 +399,14 @@ export class DeviceSession {
 
   private recordTouchEvent(payload: { type: string; x: number; y: number; edge?: number }): void {
     if (payload.type === "begin") {
-      const event = eventLogEventForHidMessage(
-        this.udid,
-        0x03,
-        payload,
-        this.eventLogScreen(),
-      );
-      if (!event) return;
-      const entry = recordEventLogEvent(event);
-      this.touchGestureLog = {
-        eventId: entry.id,
-        startX: payload.x,
-        startY: payload.y,
-        lastX: payload.x,
-        lastY: payload.y,
-        moveCount: 0,
-        edge: payload.edge,
-      };
+      this.touchGestureLog = newTouchGesture(payload);
       return;
     }
 
     if (payload.type === "move") {
       let gesture = this.touchGestureLog;
       if (!gesture) {
-        const entry = recordEventLogEvent({
-          device: this.udid,
-          source: "hid",
-          kind: "drag",
-          action: "move",
-          summary: `Drag ${formatEventLogPoint(payload.x, payload.y)}`,
-          details: this.touchGestureDetails({
-            eventId: 0,
-            startX: payload.x,
-            startY: payload.y,
-            lastX: payload.x,
-            lastY: payload.y,
-            moveCount: 1,
-            edge: payload.edge,
-          }, "move"),
-        });
-        gesture = {
-          eventId: entry.id,
-          startX: payload.x,
-          startY: payload.y,
-          lastX: payload.x,
-          lastY: payload.y,
-          moveCount: 0,
-          edge: payload.edge,
-        };
+        gesture = newTouchGesture(payload);
         this.touchGestureLog = gesture;
       }
 
@@ -443,12 +414,26 @@ export class DeviceSession {
       gesture.lastY = payload.y;
       gesture.moveCount++;
       if (payload.edge != null) gesture.edge = payload.edge;
-      updateEventLogEvent(gesture.eventId, {
-        kind: "drag",
-        action: "move",
-        summary: touchGestureSummary(gesture),
-        details: this.touchGestureDetails(gesture, "move"),
-      });
+      if (touchGestureMoved(gesture)) {
+        if (gesture.eventId == null) {
+          const entry = recordEventLogEvent({
+            device: this.udid,
+            source: "hid",
+            kind: "drag",
+            action: "move",
+            summary: touchGestureSummary(gesture),
+            details: this.touchGestureDetails(gesture, "move"),
+          });
+          gesture.eventId = entry.id;
+        } else {
+          updateEventLogEvent(gesture.eventId, {
+            kind: "drag",
+            action: "move",
+            summary: touchGestureSummary(gesture),
+            details: this.touchGestureDetails(gesture, "move"),
+          });
+        }
+      }
       return;
     }
 
@@ -459,14 +444,27 @@ export class DeviceSession {
         gesture.lastY = payload.y;
         if (payload.edge != null) gesture.edge = payload.edge;
         if (gesture.moveCount > 0 && touchGestureMoved(gesture)) {
-          updateEventLogEvent(gesture.eventId, {
-            kind: "drag",
-            action: "end",
-            summary: touchGestureSummary(gesture),
-            details: this.touchGestureDetails(gesture, "end"),
-          });
+          if (gesture.eventId == null) {
+            recordEventLogEvent({
+              device: this.udid,
+              source: "hid",
+              kind: "drag",
+              action: "end",
+              summary: touchGestureSummary(gesture),
+              details: this.touchGestureDetails(gesture, "end"),
+            });
+          } else {
+            updateEventLogEvent(gesture.eventId, {
+              kind: "drag",
+              action: "end",
+              summary: touchGestureSummary(gesture),
+              details: this.touchGestureDetails(gesture, "end"),
+            });
+          }
         } else {
-          updateEventLogEvent(gesture.eventId, {
+          recordEventLogEvent({
+            device: this.udid,
+            source: "hid",
             kind: "tap",
             action: "tap",
             summary: `Tap ${formatEventLogPoint(payload.x, payload.y)}`,

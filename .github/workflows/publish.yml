@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "packages/**"
+      - "packages/serve-sim/**"
       - ".github/workflows/publish.yml"
   workflow_dispatch: {}
 
@@ -12,22 +12,9 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-      - run: bun install
-
-      - name: Client tests
-        run: bun test packages/serve-sim-client/src/__tests__/
-
   publish-beta:
     if: github.repository == 'EvanBacon/serve-sim' && github.ref == 'refs/heads/main'
-    needs: [test]
-    runs-on: macos-latest
+    runs-on: macos-26
     permissions:
       contents: read
       id-token: write
@@ -46,10 +33,10 @@ jobs:
             exit 0
           fi
 
-          # Publish beta if serve-sim or bundled client source changed.
+          # Publish beta if serve-sim source changed.
           CHANGED=$(git diff --name-only HEAD~1 HEAD)
           SOURCE_CHANGED=false
-          if echo "$CHANGED" | grep -Eq "^packages/(serve-sim|serve-sim-client)/"; then
+          if echo "$CHANGED" | grep -Eq "^packages/serve-sim/"; then
             SOURCE_CHANGED=true
           fi
 
@@ -116,9 +103,33 @@ jobs:
           open -ga Simulator || true
           echo "udid=$UDID" >> $GITHUB_OUTPUT
 
+      # The serve-sim e2e tests load the in-process native addon
+      # (dist/native/serve-sim-native.node), so build it before running them.
+      # (The publish step below rebuilds after the version bump to embed it.)
+      - name: Build serve-sim
+        if: steps.changes.outputs.sim == 'true'
+        run: bun run build.ts
+        working-directory: packages/serve-sim
+
       - name: serve-sim tests (idle floor regression)
         if: steps.changes.outputs.sim == 'true'
-        run: bun test packages/serve-sim/src/__tests__/
+        env:
+          UDID: ${{ steps.boot-sim.outputs.udid }}
+        run: |
+          # Mirror sim-test.yml: the sim-backed e2e tests share one simulator,
+          # so a wedge from one test (stuck finger, native crash) cascades into
+          # ConnectionRefused / "server not alive" failures in unrelated later
+          # tests. Reboot for a clean slate and retry once — a transient wedge
+          # clears, a genuine regression reproduces on the second run.
+          run_tests() { bun test --max-concurrency=1 packages/serve-sim/src/__tests__/; }
+          if run_tests; then exit 0; fi
+          echo "::warning title=sim e2e retry::test run failed; rebooting $UDID and retrying once"
+          xcrun simctl shutdown "$UDID" 2>/dev/null || true
+          sleep 3
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b || true
+          open -ga Simulator || true
+          run_tests
 
       - name: Shutdown simulator
         if: always() && steps.boot-sim.outputs.udid != ''
@@ -153,7 +164,6 @@ jobs:
             fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
           "
 
-          bun run build:swift
           bun run build
 
           npm publish --access public --tag beta --provenance

@@ -1,25 +1,38 @@
 import { readdirSync, readFileSync, existsSync, unlinkSync, watch, type FSWatcher } from "fs";
 import { execSync, spawn, exec, execFile, type ChildProcess, type ExecException } from "child_process";
+import { EventEmitter } from "events";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createServer as createNetServer } from "net";
-import { randomBytes, timingSafeEqual } from "crypto";
+import { createHash, randomBytes, timingSafeEqual } from "crypto";
+import type { IncomingMessage, ServerResponse } from "http";
+import type { Socket } from "net";
+// `ws` (kept external in the build) supplies a WebSocket *client* for the
+// helper/devtools proxy. Node only exposes a global `WebSocket` on newer LTS
+// lines, and `serve-sim/middleware` is embedded in third-party dev servers, so
+// importing the dependency keeps the proxy working regardless of runtime.
+import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
+import { getDeviceSession, closeDeviceSession, type HidSocket } from "./device-session";
+import { axFrontmostAsync } from "./native";
+import { inProcessServeSimState, writeServeSimState, type ServeSimDeviceState } from "./state";
 import { debugMw } from "./debug";
 import {
-  createExecWebSocketHandler,
-  type UiRequestHandler,
-} from "./exec-ws";
-import { type ExecWebSocket } from "./exec-ws-utils";
+  resolveDevicePlaceholderAsset,
+  resolveDeviceKitChrome,
+  serveDeviceKitChromeAsset,
+  serveDevicePlaceholderAsset,
+} from "./devicekit-chrome";
+import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
-import {
-  jsonResponse,
-  noStoreJsonResponse,
-  readTextBody,
-  requestHost,
-  sseResponse,
-  textResponse,
-} from "./middleware-utils";
+import { type WebMiddleware } from "./runtime-utils";
+
+type SimReq = IncomingMessage;
+type SimRes = ServerResponse;
+type SimNext = (err?: unknown) => Promise<void>;
+export type SimMiddleware = WebMiddleware & {
+  handleUpgrade(req: SimReq, socket: Socket, head: Buffer): void;
+};
 
 // Injected at build time as a base64-encoded string via `define`
 declare const __PREVIEW_HTML_B64__: string;
@@ -42,7 +55,7 @@ type WebKitBridgeTarget = {
   inUseByOtherInspector?: boolean;
 };
 
-type WebKitBridge = {
+export type WebKitBridge = {
   port: number;
   cdpUrl: string;
   listTargets(): Promise<WebKitBridgeTarget[]>;
@@ -85,14 +98,8 @@ type ReleaseRequestBody = { targetId?: string };
 type HighlightRequestBody = { targetId?: string; on?: boolean };
 type ExecRequestBody = { command?: string };
 
-export interface ServeSimState {
-  pid: number;
-  port: number;
-  device: string;
-  url: string;
-  streamUrl: string;
-  wsUrl: string;
-}
+/** Re-exported alias for the canonical device-state record in `./state`. */
+export type ServeSimState = ServeSimDeviceState;
 
 const axStreamerCache = createAxStreamerCache();
 
@@ -125,6 +132,34 @@ const NON_UI_BUNDLE_RE = /(WidgetRenderer|ExtensionHost|\.extension(\.|$)|Servic
 
 function isUserFacingBundle(bundleId: string): boolean {
   return !NON_UI_BUNDLE_RE.test(bundleId);
+}
+
+function isSimulatorUdid(value: string): boolean {
+  return /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(value);
+}
+
+/** What to do with a persisted device state when reaping during a grid poll. */
+type StaleStateAction = "keep" | "recycle-self" | "recycle-helper";
+
+/**
+ * Decide how to reap a state record whose backing simulator may have been shut
+ * down. A booted device (or a non-simulator/unknown `booted` set) is kept.
+ *
+ * The critical distinction is `recycle-self` vs `recycle-helper`: in in-process
+ * mode `inProcessServeSimState` records the *server's own* pid, so SIGTERMing it
+ * (as we do for a separate stale helper) would kill the whole server — and
+ * index.ts converts SIGTERM into `process.exit`. When the dead device is ours,
+ * we stop just that device's capture session instead of signalling the pid.
+ */
+function classifyStaleState(
+  state: { pid: number; device: string },
+  booted: Set<string> | null,
+  selfPid: number,
+): StaleStateAction {
+  if (booted && isSimulatorUdid(state.device) && !booted.has(state.device)) {
+    return state.pid === selfPid ? "recycle-self" : "recycle-helper";
+  }
+  return "keep";
 }
 
 export function parseForegroundAppLogMessage(message: string): { bundleId: string; pid: number } | null {
@@ -186,18 +221,27 @@ export function matchInstalledAppByDisplayName(
 // The middleware runs inside the user's dev server (Metro etc.) and
 // readServeSimStates() is called on every /api and every page load.
 let bootedSnapshot: { at: number; booted: Set<string> | null } = { at: 0, booted: null };
-function getBootedUdids(): Set<string> | null {
+async function getBootedUdids(): Promise<Set<string> | null> {
   const now = Date.now();
   if (bootedSnapshot.booted && now - bootedSnapshot.at < 1500) {
     return bootedSnapshot.booted;
   }
   try {
-    const output = execSync("xcrun simctl list devices booted -j", {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 3_000,
+    const stdout = await new Promise<string>((resolve, reject) => {
+      execFile(
+        "xcrun",
+        ["simctl", "list", "devices", "booted", "-j"],
+        { encoding: "utf-8", timeout: 3_000 },
+        (err, stdout) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(stdout);
+          }
+        },
+      );
     });
-    const data = JSON.parse(output) as SimctlBootedList;
+    const data = JSON.parse(stdout) as SimctlBootedList;
     const booted = new Set<string>();
     for (const runtime of Object.values(data.devices)) {
       for (const device of runtime) {
@@ -211,7 +255,30 @@ function getBootedUdids(): Set<string> | null {
   }
 }
 
-function readServeSimStates(): ServeSimState[] {
+// The device the user most recently opened in Simulator.app, regardless of
+// which tool launched it. Simulator.app persists this as CurrentDeviceUDID, so
+// it's the best signal for "the device this user actually cares about" — we
+// surface it near the top of the grid the way Xcode's Devices window does.
+let preferredSnapshot: { at: number; udid: string | null } = { at: 0, udid: null };
+function getPreferredDeviceUdid(): string | null {
+  const now = Date.now();
+  if (now - preferredSnapshot.at < 1500) return preferredSnapshot.udid;
+  let udid: string | null = null;
+  try {
+    udid =
+      execSync("defaults read com.apple.iphonesimulator CurrentDeviceUDID", {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 1500,
+      }).trim() || null;
+  } catch {
+    udid = null;
+  }
+  preferredSnapshot = { at: now, udid };
+  return udid;
+}
+
+export async function readServeSimStates(): Promise<ServeSimState[]> {
   let files: string[];
   try {
     files = readdirSync(STATE_DIR).filter(
@@ -220,7 +287,7 @@ function readServeSimStates(): ServeSimState[] {
   } catch {
     return [];
   }
-  const booted = getBootedUdids();
+  const booted = await getBootedUdids();
   const states: ServeSimState[] = [];
   for (const f of files) {
     const path = join(STATE_DIR, f);
@@ -237,13 +304,26 @@ function readServeSimStates(): ServeSimState[] {
       // would accept connections yet never produce frames, leaving the
       // preview stuck on "Connecting...". Recycle the stale state so the
       // caller can spawn a fresh helper bound to whatever is booted.
-      if (booted && !booted.has(state.device)) {
-        debugMw(
-          "recycling stale helper pid=%d (device %s no longer booted)",
-          state.pid,
-          state.device,
-        );
-        try { process.kill(state.pid, "SIGTERM"); } catch {}
+      const action = classifyStaleState(state, booted, process.pid);
+      if (action !== "keep") {
+        if (action === "recycle-self") {
+          // This device is streamed in-process by *us* (the close button just
+          // shut its sim down). SIGTERMing state.pid would kill the whole
+          // server; instead stop just this device's capture session.
+          debugMw(
+            "closing in-process session for shut-down device %s (own pid %d)",
+            state.device,
+            state.pid,
+          );
+          closeDeviceSession(state.device);
+        } else {
+          debugMw(
+            "recycling stale helper pid=%d (device %s no longer booted)",
+            state.pid,
+            state.device,
+          );
+          try { process.kill(state.pid, "SIGTERM"); } catch {}
+        }
         try { unlinkSync(path); } catch {}
         continue;
       }
@@ -269,41 +349,442 @@ function queryDevice(rawUrl: string): string | null {
   return new URLSearchParams(rawUrl.slice(qIndex + 1)).get("device");
 }
 
+/**
+ * Parse `/grid/api` pagination params. `limit` absent → return the whole list
+ * (back-compat for embedded mounts that expect every device in one response).
+ * The full DeviceKit `chrome` descriptor is only resolved for the returned
+ * page, so a remote viewer over a tunnel fetches a small first page instead of
+ * the whole simulator catalog (~150KB) up front.
+ */
+export function parseGridPaging(rawUrl: string): { limit: number | null; offset: number } {
+  const qIndex = rawUrl.indexOf("?");
+  if (qIndex === -1) return { limit: null, offset: 0 };
+  const params = new URLSearchParams(rawUrl.slice(qIndex + 1));
+  const rawLimit = params.get("limit");
+  const rawOffset = params.get("offset");
+  // Clamp to sane bounds; ignore non-numeric/negative input rather than erroring.
+  const limit =
+    rawLimit == null || !/^\d+$/.test(rawLimit)
+      ? null
+      : Math.min(Math.max(Number(rawLimit), 1), 1000);
+  const offset =
+    rawOffset == null || !/^\d+$/.test(rawOffset) ? 0 : Math.max(Number(rawOffset), 0);
+  return { limit, offset };
+}
+
+function hostForRequest(req: SimReq): string | undefined {
+  const host = req.headers?.host;
+  if (host) return host;
+  const port = req.socket.localPort;
+  return port ? `localhost:${port}` : undefined;
+}
+
 function endpoint(base: string, path: string, device: string): string {
   const value = `${base}${path}`;
   return `${value}?device=${encodeURIComponent(device)}`;
 }
 
 /**
- * Rewrite the helper URLs in a state so they point at the hostname the request
- * came in on. The helper binds on `*:<port>`, so once the host portion matches
- * the dev-server origin, a remote viewer (LAN, or tunnel exposing the helper
- * port under the same hostname) can reach the stream. Loopback callers get
- * the state untouched.
+ * Rewrite the helper URLs in a state for the requesting browser.
+ *
+ * When `proxy` is set (standalone `serve-sim`, which owns its server and wires
+ * WebSocket upgrades), the URLs point at the preview's same-origin `/helper`
+ * proxy so remote viewers only need the one preview port. When it's off — the
+ * default for embedded `app.use(simMiddleware(...))` mounts, where the host's
+ * server doesn't forward `upgrade` events to `handleUpgrade` — the helper's
+ * loopback URLs are emitted directly (with `127.0.0.1` swapped for the request
+ * hostname so LAN/tunnel viewers can still reach the separate helper port).
  */
 export function rewriteStateForRequestHost(
   state: ServeSimState,
   hostHeader: string | undefined,
+  base = "",
+  protocol: "http" | "https" = "http",
+  proxy = false,
 ): ServeSimState {
-  if (!hostHeader) return state;
-  let hostname: string;
-  try {
-    hostname = new URL(`http://${hostHeader}`).hostname;
-  } catch {
+  if (!hostHeader) {
     return state;
   }
-  // `URL.hostname` keeps brackets around IPv6 literals, so the IPv6 loopback
-  // comparison is against the bracketed form rather than `::1`.
-  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]") {
-    return state;
+  if (!proxy) {
+    let hostname: string;
+    try {
+      hostname = new URL(`http://${hostHeader}`).hostname;
+    } catch {
+      return state;
+    }
+    // `URL.hostname` keeps brackets around IPv6 literals, so the IPv6 loopback
+    // comparison is against the bracketed form rather than `::1`.
+    if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]") {
+      return state;
+    }
+    const rewrite = (s: string) => s.replace("127.0.0.1", hostname);
+    return {
+      ...state,
+      url: rewrite(state.url),
+      streamUrl: rewrite(state.streamUrl),
+      wsUrl: rewrite(state.wsUrl),
+    };
   }
-  const rewrite = (s: string) => s.replace("127.0.0.1", hostname);
+  const normalizedBase = base === "/" ? "" : base.replace(/\/+$/, "");
+  const helperBase = `${normalizedBase}/helper`;
+  const devicePath = `${helperBase}/${encodeURIComponent(state.device)}`;
+  // Match the request's scheme so an HTTPS-served preview doesn't hand the
+  // browser `http`/`ws` helper URLs (blocked as mixed content). Behind a proxy
+  // the original scheme arrives via `x-forwarded-proto`.
+  const origin = `${protocol}://${hostHeader}`;
+  const wsOrigin = `${protocol === "https" ? "wss" : "ws"}://${hostHeader}`;
   return {
     ...state,
-    url: rewrite(state.url),
-    streamUrl: rewrite(state.streamUrl),
-    wsUrl: rewrite(state.wsUrl),
+    url: `${origin}${devicePath}`,
+    streamUrl: `${origin}${devicePath}/stream.mjpeg`,
+    wsUrl: `${wsOrigin}${devicePath}/ws`,
   };
+}
+
+function helperProxyPrefix(base: string): string {
+  return `${base === "/" ? "" : base}/helper`;
+}
+
+function devtoolsProxyPrefix(base: string): string {
+  return `${base === "/" ? "" : base}/devtools`;
+}
+
+function devtoolsProxyTarget(rawUrl: string, prefix: string): { upstreamPath: string } | null {
+  const parsed = new URL(rawUrl, "http://serve-sim.local");
+  if (!parsed.pathname.startsWith(`${prefix}/page/`)) {
+    return null;
+  }
+  const suffix = parsed.pathname.slice(prefix.length);
+  return { upstreamPath: `/devtools${suffix}${parsed.search}` };
+}
+
+function helperProxyTarget(rawUrl: string, prefix: string): { device: string | null; upstreamPath: string } | null {
+  const parsed = new URL(rawUrl, "http://serve-sim.local");
+  if (parsed.pathname !== prefix && !parsed.pathname.startsWith(`${prefix}/`)) {
+    return null;
+  }
+  const rawSuffix = parsed.pathname.slice(prefix.length);
+  const segments = rawSuffix.replace(/^\/+/, "").split("/").filter(Boolean);
+  const directHelperEndpoints = new Set([
+    "ax",
+    "config",
+    "foreground",
+    "health",
+    "stream.avcc",
+    "stream.mjpeg",
+    "ws",
+  ]);
+  let device = parsed.searchParams.get("device");
+  let upstreamSegments = segments;
+  if (segments[0] && !directHelperEndpoints.has(segments[0])) {
+    device = decodeURIComponent(segments[0]);
+    upstreamSegments = segments.slice(1);
+  }
+  const suffix = upstreamSegments.length > 0 ? `/${upstreamSegments.join("/")}` : "/";
+  parsed.searchParams.delete("device");
+  return { device, upstreamPath: `${suffix}${parsed.search}` };
+}
+
+const WS_ACCEPT_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+function websocketFrame(opcode: number, payload: Buffer<ArrayBufferLike>): Buffer {
+  const length = payload.length;
+  let header: Buffer;
+  if (length < 126) {
+    header = Buffer.from([0x80 | opcode, length]);
+  } else if (length <= 0xffff) {
+    header = Buffer.alloc(4);
+    header[0] = 0x80 | opcode;
+    header[1] = 126;
+    header.writeUInt16BE(length, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = 0x80 | opcode;
+    header[1] = 127;
+    header.writeBigUInt64BE(BigInt(length), 2);
+  }
+  return Buffer.concat([header, payload]);
+}
+
+type ParsedWebSocketFrame = {
+  opcode: number;
+  payload: Buffer<ArrayBufferLike>;
+  consumed: number;
+};
+
+function parseWebSocketFrame(buffer: Buffer): ParsedWebSocketFrame | null {
+  if (buffer.length < 2) return null;
+  const opcode = buffer[0]! & 0x0f;
+  const masked = (buffer[1]! & 0x80) !== 0;
+  let length = buffer[1]! & 0x7f;
+  let offset = 2;
+  if (length === 126) {
+    if (buffer.length < offset + 2) return null;
+    length = buffer.readUInt16BE(offset);
+    offset += 2;
+  } else if (length === 127) {
+    if (buffer.length < offset + 8) return null;
+    const bigLength = buffer.readBigUInt64BE(offset);
+    if (bigLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error("WebSocket frame too large");
+    }
+    length = Number(bigLength);
+    offset += 8;
+  }
+  const maskOffset = offset;
+  if (masked) offset += 4;
+  if (buffer.length < offset + length) return null;
+  const payload = Buffer.from(buffer.subarray(offset, offset + length));
+  if (masked) {
+    const mask = buffer.subarray(maskOffset, maskOffset + 4);
+    for (let i = 0; i < payload.length; i++) {
+      payload[i] = payload[i]! ^ mask[i % 4]!;
+    }
+  }
+  return { opcode, payload, consumed: offset + length };
+}
+
+function sendBrowserFrame(socket: Socket, opcode: number, payload: Buffer<ArrayBufferLike> = Buffer.alloc(0)): void {
+  if (socket.destroyed || !socket.writable) return;
+  socket.write(websocketFrame(opcode, payload));
+}
+
+type PendingWebSocketFrame = {
+  opcode: number;
+  payload: Buffer<ArrayBufferLike>;
+};
+
+function webSocketBinary(payload: Buffer<ArrayBufferLike>): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(payload.length);
+  bytes.set(payload);
+  return bytes;
+}
+
+/**
+ * Complete the server side of a WebSocket upgrade by hand (the `ws` server's
+ * handshake doesn't flush under Bun). Writes the 101 response and resumes the
+ * socket on success; on a missing key writes 400 and returns false.
+ */
+function writeWebSocketAccept(req: SimReq, socket: Socket): boolean {
+  const key = req.headers["sec-websocket-key"];
+  if (typeof key !== "string") {
+    socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+    return false;
+  }
+  const accept = createHash("sha1").update(key + WS_ACCEPT_GUID).digest("base64");
+  socket.write(
+    "HTTP/1.1 101 Switching Protocols\r\n" +
+    "Upgrade: websocket\r\n" +
+    "Connection: Upgrade\r\n" +
+    `Sec-WebSocket-Accept: ${accept}\r\n` +
+    "\r\n",
+  );
+  socket.resume();
+  return true;
+}
+
+function bridgeWebSocketFrames(req: SimReq, socket: Socket, head: Buffer, upstreamUrl: string): void {
+  if (!writeWebSocketAccept(req, socket)) return;
+
+  const upstream = new WebSocket(upstreamUrl);
+  upstream.binaryType = "arraybuffer";
+  let upstreamOpen = false;
+  let closed = false;
+  let pendingToUpstream: PendingWebSocketFrame[] = [];
+  let buffered = Buffer.from(head);
+
+  const closeBoth = () => {
+    if (closed) return;
+    closed = true;
+    try { upstream.close(); } catch {}
+    try { socket.end(websocketFrame(0x8, Buffer.alloc(0))); } catch {}
+    try { socket.destroy(); } catch {}
+  };
+
+  const sendToUpstream = (frame: PendingWebSocketFrame) => {
+    if (upstreamOpen && upstream.readyState === WebSocket.OPEN) {
+      upstream.send(frame.opcode === 0x1 ? frame.payload.toString("utf8") : webSocketBinary(frame.payload));
+      return;
+    }
+    pendingToUpstream.push({ opcode: frame.opcode, payload: Buffer.from(frame.payload) });
+  };
+
+  const drainFrames = () => {
+    try {
+      while (buffered.length > 0) {
+        const frame = parseWebSocketFrame(buffered);
+        if (!frame) break;
+        buffered = buffered.subarray(frame.consumed);
+        if (frame.opcode === 0x8) {
+          sendBrowserFrame(socket, 0x8, frame.payload);
+          closeBoth();
+          return;
+        }
+        if (frame.opcode === 0x9) {
+          sendBrowserFrame(socket, 0xA, frame.payload);
+          continue;
+        }
+        if (frame.opcode === 0x1 || frame.opcode === 0x2) {
+          sendToUpstream({ opcode: frame.opcode, payload: frame.payload });
+        }
+      }
+    } catch {
+      closeBoth();
+    }
+  };
+
+  upstream.onopen = () => {
+    upstreamOpen = true;
+    for (const frame of pendingToUpstream) {
+      upstream.send(frame.opcode === 0x1 ? frame.payload.toString("utf8") : webSocketBinary(frame.payload));
+    }
+    pendingToUpstream = [];
+  };
+  upstream.onmessage = (event) => {
+    const data = event.data;
+    const payload = typeof data === "string"
+      ? Buffer.from(data)
+      : Buffer.from(data as ArrayBuffer);
+    sendBrowserFrame(socket, typeof data === "string" ? 0x1 : 0x2, payload);
+  };
+  upstream.onerror = closeBoth;
+  upstream.onclose = closeBoth;
+
+  socket.on("data", (chunk) => {
+    if (typeof chunk === "string") chunk = Buffer.from(chunk);
+    buffered = Buffer.concat([buffered, chunk]);
+    drainFrames();
+  });
+  socket.on("error", closeBoth);
+  socket.on("close", closeBoth);
+  drainFrames();
+}
+
+/**
+ * Serve a helper endpoint from an in-process DeviceSession (NativeCapture +
+ * NativeHid). Returns false when no session can serve it (device not booted, or
+ * an endpoint this path doesn't own) so the caller can respond 404.
+ */
+function serveHelperInProcess(req: SimReq, res: SimRes, device: string | null, upstreamPath: string): boolean {
+  if (!device) return false;
+  let session;
+  try {
+    session = getDeviceSession(device);
+  } catch {
+    return false; // not booted / capture unavailable → 404
+  }
+  switch (upstreamPath.split("?")[0]) {
+    case "/stream.mjpeg": session.handleMjpeg(req, res); return true;
+    case "/stream.avcc": session.handleAvcc(req, res); return true;
+    case "/config": session.handleConfig(req, res); return true;
+    case "/health": session.handleHealth(req, res); return true;
+    case "/ax": session.handleAx(req, res); return true;
+    case "/foreground": session.handleForeground(req, res); return true;
+    default: return false;
+  }
+}
+
+/**
+ * Boot a simulator (if needed) and record its in-process state so the grid /
+ * preview enumerate it. Replaces spawning `serve-sim --detach <udid>`; the
+ * preview server itself serves the device's /helper routes in-process. Resolves
+ * to an error string on boot failure, or null on success.
+ */
+export async function startDeviceInProcess(udid: string, port: number, base: string): Promise<string | null> {
+  // `simctl boot` errors when already booted — ignore and let bootstatus confirm.
+  await new Promise<void>((resolve) => execFile("xcrun", ["simctl", "boot", udid], () => resolve()));
+  const ready = await new Promise<boolean>((resolve) => {
+    execFile("xcrun", ["simctl", "bootstatus", udid, "-b"], { timeout: 180_000 }, (err) => resolve(!err));
+  });
+  if (!ready) {
+    // bootstatus can exit non-zero even when the device is actually ready;
+    // confirm against the real state before reporting failure.
+    const booted = await new Promise<boolean>((resolve) => {
+      execFile("xcrun", ["simctl", "list", "devices", "-j"], (err, stdout) => {
+        if (err) return resolve(false);
+        try {
+          const data = JSON.parse(stdout) as { devices: Record<string, Array<{ udid: string; state: string }>> };
+          resolve(Object.values(data.devices).flat().some((d) => d.udid === udid && d.state === "Booted"));
+        } catch {
+          resolve(false);
+        }
+      });
+    });
+    if (!booted) return `Device ${udid} failed to reach booted state`;
+  }
+  writeServeSimState(inProcessServeSimState(udid, port, base));
+  return null;
+}
+
+/**
+ * Adapt a raw upgraded socket into the minimal HidSocket the DeviceSession
+ * needs. We do the WebSocket framing by hand (same helpers as the DevTools
+ * bridge) rather than via `ws`'s server, whose handshake doesn't flush under
+ * Bun — and the production CLI is a bun-compiled binary.
+ */
+function rawHidSocket(socket: Socket, head: Buffer): HidSocket {
+  const messageCbs: Array<(d: Buffer) => void> = [];
+  const closeCbs: Array<() => void> = [];
+  let buffered = Buffer.from(head);
+  let closed = false;
+
+  const fireClose = () => {
+    if (closed) return;
+    closed = true;
+    for (const cb of closeCbs) cb();
+  };
+  const shutdown = () => {
+    fireClose();
+    try { socket.end(websocketFrame(0x8, Buffer.alloc(0))); } catch {}
+    try { socket.destroy(); } catch {}
+  };
+
+  const drain = () => {
+    for (;;) {
+      let frame: ParsedWebSocketFrame | null;
+      try {
+        frame = parseWebSocketFrame(buffered);
+      } catch {
+        shutdown();
+        return;
+      }
+      if (!frame) return;
+      buffered = buffered.subarray(frame.consumed);
+      if (frame.opcode === 0x8) return shutdown();       // close
+      if (frame.opcode === 0x9) { sendBrowserFrame(socket, 0xa, frame.payload); continue; } // ping → pong
+      if (frame.opcode === 0x1 || frame.opcode === 0x2) {
+        for (const cb of messageCbs) cb(frame.payload);
+      }
+    }
+  };
+
+  socket.on("data", (chunk: Buffer) => { buffered = Buffer.concat([buffered, chunk]); drain(); });
+  socket.on("close", fireClose);
+  socket.on("error", fireClose);
+  if (head.length) drain();
+
+  return {
+    send(data: Buffer) { sendBrowserFrame(socket, 0x2, data); },
+    on(event: "message" | "close" | "error", cb: (data: Buffer) => void) {
+      if (event === "message") messageCbs.push(cb);
+      else closeCbs.push(cb as () => void);
+    },
+    close: shutdown,
+  };
+}
+
+/** Upgrade an in-process HID `/ws` socket onto a DeviceSession. Returns false when no session can serve it. */
+function attachHidInProcess(req: SimReq, socket: Socket, head: Buffer, device: string | null): boolean {
+  if (!device) return false;
+  let session;
+  try {
+    session = getDeviceSession(device);
+  } catch {
+    return false;
+  }
+  if (!writeWebSocketAccept(req, socket)) return true; // bad request handled
+  session.attachHidSocket(rawHidSocket(socket, head));
+  return true;
 }
 
 export function previewConfigForState(
@@ -311,9 +792,10 @@ export function previewConfigForState(
   base: string,
   serveSimBin: string,
   execToken: string,
+  codec?: string,
+  proxyHelpers = false,
 ): ServeSimState & {
   basePath: string;
-  logsEndpoint: string;
   appStateEndpoint: string;
   axEndpoint: string;
   devtoolsEndpoint: string;
@@ -324,12 +806,13 @@ export function previewConfigForState(
   gridMemoryEndpoint: string;
   previewEndpoint: string;
   execToken: string;
+  codec?: string;
+  proxyHelpers?: boolean;
 } {
   const gridApiBase = (base === "" ? "" : base) + "/grid/api";
   return {
     ...state,
     basePath: base,
-    logsEndpoint: endpoint(base, "/logs", state.device),
     appStateEndpoint: endpoint(base, "/appstate", state.device),
     axEndpoint: endpoint(base, "/ax", state.device),
     devtoolsEndpoint: endpoint(base, "/devtools", state.device),
@@ -340,6 +823,8 @@ export function previewConfigForState(
     gridMemoryEndpoint: gridApiBase + "/memory",
     previewEndpoint: base === "" ? "/" : base,
     execToken,
+    ...(codec ? { codec } : {}),
+    ...(proxyHelpers ? { proxyHelpers: true } : {}),
   };
 }
 
@@ -410,10 +895,9 @@ async function ensureInspectWebKitBridge(): Promise<WebKitBridge> {
         continue;
       }
       try {
-        // Bind explicitly to IPv4 127.0.0.1 to match what bridgeWsHost emits
-        // (and what the DevTools frontend CSP whitelists). `localhost` resolves
-        // to ::1 first on some setups, which would leave the iframe's
-        // ws://127.0.0.1:9222 connection refused.
+        // Bind explicitly to IPv4 127.0.0.1 so the preview's DevTools
+        // websocket proxy has a stable loopback upstream. `localhost` resolves
+        // to ::1 first on some setups, which would leave the bridge unreachable.
         const server = await startCdpServer({ host: "127.0.0.1", port }) as Awaited<ReturnType<typeof startCdpServer>> & {
           highlightTarget?(targetId: string, on: boolean): Promise<void>;
           releaseHighlight?(targetId?: string): void;
@@ -458,22 +942,34 @@ async function ensureInspectWebKitBridge(): Promise<WebKitBridge> {
   return inspectWebKitBridge;
 }
 
-function devtoolsFrontendUrl(frontendBase: string, wsHost: string, targetId: string): string {
-  const url = new URL(`${frontendBase}/inspector.html`, "http://serve-sim.local");
-  url.searchParams.set("ws", `${wsHost}/devtools/page/${targetId}`);
-  return `${url.pathname}${url.search}`;
+function firstHeaderValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
 }
 
-// The inspect-webkit bridge binds locally. Always emit `127.0.0.1` rather
-// than `localhost` for the iframe's WS URL: the chrome-devtools-frontend
-// inspector.html ships a CSP whose connect-src only whitelists
-// `ws://127.0.0.1:*` (plus `'self'`, which doesn't cover the bridge's
-// different port). A `ws://localhost:9222/...` connection from the iframe
-// gets CSP-blocked and surfaces as "WebSocket disconnected."
-// Non-local hostnames fall back to 127.0.0.1 since the bridge isn't
-// reachable from off-host anyway.
-function bridgeWsHost(_reqHost: string | undefined, bridgePort: number): string {
-  return `127.0.0.1:${bridgePort}`;
+function forwardedProtoForRequest(req: SimReq): string | undefined {
+  return firstHeaderValue(req.headers["x-forwarded-proto"])
+    ?.split(",", 1)[0]
+    ?.trim()
+    .toLowerCase();
+}
+
+function websocketProtocolForRequest(req: SimReq): "ws" | "wss" {
+  return forwardedProtoForRequest(req) === "https" ? "wss" : "ws";
+}
+
+function httpProtocolForRequest(req: SimReq): "http" | "https" {
+  return forwardedProtoForRequest(req) === "https" ? "https" : "http";
+}
+
+function devtoolsFrontendUrl(
+  frontendBase: string,
+  wsParamName: "ws" | "wss",
+  wsTargetBase: string,
+  targetId: string,
+): string {
+  const url = new URL(`${frontendBase}/inspector.html`, "http://serve-sim.local");
+  url.searchParams.set(wsParamName, `${wsTargetBase}/page/${encodeURIComponent(targetId)}`);
+  return `${url.pathname}${url.search}`;
 }
 
 let _html: string | null = null;
@@ -502,31 +998,37 @@ interface SimctlDevice {
   name: string;
   state: string;
   isAvailable?: boolean;
+  deviceTypeIdentifier?: string;
   runtime: string;
 }
 
-function listAllSimulators(): SimctlDevice[] {
-  try {
-    const output = execSync("xcrun simctl list devices -j", {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 3_000,
-    });
-    const data = JSON.parse(output) as SimctlAllList;
-    const out: SimctlDevice[] = [];
-    for (const [runtime, devices] of Object.entries(data.devices)) {
-      // Keep this to touch-capable simulator families that serve-sim can frame
-      // and inject into. tvOS is intentionally left out for now.
-      if (!/SimRuntime\.(iOS|watchOS|visionOS|xrOS)-/i.test(runtime)) continue;
-      for (const d of devices) {
-        if (d.isAvailable === false) continue;
-        out.push({ ...d, runtime: runtime.replace(/^.*SimRuntime\./, "") });
-      }
-    }
-    return out;
-  } catch {
-    return [];
-  }
+function listAllSimulators(): Promise<SimctlDevice[]> {
+  return new Promise((resolve) => {
+    execFile(
+      "xcrun",
+      ["simctl", "list", "devices", "-j"],
+      { encoding: "utf-8", timeout: 3_000 },
+      (err, stdout) => {
+        if (err) return resolve([]);
+        try {
+          const data = JSON.parse(stdout) as SimctlAllList;
+          const out: SimctlDevice[] = [];
+          for (const [runtime, devices] of Object.entries(data.devices)) {
+            // Keep this to touch-capable simulator families that serve-sim can
+            // frame and inject into. tvOS is intentionally left out for now.
+            if (!/SimRuntime\.(iOS|watchOS|visionOS|xrOS)-/i.test(runtime)) continue;
+            for (const d of devices) {
+              if (d.isAvailable === false) continue;
+              out.push({ ...d, runtime: runtime.replace(/^.*SimRuntime\./, "") });
+            }
+          }
+          resolve(out);
+        } catch {
+          resolve([]);
+        }
+      },
+    );
+  });
 }
 
 // Default per-simulator footprint when we have no running sim to measure
@@ -642,35 +1144,6 @@ function buildMemoryReport(): MemoryReport {
   };
 }
 
-/**
- * Locate the `serve-sim` CLI binary so the grid can spawn helpers via
- * `serve-sim --detach <udid>`. Tries, in order:
- *   1. argv[0] if it ends in `serve-sim` (we're running inside the
- *      compiled standalone binary, which IS the CLI)
- *   2. `serve-sim` on PATH (npm-installed / bun-installed CLI)
- * Returns the resolved command + args ready for spawn.
- */
-function resolveServeSimCommand(): { command: string; baseArgs: string[] } | null {
-  // 1. Compiled standalone binary: argv[0] is the serve-sim binary itself.
-  if (process.argv[0] && /(^|\/)serve-sim$/.test(process.argv[0])) {
-    return { command: process.argv[0], baseArgs: [] };
-  }
-  // 2. Running the JS bundle directly: `node /path/to/serve-sim.js`.
-  if (process.argv[1] && /(^|\/)serve-sim\.js$/.test(process.argv[1])) {
-    return { command: process.argv[0]!, baseArgs: [process.argv[1]!] };
-  }
-  // 3. Global install: serve-sim is on PATH.
-  try {
-    const path = execSync("command -v serve-sim", {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 1_500,
-    }).trim();
-    if (path) return { command: path, baseArgs: [] };
-  } catch {}
-  return null;
-}
-
 export interface SimMiddlewareOptions {
   /** Base path to serve the preview at. Default: "/.sim" */
   basePath?: string;
@@ -683,6 +1156,26 @@ export interface SimMiddlewareOptions {
    * cross-origin pages cannot read it.
    */
   execToken?: string;
+  /**
+   * Pin the preview stream codec. `"mjpeg"` forces the software JPEG path for
+   * hosts whose hardware can't encode H.264 (e.g. VMs without the high/low-
+   * latency H.264 profiles); `"auto"`/undefined lets the browser pick H.264.
+   * Reserved for future values such as `"hevc"`/`"av1"`.
+   */
+  codec?: string;
+  /**
+   * Route the browser's helper stream/control and DevTools sockets through the
+   * preview's same-origin `/helper` and `/devtools` proxies instead of the
+   * helper's own loopback port — so a single exposed preview port is enough for
+   * remote viewers. Requires the mounting server to forward WebSocket `upgrade`
+   * events to {@link SimMiddleware.handleUpgrade}. Standalone `serve-sim`
+   * enables this; plain `app.use(simMiddleware(...))` mounts leave it off (and
+   * keep direct helper URLs) unless they also wire upgrades. See the README's
+   * "Embed in your dev server" section.
+   */
+  proxyHelpers?: boolean;
+  /** Test hook for supplying a fake inspect-webkit bridge. */
+  inspectWebKitBridge?: () => Promise<WebKitBridge>;
 }
 
 function safeEqualString(a: string, b: string): boolean {
@@ -699,17 +1192,186 @@ function isJsonContentType(value: string | undefined): boolean {
   return mediaType === "application/json";
 }
 
+type ConnectMiddleware = {
+  (req: SimReq, res: SimRes, next?: SimNext): Promise<void>;
+  handleUpgrade?: (req: SimReq, socket: Socket, head: Buffer) => void;
+};
+
+function headersFromRequest(request: Request): Record<string, string> {
+  const headers: Record<string, string> = {};
+  request.headers.forEach((value, key) => {
+    headers[key.toLowerCase()] = value;
+  });
+  if (!headers.host) {
+    headers.host = new URL(request.url).host;
+  }
+  return headers;
+}
+
+function connectToFetch(
+  handler: ConnectMiddleware,
+  request: Request,
+): Promise<Response | undefined> {
+  const requestUrl = new URL(request.url);
+  const rawUrl = `${requestUrl.pathname}${requestUrl.search}`;
+  const requestEvents = new EventEmitter();
+  const abortController = new AbortController();
+  const fakeReq = Object.assign(requestEvents, {
+    method: request.method,
+    url: rawUrl,
+    headers: headersFromRequest(request),
+    socket: {
+      localPort: Number(requestUrl.port) || undefined,
+    },
+    destroy() {
+      abortController.abort();
+      requestEvents.emit("close");
+    },
+  }) as SimReq;
+
+  let status = 200;
+  let responseHeaders = new Headers();
+  let headersSent = false;
+  let writableEnded = false;
+  let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+  let resolveResponse!: (response: Response | undefined) => void;
+  let rejectResponse!: (error: unknown) => void;
+  let resolved = false;
+  const encoder = new TextEncoder();
+
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controllerRef = controller;
+    },
+    cancel() {
+      requestEvents.emit("close");
+    },
+  });
+
+  const resolveOnce = (response: Response | undefined) => {
+    if (resolved) return;
+    resolved = true;
+    resolveResponse(response);
+  };
+
+  const ensureResponse = () => {
+    if (headersSent) return;
+    headersSent = true;
+    resolveOnce(new Response(body, { status, headers: responseHeaders }));
+  };
+
+  const writeChunk = (chunk: Buffer | string | Uint8Array) => {
+    ensureResponse();
+    if (!controllerRef || writableEnded) return true;
+    const data = typeof chunk === "string"
+      ? encoder.encode(chunk)
+      : chunk instanceof Uint8Array
+        ? chunk
+        : new Uint8Array(chunk);
+    try {
+      controllerRef.enqueue(data);
+    } catch {
+      return false;
+    }
+    return true;
+  };
+
+  const fakeRes = {
+    get headersSent() {
+      return headersSent;
+    },
+    get writableEnded() {
+      return writableEnded;
+    },
+    statusCode: 200,
+    writeHead(nextStatus: number, headers?: Record<string, string | number | string[]>) {
+      status = nextStatus;
+      fakeRes.statusCode = nextStatus;
+      if (headers) {
+        responseHeaders = new Headers();
+        for (const [key, value] of Object.entries(headers)) {
+          if (Array.isArray(value)) {
+            for (const item of value) responseHeaders.append(key, item);
+          } else {
+            responseHeaders.set(key, String(value));
+          }
+        }
+      }
+      ensureResponse();
+    },
+    write(chunk: Buffer | string | Uint8Array) {
+      return writeChunk(chunk);
+    },
+    end(chunk?: Buffer | string | Uint8Array) {
+      if (chunk !== undefined) writeChunk(chunk);
+      ensureResponse();
+      writableEnded = true;
+      try {
+        controllerRef?.close();
+      } catch {}
+      requestEvents.emit("close");
+    },
+    on() {
+      return fakeRes;
+    },
+    once() {
+      return fakeRes;
+    },
+    off() {
+      return fakeRes;
+    },
+  } as unknown as SimRes;
+
+  const responsePromise = new Promise<Response | undefined>((resolve, reject) => {
+    resolveResponse = resolve;
+    rejectResponse = reject;
+  });
+
+  void (async () => {
+    try {
+      await handler(fakeReq, fakeRes, async () => {
+        resolveOnce(undefined);
+      });
+      if (!resolved && writableEnded) resolveOnce(new Response(null, { status, headers: responseHeaders }));
+    } catch (error) {
+      rejectResponse(error);
+    }
+  })();
+
+  void (async () => {
+    try {
+      if (request.body) {
+        const reader = request.body.getReader();
+        while (!abortController.signal.aborted) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          requestEvents.emit("data", Buffer.from(value));
+        }
+        reader.releaseLock();
+      }
+      if (!abortController.signal.aborted) requestEvents.emit("end");
+    } catch {
+      requestEvents.emit("close");
+    }
+  })();
+
+  return responsePromise;
+}
+
 /**
- * Fetch-style middleware that serves the simulator preview UI.
+ * Connect-style middleware that serves the simulator preview UI.
  *
  * Routes handled under `basePath` (default `/.sim`):
  *   GET  {basePath}         — the preview HTML page
  *   GET  {basePath}/api     — serve-sim state JSON
- *   GET  {basePath}/logs    — SSE stream of simctl logs
  *   GET  {basePath}/ax      — SSE stream of normalized accessibility snapshots
  */
-export function simMiddleware(options?: SimMiddlewareOptions) {
+export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const base = (options?.basePath ?? "/.sim").replace(/\/+$/, "");
+  const helperPrefix = helperProxyPrefix(base);
+  const devtoolsPrefix = devtoolsProxyPrefix(base);
+  const proxyHelpers = options?.proxyHelpers ?? false;
+  const getInspectWebKitBridge = options?.inspectWebKitBridge ?? ensureInspectWebKitBridge;
   // Per-process random token. Anyone who can read the preview HTML same-origin
   // can call /exec; cross-origin pages and LAN clients cannot, because they
   // can't read this value (it's only injected into the preview page's config).
@@ -733,14 +1395,23 @@ export function simMiddleware(options?: SimMiddlewareOptions) {
     return { ok: true };
   };
 
-  const middleware = async (req: Request): Promise<Response | undefined> => {
-    const requestUrl = new URL(req.url, "http://serve-sim.local");
-    const rawUrl = `${requestUrl.pathname}${requestUrl.search}`;
+  const connectMiddleware = (async (req: SimReq, res: SimRes, next?: SimNext) => {
+    const rawUrl: string = req.url ?? "";
     const qIndex = rawUrl.indexOf("?");
-    const url = requestUrl.pathname;
-    const host = requestHost(req, requestUrl);
+    const url = qIndex === -1 ? rawUrl : rawUrl.slice(0, qIndex);
     const selectedDevice = queryDevice(rawUrl) ?? options?.device ?? null;
     const devtoolsFrontendBase = base === "/" ? "/devtools-frontend" : `${base}/devtools-frontend`;
+
+    const helperTarget = helperProxyTarget(rawUrl, helperPrefix);
+    if (helperTarget) {
+      const device = helperTarget.device ?? selectedDevice;
+      // The device's helper endpoints are served from an in-process
+      // NativeCapture/NativeHid DeviceSession.
+      if (serveHelperInProcess(req, res, device, helperTarget.upstreamPath)) return;
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("No serve-sim device");
+      return;
+    }
 
     // Same-origin proxy for Chrome DevTools frontend assets. Loading the
     // appspot-hosted frontend directly works as a top-level tab, but is flaky
@@ -752,7 +1423,9 @@ export function simMiddleware(options?: SimMiddlewareOptions) {
         : url.slice(devtoolsFrontendBase.length + 1);
       // Reject path-traversal segments before they reach the upstream URL.
       if (assetPath.split("/").some((seg) => seg === "..")) {
-        return textResponse("Invalid asset path", { status: 400 });
+        res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Invalid asset path");
+        return;
       }
       try {
         const upstream = await fetch(
@@ -763,18 +1436,18 @@ export function simMiddleware(options?: SimMiddlewareOptions) {
         };
         const contentType = upstream.headers.get("content-type");
         if (contentType) headers["Content-Type"] = contentType;
-        return new Response(upstream.body, { status: upstream.status, headers });
+        res.writeHead(upstream.status, headers);
+        res.end(Buffer.from(await upstream.arrayBuffer()));
       } catch (err) {
-        return textResponse(
-          err instanceof Error ? err.message : "Failed to load DevTools frontend",
-          { status: 502 },
-        );
+        res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end(err instanceof Error ? err.message : "Failed to load DevTools frontend");
       }
+      return;
     }
 
     // Serve the preview page
     if (url === base || url === base + "/") {
-      const states = readServeSimStates();
+      const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       let html = loadHtml();
 
@@ -790,40 +1463,101 @@ export function simMiddleware(options?: SimMiddlewareOptions) {
       }
 
       if (state) {
-        const remoteState = rewriteStateForRequestHost(state, host);
-        const config = JSON.stringify(previewConfigForState(remoteState, base, serveSimBinPath(), execToken));
+        const remoteState = rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers);
+        const config = JSON.stringify(previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.codec, proxyHelpers));
         const configScript = `<script>window.__SIM_PREVIEW__=${config}</script>`;
         html = html.replace("<!--__SIM_PREVIEW_CONFIG__-->", configScript);
       }
 
-      const headers = {
+      res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
-      };
-      return new Response(html, {
-        status: 200,
-        headers,
       });
+      res.end(html);
+      return;
     }
 
     // Memory capacity estimate: how much room is left to boot more sims.
     if (url === base + "/grid/api/memory") {
-      return noStoreJsonResponse(buildMemoryReport());
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      res.end(JSON.stringify(buildMemoryReport()));
+      return;
+    }
+
+    if (url === base + "/grid/api/devicekit-chrome") {
+      serveDeviceKitChromeAsset(new URL(rawUrl || "/", "http://serve-sim.local"), res);
+      return;
+    }
+
+    if (url === base + "/grid/api/device-placeholder-asset") {
+      serveDevicePlaceholderAsset(new URL(rawUrl || "/", "http://serve-sim.local"), res);
+      return;
     }
 
     // Grid JSON: every supported simulator, annotated with running helper info if any.
     if (url === base + "/grid/api") {
-      const states = readServeSimStates();
+      const states = await readServeSimStates();
       const helperByUdid = new Map(states.map((s) => [s.device, s] as const));
-      const sims = listAllSimulators();
-      const devices = sims.map((d) => {
+      const sims = await listAllSimulators();
+      // Order mirrors Xcode's Devices window: the devices the user is actually
+      // using float to the top — streaming first, then booted, then the
+      // simulator they last opened in Simulator.app — and everything else falls
+      // back to a stable family / newest-OS / name grouping. This surfaces the
+      // handful of relevant devices instead of burying them in an alphabetical
+      // wall of near-identical names. Sort on the cheap metadata BEFORE
+      // resolving the DeviceKit chrome descriptor, so pagination resolves chrome
+      // only for the page actually returned.
+      const preferredUdid = getPreferredDeviceUdid();
+      const familyRank = (name: string): number => {
+        if (/iphone/i.test(name)) return 0;
+        if (/ipad/i.test(name)) return 1;
+        if (/watch/i.test(name)) return 2;
+        if (/(apple\s*tv|^tv\b)/i.test(name)) return 3;
+        if (/vision|reality/i.test(name)) return 4;
+        return 5;
+      };
+      // Lower is higher in the list: streaming > selected > booted > last-opened
+      // > rest. The active `?device=` selection is ranked near the top so it's
+      // always inside the first page — otherwise a paginated client that selected
+      // a shut-down device deep in the catalog would get no chrome/placeholder
+      // for the view it's actually showing.
+      const stateRank = (d: (typeof sims)[number]) => {
+        if (helperByUdid.has(d.udid)) return 0;
+        if (selectedDevice && d.udid === selectedDevice) return 1;
+        if (d.state === "Booted") return 2;
+        if (d.udid === preferredUdid) return 3;
+        return 4;
+      };
+      // Newest runtime first, so "iPhone 17 Pro (27.0)" sorts above its 26.x twins.
+      const runtimeRank = (runtime: string): number => {
+        const m = runtime.match(/-(\d+)-(\d+)/);
+        const major = m ? Number(m[1]) : 0;
+        const minor = m ? Number(m[2]) : 0;
+        return -(major * 1000 + minor);
+      };
+      sims.sort((a, b) =>
+        stateRank(a) - stateRank(b) ||
+        familyRank(a.name) - familyRank(b.name) ||
+        a.name.localeCompare(b.name) ||
+        runtimeRank(a.runtime) - runtimeRank(b.runtime),
+      );
+
+      const total = sims.length;
+      const { limit, offset } = parseGridPaging(rawUrl);
+      const page = limit == null ? sims : sims.slice(offset, offset + limit);
+      const devices = page.map((d) => {
         const helper = helperByUdid.get(d.udid);
-        const remoteHelper = helper ? rewriteStateForRequestHost(helper, host) : null;
+        const remoteHelper = helper ? rewriteStateForRequestHost(helper, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
         return {
           device: d.udid,
           name: d.name,
           runtime: d.runtime,
           state: d.state,
+          chrome: resolveDeviceKitChrome(d),
+          placeholderAsset: resolveDevicePlaceholderAsset(d),
           helper: remoteHelper
             ? {
                 port: remoteHelper.port,
@@ -834,100 +1568,83 @@ export function simMiddleware(options?: SimMiddlewareOptions) {
             : null,
         };
       });
-      // Stable order: family (iPhone, iPad, Watch, TV, Vision, other) →
-      // state (helper > booted > shutdown) → alpha. Keeps the most
-      // commonly used devices visible without scrolling.
-      const familyRank = (name: string): number => {
-        if (/iphone/i.test(name)) return 0;
-        if (/ipad/i.test(name)) return 1;
-        if (/watch/i.test(name)) return 2;
-        if (/(apple\s*tv|^tv\b)/i.test(name)) return 3;
-        if (/vision|reality/i.test(name)) return 4;
-        return 5;
-      };
-      const stateRank = (x: typeof devices[number]) =>
-        x.helper ? 0 : x.state === "Booted" ? 1 : 2;
-      devices.sort((a, b) =>
-        familyRank(a.name) - familyRank(b.name) ||
-        stateRank(a) - stateRank(b) ||
-        a.name.localeCompare(b.name),
-      );
-      return noStoreJsonResponse({ devices });
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      // `total` lets the client show "X of Y" and know when to stop paging;
+      // older clients that read only `devices` are unaffected.
+      res.end(JSON.stringify({ devices, total, offset: limit == null ? 0 : offset, limit: limit ?? total }));
+      return;
     }
 
     // Shutdown a booted simulator. Any running helper for the device is reaped
     // by readServeSimStates() on the next /grid/api poll (it kills helpers
     // whose backing simulator is no longer in the booted set).
     if (url === base + "/grid/api/shutdown" && req.method === "POST") {
-      const body = await req.text();
-      let udid = "";
-      try { udid = (JSON.parse(body) as ShutdownRequestBody).udid ?? ""; } catch {}
-      if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(udid)) {
-        return jsonResponse({ ok: false, error: "Invalid or missing udid" }, { status: 400 });
-      }
-      // Drop the snapshot so the next /grid/api call re-queries simctl
-      // and prunes any helper bound to this now-shutdown device.
-      bootedSnapshot = { at: 0, booted: null };
-      return new Promise<Response>((resolve) => {
+      let body = "";
+      req.on("data", (chunk: Buffer | string) => {
+        body += typeof chunk === "string" ? chunk : chunk.toString();
+      });
+      req.on("end", () => {
+        let udid = "";
+        try { udid = (JSON.parse(body) as ShutdownRequestBody).udid ?? ""; } catch {}
+        if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(udid)) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Invalid or missing udid" }));
+          return;
+        }
+        // Stop our own in-process capture for this device first (no-op if it
+        // isn't streamed here). This frees the native session immediately
+        // rather than waiting for the next poll's reaper to notice.
+        closeDeviceSession(udid);
+        // Drop the snapshot so the next /grid/api call re-queries simctl
+        // and prunes any helper bound to this now-shutdown device.
+        bootedSnapshot = { at: 0, booted: null };
         execFile("xcrun", ["simctl", "shutdown", udid], { timeout: 30_000 }, (err, _stdout, stderr) => {
           if (err) {
-            resolve(jsonResponse({
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
               ok: false,
               error: stderr?.toString().trim() || err.message,
-            }, { status: 500 }));
+            }));
             return;
           }
-          resolve(jsonResponse({ ok: true }));
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
         });
       });
+      return;
     }
 
-    // Spawn a serve-sim helper (auto-boots if needed).
+    // Start streaming a device in-process (auto-boots if needed). The preview
+    // server serves its /helper routes directly — no spawned helper.
     if (url === base + "/grid/api/start" && req.method === "POST") {
-      const body = await req.text();
-      let udid = "";
-      try { udid = (JSON.parse(body) as StartRequestBody).udid ?? ""; } catch {}
-      if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(udid)) {
-        return jsonResponse({ ok: false, error: "Invalid or missing udid" }, { status: 400 });
-      }
-      const resolved = resolveServeSimCommand();
-      if (!resolved) {
-        return jsonResponse({
-          ok: false,
-          error: "serve-sim CLI not found in PATH. Install it (npm i -g serve-sim) and retry.",
-        }, { status: 500 });
-      }
-      return new Promise<Response>((resolve) => {
-        const child = spawn(
-          resolved.command,
-          [...resolved.baseArgs, "--detach", udid],
-          { stdio: ["ignore", "pipe", "pipe"], detached: false },
-        );
-        let stdout = "";
-        let stderr = "";
-        child.stdout?.on("data", (c: Buffer) => { stdout += c.toString(); });
-        child.stderr?.on("data", (c: Buffer) => { stderr += c.toString(); });
-        // A cold iOS simulator can take 60-90s to reach `bootstatus -b`
-        // readiness; the prior 60s ceiling was killing serve-sim mid-boot
-        // and the helper never got a chance to spawn, so the click ended
-        // with an error and no state file. 3 minutes is a comfortable
-        // upper bound that covers slow first-boots without leaving a
-        // wedged child around indefinitely.
-        const timer = setTimeout(() => {
-          try { child.kill("SIGTERM"); } catch {}
-        }, 180_000);
-        child.on("close", (code) => {
-          clearTimeout(timer);
-          if (code === 0) {
-            resolve(jsonResponse({ ok: true, stdout: stdout.trim() }));
+      let body = "";
+      req.on("data", (chunk: Buffer | string) => {
+        body += typeof chunk === "string" ? chunk : chunk.toString();
+      });
+      req.on("end", () => {
+        let udid = "";
+        try { udid = (JSON.parse(body) as StartRequestBody).udid ?? ""; } catch {}
+        if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(udid)) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Invalid or missing udid" }));
+          return;
+        }
+        const port = req.socket.localPort ?? 0;
+        void startDeviceInProcess(udid, port, base).then((error) => {
+          if (res.writableEnded) return;
+          if (error) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error }));
           } else {
-            resolve(jsonResponse({
-              ok: false,
-              error: stderr.trim() || stdout.trim() || `serve-sim exited with code ${code}`,
-            }, { status: 500 }));
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true }));
           }
         });
       });
+      return;
     }
 
     // JSON API: start the inspect-webkit CDP bridge and list WebKit targets
@@ -935,77 +1652,108 @@ export function simMiddleware(options?: SimMiddlewareOptions) {
     // /devtools/page/:id on localhost; the preview adds iframe-safe frontend
     // URLs so the browser UI can embed Chrome DevTools.
     if (url === base + "/devtools") {
-      const states = readServeSimStates();
+      const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       if (!state) {
-        return jsonResponse({ error: "No serve-sim device" }, { status: 404 });
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "No serve-sim device" }));
+        return;
       }
       try {
-        const bridge = await ensureInspectWebKitBridge();
+        const bridge = await getInspectWebKitBridge();
         const bridgeTargets = await bridge.listTargets();
-        const wsHost = bridgeWsHost(host, bridge.port);
+        // Proxy mode routes the inspector socket through the preview's
+        // same-origin `/devtools` proxy; otherwise the browser talks to the
+        // bridge's loopback port directly (the pre-proxy behavior).
+        const wsProtocol = proxyHelpers ? websocketProtocolForRequest(req) : "ws";
+        const wsTargetBase = proxyHelpers
+          ? `${hostForRequest(req) ?? `127.0.0.1:${bridge.port}`}${devtoolsPrefix}`
+          : `127.0.0.1:${bridge.port}/devtools`;
         // inspect-webkit@0.0.3 only exposes `sim:<webinspectord-pid>` for
         // simulator targets, which can't be reconciled against a sim UDID.
         // Surface every booted sim's targets (Safari Develop-menu behavior)
         // until inspect-webkit grows a real UDID we can filter on.
         const targets = bridgeTargets.map((target) => ({
           ...target,
-          webSocketDebuggerUrl: `ws://${wsHost}/devtools/page/${encodeURIComponent(target.id)}`,
-          devtoolsFrontendUrl: devtoolsFrontendUrl(devtoolsFrontendBase, wsHost, target.id),
+          webSocketDebuggerUrl: `${wsProtocol}://${wsTargetBase}/page/${encodeURIComponent(target.id)}`,
+          devtoolsFrontendUrl: devtoolsFrontendUrl(devtoolsFrontendBase, wsProtocol, wsTargetBase, target.id),
         }));
-        return noStoreJsonResponse({
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify({
           port: bridge.port,
           targets,
-        });
+        }));
       } catch (err) {
-        return jsonResponse({
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
           error: err instanceof Error ? err.message : "Failed to start inspect-webkit",
-        }, { status: 500 });
+        }));
       }
+      return;
     }
 
     // POST /devtools/release — drop hover-highlight CDP sessions so we don't
     // sit on a WIR slot when the picker is dismissed (or the tab is closed).
     // Optional body { targetId } releases just one; empty body releases all.
     if (url === base + "/devtools/release" && req.method === "POST") {
-      try {
-        const body = await req.text();
-        const parsed: ReleaseRequestBody = body ? JSON.parse(body) : {};
-        const bridge = await ensureInspectWebKitBridge();
-        bridge.releaseHighlight?.(parsed.targetId);
-        return jsonResponse({});
-      } catch (err) {
-        return jsonResponse({
-          error: err instanceof Error ? err.message : "Failed to release",
-        }, { status: 500 });
-      }
+      let body = "";
+      req.on("data", (chunk: Buffer) => (body += chunk));
+      req.on("end", async () => {
+        try {
+          const parsed: ReleaseRequestBody = body ? JSON.parse(body) : {};
+          const bridge = await getInspectWebKitBridge();
+          bridge.releaseHighlight?.(parsed.targetId);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end("{}");
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            error: err instanceof Error ? err.message : "Failed to release",
+          }));
+        }
+      });
+      return;
     }
 
     // POST /devtools/highlight — flash an inspectable target in the
     // simulator the way Safari's Develop menu hover does. Body shape:
     // { targetId: string, on: boolean }.
     if (url === base + "/devtools/highlight" && req.method === "POST") {
-      try {
-        const { targetId, on } = JSON.parse(await req.text() || "{}") as HighlightRequestBody;
-        if (!targetId) {
-          return jsonResponse({ error: "Missing targetId" }, { status: 400 });
+      let body = "";
+      req.on("data", (chunk: Buffer) => (body += chunk));
+      req.on("end", async () => {
+        try {
+          const { targetId, on } = JSON.parse(body || "{}") as HighlightRequestBody;
+          if (!targetId) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Missing targetId" }));
+            return;
+          }
+          const bridge = await getInspectWebKitBridge();
+          if (!bridge.highlightTarget) {
+            res.writeHead(501, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "highlightTarget not supported by inspect-webkit" }));
+            return;
+          }
+          await bridge.highlightTarget(targetId, !!on);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end("{}");
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            error: err instanceof Error ? err.message : "Failed to highlight target",
+          }));
         }
-        const bridge = await ensureInspectWebKitBridge();
-        if (!bridge.highlightTarget) {
-          return jsonResponse({ error: "highlightTarget not supported by inspect-webkit" }, { status: 501 });
-        }
-        await bridge.highlightTarget(targetId, !!on);
-        return jsonResponse({});
-      } catch (err) {
-        return jsonResponse({
-          error: err instanceof Error ? err.message : "Failed to highlight target",
-        }, { status: 500 });
-      }
+      });
+      return;
     }
 
     // JSON API: serve-sim state
     if (url === base + "/api") {
-      const states = readServeSimStates();
+      const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       // The web UI polls /api every ~2s, so logging every hit floods the
       // debug stream with identical lines. Only log when the selection
@@ -1022,8 +1770,13 @@ export function simMiddleware(options?: SimMiddlewareOptions) {
           state ? `${state.device}@${state.port}` : "none",
         );
       }
-      const remoteState = state ? rewriteStateForRequestHost(state, host) : null;
-      return noStoreJsonResponse(remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken) : null);
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
+      res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.codec, proxyHelpers) : null));
+      return;
     }
 
     // SSE: serve-sim state stream. Push replacement for the web UI's old ~1.5s
@@ -1031,93 +1784,108 @@ export function simMiddleware(options?: SimMiddlewareOptions) {
     // or the device selection changes, so we watch the state dir and emit only
     // on change instead of re-sending identical JSON on a fixed interval.
     if (url === base + "/api/events") {
-      const computeConfig = (): string => {
-        const states = readServeSimStates();
+      const computeConfig = async (): Promise<string> => {
+        const states = await readServeSimStates();
         const state = selectServeSimState(states, selectedDevice);
-        const remoteState = state ? rewriteStateForRequestHost(state, host) : null;
+        const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
         return JSON.stringify(
-          remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken) : null,
+          remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.codec, proxyHelpers) : null,
         );
       };
 
-      return sseResponse((sink) => {
-        sink.write(":\n\n");
-
-        let lastSent = computeConfig();
-        sink.write("data: " + lastSent + "\n\n");
-
-        const sendIfChanged = () => {
-          if (sink.closed) return;
-          const next = computeConfig();
-          if (next === lastSent) return;
-          lastSent = next;
-          sink.write("data: " + next + "\n\n");
-        };
-
-        // Debounce filesystem events: a helper boot rewrites the state file a few
-        // times in quick succession, and selectServeSimState also shells out to
-        // refresh booted devices, so coalesce bursts into one recompute.
-        let debounce: ReturnType<typeof setTimeout> | null = null;
-        const onFsEvent = () => {
-          if (debounce) return;
-          debounce = setTimeout(() => {
-            debounce = null;
-            sendIfChanged();
-          }, 150);
-        };
-
-        let watcher: FSWatcher | null = null;
-        let watcherRetry: ReturnType<typeof setTimeout> | null = null;
-        const ensureWatcher = () => {
-          if (sink.closed || watcher || watcherRetry) return;
-          watcherRetry = setTimeout(() => {
-            watcherRetry = null;
-            if (sink.closed || watcher) return;
-            try {
-              watcher = watch(STATE_DIR, onFsEvent);
-              watcher.on("error", () => {
-                watcher?.close();
-                watcher = null;
-                ensureWatcher();
-              });
-              sendIfChanged();
-            } catch {
-              ensureWatcher();
-            }
-          }, 250);
-        };
-        ensureWatcher();
-
-        // Keep the connection alive through buffering proxies + catch any change
-        // an fs event missed (e.g. dir created after we failed to watch it).
-        const heartbeat = setInterval(() => {
-          if (sink.closed) return;
-          sink.write(":\n\n");
-          ensureWatcher();
-        }, 15000);
-
-        return () => {
-          if (debounce) clearTimeout(debounce);
-          if (watcherRetry) clearTimeout(watcherRetry);
-          clearInterval(heartbeat);
-          watcher?.close();
-        };
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
       });
+      res.write(":\n\n");
+
+      let lastSent = await computeConfig();
+      res.write("data: " + lastSent + "\n\n");
+
+      let closed = false;
+      const sendIfChanged = async () => {
+        if (closed || res.writableEnded) return;
+        const next = await computeConfig();
+        if (next === lastSent) return;
+        lastSent = next;
+        res.write("data: " + next + "\n\n");
+      };
+
+      // Debounce filesystem events: a helper boot rewrites the state file a few
+      // times in quick succession, and selectServeSimState also shells out to
+      // refresh booted devices, so coalesce bursts into one recompute.
+      let debounce: ReturnType<typeof setTimeout> | null = null;
+      const onFsEvent = () => {
+        if (debounce) return;
+        debounce = setTimeout(() => {
+          debounce = null;
+          sendIfChanged();
+        }, 150);
+      };
+
+      let watcher: FSWatcher | null = null;
+      let watcherRetry: ReturnType<typeof setTimeout> | null = null;
+      const ensureWatcher = () => {
+        if (closed || res.writableEnded || watcher || watcherRetry) return;
+        watcherRetry = setTimeout(() => {
+          watcherRetry = null;
+          if (closed || res.writableEnded || watcher) return;
+          try {
+            watcher = watch(STATE_DIR, onFsEvent);
+            watcher.on("error", () => {
+              watcher?.close();
+              watcher = null;
+              ensureWatcher();
+            });
+            sendIfChanged();
+          } catch {
+            ensureWatcher();
+          }
+        }, 250);
+      };
+      ensureWatcher();
+
+      // Keep the connection alive through buffering proxies + catch any change
+      // an fs event missed (e.g. dir created after we failed to watch it).
+      const heartbeat = setInterval(() => {
+        if (closed || res.writableEnded) return;
+        res.write(":\n\n");
+        ensureWatcher();
+      }, 15000);
+
+      req.on("close", () => {
+        closed = true;
+        if (debounce) clearTimeout(debounce);
+        if (watcherRetry) clearTimeout(watcherRetry);
+        clearInterval(heartbeat);
+        watcher?.close();
+      });
+      return;
     }
 
     // SSE: normalized accessibility snapshot stream
     if (url === base + "/ax") {
-      const states = readServeSimStates();
+      const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       if (!state) {
-        return textResponse("No serve-sim device", { status: 404 });
+        res.writeHead(404);
+        res.end("No serve-sim device");
+        return;
       }
-      return sseResponse((sink) => {
-        sink.write(":\n\n");
-        axStreamerCache.prune(states.map((s) => s.device));
-        const ax = axStreamerCache.get(state.device, state.port);
-        return ax.addClient({ write: (chunk) => sink.write(chunk) });
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
       });
+      res.write(":\n\n");
+      axStreamerCache.prune(states.map((s) => s.device));
+      const ax = axStreamerCache.get(state.device);
+      const removeClient = ax.addClient(res);
+      req.on("close", removeClient);
+      return;
     }
 
     // POST /exec — run a shell command on the host. Gated by a per-process
@@ -1128,104 +1896,72 @@ export function simMiddleware(options?: SimMiddlewareOptions) {
     if ((url === base + "/exec" || url === base + "/exec/") && req.method === "POST") {
       // 1. Reject anything that isn't a JSON request, killing the
       //    `enctype="text/plain"` CORS-simple form-POST path.
-      if (!isJsonContentType(req.headers.get("content-type") ?? undefined)) {
-        return jsonResponse(
-          { stdout: "", stderr: "Unsupported Media Type", exitCode: 1 },
-          { status: 415 },
-        );
+      if (!isJsonContentType(req.headers["content-type"])) {
+        res.writeHead(415, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ stdout: "", stderr: "Unsupported Media Type", exitCode: 1 }));
+        return;
       }
       // 2. If the browser supplied an Origin, require it match this server.
       //    Same-origin XHR from the preview page sets Origin to our own URL;
       //    a cross-origin page's Origin won't match.
-      const origin = req.headers.get("origin");
+      const origin = req.headers.origin;
       if (origin) {
         try {
           const originHost = new URL(origin).host;
-          if (originHost !== host) {
-            return jsonResponse(
-              { stdout: "", stderr: "Cross-origin request blocked", exitCode: 1 },
-              { status: 403 },
-            );
+          if (originHost !== req.headers.host) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ stdout: "", stderr: "Cross-origin request blocked", exitCode: 1 }));
+            return;
           }
         } catch {
-          return jsonResponse(
-            { stdout: "", stderr: "Invalid Origin", exitCode: 1 },
-            { status: 403 },
-          );
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ stdout: "", stderr: "Invalid Origin", exitCode: 1 }));
+          return;
         }
       }
       // 3. Require the per-session bearer token. Cross-origin pages cannot
       //    read it from window.__SIM_PREVIEW__; non-browser callers must
       //    have copied it from the CLI output.
-      const authHeader = req.headers.get("authorization") ?? "";
+      const authHeader = req.headers.authorization ?? "";
       const match = /^Bearer\s+(.+)$/i.exec(authHeader);
       if (!match || !safeEqualString(match[1]!.trim(), execToken)) {
-        return jsonResponse(
-          { stdout: "", stderr: "Unauthorized", exitCode: 1 },
-          { status: 401 },
-        );
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ stdout: "", stderr: "Unauthorized", exitCode: 1 }));
+        return;
       }
-      const bodyResult = await readTextBody(req, 4 * 1024 * 1024);
-      if (!bodyResult.ok) return bodyResult.response;
-      let command = "";
-      try {
-        command = (JSON.parse(bodyResult.text) as ExecRequestBody).command ?? "";
-      } catch {}
-      if (!command) {
-        return jsonResponse(
-          { stdout: "", stderr: "Missing command", exitCode: 1 },
-          { status: 400 },
-        );
-      }
-      return new Promise<Response>((resolve) => {
+      let body = "";
+      let aborted = false;
+      req.on("data", (chunk: Buffer | string) => {
+        body += typeof chunk === "string" ? chunk : chunk.toString();
+        // Cheap belt-and-braces cap so a runaway POST can't OOM the dev server.
+        if (body.length > 4 * 1024 * 1024) {
+          aborted = true;
+          res.writeHead(413, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ stdout: "", stderr: "Payload Too Large", exitCode: 1 }));
+          req.destroy();
+        }
+      });
+      req.on("end", () => {
+        if (aborted) return;
+        let command = "";
+        try {
+          command = (JSON.parse(body) as ExecRequestBody).command ?? "";
+        } catch {}
+        if (!command) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ stdout: "", stderr: "Missing command", exitCode: 1 }));
+          return;
+        }
         exec(command, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-          resolve(jsonResponse({
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
             stdout: stdout.toString(),
             stderr: stderr.toString(),
             exitCode: err ? (err as ExecException).code ?? 1 : 0,
           }));
         });
       });
-    }
-
-    // SSE: simctl log stream
-    if (url === base + "/logs") {
-      const states = readServeSimStates();
-      const state = selectServeSimState(states, selectedDevice);
-      if (!state) {
-        return textResponse("No serve-sim device", { status: 404 });
-      }
-      const udid = state.device;
-      return sseResponse((sink) => {
-        sink.write(":\n\n");
-
-        const child: ChildProcess = spawn("xcrun", [
-          "simctl", "spawn", udid, "log", "stream",
-          "--style", "ndjson",
-          "--level", "info",
-        ], { stdio: ["ignore", "pipe", "ignore"] });
-
-        let buf = "";
-        child.stdout!.on("data", (chunk: Buffer) => {
-          buf += chunk.toString();
-          let nl: number;
-          while ((nl = buf.indexOf("\n")) !== -1) {
-            const line = buf.slice(0, nl).trim();
-            buf = buf.slice(nl + 1);
-            if (line) sink.write("data: " + line + "\n\n");
-          }
-          // Drop a runaway partial line so a malformed/never-terminated
-          // log entry can't grow `buf` without bound.
-          if (buf.length > SSE_LINE_BUFFER_LIMIT) buf = "";
-        });
-
-        child.on("error", () => sink.close());
-        child.on("close", () => sink.close());
-        return () => {
-          child.stdout?.destroy();
-          child.kill();
-        };
-      });
+      return;
     }
 
     // SSE: foreground-app change stream. Emits `{bundleId, pid}` events
@@ -1233,110 +1969,155 @@ export function simMiddleware(options?: SimMiddlewareOptions) {
     // log line. Filtering is done here (not in the browser) so the SSE stream
     // stays narrow and the client can listen without rate-limit concerns.
     if (url === base + "/appstate") {
-      const states = readServeSimStates();
+      const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       if (!state) {
-        return textResponse("No serve-sim device", { status: 404 });
+        res.writeHead(404);
+        res.end("No serve-sim device");
+        return;
       }
       const udid = state.device;
-      return sseResponse((sink) => {
-        sink.write(":\n\n");
-
-        // Bootstrap: SpringBoard's log feed is edge-triggered, so a fresh
-        // subscriber would otherwise see nothing until the user re-foregrounds
-        // an app (the bug: tools couldn't reconnect after a page reload). Ask
-        // the helper's AX bridge for the current frontmost app via
-        // `proc_pidpath`+Info.plist resolution and emit it before tailing.
-        let lastBundle = "";
-        void (async () => {
-          try {
-            const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 1500);
-            const r = await fetch(`http://127.0.0.1:${state.port}/foreground`, { signal: ctrl.signal });
-            clearTimeout(timer);
-            if (!r.ok) return;
-            const info = await r.json() as { bundleId?: string; pid?: number };
-            if (!info.bundleId || !isUserFacingBundle(info.bundleId)) return;
-            if (sink.closed) return;
-            lastBundle = info.bundleId;
-            const isReactNative = await detectReactNative(udid, info.bundleId);
-            if (sink.closed) return;
-            sink.write("data: " + JSON.stringify({ bundleId: info.bundleId, pid: info.pid, isReactNative }) + "\n\n");
-          } catch {
-            // Helper may be coming up — log tail will fill in once anything moves.
-          }
-        })();
-
-        const child: ChildProcess = spawn("xcrun", [
-          "simctl", "spawn", udid, "log", "stream",
-          "--style", "ndjson",
-          "--level", "info",
-          "--predicate",
-          'process == "SpringBoard" AND eventMessage CONTAINS "Setting process visibility to: Foreground"',
-        ], { stdio: ["ignore", "pipe", "ignore"] });
-
-        const emitApp = async (bundleId: string, pid?: number) => {
-          if (!isUserFacingBundle(bundleId)) return;
-          if (bundleId === lastBundle) return;
-          lastBundle = bundleId;
-          const isReactNative = await detectReactNative(udid, bundleId);
-          if (!sink.closed) {
-            sink.write("data: " + JSON.stringify({ bundleId, pid, isReactNative }) + "\n\n");
-          }
-        };
-
-        let buf = "";
-        child.stdout!.on("data", (chunk: Buffer) => {
-          buf += chunk.toString();
-          let nl: number;
-          while ((nl = buf.indexOf("\n")) !== -1) {
-            const line = buf.slice(0, nl).trim();
-            buf = buf.slice(nl + 1);
-            if (!line) continue;
-            let msg: string;
-            try { msg = JSON.parse(line).eventMessage ?? ""; } catch { continue; }
-            const event = parseForegroundAppLogMessage(msg);
-            if (!event) continue;
-            emitApp(event.bundleId, event.pid);
-          }
-          if (buf.length > SSE_LINE_BUFFER_LIMIT) buf = "";
-        });
-
-        child.on("error", () => sink.close());
-        child.on("close", () => sink.close());
-        return () => {
-          child.stdout?.destroy();
-          child.kill();
-        };
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
       });
+      res.write(":\n\n");
+
+      // Bootstrap: SpringBoard's log feed is edge-triggered, so a fresh
+      // subscriber would otherwise see nothing until the user re-foregrounds
+      // an app (the bug: tools couldn't reconnect after a page reload). Ask
+      // the helper's AX bridge for the current frontmost app via
+      // `proc_pidpath`+Info.plist resolution and emit it before tailing.
+      let lastBundle = "";
+      try {
+        const info = JSON.parse(await axFrontmostAsync(udid)) as { bundleId?: string; pid?: number };
+        if (!info.bundleId || !isUserFacingBundle(info.bundleId)) return;
+        if (res.writableEnded) return;
+        lastBundle = info.bundleId;
+        const isReactNative = await detectReactNative(udid, info.bundleId);
+        if (res.writableEnded) return;
+        res.write("data: " + JSON.stringify({ bundleId: info.bundleId, pid: info.pid, isReactNative }) + "\n\n");
+      } catch {
+        // AX bridge may be warming up — the log tail fills in once anything moves.
+      }
+
+      const child: ChildProcess = spawn("xcrun", [
+        "simctl", "spawn", udid, "log", "stream",
+        "--style", "ndjson",
+        "--level", "info",
+        "--predicate",
+        'process == "SpringBoard" AND eventMessage CONTAINS "Setting process visibility to: Foreground"',
+      ], { stdio: ["ignore", "pipe", "ignore"] });
+
+      let closed = false;
+      const emitApp = async (bundleId: string, pid?: number) => {
+        if (!isUserFacingBundle(bundleId)) return;
+        if (bundleId === lastBundle) return;
+        lastBundle = bundleId;
+        const isReactNative = await detectReactNative(udid, bundleId);
+        if (!closed) {
+          res.write("data: " + JSON.stringify({ bundleId, pid, isReactNative }) + "\n\n");
+        }
+      };
+
+
+      let buf = "";
+      child.stdout!.on("data", (chunk: Buffer) => {
+        buf += chunk.toString();
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) !== -1) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line) continue;
+          let msg: string;
+          try { msg = JSON.parse(line).eventMessage ?? ""; } catch { continue; }
+          const event = parseForegroundAppLogMessage(msg);
+          if (!event) continue;
+          emitApp(event.bundleId, event.pid);
+        }
+        if (buf.length > SSE_LINE_BUFFER_LIMIT) buf = "";
+      });
+
+      child.on("error", () => {
+        closed = true;
+        try { res.end(); } catch {}
+      });
+      child.on("close", () => res.end());
+      req.on("close", () => {
+        closed = true;
+        child.stdout?.destroy();
+        child.kill();
+      });
+      return;
     }
 
-    return undefined;
+    // Not ours — pass through
+    if (next) return next();
+  }) as ConnectMiddleware;
+  connectMiddleware.handleUpgrade = (req: SimReq, socket: Socket, head: Buffer) => {
+    const rawUrl = req.url ?? "";
+    const selectedDevice = queryDevice(rawUrl) ?? options?.device ?? null;
+    const helperTarget = helperProxyTarget(rawUrl, helperPrefix);
+    const devtoolsTarget = devtoolsProxyTarget(rawUrl, devtoolsPrefix);
+    if (devtoolsTarget) {
+      (async () => {
+        try {
+          const bridge = await getInspectWebKitBridge();
+          bridgeWebSocketFrames(req, socket, head, `ws://127.0.0.1:${bridge.port}${devtoolsTarget.upstreamPath}`);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Failed to start inspect-webkit";
+          socket.end(`HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${message}`);
+        }
+      })();
+      return;
+    }
+    if (!helperTarget) {
+      socket.destroy();
+      return;
+    }
+    const device = helperTarget.device ?? selectedDevice;
+    if (helperTarget.upstreamPath === "/ws") {
+      // HID input is delivered to the in-process DeviceSession.
+      if (attachHidInProcess(req, socket, head, device)) return;
+      socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
+      return;
+    }
+    socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
   };
-
   // WebSocket exec channel — same auth/origin policy as POST /exec, but off
   // the browser's per-origin HTTP connection pool so multiple preview tabs
-  // (each holding MJPEG + SSE streams) can't starve exec actions. Hosts own
-  // the protocol upgrade and pass the accepted websocket here.
-  return Object.assign(middleware, {
-    handleWebSocket: createExecWebSocketHandler({
-      path: `${base}/exec-ws`,
-      execToken,
-      ssePrefixes: [
-        `${base}/api/events`,
-        `${base}/appstate`,
-        `${base}/logs`,
-        `${base}/ax`,
-      ],
-      onUiRequest: handleUiRequest,
-      onSseRequest(path, websocketRequest) {
-        const url = new URL(path, websocketRequest.url);
-        return middleware(new Request(url, {
-          headers: { accept: "text/event-stream" },
-        }));
-      },
-    }),
-  } satisfies {
-    handleWebSocket(request: Request, websocket: ExecWebSocket): boolean;
+  // (each holding MJPEG + SSE streams) can't starve exec actions. Servers
+  // mounting this middleware should forward `upgrade` events here (the
+  // built-in preview server does); the client falls back to POST /exec when
+  // the upgrade never completes.
+  const fetchMiddleware = (async (request: Request) => {
+    return connectToFetch(connectMiddleware, request);
+  }) as SimMiddleware;
+
+  fetchMiddleware.handleWebSocket = createExecWebSocketHandler({
+    path: `${base}/exec-ws`,
+    execToken,
+    ssePrefixes: [
+      `${base}/api/events`,
+      `${base}/appstate`,
+      `${base}/logs`,
+      `${base}/ax`,
+    ],
+    onUiRequest: handleUiRequest,
+    onSseRequest(path, websocketRequest) {
+      const url = new URL(path, websocketRequest.url);
+      return fetchMiddleware(new Request(url, {
+        headers: { accept: "text/event-stream" },
+      }));
+    },
   });
+
+  // WebSocket upgrades owned by the preview: the authenticated exec/control
+  // channel plus same-origin helper/devtools proxy sockets.
+  fetchMiddleware.handleUpgrade = (req: SimReq, socket: Socket, head: Buffer) => {
+    connectMiddleware.handleUpgrade?.(req, socket, head);
+  };
+  return fetchMiddleware;
 }

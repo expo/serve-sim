@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
-import { chmodSync, existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { createHash } from "crypto";
-import { homedir, networkInterfaces } from "os";
+import { networkInterfaces } from "os";
 import { join, resolve } from "path";
-import { STATE_DIR, stateFileForDevice, listStateFiles } from "./state";
+import { STATE_DIR, stateFileForDevice, listStateFiles, inProcessServeSimState, type ServeSimDeviceState } from "./state";
 import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from "./text-to-keys";
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
 import { killPortHolder } from "./ports";
@@ -36,16 +36,8 @@ function resolveVersion(): string {
 // `serve-sim` binary. In dev / the un-compiled ESM bin the returned path is a
 // real file on disk; inside a compiled binary it points at bun's virtual FS
 // and we extract the bytes to a cached location on first use.
-import swiftHelperEmbeddedPath from "../bin/serve-sim-bin" with { type: "file" };
 
-interface ServerState {
-  pid: number;
-  port: number;
-  device: string;
-  url: string;
-  streamUrl: string;
-  wsUrl: string;
-}
+type ServerState = ServeSimDeviceState;
 
 function ensureStateDir() {
   if (!existsSync(STATE_DIR)) {
@@ -124,6 +116,15 @@ function readStateFile(file: string): ServerState | null {
     // recycle here so --detach / --list always return a working stream.
     const booted = getBootedUdids();
     if (booted && !booted.has(state.device)) {
+      if (state.pid === process.pid) {
+        // The state belongs to *this* process (an in-process/preview server
+        // recorded its own pid via inProcessServeSimState). Never SIGTERM
+        // ourselves — that would take the whole server down. Just drop the
+        // stale file; the live server reaps its own sessions on grid polls.
+        debugState("dropping own stale state for non-booted device %s", state.device);
+        try { unlinkSync(file); } catch {}
+        return null;
+      }
       debugState(
         "helper pid %d bound to non-booted device %s — killing stale helper",
         state.pid,
@@ -169,37 +170,6 @@ function clearState(udid?: string) {
       try { unlinkSync(file); } catch {}
     }
   }
-}
-
-function findHelperBinary(): string {
-  const isEmbedded = swiftHelperEmbeddedPath.startsWith("/$bunfs/");
-
-  // Dev / npm-installed: path bun gave us is a real file on disk.
-  if (!isEmbedded && existsSync(swiftHelperEmbeddedPath)) {
-    return swiftHelperEmbeddedPath;
-  }
-  if (!isEmbedded) {
-    const rel = resolve(__dirname, "../bin/serve-sim-bin");
-    if (existsSync(rel)) return rel;
-    throw new Error(
-      `serve-sim-bin not found. Run 'bun run build:swift' first.\nChecked: ${swiftHelperEmbeddedPath}, ${rel}`,
-    );
-  }
-
-  // Compiled `bun --compile` binary: extract embedded bytes to a cache dir
-  // keyed by content hash so updates replace the previous extraction.
-  const bytes = readFileSync(swiftHelperEmbeddedPath);
-  const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
-  const cacheDir = resolve(homedir(), "Library/Caches/serve-sim");
-  mkdirSync(cacheDir, { recursive: true });
-  const extracted = resolve(cacheDir, `serve-sim-bin-${hash}`);
-  if (!existsSync(extracted)) {
-    writeFileSync(extracted, bytes);
-    chmodSync(extracted, 0o755);
-    // Re-apply ad-hoc signature so the macOS kernel will exec it.
-    try { execSync(`codesign -s - -f ${JSON.stringify(extracted)}`, { stdio: "ignore" }); } catch {}
-  }
-  return extracted;
 }
 
 // ─── Device helpers ───
@@ -348,226 +318,66 @@ async function ensureBooted(udid: string): Promise<void> {
   }
 }
 
-// ─── Helper spawn ───
+// ─── Preview server lifecycle ───
 
-interface SpawnHelperOptions {
-  helperPath: string;
-  udid: string;
-  port: number;
-  host: string;
-  logFile: string;
-}
-
-/** Wait for the helper to become ready (health check + capture started). */
-async function waitForHelperReady(
-  pid: number,
-  url: string,
-  logFile: string,
-  isAlive: () => boolean,
-): Promise<{ ready: boolean; log: string }> {
-  let ready = false;
-  const startedAt = Date.now();
-  debugHelper("waitForHelperReady pid=%d url=%s", pid, url);
-
-  // Poll /health
-  for (let i = 0; i < 30; i++) {
-    if (!isAlive()) {
-      debugHelper("helper pid=%d died during /health polling (attempt %d)", pid, i);
-      break;
-    }
-    try {
-      const res = await fetch(`${url}/health`);
-      if (res.ok) {
-        ready = true;
-        debugHelper("helper pid=%d /health ok after %dms", pid, Date.now() - startedAt);
-        break;
-      }
-    } catch {}
-    await new Promise((r) => setTimeout(r, 100));
+/** Resolve the command to re-exec this CLI (compiled binary or `node …js`). */
+function reExecArgs(extra: string[]): { command: string; args: string[] } {
+  // Compiled standalone binary: argv[0] is the serve-sim binary itself.
+  if (process.argv[0] && /(^|\/)serve-sim$/.test(process.argv[0])) {
+    return { command: process.argv[0], args: extra };
   }
+  // Running the JS bundle: `node /path/to/serve-sim.js`.
+  return { command: process.argv[0]!, args: [process.argv[1]!, ...extra] };
+}
 
-  if (!ready) {
-    debugHelper("helper pid=%d /health never responded (%dms)", pid, Date.now() - startedAt);
+/** Poll for the state file a re-exec'd preview server writes once it's serving. */
+async function waitForStateFile(udid: string, timeoutMs = 150_000): Promise<ServerState | null> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const state = readState(udid);
+    if (state) return state;
+    await new Promise((r) => setTimeout(r, 200));
   }
-
-  if (ready) {
-    // Wait for capture to start or process to exit
-    const captureStartedAt = Date.now();
-    const captureDeadline = captureStartedAt + 8_000;
-    let captureSawStart = false;
-    while (Date.now() < captureDeadline) {
-      await new Promise((r) => setTimeout(r, 200));
-      if (!isAlive()) {
-        debugHelper("helper pid=%d died while awaiting Capture started", pid);
-        ready = false;
-        break;
-      }
-      try {
-        const log = readFileSync(logFile, "utf-8");
-        if (log.includes("Capture started")) {
-          captureSawStart = true;
-          debugHelper(
-            "helper pid=%d saw 'Capture started' after %dms",
-            pid,
-            Date.now() - captureStartedAt,
-          );
-          break;
-        }
-      } catch {}
-    }
-    if (ready && !captureSawStart) {
-      debugHelper(
-        "helper pid=%d ready but never logged 'Capture started' within %dms — stream may not produce frames",
-        pid,
-        Date.now() - captureStartedAt,
-      );
-    }
-  }
-
-  let log = "";
-  try { log = readFileSync(logFile, "utf-8").trim(); } catch {}
-  return { ready, log };
+  return null;
 }
 
-/** Spawn the helper detached (for --detach mode). Returns after readiness check. */
-async function spawnHelperDetached(opts: SpawnHelperOptions): Promise<{
-  ready: boolean;
-  pid: number;
-  exited: boolean;
-  log: string;
-}> {
-  const { helperPath, udid, port, host, logFile } = opts;
-  const url = `http://${host}:${port}`;
-
-  ensureStateDir();
-  const logFd = openSync(logFile, "w");
-  const child = nodeSpawn(helperPath, [udid, "--port", String(port)], {
-    detached: true,
-    stdio: ["ignore", logFd, logFd],
-  });
-  child.unref();
-  closeSync(logFd);
-
-  const childPid = child.pid!;
-  let childExited = false;
-  child.once("exit", () => { childExited = true; });
-
-  const { ready, log } = await waitForHelperReady(
-    childPid,
-    url,
-    logFile,
-    () => !childExited && isProcessAlive(childPid),
-  );
-
-  return { ready, pid: childPid, exited: childExited || !isProcessAlive(childPid), log };
-}
-
-/** Spawn the helper attached (for foreground follow mode). Returns the child process. */
-async function spawnHelperAttached(opts: SpawnHelperOptions): Promise<{
-  ready: boolean;
-  child: ChildProcess;
-  log: string;
-}> {
-  const { helperPath, udid, port, host, logFile } = opts;
-  const url = `http://${host}:${port}`;
-
-  ensureStateDir();
-  const logFd = openSync(logFile, "w");
-  const child = nodeSpawn(helperPath, [udid, "--port", String(port)], {
-    detached: false,
-    stdio: ["ignore", logFd, logFd],
-  });
-  closeSync(logFd);
-
-  const childPid = child.pid!;
-  let childExited = false;
-  child.once("exit", () => { childExited = true; });
-
-  const { ready, log } = await waitForHelperReady(
-    childPid,
-    url,
-    logFile,
-    () => !childExited && isProcessAlive(childPid),
-  );
-
-  return { ready, child, log };
-}
-
-/** Boot + spawn helper with retry logic. Returns pid on success, exits on failure. */
+/**
+ * Start a preview server that streams `udid` in-process — it re-execs this CLI
+ * in `serve` mode rather than spawning the old Swift helper. Detached + unref'd
+ * for daemon mode (`--detach`); attached otherwise so the caller can monitor it.
+ */
 async function startHelper(
   udid: string,
   port: number,
   opts: { detach: boolean },
 ): Promise<{ pid: number; child?: ChildProcess }> {
   debugHelper("startHelper udid=%s port=%d detach=%s", udid, port, opts.detach);
-  await ensureBooted(udid);
 
   const host = "127.0.0.1";
-  const helperPath = findHelperBinary();
+  ensureStateDir();
+  clearState(udid); // don't read a stale state file from a previous run
+  killPortHolder(port);
+
   const logFile = join(STATE_DIR, `server-${udid}.log`);
-  debugHelper("helper binary=%s logFile=%s", helperPath, logFile);
-  const spawnOpts: SpawnHelperOptions = { helperPath, udid, port, host, logFile };
+  const logFd = openSync(logFile, "w");
+  const { command, args } = reExecArgs([udid, "--port", String(port), "--host", host]);
+  const child = nodeSpawn(command, args, {
+    detached: opts.detach,
+    stdio: ["ignore", logFd, logFd],
+  });
+  closeSync(logFd);
+  if (opts.detach) child.unref();
 
-  let lastLog = "";
-  const MAX_ATTEMPTS = 2;
-
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    debugHelper("spawn attempt %d/%d", attempt, MAX_ATTEMPTS);
-    killPortHolder(port);
-
-    if (opts.detach) {
-      const result = await spawnHelperDetached(spawnOpts);
-      debugHelper(
-        "spawnHelperDetached result ready=%s pid=%d exited=%s",
-        result.ready,
-        result.pid,
-        result.exited,
-      );
-      if (result.ready) {
-        const state: ServerState = {
-          pid: result.pid,
-          port,
-          device: udid,
-          url: `http://${host}:${port}`,
-          streamUrl: `http://${host}:${port}/stream.mjpeg`,
-          wsUrl: `ws://${host}:${port}/ws`,
-        };
-        writeState(state);
-        return { pid: result.pid };
-      }
-      stopProcess(result.pid);
-      lastLog = result.log;
-    } else {
-      const result = await spawnHelperAttached(spawnOpts);
-      debugHelper(
-        "spawnHelperAttached result ready=%s pid=%d",
-        result.ready,
-        result.child.pid,
-      );
-      if (result.ready) {
-        const state: ServerState = {
-          pid: result.child.pid!,
-          port,
-          device: udid,
-          url: `http://${host}:${port}`,
-          streamUrl: `http://${host}:${port}/stream.mjpeg`,
-          wsUrl: `ws://${host}:${port}/ws`,
-        };
-        writeState(state);
-        return { pid: result.child.pid!, child: result.child };
-      }
-      stopProcess(result.child.pid!);
-      lastLog = result.log;
-    }
-
-    if (attempt < MAX_ATTEMPTS) {
-      await new Promise((r) => setTimeout(r, 500));
-    }
+  // The child boots the sim then writes its state once it's bound + serving.
+  const state = await waitForStateFile(udid);
+  if (!state) {
+    if (child.pid) stopProcess(child.pid);
+    let log = "";
+    try { log = readFileSync(logFile, "utf-8").trim(); } catch {}
+    console.error(log ? `Preview server failed:\n${log}` : "Preview server failed to start");
+    process.exit(1);
   }
-
-  const reason = lastLog ? `Helper failed:\n${lastLog}` : "Helper process failed to start";
-  console.error(reason);
-  process.exit(1);
+  return opts.detach ? { pid: state.pid } : { pid: state.pid, child };
 }
 
 // ─── Commands ───
@@ -611,21 +421,15 @@ async function follow(devices: string[], startPort: number, quiet: boolean) {
     }
 
     port = await findAvailablePort(port);
-    const { pid, child } = await startHelper(udid, port, { detach: false });
+    const { child } = await startHelper(udid, port, { detach: false });
 
     if (child) {
       children.set(udid, child);
     }
 
-    const host = "127.0.0.1";
-    const state: ServerState = {
-      pid,
-      port,
-      device: udid,
-      url: `http://${host}:${port}`,
-      streamUrl: `http://${host}:${port}/stream.mjpeg`,
-      wsUrl: `ws://${host}:${port}/ws`,
-    };
+    // The re-exec'd preview server wrote its own in-process state (same-origin
+    // /helper URLs); reuse it rather than reconstructing helper-port URLs.
+    const state = readState(udid) ?? inProcessServeSimState(udid, port, "/", "127.0.0.1");
     states.push(state);
 
     if (!quiet) {
@@ -729,15 +533,8 @@ async function detach(devices: string[], startPort: number): Promise<ServerState
     port = await findAvailablePort(port);
     await startHelper(udid, port, { detach: true });
 
-    const host = "127.0.0.1";
-    states.push({
-      pid: readState(udid)!.pid,
-      port,
-      device: udid,
-      url: `http://${host}:${port}`,
-      streamUrl: `http://${host}:${port}/stream.mjpeg`,
-      wsUrl: `ws://${host}:${port}/ws`,
-    });
+    // Reuse the detached server's own in-process state (same-origin /helper URLs).
+    states.push(readState(udid) ?? inProcessServeSimState(udid, port, "/", "127.0.0.1"));
 
     port++;
   }
@@ -993,6 +790,19 @@ async function rotate(orientation: string, deviceArg?: string) {
   });
 }
 
+// HID (page, usage) codes for hardware buttons not backed by a named idb event
+// source, mirroring DeviceKit chrome.json's per-input `usagePage`/`usage`. The
+// helper injects these through IndigoHIDMessageForHIDArbitrary.
+const HID_BUTTON_CODES: Record<string, { page: number; usage: number }> = {
+  power: { page: 12, usage: 48 },
+  "volume-up": { page: 12, usage: 233 },
+  "volume-down": { page: 12, usage: 234 },
+  action: { page: 11, usage: 45 },
+  "side-button": { page: 12, usage: 149 },
+  "digital-crown": { page: 12, usage: 64 },
+  "left-side-button": { page: 65281, usage: 512 },
+};
+
 async function button(buttonName = "home", deviceArg?: string) {
   const state = readState(deviceArg);
   if (!state) {
@@ -1000,12 +810,15 @@ async function button(buttonName = "home", deviceArg?: string) {
     process.exit(1);
   }
 
+  const hid = HID_BUTTON_CODES[buttonName];
+  const payload = hid ? { button: buttonName, ...hid } : { button: buttonName };
+
   return new Promise<void>((resolve, reject) => {
     const ws = new WebSocket(state.wsUrl);
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
-      const json = new TextEncoder().encode(JSON.stringify({ button: buttonName }));
+      const json = new TextEncoder().encode(JSON.stringify(payload));
       const msg = new Uint8Array(1 + json.length);
       msg[0] = 0x04;
       msg.set(json, 1);
@@ -1757,26 +1570,41 @@ Examples:
 
 // ─── Serve preview ───
 
-async function serve(servePort: number, devices: string[], portExplicit: boolean, host: string) {
-  let targetDevice: string | undefined;
-
-  if (devices.length > 0) {
-    const states = await detach(devices, 3100);
-    targetDevice = states[0]?.device;
-  } else {
-    // Ensure a serve-sim stream is running (start one if not)
-    const existing = readAllStates();
-    if (existing.length > 0) {
-      targetDevice = existing[0]?.device;
-    } else {
-      console.log("Starting simulator stream...");
-      const states = await detach(devices, 3100);
-      targetDevice = states[0]?.device;
-    }
+/** Resolve which simulators to stream, without spawning anything. */
+function resolveTargetDevices(devices: string[]): string[] {
+  if (devices.length > 0) return devices.map(resolveDevice);
+  const existing = readAllStates();
+  if (existing.length > 0) return [existing[0]!.device];
+  const booted = findBootedDevice();
+  if (booted) return [booted];
+  const fallback = pickDefaultDevice();
+  if (!fallback) {
+    console.error("No device specified and no available iOS simulator found.");
+    process.exit(1);
   }
+  return [fallback.udid];
+}
+
+async function serve(
+  servePort: number,
+  devices: string[],
+  portExplicit: boolean,
+  host: string,
+  codec: string | undefined,
+) {
+  // Boot the target simulators; the preview server streams them in-process
+  // (no spawned helper). Sessions are created lazily on the first stream request.
+  const targetDevices = resolveTargetDevices(devices);
+  if (devices.length === 0 && readAllStates().length === 0) {
+    console.log("Starting simulator stream...");
+  }
+  for (const udid of targetDevices) await ensureBooted(udid);
+  const targetDevice = targetDevices[0];
 
   const { simMiddleware } = await import("./middleware");
-  const middleware = simMiddleware({ basePath: "/", device: targetDevice });
+  // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
+  // it can route helper/DevTools sockets through the single preview port.
+  const middleware = simMiddleware({ basePath: "/", device: targetDevice, codec, proxyHelpers: true });
 
   // Try requested port; if busy and the user didn't pin it, scan forward.
   const maxScan = portExplicit ? 1 : 50;
@@ -1807,6 +1635,18 @@ async function serve(servePort: number, devices: string[], portExplicit: boolean
     }
     process.exit(1);
   }
+
+  // Record in-process state so the preview/grid enumerate these devices and the
+  // CLI input subcommands can reach the same-origin /helper ws.
+  for (const udid of targetDevices) {
+    writeState(inProcessServeSimState(udid, boundPort, "/", host));
+  }
+  const clearAll = () => {
+    for (const udid of targetDevices) {
+      try { clearState(udid); } catch {}
+    }
+  };
+  process.on("exit", clearAll);
 
   const exposedToLan = host !== "127.0.0.1" && host !== "localhost" && host !== "::1";
   const networkIP = getLocalNetworkIP();
@@ -1842,7 +1682,7 @@ program
   .helpOption("-h, --help", "Show this help")
   // The default command: start the preview server (or stream / list / kill).
   .argument("[devices...]", "Simulator(s) to target (udid or name; default: booted)")
-  .option("-p, --port <port>", "Starting port (preview default: 3200, stream default: 3100)", (v) => parseInt(v, 10))
+  .option("-p, --port <port>", "Starting port (preview default: 3200; helper default: 3100)", (v) => parseInt(v, 10))
   .option(
     "--host <addr>",
     "Interface to bind the preview server to. Use 0.0.0.0 to expose on the " +
@@ -1853,6 +1693,19 @@ program
   .option("--detach", "Spawn helper and exit (daemon mode)")
   .option("-q, --quiet", "Suppress human-readable output, JSON only")
   .option("--no-preview", "Skip the web preview server; stream in foreground only")
+  .option(
+    "--codec <codec>",
+    "Stream codec for the preview UI: 'auto' (H.264 when the browser can decode " +
+      "it) or 'mjpeg' (force software JPEG — e.g. on VMs without H.264 encode).",
+    (value) => {
+      const v = value.toLowerCase();
+      const allowed = ["auto", "h264", "mjpeg"];
+      if (!allowed.includes(v)) {
+        throw new InvalidArgumentError(`Unsupported codec '${value}'. Supported: ${allowed.join(", ")}.`);
+      }
+      return v;
+    },
+  )
   .option("-l, --list [device]", "List running streams")
   .option("-k, --kill [device]", "Kill running stream(s)")
   .addHelpText(
@@ -1861,6 +1714,7 @@ program
 Examples:
   serve-sim                              Open simulator preview at localhost:3200
   serve-sim -p 8080                      Preview on a custom port
+  serve-sim --codec mjpeg                Force MJPEG (e.g. on VMs without H.264 encode)
   serve-sim --no-preview                 Auto-detect booted sim, stream in foreground
   serve-sim --no-preview "iPhone 16 Pro" Stream a specific device (no preview)
   serve-sim --detach                     Start streaming in background (daemon)
@@ -1883,7 +1737,7 @@ Examples:
     } else if (opts.preview === false) {
       await follow(devices, startPort ?? 3100, !!opts.quiet);
     } else {
-      await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host);
+      await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, opts.codec);
     }
   });
 

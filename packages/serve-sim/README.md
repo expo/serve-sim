@@ -31,7 +31,7 @@ I develop the Expo framework, but this tool is completely agnostic to React Nati
 
 ## Install
 
-Requires macOS with Xcode command line tools (`xcrun simctl`) and Node.js 18+. `bun` is **not** required to run the CLI. Camera injection uses a host-side helper built for macOS 14+.
+Requires macOS with Xcode command line tools (`xcrun simctl`) and a [maintained Node.js LTS release](https://nodejs.org/en/about/previous-releases) (currently Node 20+). Older or end-of-life Node versions are not supported. `bun` is **not** required to run the CLI. Camera injection uses a host-side helper built for macOS 14+.
 
 > **Note:** Apple Silicon (arm64) only. The bundled `serve-sim-bin` helper ships as an arm64 binary and does not run on Intel (x86_64) Macs.
 
@@ -64,10 +64,13 @@ serve-sim camera --stop-webcam [-d udid]
                                       Stop the camera helper for a device
 
 Options:
-  -p, --port <port>   Starting port (preview default: 3200, stream default: 3100)
+  -p, --port <port>   Starting port (preview default: 3200; helper default: 3100)
   -d, --detach        Spawn helper and exit (daemon mode)
   -q, --quiet         JSON-only output
       --no-preview    Skip the web UI; stream in foreground only
+      --codec <codec> Stream codec for the preview UI: 'auto' (H.264 when the
+                      browser can decode it) or 'mjpeg' (force software JPEG —
+                      e.g. on VMs without H.264 encode)
       --list [device] List running streams
       --kill [device] Kill running stream(s)
 
@@ -208,7 +211,22 @@ server.onUpgrade((request, socket) => {
 });
 ```
 
-The middleware reads the helper's state from `$TMPDIR/serve-sim/` and forwards the user's browser to the live MJPEG + WebSocket endpoints. CORS is wide-open on the helper, so the page renders without a proxy.
+The middleware reads the helper's state from `$TMPDIR/serve-sim/` and points the browser at the helper's stream, interaction WebSocket, and WebKit DevTools endpoints. By default those URLs target the helper's own port directly (CORS is wide-open on the helper), so a plain `app.use(...)` mount works without touching your server's WebSocket handling.
+
+### Single-port / remote proxying
+
+To expose the preview to remote viewers behind a single port (the way standalone `serve-sim` does), pass `proxyHelpers: true`. The browser then reaches the stream, control socket, and DevTools through same-origin `/.sim/helper/<device>` and `/.sim/devtools` URLs, so the per-device helper port and inspect-webkit bridge can stay local to the host. This routes WebSockets through the middleware, so you must forward your server's `upgrade` events to `handleUpgrade`:
+
+```ts
+const middleware = simMiddleware({ basePath: "/.sim", proxyHelpers: true });
+
+// Route HTTP requests through `middleware(request)` as above, and also forward
+// raw upgrade events for helper and DevTools proxy sockets.
+const server = listen();
+server.on("upgrade", (req, socket, head) => middleware.handleUpgrade(req, socket, head));
+```
+
+If you enable `proxyHelpers` but don't wire `upgrade`, the page still loads video over HTTP but loses simulator input and DevTools (their sockets never reach the proxy). When terminating TLS at a reverse proxy, forward `X-Forwarded-Proto` so the helper URLs use `https`/`wss` and avoid mixed-content blocks.
 
 ## How it works
 

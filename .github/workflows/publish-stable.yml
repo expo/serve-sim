@@ -7,22 +7,9 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-      - run: bun install
-
-      - name: Client tests
-        run: bun test packages/serve-sim-client/src/__tests__/
-
   publish-stable:
     if: github.repository == 'EvanBacon/serve-sim' && github.ref == 'refs/heads/main'
-    needs: [test]
-    runs-on: macos-latest
+    runs-on: macos-26
     permissions:
       contents: write
       id-token: write
@@ -55,25 +42,30 @@ jobs:
       - name: Boot iOS simulator for serve-sim tests
         id: boot-sim
         run: |
-          # Pick the newest available iOS simulator device. The runner image
-          # ships pre-created sims - boot one so the serve-sim idle-floor
-          # integration test has something real to talk to. Fallback: create
-          # one from the latest iOS runtime.
-          UDID=$(xcrun simctl list devices available -j | node -e "
-            const data = JSON.parse(require('fs').readFileSync(0, 'utf-8'));
-            const iosRuntimes = Object.keys(data.devices).filter(r => r.includes('iOS'));
-            iosRuntimes.sort().reverse();
-            for (const runtime of iosRuntimes) {
-              for (const d of data.devices[runtime]) {
-                if (d.isAvailable && d.name.includes('iPhone')) {
-                  console.log(d.udid);
-                  process.exit(0);
+          # Fast path: GitHub's macOS runner images pre-create iPhone
+          # simulators, so try booting one by name directly. `simctl list`
+          # enumerates every device/runtime and can cost 1.5-3min of
+          # cold-CoreSimulator first-touch; boot-by-name pays that once on a
+          # single device instead. The first available name wins; fall back
+          # to the full discovery+create path only if none boot.
+          UDID=""
+          for NAME in "iPhone 17 Pro" "iPhone 16 Pro" "iPhone 16" "iPhone 15 Pro" "iPhone 15"; do
+            echo "Trying to boot \"$NAME\"..."
+            if OUT=$(xcrun simctl boot "$NAME" 2>&1); then
+              UDID=$(xcrun simctl list devices booted -j | node -e "
+                const data = JSON.parse(require('fs').readFileSync(0, 'utf-8'));
+                for (const devs of Object.values(data.devices)) {
+                  for (const d of devs) { console.log(d.udid); process.exit(0); }
                 }
-              }
-            }
-          ")
+              ")
+              echo "Booted \"$NAME\" -> $UDID"
+              break
+            fi
+            echo "  skip: $OUT"
+          done
+
           if [ -z "$UDID" ]; then
-            echo "No pre-created iOS simulator found; creating one from the latest runtime"
+            echo "No pre-created iPhone simulator booted; creating one from the latest runtime"
             RUNTIME=$(xcrun simctl list runtimes -j | node -e "
               const data = JSON.parse(require('fs').readFileSync(0, 'utf-8'));
               const ios = data.runtimes.filter(r => r.isAvailable && r.identifier.includes('iOS'));
@@ -86,15 +78,37 @@ jobs:
               console.log(iphones[iphones.length - 1].identifier);
             ")
             UDID=$(xcrun simctl create "ci-test-iphone" "$DEVICETYPE" "$RUNTIME")
+            xcrun simctl boot "$UDID" || true
           fi
-          echo "Booting simulator $UDID"
-          xcrun simctl boot "$UDID" || true
+
           xcrun simctl bootstatus "$UDID" -b
           open -ga Simulator || true
           echo "udid=$UDID" >> $GITHUB_OUTPUT
 
+      # The serve-sim e2e tests load the in-process native addon
+      # (dist/native/serve-sim-native.node), so build it before running them.
+      # (The publish step below rebuilds after the version bump to embed it.)
+      - name: Build serve-sim
+        run: bun run build.ts
+        working-directory: packages/serve-sim
+
       - name: serve-sim tests (idle floor regression)
-        run: bun test packages/serve-sim/src/__tests__/
+        env:
+          UDID: ${{ steps.boot-sim.outputs.udid }}
+        run: |
+          run_tests() { bun test --max-concurrency=1 packages/serve-sim/src/__tests__/; }
+          if run_tests; then exit 0; fi
+          # The sim-backed e2e tests share one simulator; a wedge from one test
+          # (stuck finger, native crash) shows up as hook timeouts / ECONNRESET /
+          # ConnectionRefused in unrelated later tests. Reboot for a clean slate
+          # and retry once before blocking the stable publish.
+          echo "::warning title=sim e2e retry::test run failed; rebooting $UDID and retrying once"
+          xcrun simctl shutdown "$UDID" 2>/dev/null || true
+          sleep 3
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b || true
+          open -ga Simulator || true
+          run_tests
 
       - name: Shutdown simulator
         if: always() && steps.boot-sim.outputs.udid != ''
@@ -127,7 +141,6 @@ jobs:
             fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
           "
 
-          bun run build:swift
           bun run build
 
           npm publish --access public --tag latest --provenance

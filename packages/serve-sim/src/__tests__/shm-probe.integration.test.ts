@@ -31,7 +31,7 @@ const platformOk = process.platform === "darwin";
 const shouldRun = platformOk && helperReady();
 
 interface ShmHandle {
-  ptr: number;
+  ptr: unknown;
   buffer: ArrayBuffer;
   fd: number;
   size: number;
@@ -101,11 +101,12 @@ async function openExistingShm(name: string): Promise<ShmHandle | null> {
     return null;
   }
   const buffer = sys.toArrayBuffer(ptr, 0, size);
-  return { ptr: 0, buffer, fd, size };
+  return { ptr, buffer, fd, size };
 }
 
 async function closeShm(handle: ShmHandle): Promise<void> {
   const sys = await loadFfi();
+  sys.munmap(handle.ptr, BigInt(handle.size));
   sys.close(handle.fd);
 }
 
@@ -403,9 +404,17 @@ describeIf("SimCameraHelper shm probe", () => {
     helper = null;
 
     const sys = await loadFfi();
-    const fd = sys.shm_open(Buffer.from(`${SHM_NAME}\0`), 0, 0);
-    if (fd >= 0) {
+    // The helper shm_unlink()s during shutdown, but on a loaded CI runner that
+    // can land a beat after the process-exit event fires. Poll briefly so the
+    // assertion proves "eventually unlinked" rather than racing the cleanup.
+    let fd = -1;
+    for (let i = 0; i < 40; i++) {
+      fd = sys.shm_open(Buffer.from(`${SHM_NAME}\0`), 0, 0);
+      if (fd < 0) break;
       sys.close(fd);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (fd >= 0) {
       sys.shm_unlink(Buffer.from(`${SHM_NAME}\0`));
     }
     expect(fd).toBeLessThan(0);

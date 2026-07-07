@@ -8,7 +8,6 @@ declare global {
       port: number;
       device: string;
       basePath: string;
-      logsEndpoint?: string;
       axEndpoint?: string;
       appStateEndpoint?: string;
       devtoolsEndpoint?: string;
@@ -23,6 +22,20 @@ declare global {
       serveSimBin?: string;
       /** Bearer token required by the /exec shell-exec route. */
       execToken?: string;
+      /**
+       * Server-pinned stream codec. `"mjpeg"` forces the software JPEG path
+       * (for hosts whose hardware can't encode H.264); `"auto"`/undefined lets
+       * the client pick H.264 when the browser can decode it. Reserved for
+       * future values like `"hevc"`/`"av1"`.
+       */
+      codec?: string;
+      /**
+       * Set when the server routes helper stream/control + DevTools sockets
+       * through its same-origin `/helper` and `/devtools` proxies. The browser
+       * then re-anchors those URLs to its own origin; left unset, the config
+       * already carries the helper's direct URLs and is used as-is.
+       */
+      proxyHelpers?: boolean;
     };
   }
 }

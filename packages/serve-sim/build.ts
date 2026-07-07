@@ -12,7 +12,7 @@
  * their PATH can still run `npx serve-sim` / mount the fetch-style middleware.
  * Runtime server and timing behavior is implemented with Node stdlib APIs.
  *
- * The preview HTML (bundled client.tsx + Preact + serve-sim-client, base64
+ * The preview HTML (bundled client.tsx + Preact, base64
  * encoded) is injected into every artifact that could need to serve the UI
  * via the __PREVIEW_HTML_B64__ build-time define.
  */
@@ -129,6 +129,7 @@ const mwResult = await Bun.build({
   outdir: distDir,
   external: ["fs", "path", "os", "child_process", "url", "net", "tls", "crypto", "stream", "events", "http", "https", "zlib", "buffer", "module", "ws"],
   define: PREVIEW_DEFINE,
+  sourcemap: "linked",
 });
 if (!mwResult.success) {
   console.error("Middleware build failed:");
@@ -155,6 +156,7 @@ const binJsResult = await Bun.build({
   naming: "serve-sim.js",
   external: ["fs", "path", "os", "child_process", "url", "net", "tls", "crypto", "stream", "events", "http", "https", "zlib", "buffer", "module", "ws"],
   define: PREVIEW_DEFINE,
+  sourcemap: "linked",
 });
 if (!binJsResult.success) {
   console.error("Bin JS build failed:");
@@ -236,5 +238,23 @@ if (axSettingsBuild.status !== 0) {
   process.exit(axSettingsBuild.status ?? 1);
 }
 console.log("dist/simax/serve-sim-ax-settings");
+
+// ─── 8. serve-sim-native.node — in-process N-API addon ───────────────────
+// Replaces the spawned serve-sim-bin helper. arm64 (Apple Silicon); loaded by
+// path from both the node bundle (createRequire) and the bun-compiled executable.
+
+const nativeBuild = spawnSync(
+  "bash",
+  [
+    resolve(root, "Sources/SimNative/build.sh"),
+    resolve(distDir, "native"),
+  ],
+  { stdio: "inherit" },
+);
+if (nativeBuild.status !== 0) {
+  console.error("SimNative addon build failed.");
+  process.exit(nativeBuild.status ?? 1);
+}
+console.log("dist/native/serve-sim-native.node");
 
 console.log("Done.");

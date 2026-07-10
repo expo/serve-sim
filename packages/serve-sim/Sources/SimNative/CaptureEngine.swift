@@ -180,7 +180,7 @@ actor CaptureEngine {
 
     func handleWebRTCOffer(_ offerJson: String) async throws -> String {
         let request = try JSONDecoder().decode(WebRTCOfferPayload.self, from: Data(offerJson.utf8))
-        let answer = try getWebRTCPublisher().handleOffer(request)
+        let answer = try await getWebRTCPublisher().handleOffer(request)
         let data = try JSONEncoder().encode(answer)
         return String(decoding: data, as: UTF8.self)
     }

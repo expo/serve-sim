@@ -107,8 +107,10 @@ private func u32(_ v: Int) -> UInt32 {
         self.inputQueue = inputQueue
         self.onWebRTCInput = onWebRTCInput
         self.engine = CaptureEngine(deviceUDID: udid, onWebRTCInput: { data in
-            try? inputQueue.run(blocking: false) {
-                _ = try? await onWebRTCInput.call([try NodeBuffer(copying: data)]).as(NodePromise.self)?.value
+            Task {
+                try? await inputQueue.run(blocking: false) {
+                    _ = try? await onWebRTCInput.call([try NodeBuffer(copying: data)]).as(NodePromise.self)?.value
+                }
             }
         })
     }

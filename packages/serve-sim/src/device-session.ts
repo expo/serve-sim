@@ -49,9 +49,6 @@ export function sendCorsPreflight(res: ServerResponse): void {
   res.end();
 }
 
-// Don't let a stalled viewer's socket buffer grow without bound — drop frames
-// for a client that's this far behind rather than balloon memory.
-const MAX_CLIENT_BACKLOG = 8 * 1024 * 1024;
 // AVCC seed tag (StreamFormat.AVCCEnvelope.seedTag). description/keyframe/delta
 // envelopes are framed natively; only the on-connect JPEG seed is built here.
 const AVCC_SEED_TAG = 0x04;
@@ -128,6 +125,15 @@ function waitForDrain(res: ServerResponse): Promise<void> {
     res.once("drain", done);
     res.once("close", done);
     res.once("error", done);
+  });
+}
+
+function readRequestBody(req: IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
   });
 }
 

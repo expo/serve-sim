@@ -5,7 +5,15 @@ import { existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unl
 import { createHash } from "crypto";
 import { networkInterfaces } from "os";
 import { join, resolve } from "path";
-import { STATE_DIR, stateFileForDevice, listStateFiles, inProcessServeSimState, type ServeSimDeviceState } from "./state";
+import {
+  STATE_DIR,
+  stateFileForDevice,
+  listStateFiles,
+  inProcessServeSimState,
+  type ServeSimDeviceState,
+  type StreamSettings,
+  type WebRtcIceServer,
+} from "./state";
 import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from "./text-to-keys";
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
 import { killPortHolder } from "./ports";
@@ -41,8 +49,7 @@ function resolveVersion(): string {
 
 type ServerState = ServeSimDeviceState;
 
-type StreamRuntimeOptions = Pick<ServeSimDeviceState, "transport" | "codec" | "webrtcCodec" | "webrtcIceServers">;
-type WebRTCIceServer = NonNullable<ServeSimDeviceState["webrtcIceServers"]>[number];
+type StreamRuntimeOptions = StreamSettings;
 function ensureStateDir() {
   if (!existsSync(STATE_DIR)) {
     mkdirSync(STATE_DIR, { recursive: true });
@@ -1690,10 +1697,7 @@ async function serve(
   const middleware = simMiddleware({
     basePath: "/",
     device: targetDevice,
-    codec: options.stream?.codec,
-    transport: options.stream?.transport,
-    webrtcCodec: options.stream?.webrtcCodec,
-    webrtcIceServers: options.stream?.webrtcIceServers,
+    streamSettings: options.stream,
     proxyHelpers: true,
   });
 
@@ -1838,7 +1842,7 @@ Examples:
     const stunUrls = typeof opts.stunUrl === "string"
       ? opts.stunUrl.split(",").map((s: string) => s.trim()).filter(Boolean)
       : [];
-    const webrtcIceServers: WebRTCIceServer[] = [];
+    const webrtcIceServers: WebRtcIceServer[] = [];
     if (stunUrls.length) webrtcIceServers.push({ urls: stunUrls });
     if (opts.turnUrl) {
       webrtcIceServers.push({
@@ -1847,12 +1851,16 @@ Examples:
         credential: opts.turnCredential,
       });
     }
-    const stream: StreamRuntimeOptions = {
-      transport: opts.transport,
-      codec: opts.codec,
-      webrtcCodec: opts.transport === "webrtc" ? opts.webrtcCodec : undefined,
-      webrtcIceServers: webrtcIceServers.length ? webrtcIceServers : undefined,
-    };
+    const stream: StreamRuntimeOptions = opts.transport === "webrtc"
+      ? {
+          transport: "webrtc",
+          codec: opts.webrtcCodec,
+          ...(webrtcIceServers.length ? { iceServers: webrtcIceServers } : {}),
+        }
+      : {
+          transport: "http",
+          codec: opts.codec,
+        };
     const startPort: number | undefined = opts.port;
     if (opts.detach) {
       const states = await detach(devices, startPort ?? 3100);

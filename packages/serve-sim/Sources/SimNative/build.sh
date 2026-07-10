@@ -41,10 +41,12 @@ fi
 
 WEBRTC_ARTIFACT_FRAMEWORK="$(find "$BUILD_DIR/artifacts" -path "*/macos-arm64_x86_64/$WEBRTC_FRAMEWORK_NAME" -type d -print -quit)"
 if [ -z "$WEBRTC_ARTIFACT_FRAMEWORK" ]; then
-  WEBRTC_ARTIFACT_FRAMEWORK="$(find "$BUILD_DIR/artifacts" -name "$WEBRTC_FRAMEWORK_NAME" -type d -print -quit)"
+  echo "Expected macOS LiveKitWebRTC framework artifact not found under $BUILD_DIR/artifacts" >&2
+  exit 1
 fi
-if [ -z "$WEBRTC_ARTIFACT_FRAMEWORK" ]; then
-  echo "Expected LiveKitWebRTC framework artifact not found under $BUILD_DIR/artifacts" >&2
+WEBRTC_ARTIFACT_BINARY="$WEBRTC_ARTIFACT_FRAMEWORK/Versions/A/LiveKitWebRTC"
+if ! lipo "$WEBRTC_ARTIFACT_BINARY" -verify_arch arm64 x86_64; then
+  echo "LiveKitWebRTC macOS artifact is not universal (arm64 + x86_64)" >&2
   exit 1
 fi
 WEBRTC_LICENSE="$(find "$BUILD_DIR/artifacts" -path "*/LiveKitWebRTC.xcframework/LICENSE" -type f -print -quit)"
@@ -67,15 +69,31 @@ cp "$WEBRTC_LICENSE" "$WEBRTC_RUNTIME_FRAMEWORK/Versions/A/Resources/LICENSE.web
 # packaging tools and macOS discover it, then remove the malformed duplicate.
 cp "$WEBRTC_PRIVACY" "$WEBRTC_RUNTIME_FRAMEWORK/Versions/A/Resources/PrivacyInfo.xcprivacy"
 rm -rf "$WEBRTC_RUNTIME_FRAMEWORK/Versions/A/Versions"
+# Headers and Clang modules are build-time inputs. The npm package only loads
+# this framework dynamically, so omit them from the runtime artifact.
+rm -rf "$WEBRTC_RUNTIME_FRAMEWORK/Versions/A/Headers" "$WEBRTC_RUNTIME_FRAMEWORK/Versions/A/Modules"
+# npm omits framework symlinks from tarballs. Flatten the runtime framework so
+# the installed package remains a complete, signable bundle without them.
+rm -f \
+  "$WEBRTC_RUNTIME_FRAMEWORK/LiveKitWebRTC" \
+  "$WEBRTC_RUNTIME_FRAMEWORK/Resources" \
+  "$WEBRTC_RUNTIME_FRAMEWORK/Headers" \
+  "$WEBRTC_RUNTIME_FRAMEWORK/Modules"
+mv "$WEBRTC_RUNTIME_FRAMEWORK/Versions/A/LiveKitWebRTC" "$WEBRTC_RUNTIME_FRAMEWORK/LiveKitWebRTC"
+mv "$WEBRTC_RUNTIME_FRAMEWORK/Versions/A/Resources" "$WEBRTC_RUNTIME_FRAMEWORK/Resources"
+rm -rf "$WEBRTC_RUNTIME_FRAMEWORK/Versions"
+codesign -s - -f --deep "$WEBRTC_RUNTIME_FRAMEWORK"
+codesign --verify --deep --strict "$WEBRTC_RUNTIME_FRAMEWORK"
 
 OUT="$OUT_DIR/${PRODUCT}.node"
 cp -a "$DYLIB" "$OUT"
 strip -x "$OUT"
 install_name_tool \
   -change "@rpath/LiveKitWebRTC.framework/LiveKitWebRTC" \
-  "@loader_path/../bin/LiveKitWebRTC.framework/Versions/A/LiveKitWebRTC" \
+  "@loader_path/../bin/LiveKitWebRTC.framework/LiveKitWebRTC" \
   "$OUT"
-codesign -s - -f "$OUT" 2>/dev/null || true
+codesign -s - -f "$OUT"
+codesign --verify --strict "$OUT"
 
 echo "Built: $OUT"
 lipo -info "$OUT"

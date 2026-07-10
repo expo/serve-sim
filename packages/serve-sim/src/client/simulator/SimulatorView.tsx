@@ -207,7 +207,7 @@ export function SimulatorView({
     let stopped = false;
     let videoFrameCallback = 0;
     const onFirstFrame = () => {
-      if (settled) return;
+      if (stopped || settled) return;
       settled = true;
       onWebRtcFrame?.();
       setConnected(true);
@@ -222,6 +222,7 @@ export function SimulatorView({
       videoFrameCallback = video.requestVideoFrameCallback(onVideoFrame);
     };
     const onTimeUpdate = () => {
+      if (stopped) return;
       lastFrameAtRef.current = Date.now();
       onFirstFrame();
       setConnected(true);
@@ -237,9 +238,6 @@ export function SimulatorView({
         videoFrameCallback = video.requestVideoFrameCallback(onVideoFrame);
       } else {
         video.addEventListener("timeupdate", onTimeUpdate);
-      }
-      if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-        onFirstFrame();
       }
       void video.play().catch(() => {});
     } else {
@@ -604,6 +602,21 @@ export function SimulatorView({
       wsRef.current = null;
     };
   }, [url, streamUrl, relayMode, updateScreenConfig, wsUrlProp, useAvcc, useWebRtc]);
+
+  // WebRTC bypasses the direct HTTP/WS effect above. Its video-frame callback
+  // still increments the shared counter, so publish that count once a second.
+  useEffect(() => {
+    if (!useWebRtc) return;
+    const interval = setInterval(() => {
+      setFps(frameCountRef.current);
+      frameCountRef.current = 0;
+      const lastFrameAt = lastFrameAtRef.current;
+      if (!document.hidden && lastFrameAt && Date.now() - lastFrameAt > 3000) {
+        setConnected(false);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [useWebRtc]);
 
   // FPS counter + stale-frame detection for relay mode.
   // Unlike non-relay mode (where WS close flips connected=false), relay mode

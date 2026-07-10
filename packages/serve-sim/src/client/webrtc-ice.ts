@@ -1,8 +1,6 @@
-export type IceServer = {
-  urls: string[];
-  username?: string;
-  credential?: string;
-};
+import type { WebRtcIceServer } from "../state";
+
+export type IceServer = WebRtcIceServer;
 
 // Keep ICE in normal mode: direct host/srflx candidates are preferred when they
 // work, and TURN is only used when those checks fail. A tunnel URL is signaling

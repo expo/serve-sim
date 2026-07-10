@@ -1,5 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import { streamHelperArgs, streamRuntimeArgs } from "../stream-runtime-args";
+import {
+  parseIceUrlList,
+  streamHelperArgs,
+  streamRuntimeArgs,
+  streamSettingsEqual,
+} from "../stream-runtime-args";
+
+describe("parseIceUrlList", () => {
+  test("normalizes valid STUN and TURN lists", () => {
+    expect(parseIceUrlList(" stun:one.test:3478,stuns:two.test:5349 ", "stun")).toEqual([
+      "stun:one.test:3478",
+      "stuns:two.test:5349",
+    ]);
+    expect(parseIceUrlList("turn:one.test:3478,turns:two.test:5349", "turn")).toHaveLength(2);
+  });
+
+  test("rejects empty lists and URLs for the wrong protocol", () => {
+    expect(() => parseIceUrlList(",", "stun")).toThrow();
+    expect(() => parseIceUrlList("https://example.test", "stun")).toThrow();
+    expect(() => parseIceUrlList("stun:example.test", "turn")).toThrow();
+  });
+});
 
 describe("streamRuntimeArgs", () => {
   test("forwards HTTP codec options", () => {
@@ -39,6 +60,27 @@ describe("streamRuntimeArgs", () => {
       "--turn-credential",
       "pass",
     ]);
+  });
+});
+
+describe("streamSettingsEqual", () => {
+  test("treats missing legacy settings as the default HTTP transport", () => {
+    expect(streamSettingsEqual(undefined, { transport: "http" })).toBe(true);
+    expect(streamSettingsEqual(
+      { codec: "auto", transport: "http" },
+      { transport: "http" },
+    )).toBe(true);
+  });
+
+  test("detects explicit transport and codec changes", () => {
+    expect(streamSettingsEqual(
+      { transport: "http", codec: "mjpeg" },
+      { transport: "webrtc", codec: "vp8" },
+    )).toBe(false);
+    expect(streamSettingsEqual(
+      { transport: "webrtc", codec: "vp8" },
+      { transport: "webrtc", codec: "vp9" },
+    )).toBe(false);
   });
 });
 

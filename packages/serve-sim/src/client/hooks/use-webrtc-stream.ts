@@ -14,10 +14,12 @@ const DEFAULT_ICE_SERVERS: IceServer[] = [
 const ICE_GATHERING_TIMEOUT_MS = 3_000;
 // Native signaling has its own 10s deadline. Keep the browser deadline longer
 // so the server always gets the first chance to close a timed-out session.
-const SIGNALING_TIMEOUT_MS = 15_000;
+const SIGNALING_TIMEOUT_MS = 20_000;
 const FIRST_FRAME_TIMEOUT_MS = 4_000;
 const BUSY_RETRY_INTERVAL_MS = 500;
-const BUSY_RETRY_COUNT = 20;
+// An abandoned native answer is reaped after 10s. Retry beyond that deadline
+// so a replacement viewer can take over without requiring a page reload.
+const BUSY_RETRY_COUNT = 30;
 
 function createSessionId(): string {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();

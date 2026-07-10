@@ -30,6 +30,8 @@ that suffix removed. A standalone server normally uses
 The stream and signaling responses allow cross-origin access. WebRTC media uses
 ICE directly; loading the preview through an HTTP tunnel does not tunnel media.
 Configure TURN when viewers cannot reach direct or server-reflexive candidates.
+Each simulator accepts one active WebRTC viewer at a time; HTTP streams can
+fan out to multiple viewers.
 
 ### Input messages
 

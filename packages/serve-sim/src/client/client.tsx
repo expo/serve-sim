@@ -1200,6 +1200,7 @@ function AppWithConfig({
         onCodecPreferenceChange={setCodecPreference}
         activeCodec={useAvccVideo ? "h264" : "mjpeg"}
         avccSupported={avcc.supported}
+        showStreamSettings={!useWebRtcVideo}
         width={toolsPanelWidth}
       />
       <ResizeHandle

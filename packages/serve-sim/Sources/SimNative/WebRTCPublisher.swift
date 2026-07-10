@@ -25,6 +25,11 @@ struct WebRTCIceServerPayload: Codable {
     let credential: String?
 }
 
+private let defaultWebRTCIceServers = [
+    WebRTCIceServerPayload(urls: ["stun:stun.l.google.com:19302"], username: nil, credential: nil),
+    WebRTCIceServerPayload(urls: ["stun:stun1.l.google.com:19302"], username: nil, credential: nil),
+]
+
 struct WebRTCOfferPayload: Codable {
     let type: String
     let sdp: String
@@ -72,6 +77,7 @@ private struct PendingWebRTCOffer {
 
 final class WebRTCPublisher: @unchecked Sendable {
     private static let signalingTimeoutMs = 10_000
+    private static let connectionTimeoutMs = 10_000
 
     var onInput: ((Data) -> Void)?
     private let queue = DispatchQueue(label: "webrtc-publisher")
@@ -399,11 +405,17 @@ final class WebRTCPublisher: @unchecked Sendable {
             mandatoryConstraints: nil,
             optionalConstraints: ["DtlsSrtpKeyAgreement": "true"]
         )
-        let delegate = WebRTCSessionDelegate(onInput: { [weak self] data in
-            self?.onInput?(data)
-        }, onClosed: { [weak self] peerConnection in
-            self?.clearSession(peerConnection)
-        })
+        let delegate = WebRTCSessionDelegate(
+            onInput: { [weak self] data in
+                self?.onInput?(data)
+            },
+            onConnected: { [weak self] peerConnection in
+                self?.activateSession(peerConnection)
+            },
+            onClosed: { [weak self] peerConnection in
+                self?.clearSession(peerConnection)
+            }
+        )
         guard let peerConnection = factory.peerConnection(
             with: config,
             constraints: constraints,
@@ -519,8 +531,23 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
         pendingOffer = nil
         session = offerSession
-        activateFrames()
+        queue.asyncAfter(deadline: .now().advanced(by: .milliseconds(Self.connectionTimeoutMs))) {
+            guard self.session === offerSession else { return }
+            guard offerSession.peerConnection.connectionState != .connected else { return }
+            streamLog("[webrtc] Peer did not connect before deadline; closing orphaned session")
+            offerSession.close()
+            self.session = nil
+            self.deactivateFrames()
+        }
         completion(.success(answer))
+    }
+
+    private func activateSession(_ peerConnection: LKRTCPeerConnection) {
+        queue.async {
+            guard let session = self.session, session.peerConnection === peerConnection else { return }
+            self.activateFrames()
+            streamLog("[webrtc] Peer connected; publisher active")
+        }
     }
 
     private func isPending(_ offerSession: WebRTCSession) -> Bool {
@@ -570,10 +597,7 @@ final class WebRTCPublisher: @unchecked Sendable {
     }
 
     private func iceServers(from payload: [WebRTCIceServerPayload]?) -> [LKRTCIceServer] {
-        let servers = payload ?? [
-            WebRTCIceServerPayload(urls: ["stun:stun.l.google.com:19302"], username: nil, credential: nil),
-            WebRTCIceServerPayload(urls: ["stun:stun1.l.google.com:19302"], username: nil, credential: nil),
-        ]
+        let servers = payload ?? defaultWebRTCIceServers
         return servers.flatMap { server in
             server.urls.map { url in
                 LKRTCIceServer(
@@ -598,7 +622,7 @@ final class WebRTCPublisher: @unchecked Sendable {
     }
 
     private func iceServerSummary(_ payload: [WebRTCIceServerPayload]?) -> String {
-        let servers = payload ?? []
+        let servers = payload ?? defaultWebRTCIceServers
         let stunUrls = servers.flatMap { server in
             server.urls.filter { $0.lowercased().hasPrefix("stun:") }
         }.count
@@ -652,14 +676,14 @@ final class WebRTCPublisher: @unchecked Sendable {
         if hadTrailingNewline {
             lines.removeLast()
         }
-        var existingCandidateLines = Set<String>()
+        var existingCandidateLines: [Int: Set<String>] = [:]
         var sectionsNeedingEndMarker = Set<Int>()
         var currentSection = -1
         for line in lines {
             if line.hasPrefix("m=") {
                 currentSection += 1
             } else if line.hasPrefix("a=candidate:"), currentSection >= 0 {
-                existingCandidateLines.insert(line)
+                existingCandidateLines[currentSection, default: []].insert(line)
                 sectionsNeedingEndMarker.insert(currentSection)
             }
         }
@@ -669,14 +693,18 @@ final class WebRTCPublisher: @unchecked Sendable {
             let candidateLine = candidate.sdp.hasPrefix("a=")
                 ? candidate.sdp
                 : "a=\(candidate.sdp)"
-            let sectionIndex = mediaSectionIndex(
+            guard let sectionIndex = mediaSectionIndex(
                 in: lines,
                 sdpMid: candidate.sdpMid,
                 sdpMLineIndex: candidate.sdpMLineIndex
-            )
+            ) else {
+                streamLog("[webrtc] Ignoring ICE candidate without a valid media section")
+                continue
+            }
             sectionsNeedingEndMarker.insert(sectionIndex)
-            guard !existingCandidateLines.contains(candidateLine) else { continue }
-            existingCandidateLines.insert(candidateLine)
+            guard existingCandidateLines[sectionIndex, default: []].insert(candidateLine).inserted else {
+                continue
+            }
             sectionCandidates[sectionIndex, default: []].append(candidateLine)
         }
 
@@ -699,7 +727,10 @@ final class WebRTCPublisher: @unchecked Sendable {
         in lines: [String],
         sdpMid: String?,
         sdpMLineIndex: Int32
-    ) -> Int {
+    ) -> Int? {
+        let sectionCount = lines.reduce(into: 0) { count, line in
+            if line.hasPrefix("m=") { count += 1 }
+        }
         if let sdpMid {
             var currentSection = -1
             for line in lines {
@@ -711,7 +742,10 @@ final class WebRTCPublisher: @unchecked Sendable {
             }
         }
         let candidateIndex = Int(sdpMLineIndex)
-        return candidateIndex >= 0 ? candidateIndex : 0
+        if candidateIndex >= 0, candidateIndex < sectionCount {
+            return candidateIndex
+        }
+        return sectionCount == 1 ? 0 : nil
     }
 
     private func mediaSectionRange(in lines: [String], sectionIndex: Int) -> Range<Int> {
@@ -1353,6 +1387,7 @@ private final class WebRTCSession {
 private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChannelDelegate {
     weak var peerConnection: LKRTCPeerConnection?
     private let onInput: (Data) -> Void
+    private let onConnected: (LKRTCPeerConnection) -> Void
     private let onClosed: (LKRTCPeerConnection) -> Void
     private let iceGatheringCompleteHandlerLock = NSLock()
     private var iceGatheringCompleteHandler: (() -> Void)?
@@ -1362,8 +1397,13 @@ private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate
     private let retainedDataChannelsLock = NSLock()
     private var retainedDataChannels: [ObjectIdentifier: LKRTCDataChannel] = [:]
 
-    init(onInput: @escaping (Data) -> Void, onClosed: @escaping (LKRTCPeerConnection) -> Void) {
+    init(
+        onInput: @escaping (Data) -> Void,
+        onConnected: @escaping (LKRTCPeerConnection) -> Void,
+        onClosed: @escaping (LKRTCPeerConnection) -> Void
+    ) {
         self.onInput = onInput
+        self.onConnected = onConnected
         self.onClosed = onClosed
     }
 
@@ -1381,7 +1421,9 @@ private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate
     }
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didChange newState: LKRTCPeerConnectionState) {
         streamLog("[webrtc] Peer connection state: \(newState.rawValue)")
-        if newState == .failed || newState == .closed {
+        if newState == .connected {
+            onConnected(peerConnection)
+        } else if newState == .failed || newState == .closed {
             onClosed(peerConnection)
         } else if newState == .disconnected {
             closeIfStillDisconnected(peerConnection)

@@ -101,6 +101,8 @@ Camera options (used with `serve-sim camera <bundle-id>`):
 WebRTC uses the HTTP/WebSocket server only for signaling. ICE still prefers a
 direct UDP path when one is reachable, even if the page was loaded through a
 tunnel URL; TURN is used as a fallback when direct/STUN candidates fail.
+Each simulator accepts one active WebRTC viewer at a time; HTTP streaming
+continues to support multiple viewers.
 
 ### Examples
 

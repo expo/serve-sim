@@ -371,6 +371,21 @@ export class DeviceSession {
   }
 
   async handleWebRTCOffer(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let sessionId: string | undefined;
+    let sessionEstablished = false;
+    let cancellation: Promise<void> | undefined;
+    const cancelSession = (): Promise<void> => {
+      if (!sessionId) return Promise.resolve();
+      cancellation ??= this.capture.closeWebRTCSession(sessionId);
+      return cancellation;
+    };
+    const handleResponseClose = () => {
+      // `close` also fires after a normal response. Only cancel when the socket
+      // disappeared before Node finished flushing the SDP answer.
+      if (!res.writableFinished) void cancelSession();
+    };
+    res.once("close", handleResponseClose);
+
     try {
       if (req.method !== "POST") {
         throw new WebRtcSignalingError("WebRTC offers require POST", 405, "method_not_allowed");
@@ -380,12 +395,18 @@ export class DeviceSession {
       }
       const body = await readRequestBody(req, MAX_WEBRTC_SIGNALING_BODY_BYTES);
       const offer = parseWebRtcOffer(parseJsonBody(body, "invalid_offer"));
+      sessionId = offer.sessionId;
       await this.waitForCapture();
-      const answer = await this.capture.handleWebRTCOffer(offer);
       if (await this.refreshScreenSizeFromNative()) this.broadcastConfig();
-      if (res.writableEnded || res.destroyed) return;
+      const answer = await this.capture.handleWebRTCOffer(offer);
+      sessionEstablished = true;
+      if (res.writableEnded || res.destroyed) {
+        await cancelSession();
+        return;
+      }
       this.sendJson(res, 200, answer);
     } catch (err) {
+      if (sessionEstablished) await cancelSession();
       if (res.writableEnded || res.destroyed) return;
       const busy = err instanceof Error && (
         err.message.includes("WebRTC session already active") ||
@@ -401,6 +422,8 @@ export class DeviceSession {
         error: code,
         message: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      if (res.writableFinished) res.off("close", handleResponseClose);
     }
   }
 

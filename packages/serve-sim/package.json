@@ -28,6 +28,7 @@
     "dist/serve-sim.js",
     "dist/middleware.js",
     "dist/middleware.cjs",
+    "dist/state.js",
     "dist/simcam/libSimCameraInjector.dylib",
     "dist/simcam/serve-sim-camera-helper",
     "dist/simax/serve-sim-ax-settings",
@@ -46,10 +47,7 @@
     "Sources/SimAXSettings/sim-ax-settings.m",
     "Sources/SimAXSettings/build.sh",
     "dist/native/serve-sim-native.node",
-    "dist/bin/LiveKitWebRTC.framework",
-    "Package.swift",
-    "Sources/SimNative/*.swift",
-    "Sources/SimNative/build.sh"
+    "dist/bin/LiveKitWebRTC.framework"
   ],
   "exports": {
     "./middleware": {
@@ -58,7 +56,7 @@
       "types": "./src/middleware.ts"
     },
     "./state": {
-      "import": "./src/state.ts",
+      "import": "./dist/state.js",
       "types": "./src/state.ts"
     }
   },

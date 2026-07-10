@@ -77,6 +77,18 @@ describe("previewConfigForState", () => {
     ).toEqual({ transport: "http", codec: "mjpeg" });
   });
 
+  test("keeps the legacy codec argument compatible with stream settings", () => {
+    const config = previewConfigForState(
+      states[0]!,
+      "/preview",
+      "/bin/serve-sim",
+      "token-xyz",
+      "mjpeg",
+    );
+    expect(config.codec).toBe("mjpeg");
+    expect(config.streamSettings).toEqual({ transport: "http", codec: "mjpeg" });
+  });
+
   test("passes WebRTC VP9 preference through to the client config", () => {
     expect(
       previewConfigForState(states[0]!, "/preview", "/bin/serve-sim", "token-xyz", {

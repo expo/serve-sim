@@ -834,7 +834,7 @@ export function previewConfigForState(
   base: string,
   serveSimBin: string,
   execToken: string,
-  streamSettings?: StreamSettings,
+  streamSettingsOrCodec?: StreamSettings | string,
   proxyHelpers = false,
 ): ServeSimState & {
   basePath: string;
@@ -850,10 +850,16 @@ export function previewConfigForState(
   gridMemoryEndpoint: string;
   previewEndpoint: string;
   execToken: string;
+  /** @deprecated Use streamSettings. */
+  codec?: string;
   streamSettings?: StreamSettings;
   proxyHelpers?: boolean;
 } {
   const gridApiBase = (base === "" ? "" : base) + "/grid/api";
+  const legacyCodec = typeof streamSettingsOrCodec === "string" ? streamSettingsOrCodec : undefined;
+  const streamSettings = typeof streamSettingsOrCodec === "object"
+    ? streamSettingsOrCodec
+    : httpStreamSettingsFromLegacyCodec(legacyCodec);
   return {
     ...state,
     basePath: base,
@@ -869,6 +875,7 @@ export function previewConfigForState(
     gridMemoryEndpoint: gridApiBase + "/memory",
     previewEndpoint: base === "" ? "/" : base,
     execToken,
+    ...(legacyCodec ? { codec: legacyCodec } : {}),
     ...(streamSettings ? { streamSettings } : {}),
     ...(proxyHelpers ? { proxyHelpers: true } : {}),
   };
@@ -1204,6 +1211,8 @@ export interface SimMiddlewareOptions {
   execToken?: string;
   /** Stream transport and codec settings for the preview. */
   streamSettings?: StreamSettings;
+  /** @deprecated Use `streamSettings: { transport: "http", codec }`. */
+  codec?: string;
   /**
    * Route the browser's helper stream/control and DevTools sockets through the
    * preview's same-origin `/helper` and `/devtools` proxies instead of the
@@ -1217,6 +1226,13 @@ export interface SimMiddlewareOptions {
   proxyHelpers?: boolean;
   /** Test hook for supplying a fake inspect-webkit bridge. */
   inspectWebKitBridge?: () => Promise<WebKitBridge>;
+}
+
+function httpStreamSettingsFromLegacyCodec(codec: string | undefined): StreamSettings | undefined {
+  if (codec === "auto" || codec === "h264" || codec === "mjpeg") {
+    return { transport: "http", codec };
+  }
+  return undefined;
 }
 
 function safeEqualString(a: string, b: string): boolean {
@@ -1410,6 +1426,7 @@ function connectToFetch(
  *   GET  {basePath}/ax      — SSE stream of normalized accessibility snapshots
  */
 export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
+  const streamSettings = options?.streamSettings ?? httpStreamSettingsFromLegacyCodec(options?.codec);
   const base = (options?.basePath ?? "/.sim").replace(/\/+$/, "");
   const helperPrefix = helperProxyPrefix(base);
   const devtoolsPrefix = devtoolsProxyPrefix(base);
@@ -1521,7 +1538,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
       if (state) {
         const remoteState = rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers);
-        const config = JSON.stringify(previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.streamSettings, proxyHelpers));
+        const config = JSON.stringify(previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers));
         const configScript = `<script>window.__SIM_PREVIEW__=${config}</script>`;
         html = html.replace("<!--__SIM_PREVIEW_CONFIG__-->", configScript);
       }
@@ -1690,7 +1707,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           return;
         }
         const port = req.socket.localPort ?? 0;
-        void startDeviceInProcess(udid, port, base, options?.streamSettings).then((error) => {
+        void startDeviceInProcess(udid, port, base, streamSettings).then((error) => {
           if (res.writableEnded) return;
           if (error) {
             res.writeHead(500, { "Content-Type": "application/json" });
@@ -1832,7 +1849,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         "Cache-Control": "no-store",
       });
       const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
-      res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.streamSettings, proxyHelpers) : null));
+      res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers) : null));
       return;
     }
 
@@ -1896,7 +1913,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         const state = selectServeSimState(states, selectedDevice);
         const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
         return JSON.stringify(
-          remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.streamSettings, proxyHelpers) : null,
+          remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers) : null,
         );
       };
 

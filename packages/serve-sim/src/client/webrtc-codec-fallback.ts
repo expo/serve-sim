@@ -1,4 +1,6 @@
-export type WebRtcCodec = "vp8" | "vp9" | "h264";
+import type { WebRtcStreamCodec } from "../state";
+
+export type WebRtcCodec = WebRtcStreamCodec;
 
 const FALLBACK_ATTEMPTS: Record<WebRtcCodec, readonly WebRtcCodec[]> = {
   h264: ["h264", "vp8", "vp9"],

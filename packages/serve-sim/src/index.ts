@@ -24,7 +24,7 @@ import { uiSettings } from "./ui-settings";
 import { debugCli, debugHelper, debugState } from "./debug";
 import type { EventLogEntry } from "./event-log";
 import { formatEventLogLine } from "./event-log-format";
-import { streamHelperArgs } from "./stream-runtime-args";
+import { parseIceUrlList, streamHelperArgs, streamSettingsEqual } from "./stream-runtime-args";
 
 // `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
 // CLI works under plain `node` too.
@@ -401,7 +401,13 @@ async function startHelper(
 // ─── Commands ───
 
 /** Foreground follow mode (default). Stays attached, cleans up on Ctrl+C. */
-async function follow(devices: string[], startPort: number, quiet: boolean, stream?: StreamSettings) {
+async function follow(
+  devices: string[],
+  startPort: number,
+  quiet: boolean,
+  stream?: StreamSettings,
+  replaceMismatchedStream = false,
+) {
   debugCli("follow devices=%o startPort=%d", devices, startPort);
   const udids = devices.length > 0
     ? devices.map(resolveDevice)
@@ -427,15 +433,20 @@ async function follow(devices: string[], startPort: number, quiet: boolean, stre
     // Return existing server if already running
     const existing = readState(udid);
     if (existing) {
-      if (!quiet) {
-        const name = getDeviceName(udid) ?? udid;
-        if (udids.length > 1) console.log(`\n==> ${name} (${udid}) <==`);
-        console.log(`  Already running on port ${existing.port}`);
-        console.log(`  Stream:    ${existing.streamUrl}`);
-        console.log(`  WebSocket: ${existing.wsUrl}`);
+      if (replaceMismatchedStream && !streamSettingsEqual(existing.streamSettings, stream)) {
+        stopProcess(existing.pid);
+        clearState(udid);
+      } else {
+        if (!quiet) {
+          const name = getDeviceName(udid) ?? udid;
+          if (udids.length > 1) console.log(`\n==> ${name} (${udid}) <==`);
+          console.log(`  Already running on port ${existing.port}`);
+          console.log(`  Stream:    ${existing.streamUrl}`);
+          console.log(`  WebSocket: ${existing.wsUrl}`);
+        }
+        states.push(existing);
+        continue;
       }
-      states.push(existing);
-      continue;
     }
 
     port = await findAvailablePort(port);
@@ -523,7 +534,12 @@ async function follow(devices: string[], startPort: number, quiet: boolean, stre
 }
 
 /** Detach mode (--detach). Spawns helpers and returns their states. */
-async function detach(devices: string[], startPort: number, stream?: StreamSettings): Promise<ServerState[]> {
+async function detach(
+  devices: string[],
+  startPort: number,
+  stream?: StreamSettings,
+  replaceMismatchedStream = false,
+): Promise<ServerState[]> {
   debugCli("detach devices=%o startPort=%d", devices, startPort);
   const udids = devices.length > 0
     ? devices.map(resolveDevice)
@@ -544,8 +560,13 @@ async function detach(devices: string[], startPort: number, stream?: StreamSetti
   for (const udid of udids) {
     const existing = readState(udid);
     if (existing) {
-      states.push(existing);
-      continue;
+      if (replaceMismatchedStream && !streamSettingsEqual(existing.streamSettings, stream)) {
+        stopProcess(existing.pid);
+        clearState(udid);
+      } else {
+        states.push(existing);
+        continue;
+      }
     }
 
     port = await findAvailablePort(port);
@@ -1803,9 +1824,32 @@ program
       return v;
     },
   )
-  .option("--webrtc-codec <vp8|vp9|h264>", "WebRTC video codec", "h264")
-  .option("--stun-url <url[,url...]>", "STUN URL(s) for WebRTC ICE")
-  .option("--turn-url <url[,url...]>", "TURN URL(s) for WebRTC ICE")
+  .option(
+    "--webrtc-codec <vp8|vp9|h264>",
+    "WebRTC video codec",
+    (value) => {
+      const codec = value.toLowerCase();
+      if (codec !== "vp8" && codec !== "vp9" && codec !== "h264") {
+        throw new InvalidArgumentError(`Unsupported WebRTC codec '${value}'. Supported: vp8, vp9, h264.`);
+      }
+      return codec;
+    },
+    "h264",
+  )
+  .option("--stun-url <url[,url...]>", "STUN URL(s) for WebRTC ICE", (value) => {
+    try {
+      return parseIceUrlList(value, "stun");
+    } catch (error) {
+      throw new InvalidArgumentError((error as Error).message);
+    }
+  })
+  .option("--turn-url <url[,url...]>", "TURN URL(s) for WebRTC ICE", (value) => {
+    try {
+      return parseIceUrlList(value, "turn");
+    } catch (error) {
+      throw new InvalidArgumentError((error as Error).message);
+    }
+  })
   .option("--turn-username <username>", "TURN username")
   .option("--turn-credential <credential>", "TURN credential")
   .option("-l, --list [device]", "List running streams")
@@ -1837,18 +1881,36 @@ Examples:
       console.error("--transport must be one of: http, webrtc.");
       process.exit(1);
     }
-    if (opts.webrtcCodec !== "vp8" && opts.webrtcCodec !== "vp9" && opts.webrtcCodec !== "h264") {
-      console.error("--webrtc-codec must be one of: vp8, vp9, h264.");
+    const wasProvided = (name: string) => program.getOptionValueSource(name) === "cli";
+    const webRtcOptionProvided = [
+      "webrtcCodec",
+      "stunUrl",
+      "turnUrl",
+      "turnUsername",
+      "turnCredential",
+    ].some(wasProvided);
+    if (opts.transport === "http" && webRtcOptionProvided) {
+      console.error("WebRTC options require --transport webrtc.");
       process.exit(1);
     }
-    const stunUrls = typeof opts.stunUrl === "string"
-      ? opts.stunUrl.split(",").map((s: string) => s.trim()).filter(Boolean)
-      : [];
+    if (opts.transport === "webrtc" && wasProvided("codec")) {
+      console.error("--codec configures HTTP streaming; use --webrtc-codec with --transport webrtc.");
+      process.exit(1);
+    }
+    if ((opts.turnUsername === undefined) !== (opts.turnCredential === undefined)) {
+      console.error("--turn-username and --turn-credential must be provided together.");
+      process.exit(1);
+    }
+    if ((opts.turnUsername !== undefined || opts.turnCredential !== undefined) && !opts.turnUrl) {
+      console.error("--turn-username and --turn-credential require --turn-url.");
+      process.exit(1);
+    }
+    const stunUrls: string[] = opts.stunUrl ?? [];
     const webrtcIceServers: WebRtcIceServer[] = [];
     if (stunUrls.length) webrtcIceServers.push({ urls: stunUrls });
     if (opts.turnUrl) {
       webrtcIceServers.push({
-        urls: String(opts.turnUrl).split(",").map((s: string) => s.trim()).filter(Boolean),
+        urls: opts.turnUrl,
         username: opts.turnUsername,
         credential: opts.turnCredential,
       });
@@ -1864,11 +1926,12 @@ Examples:
           codec: opts.codec,
         };
     const startPort: number | undefined = opts.port;
+    const streamOptionsProvided = wasProvided("transport") || wasProvided("codec") || webRtcOptionProvided;
     if (opts.detach) {
-      const states = await detach(devices, startPort ?? 3100, stream);
+      const states = await detach(devices, startPort ?? 3100, stream, streamOptionsProvided);
       printStatesJSON(states);
     } else if (opts.preview === false) {
-      await follow(devices, startPort ?? 3100, !!opts.quiet, stream);
+      await follow(devices, startPort ?? 3100, !!opts.quiet, stream, streamOptionsProvided);
     } else {
       await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, {
         stream,

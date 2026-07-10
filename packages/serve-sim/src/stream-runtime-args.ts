@@ -1,5 +1,38 @@
 import type { StreamSettings, WebRtcIceServer } from "./state";
 
+export function parseIceUrlList(value: string, kind: "stun" | "turn"): string[] {
+  const urls = value.split(",").map((url) => url.trim()).filter(Boolean);
+  const scheme = kind === "stun" ? /^stuns?:/i : /^turns?:/i;
+  if (urls.length === 0 || urls.length > 16 || urls.some((url) => url.length > 2_048 || !scheme.test(url))) {
+    throw new Error(`Expected one or more comma-separated ${kind.toUpperCase()} URLs`);
+  }
+  return urls;
+}
+
+export function streamSettingsEqual(
+  left: StreamSettings | undefined,
+  right: StreamSettings | undefined,
+): boolean {
+  const normalizedLeft = left ?? { transport: "http" };
+  const normalizedRight = right ?? { transport: "http" };
+  if (normalizedLeft.transport !== normalizedRight.transport) return false;
+  if (normalizedLeft.transport === "http" && normalizedRight.transport === "http") {
+    return (normalizedLeft.codec ?? "auto") === (normalizedRight.codec ?? "auto");
+  }
+  if (normalizedLeft.transport !== "webrtc" || normalizedRight.transport !== "webrtc") return false;
+  if (normalizedLeft.codec !== normalizedRight.codec) return false;
+  const leftServers = normalizedLeft.iceServers ?? [];
+  const rightServers = normalizedRight.iceServers ?? [];
+  if (leftServers.length !== rightServers.length) return false;
+  return leftServers.every((server, index) => {
+    const other = rightServers[index]!;
+    return server.username === other.username &&
+      server.credential === other.credential &&
+      server.urls.length === other.urls.length &&
+      server.urls.every((url, urlIndex) => url === other.urls[urlIndex]);
+  });
+}
+
 function urlsWithPrefix(
   servers: WebRtcIceServer[] | undefined,
   prefixes: string[],

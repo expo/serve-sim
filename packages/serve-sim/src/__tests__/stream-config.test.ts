@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   mjpegStreamUrlFrom,
   streamConfigFrom,
+  webrtcOfferUrlFrom,
 } from "../client/utils/sim-endpoint";
 import { inProcessServeSimState } from "../state";
 
@@ -77,5 +78,39 @@ describe("mjpegStreamUrlFrom", () => {
     expect(mjpegStreamUrlFrom(config)).toBe(
       "http://127.0.0.1:3200/preview/helper/DEVICE-A/stream.mjpeg",
     );
+  });
+});
+
+describe("webrtcOfferUrlFrom", () => {
+  test("uses the helper base URL for direct helper configs", () => {
+    expect(webrtcOfferUrlFrom(fullConfig)).toBe(
+      "http://127.0.0.1:3100/webrtc/offer",
+    );
+  });
+
+  test("preserves in-process helper paths for embedded preview signaling", () => {
+    const config = {
+      ...fullConfig,
+      ...inProcessServeSimState("DEVICE-A", 3200, "/preview", "127.0.0.1", {
+        transport: "webrtc",
+        codec: "h264",
+      }),
+    } as NonNullable<Window["__SIM_PREVIEW__"]>;
+
+    expect(webrtcOfferUrlFrom(config)).toBe(
+      "http://127.0.0.1:3200/preview/helper/DEVICE-A/webrtc/offer",
+    );
+  });
+
+  test("maps same-origin proxy stream URLs to same-origin signaling", () => {
+    expect(
+      webrtcOfferUrlFrom({
+        ...fullConfig,
+        url: "https://example.test/.sim/helper/DEVICE-A",
+        streamUrl: "https://example.test/.sim/helper/DEVICE-A/stream.avcc",
+        wsUrl: "wss://example.test/.sim/helper/DEVICE-A/ws",
+        streamSettings: { transport: "webrtc", codec: "h264" },
+      }),
+    ).toBe("https://example.test/.sim/helper/DEVICE-A/webrtc/offer");
   });
 });

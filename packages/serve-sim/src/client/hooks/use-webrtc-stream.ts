@@ -16,12 +16,12 @@ const SIGNALING_TIMEOUT_MS = 10_000;
 const FIRST_FRAME_TIMEOUT_MS = 4_000;
 
 export function useWebRtcStream({
-  url,
+  offerUrl,
   enabled,
   codec = "h264",
   iceServers,
 }: {
-  url: string;
+  offerUrl: string;
   enabled: boolean;
   codec?: WebRtcCodec;
   iceServers?: IceServer[];
@@ -51,7 +51,7 @@ export function useWebRtcStream({
   }, []);
 
   useEffect(() => {
-    if (!enabled || !url) return;
+    if (!enabled || !offerUrl) return;
     if (typeof RTCPeerConnection === "undefined" || typeof RTCRtpReceiver === "undefined") {
       setStream(null);
       setFailedCodec(codec);
@@ -168,7 +168,7 @@ export function useWebRtcStream({
         }, SIGNALING_TIMEOUT_MS);
         let response: Response;
         try {
-          response = await fetch(`${url}/webrtc/offer`, {
+          response = await fetch(offerUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             signal: offerController.signal,
@@ -210,7 +210,7 @@ export function useWebRtcStream({
       dc?.close();
       pc?.close();
     };
-  }, [enabled, url, codec, iceServers]);
+  }, [enabled, offerUrl, codec, iceServers]);
 
   return { stream, dataTarget, failedCodec, markFrameDecoded };
 }

@@ -71,7 +71,7 @@ import {
   PANEL_WIDTH,
 } from "./utils/panel-widths";
 import { proxyPreviewConfigForBrowser } from "./utils/preview-config";
-import { mjpegStreamUrlFrom, simEndpoint, streamConfigFrom } from "./utils/sim-endpoint";
+import { mjpegStreamUrlFrom, simEndpoint, streamConfigFrom, webrtcOfferUrlFrom } from "./utils/sim-endpoint";
 import {
   SIMULATOR_RESIZE_DRAG_TRANSITION,
   SIMULATOR_RESIZE_LAYOUT_TRANSITION,
@@ -454,7 +454,7 @@ function AppWithConfig({
   const configuredWebRtcCodec = streamSettings?.transport === "webrtc" ? streamSettings.codec : "h264";
   const effectiveWebRtcCodec = webRtcCodecOverride ?? configuredWebRtcCodec;
   const webrtc = useWebRtcStream({
-    url: config.url,
+    offerUrl: webrtcOfferUrlFrom(config),
     enabled: useWebRtcVideo,
     codec: effectiveWebRtcCodec,
     iceServers: streamSettings?.transport === "webrtc" ? streamSettings.iceServers : undefined,

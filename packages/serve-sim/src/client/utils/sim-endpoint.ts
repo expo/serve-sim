@@ -62,6 +62,14 @@ export function mjpegStreamUrlFrom(config: NonNullable<Window["__SIM_PREVIEW__"]
   return streamUrl.toString();
 }
 
+export function webrtcOfferUrlFrom(config: NonNullable<Window["__SIM_PREVIEW__"]>): string {
+  const streamUrl = new URL(config.streamUrl);
+  streamUrl.pathname = streamUrl.pathname.replace(/\/stream\.[^/]+$/, "/webrtc/offer");
+  streamUrl.search = "";
+  streamUrl.hash = "";
+  return streamUrl.toString();
+}
+
 export function simEndpoint(path: string): string {
   // When __SIM_PREVIEW__ is injected we have the canonical base path. Without
   // it (BootEmptyState — no helper running yet) the page is still being served

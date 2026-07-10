@@ -2,6 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { streamRuntimeArgs } from "../stream-runtime-args";
 
 describe("streamRuntimeArgs", () => {
+  test("forwards HTTP codec options", () => {
+    expect(
+      streamRuntimeArgs({
+        transport: "http",
+        codec: "mjpeg",
+      }),
+    ).toEqual(["--transport", "http", "--codec", "mjpeg"]);
+  });
+
   test("forwards WebRTC transport, codec, STUN, and TURN options", () => {
     expect(
       streamRuntimeArgs({

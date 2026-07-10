@@ -50,7 +50,12 @@ private final class WebRTCSignalingCompletion: @unchecked Sendable {
     }
 }
 
-final class WebRTCPublisher {
+private struct PendingWebRTCFrame {
+    let pixelBuffer: CVPixelBuffer
+    let timestamp: CMTime
+}
+
+final class WebRTCPublisher: @unchecked Sendable {
     private static let signalingTimeoutMs = 10_000
 
     var onInput: ((Data) -> Void)?
@@ -62,6 +67,11 @@ final class WebRTCPublisher {
     private let videoTrack: LKRTCVideoTrack
     private let capturer: LKRTCVideoCapturer
     private var session: WebRTCSession?
+    private var pendingOfferSession: WebRTCSession?
+    private var offerInProgress = false
+    private let frameLock = NSLock()
+    private var pendingFrame: PendingWebRTCFrame?
+    private var framePumpScheduled = false
     private var lastOutputWidth = 0
     private var lastOutputHeight = 0
     private var sentFrameCount: Int64 = 0
@@ -141,6 +151,15 @@ final class WebRTCPublisher {
                 continuation.resume(with: result)
             }
             queue.async {
+                guard !self.offerInProgress else {
+                    _ = completion.resume(with: .failure(self.makeError("WebRTC signaling already in progress")))
+                    return
+                }
+                guard self.session == nil else {
+                    _ = completion.resume(with: .failure(self.makeError("WebRTC session already active")))
+                    return
+                }
+                self.offerInProgress = true
                 self.createAnswer(request) { result in
                     _ = completion.resume(with: result)
                 }
@@ -149,18 +168,24 @@ final class WebRTCPublisher {
                 guard completion.resume(with: .failure(self.makeError("WebRTC signaling timed out"))) else {
                     return
                 }
-                self.session?.close()
-                self.session = nil
-                self.onActiveChanged?(false)
+                self.closePendingOfferSession()
+                self.offerInProgress = false
             }
         }
     }
 
     func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
-        queue.async {
-            guard self.session != nil else { return }
-            self.queuedInputFrameCount += 1
-            self.sendFrameOnQueue(pixelBuffer, timestamp: timestamp, mode: "queued")
+        let frame = PendingWebRTCFrame(pixelBuffer: pixelBuffer, timestamp: timestamp)
+        var shouldSchedule = false
+        frameLock.lock()
+        pendingFrame = frame
+        if !framePumpScheduled {
+            framePumpScheduled = true
+            shouldSchedule = true
+        }
+        frameLock.unlock()
+        if shouldSchedule {
+            queue.async { self.drainFramePump() }
         }
     }
 
@@ -344,10 +369,43 @@ final class WebRTCPublisher {
 
     func stop() {
         queue.sync {
+            closePendingOfferSession()
+            offerInProgress = false
             session?.close()
             session = nil
+            clearPendingFrame()
             onActiveChanged?(false)
         }
+    }
+
+    private func drainFramePump() {
+        frameLock.lock()
+        let frame = pendingFrame
+        pendingFrame = nil
+        frameLock.unlock()
+
+        if let frame {
+            if session != nil {
+                queuedInputFrameCount += 1
+                sendFrameOnQueue(frame.pixelBuffer, timestamp: frame.timestamp, mode: "queued")
+            }
+        }
+
+        frameLock.lock()
+        if pendingFrame != nil {
+            frameLock.unlock()
+            queue.async { self.drainFramePump() }
+        } else {
+            framePumpScheduled = false
+            frameLock.unlock()
+        }
+    }
+
+    private func clearPendingFrame() {
+        frameLock.lock()
+        pendingFrame = nil
+        framePumpScheduled = false
+        frameLock.unlock()
     }
 
     private func createAnswer(
@@ -379,65 +437,127 @@ final class WebRTCPublisher {
             constraints: constraints,
             delegate: delegate
         ) else {
-            completion(.failure(makeError("Failed to create peer connection")))
+            failOffer(nil, makeError("Failed to create peer connection"), completion)
             return
         }
 
         let session = WebRTCSession(peerConnection: peerConnection, delegate: delegate)
-        self.session?.close()
-        self.session = session
-        onActiveChanged?(true)
+        pendingOfferSession = session
 
         let remoteDescription = LKRTCSessionDescription(type: .offer, sdp: request.sdp)
         peerConnection.setRemoteDescription(remoteDescription) { error in
-            if let error {
-                completion(.failure(error))
-                return
-            }
-            self.attachVideoTrack(to: peerConnection, codec: request.codec)
-            peerConnection.answer(for: constraints) { answer, error in
+            self.queue.async {
                 if let error {
-                    completion(.failure(error))
+                    self.failOffer(session, error, completion)
                     return
                 }
-                guard let answer else {
-                    completion(.failure(self.makeError("answer creation returned nil")))
+                guard self.pendingOfferSession === session else {
+                    self.failOffer(session, self.makeError("WebRTC offer was superseded"), completion)
                     return
                 }
-                peerConnection.setLocalDescription(answer) { error in
-                    if let error {
-                        completion(.failure(error))
-                        return
-                    }
-                    session.waitForIceGathering { completed in
-                        let local = peerConnection.localDescription ?? answer
-                        let gatheredCandidates = delegate.generatedCandidatesSnapshot()
-                        let finalSdp = self.sdpWithGatheredCandidates(
-                            local.sdp,
-                            candidates: gatheredCandidates
-                        )
-                        var candidateCounts = self.iceCandidateCounts(in: finalSdp)
-                        if candidateCounts.isEmpty {
-                            candidateCounts = self.iceCandidateCounts(in: gatheredCandidates)
+                self.attachVideoTrack(to: peerConnection, session: session, codec: request.codec)
+                peerConnection.answer(for: constraints) { answer, error in
+                    self.queue.async {
+                        if let error {
+                            self.failOffer(session, error, completion)
+                            return
                         }
-                        if !completed {
-                            print("[webrtc] ICE gathering timed out; proceeding with candidates gathered so far: \(candidateCounts)")
-                        } else if self.hasCredentialedTurnServer(request.iceServers), candidateCounts["relay", default: 0] == 0 {
-                            print("[webrtc] WARNING: no relay ICE candidates gathered for credentialed TURN offer; counts=\(candidateCounts)")
-                        } else {
-                            print("[webrtc] ICE candidates gathered: \(candidateCounts)")
+                        guard self.pendingOfferSession === session else {
+                            self.failOffer(session, self.makeError("WebRTC offer was superseded"), completion)
+                            return
                         }
-                        completion(.success(WebRTCAnswerPayload(
-                            type: LKRTCSessionDescription.string(for: local.type),
-                            sdp: finalSdp
-                        )))
+                        guard let answer else {
+                            self.failOffer(session, self.makeError("answer creation returned nil"), completion)
+                            return
+                        }
+                        peerConnection.setLocalDescription(answer) { error in
+                            self.queue.async {
+                                if let error {
+                                    self.failOffer(session, error, completion)
+                                    return
+                                }
+                                guard self.pendingOfferSession === session else {
+                                    self.failOffer(session, self.makeError("WebRTC offer was superseded"), completion)
+                                    return
+                                }
+                                session.waitForIceGathering { completed in
+                                    self.queue.async {
+                                        guard self.pendingOfferSession === session else {
+                                            self.failOffer(session, self.makeError("WebRTC offer was superseded"), completion)
+                                            return
+                                        }
+                                        let local = peerConnection.localDescription ?? answer
+                                        let gatheredCandidates = delegate.generatedCandidatesSnapshot()
+                                        let finalSdp = self.sdpWithGatheredCandidates(
+                                            local.sdp,
+                                            candidates: gatheredCandidates
+                                        )
+                                        var candidateCounts = self.iceCandidateCounts(in: finalSdp)
+                                        if candidateCounts.isEmpty {
+                                            candidateCounts = self.iceCandidateCounts(in: gatheredCandidates)
+                                        }
+                                        if !completed {
+                                            print("[webrtc] ICE gathering timed out; proceeding with candidates gathered so far: \(candidateCounts)")
+                                        } else if self.hasCredentialedTurnServer(request.iceServers), candidateCounts["relay", default: 0] == 0 {
+                                            print("[webrtc] WARNING: no relay ICE candidates gathered for credentialed TURN offer; counts=\(candidateCounts)")
+                                        } else {
+                                            print("[webrtc] ICE candidates gathered: \(candidateCounts)")
+                                        }
+                                        self.completeOffer(
+                                            session,
+                                            answer: WebRTCAnswerPayload(
+                                                type: LKRTCSessionDescription.string(for: local.type),
+                                                sdp: finalSdp
+                                            ),
+                                            completion
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    private func attachVideoTrack(to peerConnection: LKRTCPeerConnection, codec: String?) {
+    private func failOffer(
+        _ offerSession: WebRTCSession?,
+        _ error: Error,
+        _ completion: @escaping (Result<WebRTCAnswerPayload, Error>) -> Void
+    ) {
+        if let offerSession {
+            offerSession.close()
+            if pendingOfferSession === offerSession {
+                pendingOfferSession = nil
+            }
+        }
+        offerInProgress = false
+        completion(.failure(error))
+    }
+
+    private func completeOffer(
+        _ offerSession: WebRTCSession,
+        answer: WebRTCAnswerPayload,
+        _ completion: @escaping (Result<WebRTCAnswerPayload, Error>) -> Void
+    ) {
+        guard pendingOfferSession === offerSession else {
+            failOffer(offerSession, makeError("WebRTC offer was superseded"), completion)
+            return
+        }
+        pendingOfferSession = nil
+        session = offerSession
+        offerInProgress = false
+        onActiveChanged?(true)
+        completion(.success(answer))
+    }
+
+    private func closePendingOfferSession() {
+        pendingOfferSession?.close()
+        pendingOfferSession = nil
+    }
+
+    private func attachVideoTrack(to peerConnection: LKRTCPeerConnection, session: WebRTCSession, codec: String?) {
         let transceiver = peerConnection.transceivers.first { $0.mediaType == .video }
             ?? createFallbackVideoTransceiver(on: peerConnection)
         guard let transceiver else {
@@ -454,11 +574,8 @@ final class WebRTCPublisher {
             print("[webrtc] Failed to set video transceiver direction: \(directionError.localizedDescription)")
         }
         applyVideoCodecPreference(codec, to: transceiver)
-        let session = self.session
-        session?.videoSender = transceiver.sender
-        if let session {
-            applyBitrateSettings(to: session)
-        }
+        session.videoSender = transceiver.sender
+        applyBitrateSettings(to: session)
     }
 
     private func createFallbackVideoTransceiver(on peerConnection: LKRTCPeerConnection) -> LKRTCRtpTransceiver? {
@@ -704,6 +821,7 @@ final class WebRTCPublisher {
             guard let session = self.session, session.peerConnection === peerConnection else { return }
             session.close()
             self.session = nil
+            self.clearPendingFrame()
             self.onActiveChanged?(false)
             print("[webrtc] Peer connection closed; publisher inactive")
         }

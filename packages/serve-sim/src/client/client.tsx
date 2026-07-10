@@ -444,8 +444,8 @@ function AppWithConfig({
   // `bunx serve-sim --detach`, which runs the published `serve-sim` — older
   // versions predate H.264 and 404 the endpoint (cross-origin that 404 is
   // opaque to fetch, so "no frame arrived" is the only reliable signal).
-  // `avccFallback` drives a startup timeout: if AVCC paints nothing in time,
-  // drop to MJPEG, which every helper serves. See avcc-fallback.ts.
+  // `avccFallback` drives a startup timeout: if AVCC decodes no H.264 frame in
+  // time, drop to MJPEG, which every helper serves. See avcc-fallback.ts.
   const avcc = useAvccStream();
   const streamSettings = config.streamSettings;
   const useWebRtcVideo = streamSettings?.transport === "webrtc";
@@ -512,12 +512,8 @@ function AppWithConfig({
     setWebRtcFailed(false);
     setWebRtcCodecOverride(nextCodec);
   }, [configuredWebRtcCodec, effectiveWebRtcCodec, useWebRtcVideo, webrtc.failedCodec]);
-  // `streaming` flips true on the first painted AVCC frame (JPEG seed decodes
-  // sub-second on a healthy helper), which cancels the fallback.
-  useEffect(() => {
-    if (useAvccVideo && streaming) dispatchAvccFallback("frame");
-  }, [useAvccVideo, streaming]);
-  // One-shot startup window; on expiry fall back unless a frame already landed.
+  // One-shot startup window; the JPEG seed paints immediately but only a
+  // decoded H.264 frame proves AVCC is viable and cancels this fallback.
   useEffect(() => {
     if (!useAvccVideo) return;
     const timer = setTimeout(
@@ -1026,6 +1022,7 @@ function AppWithConfig({
                 onWebRtcFrame={webrtc.markFrameDecoded}
                 streamError={webrtc.error ?? (webRtcFailed ? "WebRTC stream failed after trying all configured codecs." : null)}
                 onAvccError={() => dispatchAvccFallback("error")}
+                onAvccDecodedFrame={() => dispatchAvccFallback("decoded-frame")}
                 subscribeFrame={useAvccVideo ? undefined : mjpeg.subscribeFrame}
                 streamFrame={useAvccVideo ? undefined : mjpeg.frame}
                 streamConfig={activeStreamConfig}

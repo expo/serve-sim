@@ -92,6 +92,8 @@ export interface SimulatorViewProps {
    * only on the AVCC path; inert under MJPEG.
    */
   onAvccError?: () => void;
+  /** Called once after AVCC paints its first decoded H.264 frame. */
+  onAvccDecodedFrame?: () => void;
 }
 
 /**
@@ -128,6 +130,7 @@ export function SimulatorView({
   onWebRtcFrame,
   streamError,
   onAvccError,
+  onAvccDecodedFrame,
 }: SimulatorViewProps) {
   const relayMode = !!onStreamTouch;
   const effectiveStreamMode = streamMode === "avcc" && !isAvccSupported() ? "mjpeg" : streamMode;
@@ -381,6 +384,7 @@ export function SimulatorView({
     canvasRef,
     onFirstFrame: onAvccFirstFrame,
     onFrame: onAvccFrame,
+    onDecodedFrame: onAvccDecodedFrame,
     onError: setError,
     onDecoderError: onAvccError,
   });

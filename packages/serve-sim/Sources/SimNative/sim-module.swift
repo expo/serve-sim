@@ -86,11 +86,10 @@ private func u32(_ v: Int) -> UInt32 {
 
 // MARK: - Capture
 
-/// In-process frame capture + encode for one simulator. MJPEG frames are always
-/// produced; H.264/AVCC runs only while `setAvccActive(true)`. Encoded frames are
-/// produced on a native encode thread and marshalled onto the JS thread through a
-/// NodeAsyncQueue (threadsafe function), then handed to `onFrame` as
-/// (codec, Buffer, width, height, flags).
+/// In-process frame capture + encode for one simulator. Each codec runs only
+/// while it has consumers. Encoded frames are produced on a native encode thread
+/// and marshalled onto the JS thread through a NodeAsyncQueue (threadsafe
+/// function), then handed to `onFrame` as (codec, Buffer, width, height, flags).
 @NodeClass @NodeActor final class SimCapture {
     private let engine: CaptureEngine
     private let queue: NodeAsyncQueue

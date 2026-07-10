@@ -217,7 +217,7 @@ export class DeviceSession {
 
   // ── Frame handling ───────────────────────────────────────────────────────
 
-  private async onSharedMjpegFrame(frame: MjpegFrame): Promise<void> {
+  private onSharedMjpegFrame(frame: MjpegFrame): void {
     const { width, height, data: jpeg } = frame;
     this.updateScreenSize(width, height);
 
@@ -258,19 +258,30 @@ export class DeviceSession {
     });
 
     void (async () => {
+      let cleanup = () => {};
       try {
         await this.waitForCapture();
         const latestJpeg = this.latestJpeg();
         if (latestJpeg) this.writeMjpegFrame(res, latestJpeg); // paint immediately
         const unsubscribe = await this.capture.subscribeMjpeg(async (frame) => {
-          await this.onSharedMjpegFrame(frame);
+          this.onSharedMjpegFrame(frame);
           await waitForDrain(res);
           if (!res.writableEnded && !res.destroyed) this.writeMjpegFrame(res, frame.data);
         });
-        if (res.writableEnded || res.destroyed) unsubscribe();
-        res.on("close", unsubscribe);
-        res.on("error", unsubscribe);
+        let unsubscribed = false;
+        cleanup = () => {
+          if (unsubscribed) return;
+          unsubscribed = true;
+          unsubscribe();
+        };
+        if (res.writableEnded || res.destroyed) {
+          cleanup();
+        } else {
+          res.once("close", cleanup);
+          res.once("error", cleanup);
+        }
       } catch {
+        cleanup();
         res.destroy();
       }
     })();
@@ -285,23 +296,67 @@ export class DeviceSession {
     });
 
     void (async () => {
+      let cleanup = () => {};
       try {
         await this.waitForCapture();
-        // Seed with the current screen when an earlier MJPEG viewer populated
-        // the cache; otherwise the native AVCC subscription starts directly
-        // with its decoder config and keyframe.
-        const latestJpeg = this.latestJpeg();
-        if (latestJpeg) res.write(avccSeed(latestJpeg));
+        let streamStarted = false;
+        let stopSeedRequested = false;
+        let unsubscribeSeed: (() => void) | undefined;
+        const stopSeed = () => {
+          stopSeedRequested = true;
+          const unsubscribe = unsubscribeSeed;
+          unsubscribeSeed = undefined;
+          unsubscribe?.();
+        };
+        cleanup = stopSeed;
 
-        const unsubscribe = await this.capture.subscribeAvcc(async (frame) => {
+        // Whichever codec produces first opens the response. A cached or
+        // one-shot JPEG gives AVCC clients an immediate paint and keeps the
+        // endpoint responsive on hosts where VideoToolbox cannot encode H.264.
+        // The JPEG subscription is cancelled as soon as either seed or AVCC
+        // data arrives, so it adds no steady-state encoding cost.
+        const latestJpeg = this.latestJpeg();
+        if (latestJpeg) {
+          streamStarted = true;
+          res.write(avccSeed(latestJpeg));
+        } else {
+          unsubscribeSeed = await this.capture.subscribeMjpeg(async (frame) => {
+            if (streamStarted || res.writableEnded || res.destroyed) {
+              stopSeed();
+              return;
+            }
+            this.onSharedMjpegFrame(frame);
+            streamStarted = true;
+            res.write(avccSeed(frame.data));
+            stopSeed();
+          });
+          if (stopSeedRequested) stopSeed();
+        }
+
+        const unsubscribeAvcc = await this.capture.subscribeAvcc(async (frame) => {
           this.updateScreenSize(frame.width, frame.height);
+          if (!streamStarted) {
+            streamStarted = true;
+            stopSeed();
+          }
           await waitForDrain(res);
           if (!res.writableEnded && !res.destroyed) res.write(frame.data);
         });
-        if (res.writableEnded || res.destroyed) unsubscribe();
-        res.on("close", unsubscribe);
-        res.on("error", unsubscribe);
+        let unsubscribed = false;
+        cleanup = () => {
+          if (unsubscribed) return;
+          unsubscribed = true;
+          stopSeed();
+          unsubscribeAvcc();
+        };
+        if (res.writableEnded || res.destroyed) {
+          cleanup();
+        } else {
+          res.once("close", cleanup);
+          res.once("error", cleanup);
+        }
       } catch {
+        cleanup();
         res.destroy();
       }
     })();

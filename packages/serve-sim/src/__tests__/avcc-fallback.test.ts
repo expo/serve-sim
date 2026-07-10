@@ -15,30 +15,30 @@ describe("avccFallbackReducer", () => {
     expect(initialAvccFallback).toEqual({ streamed: false, fellBack: false });
   });
 
-  test("timeout without a frame falls back to MJPEG", () => {
+  test("timeout without a decoded frame falls back to MJPEG", () => {
     // The repro: helper has no /stream.avcc route, so no frame ever arrives.
     expect(run(["timeout"]).fellBack).toBe(true);
   });
 
-  test("a frame before timeout keeps AVCC", () => {
-    // Healthy helper paints its JPEG seed first, cancelling the fallback.
-    const state = run(["frame", "timeout"]);
+  test("a decoded H.264 frame before timeout keeps AVCC", () => {
+    // A decoded H.264 frame, not the JPEG seed, cancels the fallback.
+    const state = run(["decoded-frame", "timeout"]);
     expect(state.streamed).toBe(true);
     expect(state.fellBack).toBe(false);
   });
 
   test("a late stall does not downgrade a stream that already worked", () => {
-    // frame → working; a later timeout (e.g. transient stall) must not flip us
+    // decoded frame -> working; a later timeout (e.g. transient stall) must not flip us
     // to MJPEG permanently.
-    expect(run(["frame", "timeout", "timeout"]).fellBack).toBe(false);
+    expect(run(["decoded-frame", "timeout", "timeout"]).fellBack).toBe(false);
   });
 
   test("error downgrades a working stream where timeout does not", () => {
     // The one behaviour that distinguishes the two: a transient stall (timeout)
-    // keeps a stream that already painted frames, but a fatal decoder error
+    // keeps a stream that already decoded frames, but a fatal decoder error
     // (e.g. a screen recorder starving VideoToolbox) downgrades it to MJPEG.
-    expect(run(["frame", "timeout"]).fellBack).toBe(false);
-    expect(run(["frame", "error"]).fellBack).toBe(true);
+    expect(run(["decoded-frame", "timeout"]).fellBack).toBe(false);
+    expect(run(["decoded-frame", "error"]).fellBack).toBe(true);
   });
 
   test("reset re-arms AVCC after a device switch / reconnect", () => {

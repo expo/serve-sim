@@ -51,6 +51,7 @@ describe("previewConfigForState", () => {
       appStateEndpoint: "/preview/appstate?device=DEVICE-B",
       eventLogEndpoint: "/preview/api/event-log?device=DEVICE-B",
       eventLogEventsEndpoint: "/preview/api/event-log/events?device=DEVICE-B",
+      metricsEndpoint: "/preview/metrics?device=DEVICE-B",
       axEndpoint: "/preview/ax?device=DEVICE-B",
       cameraStatusEndpoint: "/preview/helper/DEVICE-B/camera/status",
       devtoolsEndpoint: "/preview/devtools?device=DEVICE-B",

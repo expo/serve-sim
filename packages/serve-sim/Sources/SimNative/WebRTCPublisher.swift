@@ -90,10 +90,6 @@ final class WebRTCPublisher {
     private var totalConversionMs = 0.0
     private var lastConversionMs = 0.0
     private var maxConversionMs = 0.0
-    var isActive: Bool {
-        queue.sync { session != nil }
-    }
-
     init() {
         h264WebRTCSupport = Self.detectH264WebRTCSupport()
         h264FrameModeOverride = Self.h264FrameModeOverride()

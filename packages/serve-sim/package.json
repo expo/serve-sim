@@ -24,6 +24,7 @@
     "node": ">=20"
   },
   "files": [
+    "LICENSE",
     "dist/serve-sim.js",
     "dist/middleware.js",
     "dist/middleware.cjs",

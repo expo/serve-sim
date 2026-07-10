@@ -117,3 +117,24 @@ export async function readTextBody(request: Request, maxBytes?: number): Promise
     reader.releaseLock();
   }
 }
+
+// Echoes the request Origin (never a wildcard) when it's loopback or allowlisted.
+export function corsAllowOriginHeaders(
+  origin: string | null | undefined,
+  allowedOrigins: readonly string[],
+): Record<string, string> {
+  if (!origin) return {};
+  let hostname: string;
+  try {
+    hostname = new URL(origin).hostname;
+  } catch {
+    return {};
+  }
+  // URL() keeps IPv6 hosts bracketed ("[::1]"); strip them before comparing.
+  const host = hostname.replace(/^\[|\]$/g, "");
+  const isLoopback = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  if (isLoopback || allowedOrigins.includes(origin)) {
+    return { "Access-Control-Allow-Origin": origin, Vary: "Origin" };
+  }
+  return {};
+}

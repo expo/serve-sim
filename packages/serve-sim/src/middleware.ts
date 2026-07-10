@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, existsSync, unlinkSync, watch, type FSWatcher } from "fs";
+import { createReadStream, readdirSync, readFileSync, existsSync, unlinkSync, watch, type FSWatcher } from "fs";
 import { execSync, spawn, exec, execFile, type ChildProcess, type ExecException } from "child_process";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -14,6 +14,7 @@ import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
 import { createMetricsSamplerCache, type MetricsSamplerCache } from "./cpu-mem-sampler";
+import { createMetricsPersistence, udidForArtifactId } from "./metrics-persistence";
 import { corsAllowOriginHeaders } from "./middleware-utils";
 import { closeDeviceSession, getDeviceSession, sendCorsPreflight, type HidSocket } from "./device-session";
 import {
@@ -113,6 +114,8 @@ export type ServeSimState = ServeSimDeviceState;
 const axStreamerCache = createAxStreamerCache();
 // One shared cpu/mem sampler per udid; every /metrics viewer subscribes.
 const metricsSamplerCache = createMetricsSamplerCache();
+// Persists each device's samples to an NDJSON file, exposed via /artifacts for the EAS poller.
+const metricsPersistence = createMetricsPersistence(metricsSamplerCache.subscribe);
 
 // Hard cap on the SSE line-assembly buffer for child-process stdout.
 // A malformed log entry without a newline can't grow this beyond 1 MB;
@@ -358,6 +361,7 @@ export async function readServeSimStates(): Promise<ServeSimState[]> {
           );
           try { process.kill(state.pid, "SIGTERM"); } catch {}
         }
+        metricsPersistence.stop(state.device);
         try { unlinkSync(path); } catch {}
         continue;
       }
@@ -1627,6 +1631,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         // isn't streamed here). This frees the native session immediately
         // rather than waiting for the next poll's reaper to notice.
         closeDeviceSession(udid);
+        metricsPersistence.stop(udid);
         // Drop the snapshot so the next /grid/api call re-queries simctl
         // and prunes any helper bound to this now-shutdown device.
         bootedSnapshot = { at: 0, booted: null };
@@ -2019,7 +2024,41 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     if (url === base + "/metrics") {
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
+      // Live viewing also persists the session (idempotent, shares the sampler).
+      if (state) metricsPersistence.ensureStarted(state.device);
       handleMetricsRequest(req, res, state, metricsSamplerCache, metricsCorsOrigins);
+      return;
+    }
+
+    // GET /artifacts — artifact inventory for the device (EAS poller shape); starts
+    // persistence on first poll and lists the metrics NDJSON once it exists.
+    if (url === base + "/artifacts") {
+      const state = selectServeSimState(await readServeSimStates(), selectedDevice);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (!state) {
+        res.end(JSON.stringify({ artifacts: [] }));
+        return;
+      }
+      metricsPersistence.ensureStarted(state.device);
+      res.end(JSON.stringify({ artifacts: metricsPersistence.list(state.device) }));
+      return;
+    }
+
+    // GET /artifacts/:id — download a session artifact (the metrics NDJSON).
+    if (url.startsWith(base + "/artifacts/")) {
+      const id = url.slice((base + "/artifacts/").length);
+      const udid = udidForArtifactId(id);
+      const filePath =
+        udid && /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(udid)
+          ? metricsPersistence.filePath(udid)
+          : null;
+      if (!filePath || !existsSync(filePath)) {
+        res.writeHead(404);
+        res.end("Artifact not found");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      createReadStream(filePath).pipe(res);
       return;
     }
 

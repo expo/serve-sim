@@ -698,7 +698,7 @@ function bridgeWebSocketFrames(req: SimReq, socket: Socket, head: Buffer, upstre
 function serveHelperInProcess(req: SimReq, res: SimRes, device: string | null, upstreamPath: string): boolean {
   if (!device) return false;
   const endpoint = upstreamPath.split("?")[0];
-  if (endpoint === "/webrtc/offer" && req.method === "OPTIONS") {
+  if ((endpoint === "/webrtc/offer" || endpoint === "/webrtc/close") && req.method === "OPTIONS") {
     sendCorsPreflight(res);
     return true;
   }
@@ -714,6 +714,7 @@ function serveHelperInProcess(req: SimReq, res: SimRes, device: string | null, u
     case "/config": session.handleConfig(req, res); return true;
     case "/health": session.handleHealth(req, res); return true;
     case "/webrtc/offer": void session.handleWebRTCOffer(req, res); return true;
+    case "/webrtc/close": void session.handleWebRTCClose(req, res); return true;
     case "/ax": session.handleAx(req, res); return true;
     case "/foreground": session.handleForeground(req, res); return true;
     default: return false;
@@ -1294,15 +1295,17 @@ function connectToFetch(
     resolveResponse(response);
   };
 
+  const statusAllowsBody = () => status !== 101 && status !== 204 && status !== 205 && status !== 304;
+
   const ensureResponse = () => {
     if (headersSent) return;
     headersSent = true;
-    resolveOnce(new Response(body, { status, headers: responseHeaders }));
+    resolveOnce(new Response(statusAllowsBody() ? body : null, { status, headers: responseHeaders }));
   };
 
   const writeChunk = (chunk: Buffer | string | Uint8Array) => {
     ensureResponse();
-    if (!controllerRef || writableEnded) return true;
+    if (!statusAllowsBody() || !controllerRef || writableEnded) return true;
     const data = typeof chunk === "string"
       ? encoder.encode(chunk)
       : chunk instanceof Uint8Array

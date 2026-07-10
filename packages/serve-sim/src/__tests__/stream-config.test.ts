@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   mjpegStreamUrlFrom,
   streamConfigFrom,
+  webrtcCloseUrlFrom,
   webrtcOfferUrlFrom,
 } from "../client/utils/sim-endpoint";
 import { inProcessServeSimState } from "../state";
@@ -112,5 +113,21 @@ describe("webrtcOfferUrlFrom", () => {
         streamSettings: { transport: "webrtc", codec: "h264" },
       }),
     ).toBe("https://example.test/.sim/helper/DEVICE-A/webrtc/offer");
+  });
+});
+
+describe("webrtcCloseUrlFrom", () => {
+  test("preserves the in-process helper path", () => {
+    const config = {
+      ...fullConfig,
+      ...inProcessServeSimState("DEVICE-A", 3200, "/preview", "127.0.0.1", {
+        transport: "webrtc",
+        codec: "h264",
+      }),
+    } as NonNullable<Window["__SIM_PREVIEW__"]>;
+
+    expect(webrtcCloseUrlFrom(config)).toBe(
+      "http://127.0.0.1:3200/preview/helper/DEVICE-A/webrtc/close",
+    );
   });
 });

@@ -48,3 +48,19 @@ export function streamRuntimeArgs(settings?: StreamSettings): string[] {
 
   return args;
 }
+
+export function streamHelperArgs(
+  udid: string,
+  port: number,
+  host: string,
+  settings?: StreamSettings,
+): string[] {
+  return [
+    udid,
+    "--port",
+    String(port),
+    "--host",
+    host,
+    ...streamRuntimeArgs(settings),
+  ];
+}

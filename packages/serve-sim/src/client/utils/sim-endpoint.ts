@@ -70,6 +70,12 @@ export function webrtcOfferUrlFrom(config: NonNullable<Window["__SIM_PREVIEW__"]
   return streamUrl.toString();
 }
 
+export function webrtcCloseUrlFrom(config: NonNullable<Window["__SIM_PREVIEW__"]>): string {
+  const closeUrl = new URL(webrtcOfferUrlFrom(config));
+  closeUrl.pathname = closeUrl.pathname.replace(/\/offer$/, "/close");
+  return closeUrl.toString();
+}
+
 export function simEndpoint(path: string): string {
   // When __SIM_PREVIEW__ is injected we have the canonical base path. Without
   // it (BootEmptyState — no helper running yet) the page is still being served

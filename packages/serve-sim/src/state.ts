@@ -69,7 +69,9 @@ export function writeServeSimState(state: ServeSimDeviceState): void {
   mkdirSync(STATE_DIR, { recursive: true });
   const file = stateFileForDevice(state.device);
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(state, null, 2));
+  // WebRTC state can contain short-lived TURN credentials. Keep the file
+  // readable only by the account running serve-sim.
+  writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
   renameSync(tmp, file);
 }
 

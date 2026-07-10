@@ -6,8 +6,17 @@ import Accelerate
 import VideoToolbox
 import LiveKitWebRTC
 
-private func streamLog(_ message: String) {
-    print(message)
+private let webRTCDebugEnabled: Bool = {
+    switch ProcessInfo.processInfo.environment["SERVE_SIM_WEBRTC_DEBUG"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased() {
+    case "1", "true", "yes", "on": true
+    default: false
+    }
+}()
+
+private func streamLog(_ message: @autoclosure () -> String) {
+    if webRTCDebugEnabled { print(message()) }
 }
 
 struct WebRTCIceServerPayload: Codable {
@@ -19,6 +28,7 @@ struct WebRTCIceServerPayload: Codable {
 struct WebRTCOfferPayload: Codable {
     let type: String
     let sdp: String
+    let sessionId: String
     let codec: String?
     let iceServers: [WebRTCIceServerPayload]?
 }
@@ -55,55 +65,43 @@ private struct PendingWebRTCFrame {
     let timestamp: CMTime
 }
 
+private struct PendingWebRTCOffer {
+    let session: WebRTCSession
+    let completion: (Result<WebRTCAnswerPayload, Error>) -> Void
+}
+
 final class WebRTCPublisher: @unchecked Sendable {
     private static let signalingTimeoutMs = 10_000
 
     var onInput: ((Data) -> Void)?
-    var onActiveChanged: ((Bool) -> Void)?
-
     private let queue = DispatchQueue(label: "webrtc-publisher")
     private let factory: LKRTCPeerConnectionFactory
     private let videoSource: LKRTCVideoSource
     private let videoTrack: LKRTCVideoTrack
     private let capturer: LKRTCVideoCapturer
     private var session: WebRTCSession?
-    private var pendingOfferSession: WebRTCSession?
-    private var offerInProgress = false
+    private var pendingOffer: PendingWebRTCOffer?
+    private var cancelledSessionIds = Set<String>()
+    private var cancelledSessionIdOrder: [String] = []
     private let frameLock = NSLock()
+    private var acceptsFrames = false
     private var pendingFrame: PendingWebRTCFrame?
     private var framePumpScheduled = false
+    private var lastSentFrameAtNs: UInt64 = 0
     private var lastOutputWidth = 0
     private var lastOutputHeight = 0
     private var sentFrameCount: Int64 = 0
-    private var queuedInputFrameCount: Int64 = 0
-    private var directInputFrameCount: Int64 = 0
     private var lastFrameTimestampNs: Int64 = 0
-    private let statsStartNs = DispatchTime.now().uptimeNanoseconds
-    private var lastFrameSentAtNs: UInt64 = 0
-    private let usesCustomSoftwareH264Encoder: Bool
-    private var totalI420Ms = 0.0
-    private var lastI420Ms = 0.0
-    private var maxI420Ms = 0.0
     private var lastInputPixelFormat: OSType?
-    private var lastForwardedPixelFormat: OSType?
-    private var lastFrameMode = "none"
     private var useNativePixelBufferFrames: Bool?
-    private var requestedCodecName = "H264"
     private var selectedCodecName = "H264"
     private let h264PixelBufferConverter = H264WebRTCPixelBufferConverter()
-    private let h264WebRTCSupport: WebRTCH264Support
+    private lazy var h264WebRTCSupport = Self.detectH264WebRTCSupport()
     private let h264FrameModeOverride: H264WebRTCFrameMode?
-    private var maxFps = 30
-    private var targetBitrate = 6_000_000
-    private var convertedFrameCount: Int64 = 0
-    private var conversionFailureCount: Int64 = 0
-    private var totalConversionMs = 0.0
-    private var lastConversionMs = 0.0
-    private var maxConversionMs = 0.0
+    private let maxFps = 30
+    private let targetBitrate = 6_000_000
     init() {
-        h264WebRTCSupport = Self.detectH264WebRTCSupport()
         h264FrameModeOverride = Self.h264FrameModeOverride()
-        usesCustomSoftwareH264Encoder = false
         let defaultEncoderFactory = LKRTCDefaultVideoEncoderFactory()
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()
         factory = LKRTCPeerConnectionFactory(
@@ -114,35 +112,11 @@ final class WebRTCPublisher: @unchecked Sendable {
         videoTrack = factory.videoTrack(with: videoSource, trackId: "simulator-video")
         videoTrack.isEnabled = true
         capturer = LKRTCVideoCapturer(delegate: videoSource)
-        let h264Status = h264WebRTCSupport.allowed
-            ? "enabled(\(h264WebRTCSupport.probeSummary))"
-            : "disabled(\(h264WebRTCSupport.reason ?? "unsupported runtime"))"
-        let encoderFactoryStatus = usesCustomSoftwareH264Encoder ? "serve-sim H.264 encoder factory" : "default codec factory"
-        print(
-            "[webrtc] Publisher ready (\(encoderFactoryStatus) + screen-cast video source) " +
-            "h264=\(h264Status) h264FrameMode=\(h264FrameModeDescription()) senderCodecs=\(senderCodecSummary())"
+        streamLog(
+            "[webrtc] Publisher ready (default codec factory + screen-cast video source) " +
+            "h264=\(h264SupportDescription()) h264FrameMode=\(h264FrameModeDescription()) " +
+            "senderCodecs=\(senderCodecSummary())"
         )
-    }
-
-    func updateSettings(maxFps: Int, bitrate: Int) {
-        let normalizedFps = max(1, min(120, maxFps))
-        let normalizedBitrate = max(100_000, bitrate)
-        queue.async {
-            guard self.maxFps != normalizedFps || self.targetBitrate != normalizedBitrate else { return }
-            self.maxFps = normalizedFps
-            self.targetBitrate = normalizedBitrate
-            if self.lastOutputWidth > 0, self.lastOutputHeight > 0 {
-                self.videoSource.adaptOutputFormat(
-                    toWidth: Int32(self.lastOutputWidth),
-                    height: Int32(self.lastOutputHeight),
-                    fps: Int32(self.maxFps)
-                )
-            }
-            if let session = self.session {
-                self.applyBitrateSettings(to: session)
-            }
-            print("[webrtc] Settings updated fps=\(normalizedFps) bitrate=\(normalizedBitrate)")
-        }
     }
 
     func handleOffer(_ request: WebRTCOfferPayload) async throws -> WebRTCAnswerPayload {
@@ -151,7 +125,11 @@ final class WebRTCPublisher: @unchecked Sendable {
                 continuation.resume(with: result)
             }
             queue.async {
-                guard !self.offerInProgress else {
+                guard !self.cancelledSessionIds.contains(request.sessionId) else {
+                    _ = completion.resume(with: .failure(self.makeError("WebRTC session was cancelled")))
+                    return
+                }
+                guard self.pendingOffer == nil else {
                     _ = completion.resume(with: .failure(self.makeError("WebRTC signaling already in progress")))
                     return
                 }
@@ -159,7 +137,6 @@ final class WebRTCPublisher: @unchecked Sendable {
                     _ = completion.resume(with: .failure(self.makeError("WebRTC session already active")))
                     return
                 }
-                self.offerInProgress = true
                 self.createAnswer(request) { result in
                     _ = completion.resume(with: result)
                 }
@@ -168,85 +145,55 @@ final class WebRTCPublisher: @unchecked Sendable {
                 guard completion.resume(with: .failure(self.makeError("WebRTC signaling timed out"))) else {
                     return
                 }
-                self.closePendingOfferSession()
-                self.offerInProgress = false
+                self.closePendingOffer(sessionId: request.sessionId)
+            }
+        }
+    }
+
+    func closeSession(_ sessionId: String) async {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                self.rememberCancelledSession(sessionId)
+                if let pending = self.pendingOffer, pending.session.id == sessionId {
+                    self.pendingOffer = nil
+                    pending.session.close()
+                    pending.completion(.failure(self.makeError("WebRTC session was cancelled")))
+                }
+                if let session = self.session, session.id == sessionId {
+                    session.close()
+                    self.session = nil
+                    self.deactivateFrames()
+                }
+                continuation.resume()
             }
         }
     }
 
     func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
         let frame = PendingWebRTCFrame(pixelBuffer: pixelBuffer, timestamp: timestamp)
-        var shouldSchedule = false
+        var scheduleDelayNs: UInt64?
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        let frameIntervalNs = UInt64(1_000_000_000 / maxFps)
+        let schedulingToleranceNs: UInt64 = 1_000_000
         frameLock.lock()
+        guard acceptsFrames else {
+            frameLock.unlock()
+            return
+        }
+        // Always retain the newest frame. Dropping every frame inside the rate
+        // limit can lose the final state of a short animation until the 5fps
+        // idle floor emits it again.
         pendingFrame = frame
         if !framePumpScheduled {
             framePumpScheduled = true
-            shouldSchedule = true
+            let earliestSendNs = lastSentFrameAtNs &+ frameIntervalNs
+            scheduleDelayNs = lastSentFrameAtNs == 0 || nowNs &+ schedulingToleranceNs >= earliestSendNs
+                ? 0
+                : earliestSendNs - nowNs
         }
         frameLock.unlock()
-        if shouldSchedule {
-            queue.async { self.drainFramePump() }
-        }
-    }
-
-    func sendFrameDirect(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
-        queue.sync {
-            guard self.session != nil else { return }
-            self.directInputFrameCount += 1
-            self.sendFrameOnQueue(pixelBuffer, timestamp: timestamp, mode: "direct")
-        }
-    }
-
-    func statsSnapshot(nowNs: UInt64 = DispatchTime.now().uptimeNanoseconds) -> [String: Any] {
-        queue.sync {
-            let uptimeSec = max(0.001, Double(nowNs - statsStartNs) / 1_000_000_000.0)
-            let lastFrameAgeMs = lastFrameSentAtNs == 0 ? -1.0 : Double(nowNs - lastFrameSentAtNs) / 1_000_000.0
-            var stats: [String: Any] = [
-                "active": session != nil,
-                "targetFps": maxFps,
-                "targetBitrate": targetBitrate,
-                "requestedCodec": requestedCodecName,
-                "selectedCodec": selectedCodecName,
-                "h264WebRTCEnabled": h264WebRTCSupport.allowed,
-                "h264WebRTCProbe": h264WebRTCSupport.probeSummary,
-                "h264WebRTCCustomEncoder": usesCustomSoftwareH264Encoder,
-                "h264FrameMode": h264FrameModeDescription(),
-                "frameMode": lastFrameMode,
-                "outputWidth": lastOutputWidth,
-                "outputHeight": lastOutputHeight,
-                "sentFrames": sentFrameCount,
-                "queuedInputFrames": queuedInputFrameCount,
-                "directInputFrames": directInputFrameCount,
-                "avgSentFps": Double(sentFrameCount) / uptimeSec,
-                "lastFrameAgeMs": lastFrameAgeMs,
-                "convertedFrames": convertedFrameCount,
-                "conversionFailures": conversionFailureCount,
-                "conversionMsLast": lastConversionMs,
-                "conversionMsAvg": convertedFrameCount > 0 ? totalConversionMs / Double(convertedFrameCount) : 0.0,
-                "conversionMsMax": maxConversionMs,
-                "i420MsLast": lastI420Ms,
-                "i420MsAvg": sentFrameCount > 0 ? totalI420Ms / Double(sentFrameCount) : 0.0,
-                "i420MsMax": maxI420Ms,
-            ]
-            if let lastInputPixelFormat {
-                stats["inputPixelFormat"] = pixelFormatDescription(lastInputPixelFormat)
-            }
-            if let lastForwardedPixelFormat {
-                stats["forwardedPixelFormat"] = pixelFormatDescription(lastForwardedPixelFormat)
-            }
-            if let reason = h264WebRTCSupport.reason {
-                stats["h264WebRTCDisabledReason"] = reason
-            }
-            if let encoderID = h264WebRTCSupport.encoderID {
-                stats["h264VideoToolboxEncoderID"] = encoderID
-            }
-            if let usesHardware = h264WebRTCSupport.usesHardware {
-                stats["h264VideoToolboxUsesHardware"] = usesHardware
-            }
-            if let session {
-                stats["outboundRtp"] = session.delegate.outboundStatsSnapshot()
-            }
-            return stats
+        if let scheduleDelayNs {
+            scheduleFramePump(afterNs: scheduleDelayNs)
         }
     }
 
@@ -260,7 +207,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         return timestampNs
     }
 
-    private func sendFrameOnQueue(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime, mode: String) {
+    private func sendFrameOnQueue(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         if width != lastOutputWidth || height != lastOutputHeight {
@@ -271,7 +218,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                 height: Int32(height),
                 fps: Int32(maxFps)
             )
-            print("[webrtc] Video source output format: \(width)x\(height) @ \(maxFps)fps")
+            streamLog("[webrtc] Video source output format: \(width)x\(height) @ \(maxFps)fps")
         }
         let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
         if lastInputPixelFormat != pixelFormat {
@@ -280,7 +227,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                 .contains(NSNumber(value: UInt32(pixelFormat)))
             useNativePixelBufferFrames = supported
             let frameMode = supported ? "native CVPixelBuffer" : "I420 fallback"
-            print("[webrtc] Input pixel format: \(pixelFormat) cvPixelBufferSupported=\(supported); forwarding as \(frameMode)")
+            streamLog("[webrtc] Input pixel format: \(pixelFormat) cvPixelBufferSupported=\(supported); forwarding as \(frameMode)")
         }
         let timeNs = nextFrameTimestampNs(timestamp)
         let sourceFrame = LKRTCVideoFrame(
@@ -327,7 +274,6 @@ final class WebRTCPublisher: @unchecked Sendable {
                     usedNativeFrame = true
                     frameMode = "nv12"
                 } else {
-                    conversionFailureCount += 1
                     let convertStartNs = DispatchTime.now().uptimeNanoseconds
                     usedFrame = sourceFrame.newI420()
                     convertDurationMs = Double(DispatchTime.now().uptimeNanoseconds - convertStartNs) / 1_000_000.0
@@ -343,22 +289,10 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
 
         videoSource.capturer(capturer, didCapture: usedFrame)
-        if convertDurationMs > 0 {
-            convertedFrameCount += 1
-            totalConversionMs += convertDurationMs
-            maxConversionMs = max(maxConversionMs, convertDurationMs)
-        }
         sentFrameCount += 1
-        lastFrameSentAtNs = DispatchTime.now().uptimeNanoseconds
-        lastForwardedPixelFormat = forwardedPixelFormat
-        lastFrameMode = frameMode
-        lastConversionMs = convertDurationMs
-        lastI420Ms = frameMode == "i420-fallback" ? convertDurationMs : 0.0
-        totalI420Ms += lastI420Ms
-        maxI420Ms = max(maxI420Ms, lastI420Ms)
         if shouldLogFrame(sentFrameCount) {
-            print(
-                "[webrtc] Sent video frame #\(sentFrameCount) mode=\(mode) codec=\(selectedCodecName) " +
+            streamLog(
+                "[webrtc] Sent video frame #\(sentFrameCount) codec=\(selectedCodecName) " +
                 "size=\(width)x\(height) timestampNs=\(timeNs) frameMode=\(frameMode) " +
                 "inputFormat=\(pixelFormatDescription(pixelFormat)) " +
                 "forwardedFormat=\(pixelFormatDescription(forwardedPixelFormat)) " +
@@ -369,42 +303,80 @@ final class WebRTCPublisher: @unchecked Sendable {
 
     func stop() {
         queue.sync {
-            closePendingOfferSession()
-            offerInProgress = false
+            if let pending = pendingOffer {
+                pendingOffer = nil
+                pending.session.close()
+                pending.completion(.failure(makeError("WebRTC publisher stopped")))
+            }
             session?.close()
             session = nil
-            clearPendingFrame()
-            onActiveChanged?(false)
+            deactivateFrames()
         }
     }
 
     private func drainFramePump() {
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        let frameIntervalNs = UInt64(1_000_000_000 / maxFps)
+        let schedulingToleranceNs: UInt64 = 1_000_000
         frameLock.lock()
-        let frame = pendingFrame
+        guard acceptsFrames else {
+            pendingFrame = nil
+            framePumpScheduled = false
+            frameLock.unlock()
+            return
+        }
+        guard let frame = pendingFrame else {
+            framePumpScheduled = false
+            frameLock.unlock()
+            return
+        }
+        let earliestSendNs = lastSentFrameAtNs &+ frameIntervalNs
+        if lastSentFrameAtNs > 0, nowNs &+ schedulingToleranceNs < earliestSendNs {
+            let delayNs = earliestSendNs - nowNs
+            frameLock.unlock()
+            scheduleFramePump(afterNs: delayNs)
+            return
+        }
         pendingFrame = nil
+        lastSentFrameAtNs = nowNs
         frameLock.unlock()
 
-        if let frame {
-            if session != nil {
-                queuedInputFrameCount += 1
-                sendFrameOnQueue(frame.pixelBuffer, timestamp: frame.timestamp, mode: "queued")
-            }
+        if session != nil {
+            sendFrameOnQueue(frame.pixelBuffer, timestamp: frame.timestamp)
         }
 
         frameLock.lock()
-        if pendingFrame != nil {
+        if acceptsFrames && pendingFrame != nil {
             frameLock.unlock()
-            queue.async { self.drainFramePump() }
+            scheduleFramePump(afterNs: frameIntervalNs)
         } else {
             framePumpScheduled = false
             frameLock.unlock()
         }
     }
 
-    private func clearPendingFrame() {
+    private func scheduleFramePump(afterNs delayNs: UInt64) {
+        if delayNs == 0 {
+            queue.async { self.drainFramePump() }
+            return
+        }
+        queue.asyncAfter(deadline: .now() + .nanoseconds(Int(delayNs))) {
+            self.drainFramePump()
+        }
+    }
+
+    private func activateFrames() {
         frameLock.lock()
+        acceptsFrames = true
+        lastSentFrameAtNs = 0
+        frameLock.unlock()
+    }
+
+    private func deactivateFrames() {
+        frameLock.lock()
+        acceptsFrames = false
         pendingFrame = nil
-        framePumpScheduled = false
+        lastSentFrameAtNs = 0
         frameLock.unlock()
     }
 
@@ -420,8 +392,8 @@ final class WebRTCPublisher: @unchecked Sendable {
         config.continualGatheringPolicy = .gatherOnce
         config.iceServers = iceServers(from: request.iceServers)
         config.iceTransportPolicy = .all
-        print("[webrtc] ICE transport policy: all (TURN as fallback)")
-        print("[webrtc] ICE servers: \(iceServerSummary(request.iceServers))")
+        streamLog("[webrtc] ICE transport policy: all (TURN as fallback)")
+        streamLog("[webrtc] ICE servers: \(iceServerSummary(request.iceServers))")
 
         let constraints = LKRTCMediaConstraints(
             mandatoryConstraints: nil,
@@ -441,8 +413,9 @@ final class WebRTCPublisher: @unchecked Sendable {
             return
         }
 
-        let session = WebRTCSession(peerConnection: peerConnection, delegate: delegate)
-        pendingOfferSession = session
+        let session = WebRTCSession(id: request.sessionId, peerConnection: peerConnection, delegate: delegate)
+        delegate.peerConnection = peerConnection
+        pendingOffer = PendingWebRTCOffer(session: session, completion: completion)
 
         let remoteDescription = LKRTCSessionDescription(type: .offer, sdp: request.sdp)
         peerConnection.setRemoteDescription(remoteDescription) { error in
@@ -451,7 +424,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                     self.failOffer(session, error, completion)
                     return
                 }
-                guard self.pendingOfferSession === session else {
+                guard self.isPending(session) else {
                     self.failOffer(session, self.makeError("WebRTC offer was superseded"), completion)
                     return
                 }
@@ -462,7 +435,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                             self.failOffer(session, error, completion)
                             return
                         }
-                        guard self.pendingOfferSession === session else {
+                        guard self.isPending(session) else {
                             self.failOffer(session, self.makeError("WebRTC offer was superseded"), completion)
                             return
                         }
@@ -476,13 +449,13 @@ final class WebRTCPublisher: @unchecked Sendable {
                                     self.failOffer(session, error, completion)
                                     return
                                 }
-                                guard self.pendingOfferSession === session else {
+                                guard self.isPending(session) else {
                                     self.failOffer(session, self.makeError("WebRTC offer was superseded"), completion)
                                     return
                                 }
                                 session.waitForIceGathering { completed in
                                     self.queue.async {
-                                        guard self.pendingOfferSession === session else {
+                                        guard self.isPending(session) else {
                                             self.failOffer(session, self.makeError("WebRTC offer was superseded"), completion)
                                             return
                                         }
@@ -497,11 +470,11 @@ final class WebRTCPublisher: @unchecked Sendable {
                                             candidateCounts = self.iceCandidateCounts(in: gatheredCandidates)
                                         }
                                         if !completed {
-                                            print("[webrtc] ICE gathering timed out; proceeding with candidates gathered so far: \(candidateCounts)")
+                                            streamLog("[webrtc] ICE gathering timed out; proceeding with candidates gathered so far: \(candidateCounts)")
                                         } else if self.hasCredentialedTurnServer(request.iceServers), candidateCounts["relay", default: 0] == 0 {
-                                            print("[webrtc] WARNING: no relay ICE candidates gathered for credentialed TURN offer; counts=\(candidateCounts)")
+                                            streamLog("[webrtc] WARNING: no relay ICE candidates gathered for credentialed TURN offer; counts=\(candidateCounts)")
                                         } else {
-                                            print("[webrtc] ICE candidates gathered: \(candidateCounts)")
+                                            streamLog("[webrtc] ICE candidates gathered: \(candidateCounts)")
                                         }
                                         self.completeOffer(
                                             session,
@@ -528,11 +501,10 @@ final class WebRTCPublisher: @unchecked Sendable {
     ) {
         if let offerSession {
             offerSession.close()
-            if pendingOfferSession === offerSession {
-                pendingOfferSession = nil
+            if isPending(offerSession) {
+                pendingOffer = nil
             }
         }
-        offerInProgress = false
         completion(.failure(error))
     }
 
@@ -541,20 +513,32 @@ final class WebRTCPublisher: @unchecked Sendable {
         answer: WebRTCAnswerPayload,
         _ completion: @escaping (Result<WebRTCAnswerPayload, Error>) -> Void
     ) {
-        guard pendingOfferSession === offerSession else {
+        guard isPending(offerSession) else {
             failOffer(offerSession, makeError("WebRTC offer was superseded"), completion)
             return
         }
-        pendingOfferSession = nil
+        pendingOffer = nil
         session = offerSession
-        offerInProgress = false
-        onActiveChanged?(true)
+        activateFrames()
         completion(.success(answer))
     }
 
-    private func closePendingOfferSession() {
-        pendingOfferSession?.close()
-        pendingOfferSession = nil
+    private func isPending(_ offerSession: WebRTCSession) -> Bool {
+        pendingOffer?.session === offerSession
+    }
+
+    private func closePendingOffer(sessionId: String) {
+        guard let pending = pendingOffer, pending.session.id == sessionId else { return }
+        pendingOffer = nil
+        pending.session.close()
+    }
+
+    private func rememberCancelledSession(_ sessionId: String) {
+        guard cancelledSessionIds.insert(sessionId).inserted else { return }
+        cancelledSessionIdOrder.append(sessionId)
+        if cancelledSessionIdOrder.count > 64 {
+            cancelledSessionIds.remove(cancelledSessionIdOrder.removeFirst())
+        }
     }
 
     private func attachVideoTrack(to peerConnection: LKRTCPeerConnection, session: WebRTCSession, codec: String?) {
@@ -562,7 +546,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             ?? createFallbackVideoTransceiver(on: peerConnection)
         guard let transceiver else {
             _ = peerConnection.add(videoTrack, streamIds: ["stream0"])
-            print("[webrtc] Could not find or create video transceiver; fell back to addTrack")
+            streamLog("[webrtc] Could not find or create video transceiver; fell back to addTrack")
             return
         }
 
@@ -571,7 +555,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         var directionError: NSError?
         transceiver.setDirection(.sendOnly, error: &directionError)
         if let directionError {
-            print("[webrtc] Failed to set video transceiver direction: \(directionError.localizedDescription)")
+            streamLog("[webrtc] Failed to set video transceiver direction: \(directionError.localizedDescription)")
         }
         applyVideoCodecPreference(codec, to: transceiver)
         session.videoSender = transceiver.sender
@@ -758,34 +742,39 @@ final class WebRTCPublisher: @unchecked Sendable {
 
     private func applyVideoCodecPreference(_ codec: String?, to transceiver: LKRTCRtpTransceiver) {
         let requestedName = Self.preferredVideoCodecName(codec)
-        requestedCodecName = requestedName
         var preferredName = requestedName
         if requestedName == "H264", !h264WebRTCSupport.allowed {
             preferredName = "VP8"
-            print(
+            streamLog(
                 "[webrtc] H.264 requested but disabled (\(h264WebRTCSupport.reason ?? "unsupported runtime")); " +
                 "preferring VP8"
             )
         }
         selectedCodecName = preferredName
         let capabilities = factory.rtpSenderCapabilities(forKind: "video")
-        let usableCodecs = capabilities.codecs.filter { capability in
-            h264WebRTCSupport.allowed || !Self.codecCapability(capability, matches: "H264")
-        }
+        // VP8/VP9 do not need VideoToolbox. Avoid running the synchronous H.264
+        // capability probe on VMs unless H.264 was actually requested.
+        let usableCodecs = requestedName == "H264" && !h264WebRTCSupport.allowed
+            ? capabilities.codecs.filter { !Self.codecCapability($0, matches: "H264") }
+            : capabilities.codecs
         let preferredCodecs = usableCodecs.filter {
             $0.name.caseInsensitiveCompare(preferredName) == .orderedSame ||
                 $0.mimeType.caseInsensitiveCompare("video/\(preferredName)") == .orderedSame
         }
         guard !preferredCodecs.isEmpty else {
-            print("[webrtc] No sender codec capability found for \(preferredName); using default order")
+            streamLog("[webrtc] No sender codec capability found for \(preferredName); using default order")
             return
         }
         let remainingCodecs = usableCodecs.filter { capability in
             !preferredCodecs.contains { $0 === capability }
         }
         let orderedCodecs = preferredCodecs + remainingCodecs
-        transceiver.codecPreferences = orderedCodecs
-        print("[webrtc] Preferred video codec: \(preferredName)")
+        do {
+            try transceiver.setCodecPreferences(orderedCodecs, error: ())
+        } catch {
+            streamLog("[webrtc] Failed to set codec preferences: \(error.localizedDescription)")
+        }
+        streamLog("[webrtc] Preferred video codec: \(preferredName)")
     }
 
     private func applyBitrateSettings(to session: WebRTCSession) {
@@ -810,7 +799,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             currentBitrateBps: maxBitrate,
             maxBitrateBps: maxBitrate
         )
-        print(
+        streamLog(
             "[webrtc] Sender parameters fps=\(maxFps) minBitrate=\(minBitrate) " +
             "maxBitrate=\(maxBitrate) bweUpdated=\(bweUpdated)"
         )
@@ -818,12 +807,17 @@ final class WebRTCPublisher: @unchecked Sendable {
 
     private func clearSession(_ peerConnection: LKRTCPeerConnection?) {
         queue.async {
+            if let pending = self.pendingOffer, pending.session.peerConnection === peerConnection {
+                self.pendingOffer = nil
+                pending.session.close()
+                pending.completion(.failure(self.makeError("WebRTC peer connection closed during signaling")))
+                return
+            }
             guard let session = self.session, session.peerConnection === peerConnection else { return }
             session.close()
             self.session = nil
-            self.clearPendingFrame()
-            self.onActiveChanged?(false)
-            print("[webrtc] Peer connection closed; publisher inactive")
+            self.deactivateFrames()
+            streamLog("[webrtc] Peer connection closed; publisher inactive")
         }
     }
 
@@ -873,6 +867,12 @@ final class WebRTCPublisher: @unchecked Sendable {
     private func h264FrameModeDescription() -> String {
         let source = h264FrameModeOverride == nil ? "auto" : "env"
         return "\(h264FrameMode().rawValue)(\(source))"
+    }
+
+    private func h264SupportDescription() -> String {
+        h264WebRTCSupport.allowed
+            ? "enabled(\(h264WebRTCSupport.probeSummary))"
+            : "disabled(\(h264WebRTCSupport.reason ?? "unsupported runtime"))"
     }
 
     private static func detectH264WebRTCSupport() -> WebRTCH264Support {
@@ -1064,7 +1064,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         case "nv12", "native", "cvpixelbuffer":
             return .nv12
         default:
-            print("[webrtc] Ignoring invalid SERVE_SIM_WEBRTC_H264_FRAME_MODE=\(raw); expected bgra, i420, or nv12")
+            streamLog("[webrtc] Ignoring invalid SERVE_SIM_WEBRTC_H264_FRAME_MODE=\(raw); expected bgra, i420, or nv12")
             return nil
         }
     }
@@ -1307,12 +1307,14 @@ private func pixelFormatDescription(_ pixelFormat: OSType) -> String {
 }
 
 private final class WebRTCSession {
+    let id: String
     let peerConnection: LKRTCPeerConnection
     let delegate: WebRTCSessionDelegate
     var videoSender: LKRTCRtpSender?
     private let iceGatheringTimeout: DispatchTimeInterval = .milliseconds(3_000)
 
-    init(peerConnection: LKRTCPeerConnection, delegate: WebRTCSessionDelegate) {
+    init(id: String, peerConnection: LKRTCPeerConnection, delegate: WebRTCSessionDelegate) {
+        self.id = id
         self.peerConnection = peerConnection
         self.delegate = delegate
     }
@@ -1349,17 +1351,13 @@ private final class WebRTCSession {
 }
 
 private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChannelDelegate {
+    weak var peerConnection: LKRTCPeerConnection?
     private let onInput: (Data) -> Void
     private let onClosed: (LKRTCPeerConnection) -> Void
     private let iceGatheringCompleteHandlerLock = NSLock()
     private var iceGatheringCompleteHandler: (() -> Void)?
     private let candidatesLock = NSLock()
     private var generatedCandidates: [LKRTCIceCandidate] = []
-    private var statsScheduled = false
-    private let outboundStatsLock = NSLock()
-    private var latestOutboundStatsLabel = "none"
-    private var latestOutboundStatsAtNs: UInt64 = 0
-    private var latestOutboundStats: [[String: Any]] = []
     // RTCDataChannel.delegate is weak; retain opened channels until close so input callbacks keep firing.
     private let retainedDataChannelsLock = NSLock()
     private var retainedDataChannels: [ObjectIdentifier: LKRTCDataChannel] = [:]
@@ -1374,21 +1372,23 @@ private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didRemove stream: LKRTCMediaStream) {}
     func peerConnectionShouldNegotiate(_ peerConnection: LKRTCPeerConnection) {}
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didChange newState: LKRTCIceConnectionState) {
-        print("[webrtc] ICE connection state: \(newState.rawValue)")
-        if newState == .connected || newState == .completed {
-            scheduleOutboundStats(peerConnection)
-        } else if newState == .failed || newState == .closed {
+        streamLog("[webrtc] ICE connection state: \(newState.rawValue)")
+        if newState == .failed || newState == .closed {
             onClosed(peerConnection)
+        } else if newState == .disconnected {
+            closeIfStillDisconnected(peerConnection)
         }
     }
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didChange newState: LKRTCPeerConnectionState) {
-        print("[webrtc] Peer connection state: \(newState.rawValue)")
+        streamLog("[webrtc] Peer connection state: \(newState.rawValue)")
         if newState == .failed || newState == .closed {
             onClosed(peerConnection)
+        } else if newState == .disconnected {
+            closeIfStillDisconnected(peerConnection)
         }
     }
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didChange newState: LKRTCIceGatheringState) {
-        print("[webrtc] ICE gathering state: \(newState.rawValue)")
+        streamLog("[webrtc] ICE gathering state: \(newState.rawValue)")
         if newState == .complete {
             let completion = consumeIceGatheringCompleteHandler()
             completion?()
@@ -1398,7 +1398,7 @@ private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate
         candidatesLock.lock()
         generatedCandidates.append(candidate)
         candidatesLock.unlock()
-        print("[webrtc] ICE candidate gathered: \(candidateSummary(candidate))")
+        streamLog("[webrtc] ICE candidate gathered: \(candidateSummary(candidate))")
     }
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didRemove candidates: [LKRTCIceCandidate]) {}
     func peerConnection(
@@ -1408,16 +1408,16 @@ private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate
         lastReceivedMs: Int32,
         changeReason: String
     ) {
-        print("[webrtc] ICE selected pair: local=\(candidateSummary(local)) remote=\(candidateSummary(remote)) reason=\(changeReason) lastReceivedMs=\(lastReceivedMs)")
+        streamLog("[webrtc] ICE selected pair: local=\(candidateSummary(local)) remote=\(candidateSummary(remote)) reason=\(changeReason) lastReceivedMs=\(lastReceivedMs)")
     }
     func peerConnection(
         _ peerConnection: LKRTCPeerConnection,
         didFailToGatherIceCandidate event: LKRTCIceCandidateErrorEvent
     ) {
-        print("[webrtc] ICE candidate error: url=\(event.url) code=\(event.errorCode) text=\(event.errorText)")
+        streamLog("[webrtc] ICE candidate error: url=\(event.url) code=\(event.errorCode) text=\(event.errorText)")
     }
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didOpen dataChannel: LKRTCDataChannel) {
-        print("[webrtc] viewer opened data channel: \(dataChannel.label)")
+        streamLog("[webrtc] viewer opened data channel: \(dataChannel.label)")
         retainedDataChannelsLock.lock()
         defer { retainedDataChannelsLock.unlock() }
         retainedDataChannels[ObjectIdentifier(dataChannel)] = dataChannel
@@ -1428,14 +1428,14 @@ private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate
         streamLog("[webrtc] data channel state label=\(dataChannel.label) state=\(dataChannel.readyState.rawValue)")
         if dataChannel.readyState == .closed {
             retainedDataChannelsLock.lock()
-            defer { retainedDataChannelsLock.unlock() }
             retainedDataChannels.removeValue(forKey: ObjectIdentifier(dataChannel))
+            retainedDataChannelsLock.unlock()
+            if let peerConnection { onClosed(peerConnection) }
         }
     }
 
     func dataChannel(_ dataChannel: LKRTCDataChannel, didReceiveMessageWith buffer: LKRTCDataBuffer) {
         let data = Data(buffer.data)
-        streamLog("[webrtc] received input data-channel bytes=\(data.count) binary=\(buffer.isBinary)")
         onInput(data)
     }
 
@@ -1475,99 +1475,12 @@ private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate
         return "type=\(type) protocol=\(protocolName) address=\(address) port=\(port)\(server)"
     }
 
-    private func scheduleOutboundStats(_ peerConnection: LKRTCPeerConnection) {
-        guard !statsScheduled else { return }
-        statsScheduled = true
-        logOutboundStats(peerConnection, label: "connected")
-        for seconds in [2.0, 5.0, 10.0] {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + seconds) { [weak self, weak peerConnection] in
-                guard let self, let peerConnection else { return }
-                self.logOutboundStats(peerConnection, label: "+\(Int(seconds))s")
-            }
-        }
-        scheduleRecurringOutboundStats(peerConnection)
-    }
-
-    private func scheduleRecurringOutboundStats(_ peerConnection: LKRTCPeerConnection) {
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10.0) { [weak self, weak peerConnection] in
+    private func closeIfStillDisconnected(_ peerConnection: LKRTCPeerConnection) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) { [weak self, weak peerConnection] in
             guard let self, let peerConnection else { return }
-            if peerConnection.connectionState == .failed || peerConnection.connectionState == .closed {
-                return
-            }
-            self.logOutboundStats(peerConnection, label: "periodic")
-            self.scheduleRecurringOutboundStats(peerConnection)
-        }
-    }
-
-    private func logOutboundStats(_ peerConnection: LKRTCPeerConnection, label: String) {
-        peerConnection.statistics { report in
-            let videoStats = report.statistics.values
-                .filter { stat in
-                    stat.type == "outbound-rtp" &&
-                        ((stat.values["kind"] as? String) == "video" || (stat.values["mediaType"] as? String) == "video")
-                }
-            let keys = [
-                "bytesSent",
-                "packetsSent",
-                "framesEncoded",
-                "framesSent",
-                "keyFramesEncoded",
-                "hugeFramesSent",
-                "nackCount",
-                "firCount",
-                "pliCount",
-            ]
-            let payloads = videoStats.map { stat in self.statPayload(stat, keys: keys) }
-            self.storeOutboundStats(label: label, stats: payloads)
-            if videoStats.isEmpty {
-                print("[webrtc] Outbound stats \(label): no video outbound-rtp stats")
-            } else {
-                print("[webrtc] Outbound stats \(label): \(videoStats.map { self.statSummary($0, keys: keys) }.joined(separator: " | "))")
+            if peerConnection.connectionState == .disconnected || peerConnection.iceConnectionState == .disconnected {
+                self.onClosed(peerConnection)
             }
         }
-    }
-
-    func outboundStatsSnapshot() -> [String: Any] {
-        outboundStatsLock.lock()
-        let stats = latestOutboundStats
-        let label = latestOutboundStatsLabel
-        let atNs = latestOutboundStatsAtNs
-        outboundStatsLock.unlock()
-        return [
-            "label": label,
-            "updatedAtNs": atNs,
-            "reports": stats,
-        ]
-    }
-
-    private func storeOutboundStats(label: String, stats: [[String: Any]]) {
-        outboundStatsLock.lock()
-        latestOutboundStatsLabel = label
-        latestOutboundStatsAtNs = DispatchTime.now().uptimeNanoseconds
-        latestOutboundStats = stats
-        outboundStatsLock.unlock()
-    }
-
-    private func statPayload(_ stat: LKRTCStatistics, keys: [String]) -> [String: Any] {
-        var payload: [String: Any] = ["id": stat.id, "type": stat.type]
-        for key in keys {
-            guard let value = stat.values[key] else { continue }
-            payload[key] = statValue(value)
-        }
-        return payload
-    }
-
-    private func statValue(_ value: NSObject) -> Any {
-        if let number = value as? NSNumber { return number }
-        if let string = value as? NSString { return String(string) }
-        return "\(value)"
-    }
-
-    private func statSummary(_ stat: LKRTCStatistics, keys: [String]) -> String {
-        let values = keys.compactMap { key -> String? in
-            guard let value = stat.values[key] else { return nil }
-            return "\(key)=\(value)"
-        }
-        return "\(stat.id){\(values.joined(separator: " "))}"
     }
 }

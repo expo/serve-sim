@@ -201,21 +201,39 @@ export function SimulatorView({
     const video = videoRef.current;
     if (!video) return;
     let settled = false;
+    let stopped = false;
     let videoFrameCallback = 0;
     const onFirstFrame = () => {
       if (settled) return;
       settled = true;
-      lastFrameAtRef.current = Date.now();
       onWebRtcFrame?.();
       setConnected(true);
       setError(null);
+    };
+    const onVideoFrame = () => {
+      if (stopped) return;
+      lastFrameAtRef.current = Date.now();
+      frameCountRef.current++;
+      onFirstFrame();
+      setConnected(true);
+      videoFrameCallback = video.requestVideoFrameCallback(onVideoFrame);
+    };
+    const onTimeUpdate = () => {
+      lastFrameAtRef.current = Date.now();
+      onFirstFrame();
+      setConnected(true);
     };
     video.srcObject = webRtcStream ?? null;
     if (webRtcStream) {
       setConnected(false);
       video.addEventListener("loadeddata", onFirstFrame, { once: true });
-      if ("requestVideoFrameCallback" in video) {
-        videoFrameCallback = video.requestVideoFrameCallback(onFirstFrame);
+      const supportsVideoFrameCallback = typeof (video as unknown as {
+        requestVideoFrameCallback?: unknown;
+      }).requestVideoFrameCallback === "function";
+      if (supportsVideoFrameCallback) {
+        videoFrameCallback = video.requestVideoFrameCallback(onVideoFrame);
+      } else {
+        video.addEventListener("timeupdate", onTimeUpdate);
       }
       if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
         onFirstFrame();
@@ -225,8 +243,12 @@ export function SimulatorView({
       setConnected(false);
     }
     return () => {
+      stopped = true;
       video.removeEventListener("loadeddata", onFirstFrame);
-      if (videoFrameCallback && "cancelVideoFrameCallback" in video) {
+      video.removeEventListener("timeupdate", onTimeUpdate);
+      if (videoFrameCallback && typeof (video as unknown as {
+        cancelVideoFrameCallback?: unknown;
+      }).cancelVideoFrameCallback === "function") {
         video.cancelVideoFrameCallback(videoFrameCallback);
       }
       video.srcObject = null;

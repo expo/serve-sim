@@ -71,7 +71,7 @@ import {
   PANEL_WIDTH,
 } from "./utils/panel-widths";
 import { proxyPreviewConfigForBrowser } from "./utils/preview-config";
-import { mjpegStreamUrlFrom, simEndpoint, streamConfigFrom, webrtcOfferUrlFrom } from "./utils/sim-endpoint";
+import { mjpegStreamUrlFrom, simEndpoint, streamConfigFrom, webrtcCloseUrlFrom, webrtcOfferUrlFrom } from "./utils/sim-endpoint";
 import {
   SIMULATOR_RESIZE_DRAG_TRANSITION,
   SIMULATOR_RESIZE_LAYOUT_TRANSITION,
@@ -93,7 +93,7 @@ type PreviewConfig = NonNullable<Window["__SIM_PREVIEW__"]>;
 
 function previewConfigKey(config: PreviewConfig | null): string {
   return config
-    ? `${config.device}:${config.pid}:${config.streamUrl}:${config.wsUrl}`
+    ? `${config.device}:${config.pid}:${config.streamUrl}:${config.wsUrl}:${JSON.stringify(config.streamSettings ?? null)}`
     : "";
 }
 
@@ -455,6 +455,7 @@ function AppWithConfig({
   const effectiveWebRtcCodec = webRtcCodecOverride ?? configuredWebRtcCodec;
   const webrtc = useWebRtcStream({
     offerUrl: webrtcOfferUrlFrom(config),
+    closeUrl: webrtcCloseUrlFrom(config),
     enabled: useWebRtcVideo,
     codec: effectiveWebRtcCodec,
     iceServers: streamSettings?.transport === "webrtc" ? streamSettings.iceServers : undefined,
@@ -494,7 +495,7 @@ function AppWithConfig({
     dispatchAvccFallback("reset");
     setWebRtcCodecOverride(null);
     setWebRtcFailed(false);
-  }, [config.streamUrl, setStreaming]);
+  }, [config.streamUrl, setStreaming, streamSettings]);
   useEffect(() => {
     if (!useWebRtcVideo) {
       setWebRtcCodecOverride(null);
@@ -1023,7 +1024,7 @@ function AppWithConfig({
                 streamMode={useWebRtcVideo ? "webrtc" : useAvccVideo ? "avcc" : "mjpeg"}
                 webRtcStream={webrtc.stream}
                 onWebRtcFrame={webrtc.markFrameDecoded}
-                streamError={webRtcFailed ? "WebRTC stream failed after trying all configured codecs." : null}
+                streamError={webrtc.error ?? (webRtcFailed ? "WebRTC stream failed after trying all configured codecs." : null)}
                 onAvccError={() => dispatchAvccFallback("error")}
                 subscribeFrame={useAvccVideo ? undefined : mjpeg.subscribeFrame}
                 streamFrame={useAvccVideo ? undefined : mjpeg.frame}

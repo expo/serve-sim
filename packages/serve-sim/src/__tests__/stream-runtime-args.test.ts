@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { streamRuntimeArgs } from "../stream-runtime-args";
+import { streamHelperArgs, streamRuntimeArgs } from "../stream-runtime-args";
 
 describe("streamRuntimeArgs", () => {
   test("forwards HTTP codec options", () => {
@@ -38,6 +38,25 @@ describe("streamRuntimeArgs", () => {
       "user",
       "--turn-credential",
       "pass",
+    ]);
+  });
+});
+
+describe("streamHelperArgs", () => {
+  test("builds the re-exec arguments shared by detach and no-preview modes", () => {
+    expect(streamHelperArgs("DEVICE-A", 3100, "127.0.0.1", {
+      transport: "webrtc",
+      codec: "vp9",
+    })).toEqual([
+      "DEVICE-A",
+      "--port",
+      "3100",
+      "--host",
+      "127.0.0.1",
+      "--transport",
+      "webrtc",
+      "--webrtc-codec",
+      "vp9",
     ]);
   });
 });

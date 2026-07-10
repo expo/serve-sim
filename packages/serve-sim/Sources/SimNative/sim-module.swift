@@ -107,10 +107,12 @@ private func u32(_ v: Int) -> UInt32 {
         self.inputQueue = inputQueue
         self.onWebRTCInput = onWebRTCInput
         self.engine = CaptureEngine(deviceUDID: udid, onWebRTCInput: { data in
-            Task {
-                try? await inputQueue.run(blocking: false) {
-                    _ = try? await onWebRTCInput.call([try NodeBuffer(copying: data)]).as(NodePromise.self)?.value
-                }
+            // Data channels are reliable and ordered; enqueue synchronously so
+            // begin/move/end HID messages reach JS in exactly that order. The
+            // blocking mode applies backpressure instead of dropping a touch-up
+            // when the bounded Node queue is temporarily full.
+            try? inputQueue.run(blocking: true) {
+                _ = try? onWebRTCInput.call([try NodeBuffer(copying: data)])
             }
         })
     }
@@ -164,6 +166,10 @@ private func u32(_ v: Int) -> UInt32 {
 
     @NodeMethod func handleWebRTCOffer(_ offerJson: String) async throws -> String {
         try await engine.handleWebRTCOffer(offerJson)
+    }
+
+    @NodeMethod func closeWebRTCSession(_ sessionId: String) async {
+        await engine.closeWebRTCSession(sessionId)
     }
 
     @NodeMethod func screenSize() async -> [String: any NodePropertyConvertible] {

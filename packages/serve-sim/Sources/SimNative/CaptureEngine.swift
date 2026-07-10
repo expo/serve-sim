@@ -82,7 +82,9 @@ actor CaptureEngine {
     private(set) var screenSize = Dimensions(width: 0, height: 0)
     private var consumers = [UUID: CaptureConsuming]()
     private var webRTCPublisher: WebRTCPublisher?
-    private var webRTCConsumerID: UUID?
+    private var frameContinuation: AsyncStream<Frame>.Continuation?
+    private var cancelledWebRTCSessionIds = Set<String>()
+    private var cancelledWebRTCSessionIdOrder: [String] = []
 
     init(deviceUDID: String, onWebRTCInput: @escaping @Sendable (Data) -> Void = { _ in }) {
         self.deviceUDID = deviceUDID
@@ -99,8 +101,22 @@ actor CaptureEngine {
             // drop old frames if there's backpressure
             bufferingPolicy: .bufferingNewest(1)
         )
-        try await frameCapture.start(deviceUDID: deviceUDID) { pixelBuffer, timestamp in
-            frameContinuation.yield(Frame(pixelBuffer: pixelBuffer, timestamp: timestamp))
+        self.frameContinuation = frameContinuation
+        do {
+            try await frameCapture.start(deviceUDID: deviceUDID) { pixelBuffer, timestamp in
+                frameContinuation.yield(Frame(pixelBuffer: pixelBuffer, timestamp: timestamp))
+            }
+        } catch {
+            frameContinuation.finish()
+            self.frameContinuation = nil
+            if phase == .starting { phase = .unstarted }
+            throw error
+        }
+        guard phase == .starting else {
+            frameContinuation.finish()
+            self.frameContinuation = nil
+            await frameCapture.stop()
+            return
         }
         Task {
             for await frame in frames {
@@ -180,23 +196,45 @@ actor CaptureEngine {
 
     func handleWebRTCOffer(_ offerJson: String) async throws -> String {
         let request = try JSONDecoder().decode(WebRTCOfferPayload.self, from: Data(offerJson.utf8))
+        guard request.type == "offer", !request.sessionId.isEmpty else {
+            throw NSError(
+                domain: "serve-sim.webrtc",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid WebRTC offer"]
+            )
+        }
+        guard !cancelledWebRTCSessionIds.contains(request.sessionId) else {
+            throw NSError(
+                domain: "serve-sim.webrtc",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "WebRTC session was cancelled"]
+            )
+        }
         let answer = try await getWebRTCPublisher().handleOffer(request)
         let data = try JSONEncoder().encode(answer)
         return String(decoding: data, as: UTF8.self)
+    }
+
+    func closeWebRTCSession(_ sessionId: String) async {
+        rememberCancelledWebRTCSession(sessionId)
+        if let webRTCPublisher {
+            await webRTCPublisher.closeSession(sessionId)
+        }
     }
 
     func currentScreenSize() -> Dimensions {
         screenSize
     }
 
-    func stop() {
+    func stop() async {
         if phase == .stopped { return }
         phase = .stopped
-        Task { [frameCapture] in await frameCapture.stop() }
+        frameContinuation?.finish()
+        frameContinuation = nil
         webRTCPublisher?.stop()
         webRTCPublisher = nil
-        webRTCConsumerID = nil
         consumers.removeAll()
+        await frameCapture.stop()
     }
 
     private func getWebRTCPublisher() -> WebRTCPublisher {
@@ -208,23 +246,16 @@ actor CaptureEngine {
         publisher.onInput = { [onWebRTCInput] data in
             onWebRTCInput(data)
         }
-        publisher.onActiveChanged = { [weak self] active in
-            Task { await self?.setWebRTCActive(active) }
-        }
+        consumers[UUID()] = WebRTCConsumer(publisher: publisher)
         webRTCPublisher = publisher
         return publisher
     }
 
-    private func setWebRTCActive(_ active: Bool) {
-        if active {
-            guard webRTCConsumerID == nil else { return }
-            let publisher = getWebRTCPublisher()
-            let id = UUID()
-            consumers[id] = WebRTCConsumer(publisher: publisher)
-            webRTCConsumerID = id
-        } else if let id = webRTCConsumerID {
-            consumers.removeValue(forKey: id)
-            webRTCConsumerID = nil
+    private func rememberCancelledWebRTCSession(_ sessionId: String) {
+        guard cancelledWebRTCSessionIds.insert(sessionId).inserted else { return }
+        cancelledWebRTCSessionIdOrder.append(sessionId)
+        if cancelledWebRTCSessionIdOrder.count > 64 {
+            cancelledWebRTCSessionIds.remove(cancelledWebRTCSessionIdOrder.removeFirst())
         }
     }
 }

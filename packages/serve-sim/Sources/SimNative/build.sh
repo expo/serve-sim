@@ -47,10 +47,26 @@ if [ -z "$WEBRTC_ARTIFACT_FRAMEWORK" ]; then
   echo "Expected LiveKitWebRTC framework artifact not found under $BUILD_DIR/artifacts" >&2
   exit 1
 fi
+WEBRTC_LICENSE="$(find "$BUILD_DIR/artifacts" -path "*/LiveKitWebRTC.xcframework/LICENSE" -type f -print -quit)"
+WEBRTC_PRIVACY="$(find "$WEBRTC_ARTIFACT_FRAMEWORK" -name "PrivacyInfo.xcprivacy" -type f -print -quit)"
 
 rm -rf "$WEBRTC_RUNTIME_FRAMEWORK"
 mkdir -p "$WEBRTC_RUNTIME_DIR"
 cp -a "$WEBRTC_ARTIFACT_FRAMEWORK" "$WEBRTC_RUNTIME_FRAMEWORK"
+if [ -z "$WEBRTC_LICENSE" ]; then
+  echo "Expected WebRTC license not found under $BUILD_DIR/artifacts" >&2
+  exit 1
+fi
+if [ -z "$WEBRTC_PRIVACY" ]; then
+  echo "Expected WebRTC privacy manifest not found in $WEBRTC_ARTIFACT_FRAMEWORK" >&2
+  exit 1
+fi
+cp "$WEBRTC_LICENSE" "$WEBRTC_RUNTIME_FRAMEWORK/Versions/A/Resources/LICENSE.webrtc"
+# The upstream binary artifact currently nests PrivacyInfo.xcprivacy under a
+# second Versions/A directory. Put it in the framework Resources directory so
+# packaging tools and macOS discover it, then remove the malformed duplicate.
+cp "$WEBRTC_PRIVACY" "$WEBRTC_RUNTIME_FRAMEWORK/Versions/A/Resources/PrivacyInfo.xcprivacy"
+rm -rf "$WEBRTC_RUNTIME_FRAMEWORK/Versions/A/Versions"
 
 OUT="$OUT_DIR/${PRODUCT}.node"
 cp -a "$DYLIB" "$OUT"

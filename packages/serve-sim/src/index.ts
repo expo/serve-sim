@@ -10,6 +10,7 @@ import {
   stateFileForDevice,
   listStateFiles,
   inProcessServeSimState,
+  writeServeSimState,
   type ServeSimDeviceState,
   type StreamSettings,
   type WebRtcIceServer,
@@ -23,7 +24,7 @@ import { uiSettings } from "./ui-settings";
 import { debugCli, debugHelper, debugState } from "./debug";
 import type { EventLogEntry } from "./event-log";
 import { formatEventLogLine } from "./event-log-format";
-import { streamRuntimeArgs } from "./stream-runtime-args";
+import { streamHelperArgs } from "./stream-runtime-args";
 
 // `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
 // CLI works under plain `node` too.
@@ -168,7 +169,7 @@ function readAllStates(): ServerState[] {
 
 function writeState(state: ServerState) {
   ensureStateDir();
-  writeFileSync(stateFileForDevice(state.device), JSON.stringify(state, null, 2));
+  writeServeSimState(state);
   debugState("wrote state pid=%d device=%s port=%d", state.pid, state.device, state.port);
 }
 
@@ -377,14 +378,7 @@ async function startHelper(
 
   const logFile = join(STATE_DIR, `server-${udid}.log`);
   const logFd = openSync(logFile, "w");
-  const { command, args } = reExecArgs([
-    udid,
-    "--port",
-    String(port),
-    "--host",
-    host,
-    ...streamRuntimeArgs(opts.stream),
-  ]);
+  const { command, args } = reExecArgs(streamHelperArgs(udid, port, host, opts.stream));
   const child = nodeSpawn(command, args, {
     detached: opts.detach,
     stdio: ["ignore", logFd, logFd],

@@ -1,0 +1,189 @@
+// CPU/mem of the user's app on a booted sim, measured host-side (%CPU is per-core, can exceed 100).
+// Memory is phys_footprint (the number Xcode's gauge shows), with an RSS fallback.
+
+import { execFile } from "node:child_process";
+import { cpus } from "node:os";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
+export const METRICS_SCHEMA_VERSION = 1;
+
+export interface AppUsage {
+  cpuPct: number;
+  memBytes: number;
+}
+
+export interface MetricSample extends AppUsage {
+  t: number; // ms since the sampler started
+}
+
+export interface MetricsMeta {
+  schemaVersion: number;
+  udid: string;
+  hostCores: number;
+  sampleIntervalMs: number;
+}
+
+export interface AppProcesses {
+  pids: number[];
+  cpuPct: number;
+  rssKb: number;
+}
+
+// Find the user app's processes (under Containers/Bundle), not the ~190 system daemons.
+export function findUserAppProcesses(output: string, udid: string): AppProcesses | null {
+  const device = `/Devices/${udid}/`.toUpperCase();
+  const pids: number[] = [];
+  let cpuPct = 0;
+  let rssKb = 0;
+  for (const line of output.split("\n")) {
+    const m = /^\s*(\d+)\s+([\d.]+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (!m) continue;
+    const args = m[4]!.toUpperCase();
+    if (!args.includes(device) || !args.includes("/CONTAINERS/BUNDLE/APPLICATION/")) continue;
+    pids.push(+m[1]!);
+    cpuPct += +m[2]!;
+    rssKb += +m[3]!;
+  }
+  return pids.length ? { pids, cpuPct: +cpuPct.toFixed(1), rssKb } : null;
+}
+
+// Sum the per-process `phys_footprint: <n> B` lines (skips _peak and the Summary line).
+export function sumPhysFootprintBytes(output: string): number | null {
+  let bytes = 0;
+  let found = false;
+  for (const m of output.matchAll(/^\s*phys_footprint:\s+(\d+) B$/gm)) {
+    bytes += +m[1]!;
+    found = true;
+  }
+  return found ? bytes : null;
+}
+
+async function sampleUserApp(udid: string): Promise<AppUsage | null> {
+  let procs: AppProcesses | null;
+  try {
+    const { stdout } = await execFileAsync("ps", ["-axo", "pid=,pcpu=,rss=,args="], {
+      timeout: 3000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    procs = findUserAppProcesses(stdout, udid);
+  } catch {
+    return null;
+  }
+  if (!procs) return null;
+
+  let memBytes = procs.rssKb * 1024;
+  try {
+    const { stdout } = await execFileAsync(
+      "footprint",
+      ["--noCategories", "--format", "bytes", ...procs.pids.map(String)],
+      { timeout: 3000, maxBuffer: 1024 * 1024 },
+    );
+    memBytes = sumPhysFootprintBytes(stdout) ?? memBytes;
+  } catch {
+    // footprint can exit non-zero (all pids gone mid-tick); keep the RSS fallback.
+  }
+  return { cpuPct: procs.cpuPct, memBytes };
+}
+
+export interface MetricsSamplerOptions {
+  udid: string;
+  intervalMs?: number;
+  sample?: (udid: string) => Promise<AppUsage | null>;
+  now?: () => number;
+  hostCores?: number;
+}
+
+// Polls the sim and fans samples out; reschedules only after each tick settles, so ticks never overlap.
+export class MetricsSampler {
+  readonly meta: MetricsMeta;
+
+  private readonly intervalMs: number;
+  private readonly sample: (udid: string) => Promise<AppUsage | null>;
+  private readonly now: () => number;
+  private readonly listeners = new Set<(sample: MetricSample) => void>();
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private startedAt: number | null = null;
+
+  constructor(opts: MetricsSamplerOptions) {
+    this.intervalMs = opts.intervalMs ?? 1000;
+    this.sample = opts.sample ?? sampleUserApp;
+    this.now = opts.now ?? Date.now;
+    this.meta = {
+      schemaVersion: METRICS_SCHEMA_VERSION,
+      udid: opts.udid,
+      hostCores: opts.hostCores ?? cpus().length,
+      sampleIntervalMs: this.intervalMs,
+    };
+  }
+
+  get listenerCount(): number {
+    return this.listeners.size;
+  }
+
+  onSample(listener: (sample: MetricSample) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  async tickOnce(): Promise<MetricSample | null> {
+    this.startedAt ??= this.now();
+    const reading = await this.sample(this.meta.udid);
+    if (!reading) return null;
+
+    const sample: MetricSample = { t: this.now() - this.startedAt, ...reading };
+    for (const listener of this.listeners) listener(sample);
+    return sample;
+  }
+
+  start(): void {
+    if (this.timer) return;
+    this.startedAt ??= this.now();
+    const loop = async (): Promise<void> => {
+      await this.tickOnce().catch(() => {});
+      if (this.timer) this.timer = setTimeout(loop, this.intervalMs);
+    };
+    this.timer = setTimeout(loop, this.intervalMs);
+  }
+
+  stop(): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  }
+}
+
+export interface MetricsSubscription {
+  meta: MetricsMeta;
+  unsubscribe: () => void;
+}
+
+// One shared sampler per udid (like the ax streamer cache); ref-counted by subscribers.
+export function createMetricsSamplerCache(
+  makeSampler: (udid: string) => MetricsSampler = (udid) => new MetricsSampler({ udid }),
+) {
+  const byUdid = new Map<string, MetricsSampler>();
+  return {
+    subscribe(udid: string, listener: (sample: MetricSample) => void): MetricsSubscription {
+      let sampler = byUdid.get(udid);
+      if (!sampler) {
+        sampler = makeSampler(udid);
+        byUdid.set(udid, sampler);
+        sampler.start();
+      }
+      const off = sampler.onSample(listener);
+      return {
+        meta: sampler.meta,
+        unsubscribe: () => {
+          off();
+          if (sampler.listenerCount === 0) {
+            sampler.stop();
+            byUdid.delete(udid);
+          }
+        },
+      };
+    },
+  };
+}

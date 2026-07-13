@@ -1625,6 +1625,7 @@ async function serve(
   host: string,
   options: {
     stream?: StreamRuntimeOptions;
+    metricsCorsOrigins?: string[];
   } = {},
 ) {
   // Boot the target simulators; the preview server streams them in-process
@@ -1644,6 +1645,7 @@ async function serve(
     device: targetDevice,
     streamSettings: options.stream,
     proxyHelpers: true,
+    metricsCorsOrigins: options.metricsCorsOrigins ?? [],
   });
 
   // Try requested port; if busy and the user didn't pin it, scan forward.
@@ -1774,6 +1776,13 @@ program
   })
   .option("--turn-username <username>", "TURN username")
   .option("--turn-credential <credential>", "TURN credential")
+  .option(
+    "--metrics-cors-origin <origin>",
+    "Allow this origin to read the /metrics stream cross-origin (repeatable). " +
+      "Loopback origins are always allowed.",
+    (value: string, prev: string[]) => [...prev, value],
+    [] as string[],
+  )
   .option("-l, --list [device]", "List running streams")
   .option("-k, --kill [device]", "Kill running stream(s)")
   .addHelpText(
@@ -1857,6 +1866,7 @@ Examples:
     } else {
       await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, {
         stream,
+        metricsCorsOrigins: opts.metricsCorsOrigin,
       });
     }
   });

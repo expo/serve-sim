@@ -133,7 +133,8 @@ export function corsAllowOriginHeaders(
   // URL() keeps IPv6 hosts bracketed ("[::1]"); strip them before comparing.
   const host = hostname.replace(/^\[|\]$/g, "");
   const isLoopback = host === "localhost" || host === "127.0.0.1" || host === "::1";
-  if (isLoopback || allowedOrigins.includes(origin)) {
+  const allowed = allowedOrigins.some((o) => o.toLowerCase() === origin.toLowerCase());
+  if (isLoopback || allowed) {
     return { "Access-Control-Allow-Origin": origin, Vary: "Origin" };
   }
   return {};

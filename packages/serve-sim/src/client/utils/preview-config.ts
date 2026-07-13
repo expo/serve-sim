@@ -17,7 +17,8 @@ export function proxyPreviewConfigForBrowser(
   const basePath = config.basePath === "/"
     ? ""
     : (config.basePath ?? "").replace(/\/+$/, "");
-  const devicePath = `${basePath}/helper/${encodeURIComponent(config.device)}`;
+  const helperBase = `${basePath}/helper`;
+  const devicePath = `${helperBase}/${encodeURIComponent(config.device)}`;
   const httpOrigin = `${location.protocol}//${location.host}`;
   const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
 
@@ -25,6 +26,8 @@ export function proxyPreviewConfigForBrowser(
     ...config,
     url: `${httpOrigin}${devicePath}`,
     streamUrl: `${httpOrigin}${devicePath}/stream.mjpeg`,
-    wsUrl: `${wsProtocol}//${location.host}${devicePath}/ws`,
+    // WS device rides in the query so the socket path stays fixed across
+    // devices (matches rewriteStateForRequestHost on the server).
+    wsUrl: `${wsProtocol}//${location.host}${helperBase}/ws?device=${encodeURIComponent(config.device)}`,
   };
 }

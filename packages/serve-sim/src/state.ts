@@ -37,7 +37,9 @@ export interface ServeSimDeviceState {
  * Build the state for a device served in-process. There's no separate helper
  * port — the URLs point at the preview server's own same-origin
  * `{base}/helper/<device>/…` routes, which simMiddleware serves from a
- * NativeCapture/NativeHid DeviceSession.
+ * NativeCapture/NativeHid DeviceSession. The control WebSocket instead rides
+ * at the fixed `{base}/helper/ws?device=<udid>` path so the WS endpoint stays
+ * the same across devices (path-allowlisting proxies can pin it).
  */
 export function inProcessServeSimState(
   udid: string,
@@ -57,7 +59,7 @@ export function inProcessServeSimState(
     device: udid,
     url: `http://${h}:${port}`,
     streamUrl: `http://${h}:${port}${prefix}/helper/${udid}/stream.mjpeg`,
-    wsUrl: `ws://${h}:${port}${prefix}/helper/${udid}/ws`,
+    wsUrl: `ws://${h}:${port}${prefix}/helper/ws?device=${encodeURIComponent(udid)}`,
     ...(streamSettings ? { streamSettings } : {}),
   };
 }

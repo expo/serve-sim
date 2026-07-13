@@ -237,7 +237,7 @@ The middleware reads the helper's state from `$TMPDIR/serve-sim/` and points the
 
 ### Single-port / remote proxying
 
-To expose the preview to remote viewers behind a single port (the way standalone `serve-sim` does), pass `proxyHelpers: true`. The browser then reaches the stream, control socket, and DevTools through same-origin `/.sim/helper/<device>` and `/.sim/devtools` URLs, so the per-device helper port and inspect-webkit bridge can stay local to the host. This routes WebSockets through the middleware, so you must forward your server's `upgrade` events to `handleUpgrade`:
+To expose the preview to remote viewers behind a single port (the way standalone `serve-sim` does), pass `proxyHelpers: true`. The browser then reaches the stream, control socket, and DevTools through same-origin `/.sim/helper/<device>` and `/.sim/devtools` URLs. The control WebSocket is the exception: it connects to the fixed `/.sim/helper/ws?device=<udid>` path (device in the query, not the path) so the WS endpoint stays the same across devices; the older `/.sim/helper/<udid>/ws` form is still accepted. The per-device helper port and inspect-webkit bridge can stay local to the host. This routes WebSockets through the middleware, so you must forward your server's `upgrade` events to `handleUpgrade`:
 
 ```ts
 const middleware = simMiddleware({ basePath: "/.sim", proxyHelpers: true });

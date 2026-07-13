@@ -1,14 +1,19 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMetricsStream } from "../hooks/use-metrics-stream";
 import { formatCpu, formatMem, sparklinePath } from "../utils/format-metrics";
+import { simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
 
 const SPARK_W = 96;
 const SPARK_H = 24;
 
 // Live CPU/memory readout for the sim's user app, with a sparkline for each.
-export function MetricsTool() {
-  const { meta, latest, history } = useMetricsStream();
+export function MetricsTool({ udid, metricsEndpoint }: { udid: string; metricsEndpoint?: string }) {
+  const path = useMemo(
+    () => metricsEndpoint ?? `${simEndpoint("metrics")}?device=${encodeURIComponent(udid)}`,
+    [metricsEndpoint, udid],
+  );
+  const { meta, latest, history, errored } = useMetricsStream(path);
   const [open, setOpen] = useState(true);
 
   return (
@@ -46,7 +51,7 @@ export function MetricsTool() {
           />
         </>
       ) : (
-        <div className="text-white/50 text-[12px]">Waiting for CPU / memory…</div>
+        <div className="text-white/50 text-[12px]">{errored ? "Disconnected" : "Waiting for CPU / memory…"}</div>
       )}
     </CollapsibleSection>
   );

@@ -14,6 +14,9 @@ fail() {
 if [[ "$(uname -s)" != "Darwin" ]]; then
   fail "serve-sim requires macOS. Detected: $(uname -s)."
 fi
+if [[ "$(uname -m)" != "arm64" ]]; then
+  fail "serve-sim requires Apple silicon (arm64). Detected: $(uname -m)."
+fi
 
 # Xcode CLI tools (simctl)
 if ! command -v xcrun >/dev/null 2>&1; then
@@ -23,13 +26,13 @@ if ! xcrun --find simctl >/dev/null 2>&1; then
   fail "simctl not found via xcrun. Install Xcode command line tools."
 fi
 
-# Node 18+
+# Maintained Node.js LTS (currently 20+)
 if ! command -v node >/dev/null 2>&1; then
-  fail "node not found. Install Node.js 18 or newer (https://nodejs.org)."
+  fail "node not found. Install Node.js 20 or newer (https://nodejs.org)."
 fi
 NODE_MAJOR="$(node -e 'console.log(process.versions.node.split(".")[0])')"
-if [[ "$NODE_MAJOR" -lt 18 ]]; then
-  fail "node $NODE_MAJOR detected. serve-sim requires Node.js 18+."
+if [[ "$NODE_MAJOR" -lt 20 ]]; then
+  fail "node $NODE_MAJOR detected. serve-sim requires Node.js 20+."
 fi
 
 # macOS 14+ is optional (camera-only), so warn rather than fail

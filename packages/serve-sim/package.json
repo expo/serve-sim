@@ -10,12 +10,12 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/EvanBacon/serve-sim.git",
+    "url": "git+https://github.com/expo/serve-sim.git",
     "directory": "packages/serve-sim"
   },
-  "homepage": "https://github.com/EvanBacon/serve-sim#readme",
+  "homepage": "https://github.com/expo/serve-sim#readme",
   "bugs": {
-    "url": "https://github.com/EvanBacon/serve-sim/issues"
+    "url": "https://github.com/expo/serve-sim/issues"
   },
   "bin": {
     "serve-sim": "dist/serve-sim.js"
@@ -23,11 +23,15 @@
   "engines": {
     "node": ">=20"
   },
+  "cpu": [
+    "arm64"
+  ],
   "files": [
     "LICENSE",
     "dist/serve-sim.js",
     "dist/middleware.js",
     "dist/middleware.cjs",
+    "dist/state.js",
     "dist/simcam/libSimCameraInjector.dylib",
     "dist/simcam/serve-sim-camera-helper",
     "dist/simax/serve-sim-ax-settings",
@@ -46,9 +50,7 @@
     "Sources/SimAXSettings/sim-ax-settings.m",
     "Sources/SimAXSettings/build.sh",
     "dist/native/serve-sim-native.node",
-    "Package.swift",
-    "Sources/SimNative/*.swift",
-    "Sources/SimNative/build.sh"
+    "dist/bin/LiveKitWebRTC.framework"
   ],
   "exports": {
     "./middleware": {
@@ -57,7 +59,7 @@
       "types": "./src/middleware.ts"
     },
     "./state": {
-      "import": "./src/state.ts",
+      "import": "./dist/state.js",
       "types": "./src/state.ts"
     }
   },

@@ -6,7 +6,7 @@ license: Apache-2.0
 
 # serve-sim
 
-Drive an Apple Simulator (iOS, iPad, Apple Watch) from an agent using the [serve-sim](https://github.com/EvanBacon/serve-sim) CLI. serve-sim spawns a Swift helper that captures the simulator framebuffer via `simctl io`, exposes it as an MJPEG stream plus a binary WebSocket input channel, and serves a React preview UI on top. This skill teaches an agent the exact CLI surface, the gesture JSON shape, the gotchas, and the recommended workflows.
+Drive an Apple Simulator (iOS, iPad, Apple Watch) from an agent using the [serve-sim](https://github.com/expo/serve-sim) CLI. serve-sim captures simulator IOSurfaces through its in-process native addon, exposes HTTP or WebRTC video plus WebSocket input, and serves a React preview UI. This skill teaches an agent the exact CLI surface, the gesture JSON shape, the gotchas, and the recommended workflows.
 
 ## When to use
 
@@ -32,8 +32,9 @@ Before any other action, verify the host satisfies these. If something is missin
 | Requirement | Check command | Why |
 |---|---|---|
 | macOS host | `uname -s` returns `Darwin` | serve-sim only runs on macOS |
+| Apple silicon | `uname -m` returns `arm64` | bundled native components are arm64-only |
 | Xcode CLI tools | `xcrun --version` exits 0 | `simctl` is the underlying simulator driver |
-| Node.js ≥18 | `node --version` ≥18 | serve-sim is an npm package run via `npx` |
+| Node.js ≥20 | `node --version` ≥20 | serve-sim supports maintained Node.js LTS releases |
 | macOS 14+ (optional) | `sw_vers -productVersion` ≥14 | Required ONLY for `camera` subcommand |
 
 A bundled helper script is available: `scripts/check-prereqs.sh`. Run it; if it exits non-zero, surface the message to the user.
@@ -43,23 +44,19 @@ A booted simulator is required for most subcommands. Check with `xcrun simctl li
 ## Mental model
 
 ```text
-┌──────────────┐  simctl io  ┌─────────────────┐  MJPEG / WS  ┌─────────┐
-│ iOS Simulator│ ──────────► │ serve-sim-bin   │ ───────────► │ Browser │
-└──────────────┘   (Swift)   │ (per-device)    │              └─────────┘
-                             └─────────────────┘
-                                     ▲
-                              state file in
-                            $TMPDIR/serve-sim/
-                                     ▲
-                            ┌──────────────────┐
-                            │ serve-sim CLI    │
-                            └──────────────────┘
+┌───────────────┐  IOSurface  ┌────────────────────┐  HTTP/WebRTC  ┌─────────┐
+│ iOS Simulator │ ──────────► │ serve-sim process  │ ────────────► │ Browser │
+└───────────────┘              │ + native N-API     │   WebSocket   └─────────┘
+                               └────────────────────┘
+                                         ▲
+                                  state files in
+                                $TMPDIR/serve-sim/
 ```
 
 Key invariants the agent must respect:
 
 - **All coordinates are normalized 0..1**, with `(0, 0)` at top-left and `(1, 1)` at bottom-right of the display. Never pass pixel coordinates.
-- **One helper per device**. Multiple booted simulators are supported by passing several device names or by attaching to all.
+- **One registered server per device**. A server process may capture several simulators, and the capture API itself is non-exclusive.
 - **State lives in `$TMPDIR/serve-sim/server-{udid}.json`**. Use `serve-sim --list` to query it; do not read the JSON directly unless you know what you are doing.
 - **The orientation set via `rotate` is remembered by the helper**, and subsequent gestures are rotated client-side. An agent that sends raw coords after a rotation does not need to compensate manually.
 
@@ -67,7 +64,8 @@ Key invariants the agent must respect:
 
 | Goal | Command | Notes |
 |---|---|---|
-| Start preview server | `npx serve-sim [device]` | Default preview at `http://localhost:3200`, stream at `:3100`. Foreground process. |
+| Start preview server | `npx serve-sim [device]` | Default preview at `http://localhost:3200`; helper routes are same-origin. Foreground process. |
+| Start WebRTC preview | `npx serve-sim --transport webrtc [device]` | Uses WebRTC media and the ordered helper WebSocket for input. |
 | Start headless / daemon | `npx serve-sim --detach [device]` | Returns JSON with `pid`, `port`, `url`. Use for agent loops. |
 | Show stream in host's preview | `npx serve-sim --detach -q` → hand off `url` to host preview tool | See "Showing the stream in your agent's preview" section. |
 | List running streams | `npx serve-sim --list` | Add `-q` for JSON-only output. |
@@ -81,7 +79,7 @@ Key invariants the agent must respect:
 | Inject camera feed | `npx serve-sim camera <bundle-id> [--file <path>\|--webcam [name]]` | (Re)launches the app with the camera dylib attached. macOS 14+ only. See [references/camera.md](references/camera.md). |
 | Hot-swap camera source | `npx serve-sim camera switch <placeholder\|webcam\|file> [arg]` | No app relaunch. |
 | Manage app permissions | `npx serve-sim permissions <grant\|revoke\|reset\|list> <permission> <bundle-id>` | Camera, photos, location, **push notifications**, contacts, etc. See [references/permissions.md](references/permissions.md). |
-| Read accessibility tree | `curl http://localhost:3100/ax` | Returns axe-style JSON. See [references/endpoints.md](references/endpoints.md) for all endpoints. |
+| Read accessibility tree | Derive `/ax` from the helper base in `streamUrl` | Returns axe-style JSON. See [references/endpoints.md](references/endpoints.md). |
 
 Most subcommands accept `-d <udid|name>` to target a specific device when several are booted.
 
@@ -108,7 +106,7 @@ If the user has only one booted simulator, omit `-d` entirely. The skill should 
 By default, serve-sim prints human-readable status to stdout. For agent loops, prefer JSON output:
 
 ```sh
-npx serve-sim --list -q          # JSON array of running streams
+npx serve-sim --list -q          # JSON object; one stream is top-level, many are under .streams
 npx serve-sim --detach -q        # JSON with pid/port/url after spawn
 npx serve-sim camera status -q   # JSON with {alive, source, mirror, ...}
 ```
@@ -125,7 +123,7 @@ Steps:
    ```sh
    npx serve-sim --detach -q
    ```
-   This returns JSON like `{"pid":..., "port":3200, "url":"http://localhost:3200", "streamUrl":"http://localhost:3100", ...}`. The `url` field is the human-facing preview UI; `streamUrl` is the raw MJPEG endpoint.
+   This returns JSON like `{"pid":..., "port":3100, "url":"http://localhost:3100", "streamUrl":"http://localhost:3100/helper/<udid>/stream.mjpeg", ...}`. The `url` field is the human-facing preview UI; `streamUrl` is the raw MJPEG endpoint.
 
 2. **Always surface the URL plainly** in your response so the user can fallback to opening it manually in any browser.
 
@@ -154,14 +152,14 @@ npx serve-sim --kill            # stop all
 npx serve-sim --kill "iPhone 16 Pro"  # stop one
 ```
 
-Orphan helpers occupy ports 3200/3100 and prevent fresh starts.
+Orphan servers occupy their recorded ports and prevent fresh starts.
 
 ## Anti-patterns
 
 - **Do not pass pixel coordinates.** All coords are normalized `0..1`. If the user gives pixel values, divide by the screen dimensions reported by `GET /config`.
 - **Do not use `gesture` for plain taps.** Use `tap`. See "Critical gotcha" above.
 - **Do not assume `npx serve-sim` is already running.** Verify with `--list` or by checking `$TMPDIR/serve-sim/server-{udid}.json`. If absent, start it explicitly.
-- **Do not skip the prerequisites check** on the first invocation in a session. Wrong macOS version, missing Xcode CLI tools, or Node <18 produce confusing errors downstream.
+- **Do not skip the prerequisites check** on the first invocation in a session. Wrong macOS version, missing Xcode CLI tools, or Node <20 produce confusing errors downstream.
 - **Do not invent button names.** Only these six are valid: `home`, `swipe_home`, `app_switcher`, `lock`, `siri`, `side_button`. See [references/buttons-rotation.md](references/buttons-rotation.md) for the source-of-truth list.
 - **Do not parse the non-quiet human output.** Use `-q` for JSON.
 - **Do not leave camera helpers running** across unrelated tasks. Stop them with `npx serve-sim camera --stop-webcam` when done.

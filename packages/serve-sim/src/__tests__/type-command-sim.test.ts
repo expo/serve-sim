@@ -82,11 +82,7 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
     });
     expect(result.status).toBe(0);
 
-    // Wait briefly for the helper to flush its stdout log — sendKey is sync,
-    // but stdio buffering means a few ms can elapse before lines hit the file.
-    await new Promise((r) => setTimeout(r, 200));
-
-    const logAfter = readFileSync(logFile, "utf-8");
+    const logAfter = await waitForKeyLines(logFile, beforeCount + 10, 5_000);
     const newLines = logAfter.slice(logBefore.length);
     const afterCount = countKeyLines(logAfter);
 
@@ -107,6 +103,17 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
 
 function countKeyLines(s: string): number {
   return countMatches(s, /\[hid\] Key (down|up) /g);
+}
+
+async function waitForKeyLines(logFile: string, expectedCount: number, timeoutMs: number): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let log = "";
+  while (Date.now() < deadline) {
+    log = readFileSync(logFile, "utf-8");
+    if (countKeyLines(log) >= expectedCount) return log;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return readFileSync(logFile, "utf-8");
 }
 
 function countMatches(s: string, re: RegExp): number {

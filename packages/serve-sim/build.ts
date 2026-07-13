@@ -139,6 +139,22 @@ if (!mwResult.success) {
 const mwSize = (await mwResult.outputs[0]!.text()).length;
 console.log(`dist/middleware.js ${kb(mwSize)}`);
 
+const stateResult = await Bun.build({
+  entrypoints: [resolve(root, "src/state.ts")],
+  target: "node",
+  format: "esm",
+  minify: true,
+  outdir: distDir,
+  naming: "state.js",
+  external: ["fs", "os", "path"],
+});
+if (!stateResult.success) {
+  console.error("State build failed:");
+  for (const log of stateResult.logs) console.error(log);
+  process.exit(1);
+}
+console.log(`dist/state.js      ${kb((await stateResult.outputs[0]!.text()).length)}`);
+
 writeFileSync(
   resolve(distDir, "middleware.cjs"),
   `"use strict";\nmodule.exports = require("./middleware.js");\n`,
@@ -240,7 +256,7 @@ if (axSettingsBuild.status !== 0) {
 console.log("dist/simax/serve-sim-ax-settings");
 
 // ─── 8. serve-sim-native.node — in-process N-API addon ───────────────────
-// Replaces the spawned serve-sim-bin helper. arm64 (Apple Silicon); loaded by
+// Replaces the spawned serve-sim-bin helper. Arm64 macOS binary; loaded by
 // path from both the node bundle (createRequire) and the bun-compiled executable.
 
 const nativeBuild = spawnSync(

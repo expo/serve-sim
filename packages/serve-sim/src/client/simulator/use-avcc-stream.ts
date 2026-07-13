@@ -17,6 +17,8 @@ export interface UseAvccStreamOptions {
   onFirstFrame?: () => void;
   /** Called on every painted frame — drives the FPS counter / staleness check. */
   onFrame?: () => void;
+  /** Called once after the first decoded H.264 frame is painted (never for the JPEG seed). */
+  onDecodedFrame?: () => void;
   /** Called with a human-readable message when the decode pipeline fails. */
   onError?: (message: string) => void;
   /**
@@ -49,12 +51,13 @@ export function useAvccStream({
   canvasRef,
   onFirstFrame,
   onFrame,
+  onDecodedFrame,
   onError,
   onDecoderError,
 }: UseAvccStreamOptions): void {
   // Latest-callback ref: keeps the decode effect off the callback identities.
-  const callbacks = useRef({ onFirstFrame, onFrame, onError, onDecoderError });
-  callbacks.current = { onFirstFrame, onFrame, onError, onDecoderError };
+  const callbacks = useRef({ onFirstFrame, onFrame, onDecodedFrame, onError, onDecoderError });
+  callbacks.current = { onFirstFrame, onFrame, onDecodedFrame, onError, onDecoderError };
 
   useEffect(() => {
     if (!enabled || !url || !isAvccSupported()) return;
@@ -63,6 +66,7 @@ export function useAvccStream({
     const demuxer = new AvccDemuxer();
     let stopped = false;
     let painted = false;
+    let decodedFramePainted = false;
     let timestamp = 0;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let decoder: VideoDecoder | null = null;
@@ -77,7 +81,7 @@ export function useAvccStream({
       else callbacks.current.onError?.(message);
     };
 
-    const paint = (source: CanvasImageSource, width: number, height: number) => {
+    const paint = (source: CanvasImageSource, width: number, height: number, decoded: boolean) => {
       if (!isLive()) return;
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -89,6 +93,10 @@ export function useAvccStream({
       if (!ctx) return;
       ctx.drawImage(source, 0, 0, width, height);
       callbacks.current.onFrame?.();
+      if (decoded && !decodedFramePainted) {
+        decodedFramePainted = true;
+        callbacks.current.onDecodedFrame?.();
+      }
       if (!painted) {
         painted = true;
         callbacks.current.onFirstFrame?.();
@@ -99,7 +107,7 @@ export function useAvccStream({
       new VideoDecoder({
         output: (frame) => {
           try {
-            if (isLive()) paint(frame, frame.displayWidth, frame.displayHeight);
+            if (isLive()) paint(frame, frame.displayWidth, frame.displayHeight, true);
           } finally {
             frame.close();
           }
@@ -113,7 +121,7 @@ export function useAvccStream({
         new Blob([jpeg as BlobPart], { type: "image/jpeg" }),
       );
       try {
-        if (isLive()) paint(bitmap, bitmap.width, bitmap.height);
+        if (isLive()) paint(bitmap, bitmap.width, bitmap.height, false);
       } finally {
         bitmap.close();
       }

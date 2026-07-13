@@ -13,7 +13,7 @@ import type { Socket } from "net";
 // importing the dependency keeps the proxy working regardless of runtime.
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
-import { getDeviceSession, closeDeviceSession, type HidSocket } from "./device-session";
+import { closeDeviceSession, getDeviceSession, sendCorsPreflight, type HidSocket } from "./device-session";
 import {
   eventLogEventForCommand,
   readEventLog,
@@ -21,7 +21,7 @@ import {
   subscribeEventLog,
 } from "./event-log";
 import { axFrontmostAsync } from "./native";
-import { inProcessServeSimState, writeServeSimState, type ServeSimDeviceState } from "./state";
+import { inProcessServeSimState, writeServeSimState, type ServeSimDeviceState, type StreamSettings } from "./state";
 import { debugMw } from "./debug";
 import {
   resolveDevicePlaceholderAsset,
@@ -501,6 +501,7 @@ function helperProxyTarget(rawUrl: string, prefix: string): { device: string | n
     "health",
     "stream.avcc",
     "stream.mjpeg",
+    "webrtc",
     "ws",
   ]);
   let device = parsed.searchParams.get("device");
@@ -696,17 +697,24 @@ function bridgeWebSocketFrames(req: SimReq, socket: Socket, head: Buffer, upstre
  */
 function serveHelperInProcess(req: SimReq, res: SimRes, device: string | null, upstreamPath: string): boolean {
   if (!device) return false;
+  const endpoint = upstreamPath.split("?")[0];
+  if ((endpoint === "/webrtc/offer" || endpoint === "/webrtc/close") && req.method === "OPTIONS") {
+    sendCorsPreflight(res);
+    return true;
+  }
   let session;
   try {
     session = getDeviceSession(device);
   } catch {
     return false; // not booted / capture unavailable → 404
   }
-  switch (upstreamPath.split("?")[0]) {
+  switch (endpoint) {
     case "/stream.mjpeg": session.handleMjpeg(req, res); return true;
     case "/stream.avcc": session.handleAvcc(req, res); return true;
     case "/config": session.handleConfig(req, res); return true;
     case "/health": session.handleHealth(req, res); return true;
+    case "/webrtc/offer": void session.handleWebRTCOffer(req, res); return true;
+    case "/webrtc/close": void session.handleWebRTCClose(req, res); return true;
     case "/ax": session.handleAx(req, res); return true;
     case "/foreground": session.handleForeground(req, res); return true;
     default: return false;
@@ -719,7 +727,12 @@ function serveHelperInProcess(req: SimReq, res: SimRes, device: string | null, u
  * preview server itself serves the device's /helper routes in-process. Resolves
  * to an error string on boot failure, or null on success.
  */
-export async function startDeviceInProcess(udid: string, port: number, base: string): Promise<string | null> {
+export async function startDeviceInProcess(
+  udid: string,
+  port: number,
+  base: string,
+  streamSettings?: StreamSettings,
+): Promise<string | null> {
   // `simctl boot` errors when already booted — ignore and let bootstatus confirm.
   await new Promise<void>((resolve) => execFile("xcrun", ["simctl", "boot", udid], () => resolve()));
   const ready = await new Promise<boolean>((resolve) => {
@@ -741,7 +754,7 @@ export async function startDeviceInProcess(udid: string, port: number, base: str
     });
     if (!booted) return `Device ${udid} failed to reach booted state`;
   }
-  writeServeSimState(inProcessServeSimState(udid, port, base));
+  writeServeSimState(inProcessServeSimState(udid, port, base, "127.0.0.1", streamSettings));
   return null;
 }
 
@@ -821,7 +834,7 @@ export function previewConfigForState(
   base: string,
   serveSimBin: string,
   execToken: string,
-  codec?: string,
+  streamSettingsOrCodec?: StreamSettings | string,
   proxyHelpers = false,
 ): ServeSimState & {
   basePath: string;
@@ -837,10 +850,16 @@ export function previewConfigForState(
   gridMemoryEndpoint: string;
   previewEndpoint: string;
   execToken: string;
+  /** @deprecated Use streamSettings. */
   codec?: string;
+  streamSettings?: StreamSettings;
   proxyHelpers?: boolean;
 } {
   const gridApiBase = (base === "" ? "" : base) + "/grid/api";
+  const legacyCodec = typeof streamSettingsOrCodec === "string" ? streamSettingsOrCodec : undefined;
+  const streamSettings = typeof streamSettingsOrCodec === "object"
+    ? streamSettingsOrCodec
+    : httpStreamSettingsFromLegacyCodec(legacyCodec);
   return {
     ...state,
     basePath: base,
@@ -856,7 +875,8 @@ export function previewConfigForState(
     gridMemoryEndpoint: gridApiBase + "/memory",
     previewEndpoint: base === "" ? "/" : base,
     execToken,
-    ...(codec ? { codec } : {}),
+    ...(legacyCodec ? { codec: legacyCodec } : {}),
+    ...(streamSettings ? { streamSettings } : {}),
     ...(proxyHelpers ? { proxyHelpers: true } : {}),
   };
 }
@@ -1189,12 +1209,9 @@ export interface SimMiddlewareOptions {
    * cross-origin pages cannot read it.
    */
   execToken?: string;
-  /**
-   * Pin the preview stream codec. `"mjpeg"` forces the software JPEG path for
-   * hosts whose hardware can't encode H.264 (e.g. VMs without the high/low-
-   * latency H.264 profiles); `"auto"`/undefined lets the browser pick H.264.
-   * Reserved for future values such as `"hevc"`/`"av1"`.
-   */
+  /** Stream transport and codec settings for the preview. */
+  streamSettings?: StreamSettings;
+  /** @deprecated Use `streamSettings: { transport: "http", codec }`. */
   codec?: string;
   /**
    * Route the browser's helper stream/control and DevTools sockets through the
@@ -1209,6 +1226,13 @@ export interface SimMiddlewareOptions {
   proxyHelpers?: boolean;
   /** Test hook for supplying a fake inspect-webkit bridge. */
   inspectWebKitBridge?: () => Promise<WebKitBridge>;
+}
+
+function httpStreamSettingsFromLegacyCodec(codec: string | undefined): StreamSettings | undefined {
+  if (codec === "auto" || codec === "h264" || codec === "mjpeg") {
+    return { transport: "http", codec };
+  }
+  return undefined;
 }
 
 function safeEqualString(a: string, b: string): boolean {
@@ -1287,15 +1311,17 @@ function connectToFetch(
     resolveResponse(response);
   };
 
+  const statusAllowsBody = () => status !== 101 && status !== 204 && status !== 205 && status !== 304;
+
   const ensureResponse = () => {
     if (headersSent) return;
     headersSent = true;
-    resolveOnce(new Response(body, { status, headers: responseHeaders }));
+    resolveOnce(new Response(statusAllowsBody() ? body : null, { status, headers: responseHeaders }));
   };
 
   const writeChunk = (chunk: Buffer | string | Uint8Array) => {
     ensureResponse();
-    if (!controllerRef || writableEnded) return true;
+    if (!statusAllowsBody() || !controllerRef || writableEnded) return true;
     const data = typeof chunk === "string"
       ? encoder.encode(chunk)
       : chunk instanceof Uint8Array
@@ -1400,6 +1426,7 @@ function connectToFetch(
  *   GET  {basePath}/ax      — SSE stream of normalized accessibility snapshots
  */
 export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
+  const streamSettings = options?.streamSettings ?? httpStreamSettingsFromLegacyCodec(options?.codec);
   const base = (options?.basePath ?? "/.sim").replace(/\/+$/, "");
   const helperPrefix = helperProxyPrefix(base);
   const devtoolsPrefix = devtoolsProxyPrefix(base);
@@ -1511,7 +1538,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
       if (state) {
         const remoteState = rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers);
-        const config = JSON.stringify(previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.codec, proxyHelpers));
+        const config = JSON.stringify(previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers));
         const configScript = `<script>window.__SIM_PREVIEW__=${config}</script>`;
         html = html.replace("<!--__SIM_PREVIEW_CONFIG__-->", configScript);
       }
@@ -1680,7 +1707,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           return;
         }
         const port = req.socket.localPort ?? 0;
-        void startDeviceInProcess(udid, port, base).then((error) => {
+        void startDeviceInProcess(udid, port, base, streamSettings).then((error) => {
           if (res.writableEnded) return;
           if (error) {
             res.writeHead(500, { "Content-Type": "application/json" });
@@ -1822,7 +1849,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         "Cache-Control": "no-store",
       });
       const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
-      res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.codec, proxyHelpers) : null));
+      res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers) : null));
       return;
     }
 
@@ -1886,7 +1913,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         const state = selectServeSimState(states, selectedDevice);
         const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
         return JSON.stringify(
-          remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, options?.codec, proxyHelpers) : null,
+          remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers) : null,
         );
       };
 

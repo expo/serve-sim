@@ -24,6 +24,12 @@ import {
   type MjpegFrame,
 } from "./native";
 import { eventLogEventForHidMessage, formatEventLogPoint, recordEventLogEvent, updateEventLogEvent } from "./event-log";
+import {
+  MAX_WEBRTC_SIGNALING_BODY_BYTES,
+  WebRtcSignalingError,
+  parseWebRtcCloseRequest,
+  parseWebRtcOffer,
+} from "./webrtc-signaling";
 
 /**
  * Minimal WebSocket surface the HID input channel needs. Satisfied by both the
@@ -38,11 +44,16 @@ export interface HidSocket {
   close(): void;
 }
 
-const CORS = {
+export const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
+
+export function sendCorsPreflight(res: ServerResponse): void {
+  res.writeHead(204, CORS);
+  res.end();
+}
 
 // AVCC seed tag (StreamFormat.AVCCEnvelope.seedTag). description/keyframe/delta
 // envelopes are framed natively; only the on-connect JPEG seed is built here.
@@ -123,10 +134,54 @@ function waitForDrain(res: ServerResponse): Promise<void> {
   });
 }
 
+function readRequestBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    req.on("data", (chunk) => {
+      if (settled) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += buffer.length;
+      if (bytes > maxBytes) {
+        fail(new WebRtcSignalingError("WebRTC signaling body is too large", 413, "body_too_large"));
+        return;
+      }
+      chunks.push(buffer);
+    });
+    req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks));
+    });
+    req.on("aborted", () => fail(new WebRtcSignalingError("Request aborted", 400, "request_aborted")));
+    req.on("error", fail);
+  });
+}
+
+function isJsonRequest(req: IncomingMessage): boolean {
+  const value = req.headers["content-type"];
+  const contentType = Array.isArray(value) ? value[0] : value;
+  return contentType?.split(";", 1)[0]?.trim().toLowerCase() === "application/json";
+}
+
+function parseJsonBody(body: Buffer, code: string): unknown {
+  try {
+    return JSON.parse(body.toString("utf8")) as unknown;
+  } catch {
+    throw new WebRtcSignalingError("Malformed JSON request body", 400, code);
+  }
+}
+
 export class DeviceSession {
   private readonly capture: NativeCapture;
   private readonly hid: NativeHid;
-  private unsubscribeMjpeg?: () => void;
+  private captureStart?: Promise<void>;
   private phase: "unstarted" | "running" | "stopped" = "unstarted";
 
   private width = 0;
@@ -144,39 +199,27 @@ export class DeviceSession {
   }
 
   /** Begin capture. Throws if the device isn't booted. Idempotent. */
-  start(): void {
-    if (this.phase !== "unstarted") return;
-    this.capture.start();
-    void (async () => {
-      const unsubscribe = await this.capture.subscribeMjpeg((frame) => this.onSharedMjpegFrame(frame));
-      if (this.phase === "running") { // only if someone hasn't already stopped the capture
-        this.unsubscribeMjpeg = unsubscribe;
-      } else {
-        unsubscribe();
-      }
-    })();
+  start(): Promise<void> {
+    if (this.phase === "running") return this.captureStart ?? Promise.resolve();
+    if (this.phase === "stopped") return Promise.reject(new Error("Capture session is stopped"));
     this.phase = "running";
+    this.captureStart = this.capture.start();
+    return this.captureStart;
   }
 
   close(): void {
     if (this.phase !== "running") return;
     for (const ws of this.hidSockets) ws.close();
-    this.unsubscribeMjpeg?.();
     this.hidSockets.clear();
-    this.capture.stop();
+    void this.capture.stop().catch(() => {});
     this.phase = "stopped";
   }
 
   // ── Frame handling ───────────────────────────────────────────────────────
 
-  private async onSharedMjpegFrame(frame: MjpegFrame): Promise<void> {
+  private onSharedMjpegFrame(frame: MjpegFrame): void {
     const { width, height, data: jpeg } = frame;
-
-    if (width !== this.width || height !== this.height) {
-      this.width = width;
-      this.height = height;
-      this.broadcastConfig();
-    }
+    this.updateScreenSize(width, height);
 
     if (!this.latestJpegBuffer || this.latestJpegBuffer.length < jpeg.length) {
       const currentCapacity = this.latestJpegBuffer?.length ?? 0;
@@ -184,6 +227,11 @@ export class DeviceSession {
     }
     this.latestJpegBuffer.set(jpeg, 0);
     this.latestJpegLength = jpeg.length;
+  }
+
+  private async waitForCapture(): Promise<void> {
+    await this.captureStart;
+    if (this.phase !== "running") throw new Error("Capture session is stopped");
   }
 
   private latestJpeg(): Buffer | null {
@@ -210,15 +258,32 @@ export class DeviceSession {
     });
 
     void (async () => {
-      const latestJpeg = this.latestJpeg();
-      if (latestJpeg) this.writeMjpegFrame(res, latestJpeg); // paint immediately
-      const unsubscribe = await this.capture.subscribeMjpeg(async (frame) => {
-        await waitForDrain(res);
-        this.writeMjpegFrame(res, frame.data);
-      });
-      if (res.writableEnded) unsubscribe();
-      res.on("close", unsubscribe);
-      res.on("error", unsubscribe);
+      let cleanup = () => {};
+      try {
+        await this.waitForCapture();
+        const latestJpeg = this.latestJpeg();
+        if (latestJpeg) this.writeMjpegFrame(res, latestJpeg); // paint immediately
+        const unsubscribe = await this.capture.subscribeMjpeg(async (frame) => {
+          this.onSharedMjpegFrame(frame);
+          await waitForDrain(res);
+          if (!res.writableEnded && !res.destroyed) this.writeMjpegFrame(res, frame.data);
+        });
+        let unsubscribed = false;
+        cleanup = () => {
+          if (unsubscribed) return;
+          unsubscribed = true;
+          unsubscribe();
+        };
+        if (res.writableEnded || res.destroyed) {
+          cleanup();
+        } else {
+          res.once("close", cleanup);
+          res.once("error", cleanup);
+        }
+      } catch {
+        cleanup();
+        res.destroy();
+      }
     })();
   }
 
@@ -231,18 +296,69 @@ export class DeviceSession {
     });
 
     void (async () => {
-      // Seed with the current screen; the per-client native AVCC subscription
-      // starts with its own decoder config and keyframe.
-      const latestJpeg = this.latestJpeg();
-      if (latestJpeg) res.write(avccSeed(latestJpeg));
+      let cleanup = () => {};
+      try {
+        await this.waitForCapture();
+        let streamStarted = false;
+        let stopSeedRequested = false;
+        let unsubscribeSeed: (() => void) | undefined;
+        const stopSeed = () => {
+          stopSeedRequested = true;
+          const unsubscribe = unsubscribeSeed;
+          unsubscribeSeed = undefined;
+          unsubscribe?.();
+        };
+        cleanup = stopSeed;
 
-      const unsubscribe = await this.capture.subscribeAvcc(async (frame) => {
-        await waitForDrain(res);
-        res.write(frame.data);
-      });
-      if (res.writableEnded) unsubscribe();
-      res.on("close", unsubscribe);
-      res.on("error", unsubscribe);
+        // Whichever codec produces first opens the response. A cached or
+        // one-shot JPEG gives AVCC clients an immediate paint and keeps the
+        // endpoint responsive on hosts where VideoToolbox cannot encode H.264.
+        // The JPEG subscription is cancelled as soon as either seed or AVCC
+        // data arrives, so it adds no steady-state encoding cost.
+        const latestJpeg = this.latestJpeg();
+        if (latestJpeg) {
+          streamStarted = true;
+          res.write(avccSeed(latestJpeg));
+        } else {
+          unsubscribeSeed = await this.capture.subscribeMjpeg(async (frame) => {
+            if (streamStarted || res.writableEnded || res.destroyed) {
+              stopSeed();
+              return;
+            }
+            this.onSharedMjpegFrame(frame);
+            streamStarted = true;
+            res.write(avccSeed(frame.data));
+            stopSeed();
+          });
+          if (stopSeedRequested) stopSeed();
+        }
+
+        const unsubscribeAvcc = await this.capture.subscribeAvcc(async (frame) => {
+          this.updateScreenSize(frame.width, frame.height);
+          if (!streamStarted) {
+            streamStarted = true;
+            stopSeed();
+          }
+          await waitForDrain(res);
+          if (!res.writableEnded && !res.destroyed) res.write(frame.data);
+        });
+        let unsubscribed = false;
+        cleanup = () => {
+          if (unsubscribed) return;
+          unsubscribed = true;
+          stopSeed();
+          unsubscribeAvcc();
+        };
+        if (res.writableEnded || res.destroyed) {
+          cleanup();
+        } else {
+          res.once("close", cleanup);
+          res.once("error", cleanup);
+        }
+      } catch {
+        cleanup();
+        res.destroy();
+      }
     })();
   }
 
@@ -252,6 +368,87 @@ export class DeviceSession {
 
   handleHealth(_req: IncomingMessage, res: ServerResponse): void {
     this.sendJson(res, 200, { status: "ok" });
+  }
+
+  async handleWebRTCOffer(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let sessionId: string | undefined;
+    let sessionEstablished = false;
+    let cancellation: Promise<void> | undefined;
+    const cancelSession = (): Promise<void> => {
+      if (!sessionId) return Promise.resolve();
+      cancellation ??= this.capture.closeWebRTCSession(sessionId);
+      return cancellation;
+    };
+    const handleResponseClose = () => {
+      // `close` also fires after a normal response. Only cancel when the socket
+      // disappeared before Node finished flushing the SDP answer.
+      if (!res.writableFinished) void cancelSession();
+    };
+    res.once("close", handleResponseClose);
+
+    try {
+      if (req.method !== "POST") {
+        throw new WebRtcSignalingError("WebRTC offers require POST", 405, "method_not_allowed");
+      }
+      if (!isJsonRequest(req)) {
+        throw new WebRtcSignalingError("WebRTC offers require application/json", 415, "unsupported_media_type");
+      }
+      const body = await readRequestBody(req, MAX_WEBRTC_SIGNALING_BODY_BYTES);
+      const offer = parseWebRtcOffer(parseJsonBody(body, "invalid_offer"));
+      sessionId = offer.sessionId;
+      await this.waitForCapture();
+      if (await this.refreshScreenSizeFromNative()) this.broadcastConfig();
+      const answer = await this.capture.handleWebRTCOffer(offer);
+      sessionEstablished = true;
+      if (res.writableEnded || res.destroyed) {
+        await cancelSession();
+        return;
+      }
+      this.sendJson(res, 200, answer);
+    } catch (err) {
+      if (sessionEstablished) await cancelSession();
+      if (res.writableEnded || res.destroyed) return;
+      const busy = err instanceof Error &&
+        err.message.includes("WebRTC signaling already in progress");
+      const status = err instanceof WebRtcSignalingError ? err.status : busy ? 409 : 500;
+      const code = err instanceof WebRtcSignalingError
+        ? err.code
+        : busy
+          ? "webrtc_session_busy"
+          : "webrtc_offer_failed";
+      this.sendJson(res, status, {
+        error: code,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      if (res.writableFinished) res.off("close", handleResponseClose);
+    }
+  }
+
+  async handleWebRTCClose(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      if (req.method !== "POST") {
+        throw new WebRtcSignalingError("WebRTC close requires POST", 405, "method_not_allowed");
+      }
+      const body = await readRequestBody(req, 4 * 1024);
+      const request = parseWebRtcCloseRequest(parseJsonBody(body, "invalid_close_request"));
+      await this.capture.closeWebRTCSession(request.sessionId);
+      if (res.writableEnded || res.destroyed) return;
+      res.writeHead(204, CORS);
+      res.end();
+    } catch (err) {
+      if (res.writableEnded || res.destroyed) return;
+      const status = err instanceof WebRtcSignalingError ? err.status : 400;
+      const code = err instanceof WebRtcSignalingError ? err.code : "invalid_close_request";
+      this.sendJson(res, status, {
+        error: code,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  handleOptions(_req: IncomingMessage, res: ServerResponse): void {
+    sendCorsPreflight(res);
   }
 
   handleAx(_req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -518,6 +715,21 @@ export class DeviceSession {
     return Buffer.concat([Buffer.from([WS_MSG_CONFIG]), Buffer.from(JSON.stringify(this.screenConfig()))]);
   }
 
+  private async refreshScreenSizeFromNative(): Promise<boolean> {
+    const { width, height } = await this.capture.screenSize();
+    if (!width || !height || (width === this.width && height === this.height)) return false;
+    this.width = width;
+    this.height = height;
+    return true;
+  }
+
+  private updateScreenSize(width: number, height: number): void {
+    if (!width || !height || (width === this.width && height === this.height)) return;
+    this.width = width;
+    this.height = height;
+    this.broadcastConfig();
+  }
+
   private broadcastConfig(): void {
     const frame = this.configFrame();
     if (!frame) return;
@@ -551,14 +763,21 @@ const sessions = new Map<string, DeviceSession>();
 export function getDeviceSession(udid: string): DeviceSession {
   let session = sessions.get(udid);
   if (!session) {
-    session = new DeviceSession(udid);
+    const createdSession = new DeviceSession(udid);
+    session = createdSession;
+    sessions.set(udid, createdSession);
     try {
-      session.start();
+      const start = createdSession.start();
+      void start.catch(() => {
+        if (sessions.get(udid) !== createdSession) return;
+        createdSession.close();
+        sessions.delete(udid);
+      });
     } catch (err) {
-      session.close();
+      createdSession.close();
+      sessions.delete(udid);
       throw err;
     }
-    sessions.set(udid, session);
   }
   return session;
 }

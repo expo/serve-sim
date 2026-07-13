@@ -1,4 +1,4 @@
-export const SERVE_SIM_REPO_URL = "https://github.com/EvanBacon/serve-sim";
+export const SERVE_SIM_REPO_URL = "https://github.com/expo/serve-sim";
 
 export function ServeSimBrandLink({ className = "" }: { className?: string }) {
   return (

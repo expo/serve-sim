@@ -1,6 +1,6 @@
 # serve-sim agent skill
 
-A portable [Agent Skill](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview) that teaches AI coding agents to drive an Apple Simulator via the [serve-sim](https://github.com/EvanBacon/serve-sim) CLI.
+A portable [Agent Skill](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview) that teaches AI coding agents to drive an Apple Simulator via the [serve-sim](https://github.com/expo/serve-sim) CLI.
 
 Works in Claude Code, Cursor, Codex CLI, Gemini CLI, GitHub Copilot, and any other tool that implements the open Agent Skills standard. The same `SKILL.md` works across all of them without modification.
 
@@ -18,7 +18,7 @@ Once installed, your agent knows how to:
 - Discover the running stream's URL and read the simulator's accessibility tree to find UI elements.
 - Hand the stream URL off to the host agent's preview pane (`preview_start` in Claude Code, equivalents elsewhere) so the user sees the simulator inline.
 
-It also teaches the agent the **gotchas** (use `tap`, not `gesture`, for plain taps), the **prerequisites** (macOS, Xcode CLI tools, Node 18+, macOS 14+ for camera), and **anti-patterns** to avoid.
+It also teaches the agent the **gotchas** (use `tap`, not `gesture`, for plain taps), the **prerequisites** (macOS, Xcode CLI tools, Node 20+, macOS 14+ for camera), and **anti-patterns** to avoid.
 
 ## Install
 
@@ -27,16 +27,16 @@ The skill lives in this repo under `skills/serve-sim/`, so it is discoverable by
 ### Claude Code
 
 ```sh
-/plugin marketplace add EvanBacon/serve-sim
+/plugin marketplace add expo/serve-sim
 /plugin install serve-sim
 ```
 
 ### Any agent that supports the Agent Skills standard (Cursor, Codex CLI, Gemini CLI, …)
 
 ```sh
-bunx add-skill EvanBacon/serve-sim
+bunx add-skill expo/serve-sim
 # or
-npx skills add EvanBacon/serve-sim
+npx skills add expo/serve-sim
 ```
 
 ### Manual install
@@ -55,9 +55,9 @@ The skill is a folder with a `SKILL.md` file plus reference documents. No build 
 
 The agent checks these for you, but for reference:
 
-- macOS host (any recent version).
+- Apple silicon (`arm64`) macOS host.
 - Xcode command line tools (`xcode-select --install`).
-- Node.js 18+.
+- Node.js 20+.
 - macOS 14+ if you want camera injection.
 - At least one booted iOS, iPad, or Apple Watch simulator.
 

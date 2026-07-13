@@ -131,9 +131,7 @@ describe("parseWebcamListOutput", () => {
   test("ignores build noise interleaved with camera rows", () => {
     const stdout = [
       "Built: /tmp/serve-sim-camera-helper",
-      "/tmp/serve-sim-camera-helper: Mach-O universal binary with 2 architectures",
-      "Mach-O 64-bit executable x86_64",
-      "Mach-O 64-bit executable arm64",
+      "/tmp/serve-sim-camera-helper: Mach-O 64-bit executable arm64",
       "FA-CAM-1\tC505 HD Webcam",
       "BUILT-IN-001\tMacBook Pro Camera",
     ].join("\n");

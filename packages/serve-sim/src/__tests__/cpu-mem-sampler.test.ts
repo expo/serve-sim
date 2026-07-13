@@ -4,6 +4,7 @@ import {
   createMetricsSamplerCache,
   findUserAppProcesses,
   MetricsSampler,
+  sampleUserApp,
   sumPhysFootprintBytes,
   type MetricSample,
 } from "../cpu-mem-sampler";
@@ -109,6 +110,42 @@ describe("sumPhysFootprintBytes", () => {
   it("returns null when no process was reported", () => {
     expect(sumPhysFootprintBytes("")).toBeNull();
     expect(sumPhysFootprintBytes("footprint: Unable to find pid for process matching '9'")).toBeNull();
+  });
+});
+
+describe("sampleUserApp", () => {
+  const footprintFor = (pids: string[]): string =>
+    pids.map((pid) => `App [${pid}]:\nAuxiliary data:\n    phys_footprint: 1000000 B\n`).join("\n");
+
+  it("scopes to the frontmost app and combines ps (cpu) with footprint (mem)", async () => {
+    const seen: string[] = [];
+    const exec = async (file: string, args: string[]): Promise<string> => {
+      seen.push(file);
+      if (file === "ps") return psFixtureTwoApps();
+      // footprint receives only the frontmost app's pids (MyApp 103 + its extension 104)
+      const pids = args.filter((a) => /^\d+$/.test(a));
+      expect(pids).toEqual(["103", "104"]);
+      return footprintFor(pids);
+    };
+    const usage = await sampleUserApp(UDID, { exec, frontmostPid: async () => 103 });
+    expect(usage).toEqual({ cpuPct: 5, memBytes: 2_000_000 });
+    expect(seen.sort()).toEqual(["footprint", "ps"]);
+  });
+
+  it("falls back to RSS bytes when footprint fails", async () => {
+    const exec = async (file: string): Promise<string> => {
+      if (file === "ps") return psFixture();
+      throw new Error("footprint exited non-zero");
+    };
+    const usage = await sampleUserApp(UDID, { exec, frontmostPid: async () => 103 });
+    expect(usage).toEqual({ cpuPct: 5, memBytes: (80000 + 20000) * 1024 });
+  });
+
+  it("returns null when ps fails", async () => {
+    const exec = async (): Promise<string> => {
+      throw new Error("ps exited non-zero");
+    };
+    expect(await sampleUserApp(UDID, { exec, frontmostPid: async () => undefined })).toBeNull();
   });
 });
 

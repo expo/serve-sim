@@ -89,41 +89,54 @@ export function sumPhysFootprintBytes(output: string): number | null {
   return found ? bytes : null;
 }
 
-async function sampleUserApp(udid: string): Promise<AppUsage | null> {
-  let psOutput: string;
+// Injected so tests can drive sampleUserApp without spawning real processes.
+export interface SampleDeps {
+  exec?: (file: string, args: string[]) => Promise<string>;
+  frontmostPid?: (udid: string) => Promise<number | undefined>;
+}
+
+const runCommand = (file: string, args: string[]): Promise<string> =>
+  execFileAsync(file, args, { timeout: 3000, maxBuffer: 8 * 1024 * 1024 }).then((r) => r.stdout);
+
+async function frontmostPidOf(udid: string): Promise<number | undefined> {
   try {
-    psOutput = (
-      await execFileAsync("ps", ["-axo", "pid=,pcpu=,rss=,args="], {
-        timeout: 3000,
-        maxBuffer: 8 * 1024 * 1024,
-      })
-    ).stdout;
+    return (JSON.parse(await axFrontmostAsync(udid)) as { pid?: number }).pid;
   } catch {
-    return null;
+    // AX bridge warming up or unreachable: caller falls back to summing every user app.
+    return undefined;
   }
+}
 
-  let frontmostPid: number | undefined;
+// CPU side: the foreground app's processes and their %CPU. `ps` and the frontmost
+// probe don't depend on each other, so they run together.
+async function sampleCpu(udid: string, deps: Required<SampleDeps>): Promise<AppProcesses | null> {
+  const [psOutput, frontmostPid] = await Promise.all([
+    deps.exec("ps", ["-axo", "pid=,pcpu=,rss=,args="]).catch(() => null),
+    deps.frontmostPid(udid),
+  ]);
+  return psOutput == null ? null : findUserAppProcesses(psOutput, udid, frontmostPid);
+}
+
+// Memory side: phys_footprint of the app's processes. Depends on the pids the CPU
+// side found, so it can't start until those are known; RSS is the fallback.
+async function sampleMemoryBytes(procs: AppProcesses, deps: Required<SampleDeps>): Promise<number> {
   try {
-    frontmostPid = (JSON.parse(await axFrontmostAsync(udid)) as { pid?: number }).pid;
-  } catch {
-    // AX bridge warming up or unreachable: fall back to summing every user app.
-  }
-
-  const procs = findUserAppProcesses(psOutput, udid, frontmostPid);
-  if (!procs) return null;
-
-  let memBytes = procs.rssKb * 1024;
-  try {
-    const { stdout } = await execFileAsync(
-      "footprint",
-      ["--noCategories", "--format", "bytes", ...procs.pids.map(String)],
-      { timeout: 3000, maxBuffer: 1024 * 1024 },
-    );
-    memBytes = sumPhysFootprintBytes(stdout) ?? memBytes;
+    const output = await deps.exec("footprint", ["--noCategories", "--format", "bytes", ...procs.pids.map(String)]);
+    return sumPhysFootprintBytes(output) ?? procs.rssKb * 1024;
   } catch {
     // footprint can exit non-zero (all pids gone mid-tick); keep the RSS fallback.
+    return procs.rssKb * 1024;
   }
-  return { cpuPct: procs.cpuPct, memBytes };
+}
+
+export async function sampleUserApp(udid: string, deps: SampleDeps = {}): Promise<AppUsage | null> {
+  const resolved: Required<SampleDeps> = {
+    exec: deps.exec ?? runCommand,
+    frontmostPid: deps.frontmostPid ?? frontmostPidOf,
+  };
+  const procs = await sampleCpu(udid, resolved);
+  if (!procs) return null;
+  return { cpuPct: procs.cpuPct, memBytes: await sampleMemoryBytes(procs, resolved) };
 }
 
 export interface MetricsSamplerOptions {

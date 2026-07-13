@@ -86,11 +86,10 @@ private func u32(_ v: Int) -> UInt32 {
 
 // MARK: - Capture
 
-/// In-process frame capture + encode for one simulator. MJPEG frames are always
-/// produced; H.264/AVCC runs only while `setAvccActive(true)`. Encoded frames are
-/// produced on a native encode thread and marshalled onto the JS thread through a
-/// NodeAsyncQueue (threadsafe function), then handed to `onFrame` as
-/// (codec, Buffer, width, height, flags).
+/// In-process frame capture + encode for one simulator. Each codec runs only
+/// while it has consumers. Encoded frames are produced on a native encode thread
+/// and marshalled onto the JS thread through a NodeAsyncQueue (threadsafe
+/// function), then handed to `onFrame` as (codec, Buffer, width, height, flags).
 @NodeClass @NodeActor final class SimCapture {
     private let engine: CaptureEngine
     private let queue: NodeAsyncQueue
@@ -149,6 +148,19 @@ private func u32(_ v: Int) -> UInt32 {
 
     @NodeMethod func stop() async {
         await engine.stop()
+    }
+
+    @NodeMethod func handleWebRTCOffer(_ offerJson: String) async throws -> String {
+        try await engine.handleWebRTCOffer(offerJson)
+    }
+
+    @NodeMethod func closeWebRTCSession(_ sessionId: String) async {
+        await engine.closeWebRTCSession(sessionId)
+    }
+
+    @NodeMethod func screenSize() async -> [String: any NodePropertyConvertible] {
+        let dimensions = await engine.currentScreenSize()
+        return ["width": dimensions.width, "height": dimensions.height]
     }
 
     deinit {

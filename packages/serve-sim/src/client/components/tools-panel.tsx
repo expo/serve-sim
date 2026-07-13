@@ -23,6 +23,7 @@ export function ToolsPanel({
   onCodecPreferenceChange,
   activeCodec,
   avccSupported,
+  showStreamSettings = true,
   width,
 }: {
   open: boolean;
@@ -37,6 +38,7 @@ export function ToolsPanel({
   onCodecPreferenceChange: (next: CodecPreference) => void;
   activeCodec: "h264" | "mjpeg";
   avccSupported: boolean;
+  showStreamSettings?: boolean;
   width: number;
 }) {
   return (
@@ -58,12 +60,14 @@ export function ToolsPanel({
           <CameraTool udid={udid} bundleId={currentApp?.bundleId ?? null} />
           <LocationEmulationTool udid={udid} exec={execOnHost} />
           <AppPermissionsTool udid={udid} bundleId={currentApp?.bundleId ?? null} />
-          <StreamSettingsTool
-            preference={codecPreference}
-            onPreferenceChange={onCodecPreferenceChange}
-            activeCodec={activeCodec}
-            avccSupported={avccSupported}
-          />
+          {showStreamSettings && (
+            <StreamSettingsTool
+              preference={codecPreference}
+              onPreferenceChange={onCodecPreferenceChange}
+              activeCodec={activeCodec}
+              avccSupported={avccSupported}
+            />
+          )}
         </div>
       )}
     </Panel>

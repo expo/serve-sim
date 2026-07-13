@@ -8,9 +8,9 @@ mkdir -p "$OUT_DIR"
 SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 DYLIB="$OUT_DIR/libSimCameraInjector.dylib"
 
-# Build a fat dylib (arm64 + x86_64) for the iphonesimulator SDK.
+# Apple silicon simulators run arm64 processes; no Intel slice is shipped.
 xcrun --sdk iphonesimulator clang \
-    -arch arm64 -arch x86_64 \
+    -arch arm64 \
     -mios-simulator-version-min=15.0 \
     -isysroot "$SDK" \
     -dynamiclib \

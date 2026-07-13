@@ -11,11 +11,11 @@ npx serve-sim
 
 https://github.com/user-attachments/assets/fbf890f4-c8c7-4684-82be-d677b8a188f8
 
-`serve-sim` spawns a small Swift helper that captures the simulator's framebuffer via `simctl io`, exposes it as an MJPEG stream + WebSocket control channel, and serves a React preview UI on top. It works with any booted iOS Simulator — no Xcode plugin, no instrumentation in your app.
+`serve-sim` captures the simulator's IOSurface through an in-process Swift addon, exposes it over HTTP or WebRTC, and serves a React preview UI with simulator input. It works with any booted iOS Simulator — no Xcode plugin and no instrumentation in your app.
 
 ## Features 
 
-- Full 60 FPS video stream in the browser.
+- Up to 60 FPS over HTTP, or low-latency 30 FPS over WebRTC.
 - Swipe from the bottom to go home.
 - gestures like pinch to zoom by holding the option key.
 - Simulator logs are forwarded to the browser for browser-use MCP tools to read from.
@@ -32,9 +32,9 @@ I develop the Expo framework, but this tool is completely agnostic to React Nati
 
 ## Install
 
-Requires macOS with Xcode command line tools (`xcrun simctl`) and a [maintained Node.js LTS release](https://nodejs.org/en/about/previous-releases) (currently Node 20+). Older or end-of-life Node versions are not supported. `bun` is **not** required to run the CLI. Camera injection uses a host-side helper built for macOS 14+.
+Requires an Apple silicon (`arm64`) Mac with Xcode command line tools (`xcrun simctl`) and a [maintained Node.js LTS release](https://nodejs.org/en/about/previous-releases) (currently Node 20+). Older or end-of-life Node versions are not supported. `bun` is **not** required to run the CLI. Camera injection uses a host-side helper built for macOS 14+.
 
-> **Note:** Apple Silicon (arm64) only. The bundled `serve-sim-bin` helper ships as an arm64 binary and does not run on Intel (x86_64) Macs.
+The bundled native addon, simulator tools, and host helpers are arm64-only.
 
 ## CLI
 
@@ -67,12 +67,22 @@ serve-sim camera --stop-webcam [-d udid]
 
 Options:
   -p, --port <port>   Starting port (preview default: 3200; helper default: 3100)
-  -d, --detach        Spawn helper and exit (daemon mode)
+      --detach        Spawn server and exit (daemon mode)
   -q, --quiet         JSON-only output
       --no-preview    Skip the web UI; stream in foreground only
-      --codec <codec> Stream codec for the preview UI: 'auto' (H.264 when the
-                      browser can decode it) or 'mjpeg' (force software JPEG —
-                      e.g. on VMs without H.264 encode)
+      --codec <codec> HTTP stream codec: 'auto', 'h264', or 'mjpeg'
+      --transport <http|webrtc>
+                      Stream transport (default: http)
+      --webrtc-codec <vp8|vp9|h264>
+                      WebRTC video codec (default: h264)
+      --stun-url <url[,url...]>
+                      STUN URL(s) for WebRTC ICE
+      --turn-url <url[,url...]>
+                      TURN URL(s) for WebRTC ICE
+      --turn-username <username>
+                      TURN username
+      --turn-credential <credential>
+                      TURN credential
       --list [device] List running streams
       --kill [device] Kill running stream(s)
 
@@ -87,6 +97,18 @@ Camera options (used with `serve-sim camera <bundle-id>`):
       --no-mirror            Shortcut for --mirror off
       --build                Rebuild the dylib + helper from source
 ```
+
+WebRTC uses HTTP for SDP signaling and RTP for video. Simulator input and screen
+metadata continue over the existing helper WebSocket. ICE prefers a direct UDP
+path when one is reachable, even if the page was loaded through a tunnel URL;
+TURN is used as a fallback when direct/STUN candidates fail.
+Multiple WebRTC viewers can use the same simulator simultaneously. They share
+one SimulatorKit capture source, while each viewer has an independent peer
+connection, encoder, congestion controller, and helper WebSocket. HTTP streams
+continue to support multiple viewers as well.
+
+See [WebRTC architecture](docs/webrtc-architecture.md) for the current design,
+control-channel decision, known constraints, and planned direction.
 
 ### Examples
 
@@ -121,7 +143,7 @@ serve-sim camera --list-webcams
 serve-sim camera --stop-webcam
 ```
 
-Multiple booted simulators are supported — pass several device names, or leave it empty to attach to all of them.
+Multiple booted simulators are supported by passing several device names. With no device argument, serve-sim selects an existing stream, a booted simulator, or a default simulator to boot.
 
 ### Camera
 
@@ -144,9 +166,7 @@ Sources:
 An [Agent Skill](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview) ships in [`skills/serve-sim`](skills/serve-sim) — it teaches AI coding agents (Claude Code, Cursor, Codex CLI, Gemini CLI, and any host implementing the open Agent Skills standard) how to drive a simulator through the CLI: taps, gestures, hardware buttons, rotation, camera injection, and handing the stream off to the host's preview pane.
 
 ```sh
-bunx add-skill EvanBacon/serve-sim
-# in Claude Code:
-/plugin marketplace add EvanBacon/serve-sim
+bunx add-skill expo/serve-sim
 ```
 
 See [`skills/serve-sim/README.md`](skills/serve-sim/README.md) for the full capability list.
@@ -171,7 +191,7 @@ Create a `.claude/launch.json` and define a server:
 
 ### Expo
 
-Expo apps don't need to touch `metro.config.js` — the [`expo-device-hub`](https://github.com/expo/expo-device-hub) plugin uses `@expo/serve-sim` and sets up the device streaming for you.
+Expo apps don't need to touch `metro.config.js` — the [`expo-device-hub`](https://github.com/expo/expo-device-hub) plugin uses `serve-sim` and sets up the device streaming for you.
 
 ```sh
 npx expo install expo-device-hub
@@ -233,29 +253,25 @@ If you enable `proxyHelpers` but don't wire `upgrade`, the page still loads vide
 ## How it works
 
 ```
-┌──────────────┐   simctl io   ┌─────────────────┐  MJPEG / WS  ┌─────────┐
-│ iOS Simulator│ ────────────► │ serve-sim-bin   │ ───────────► │ Browser │
-└──────────────┘   (Swift)     │ (per-device)    │              └─────────┘
-                               └─────────────────┘
-                                       ▲
-                                  state file in
-                                $TMPDIR/serve-sim/
-                                       ▲
-                               ┌──────────────────┐
-                               │ serve-sim CLI /  │
-                               │ middleware       │
-                               └──────────────────┘
+┌──────────────┐   IOSurface   ┌──────────────────────┐  HTTP / WebRTC  ┌─────────┐
+│ iOS Simulator│ ────────────► │ serve-sim process    │ ──────────────► │ Browser │
+└──────────────┘               │ Swift N-API capture  │                 └─────────┘
+                               │ + Node middleware    │
+                               └──────────────────────┘
+                                          ▲
+                                     state files in
+                                   $TMPDIR/serve-sim/
 ```
 
-The Swift helper (`bin/serve-sim-bin`) is a tiny standalone binary — no Xcode dependency at runtime. The CLI embeds it via `bun build --compile`, so installing the npm package is enough.
+The npm package ships the native capture addon and LiveKit WebRTC framework alongside the Node CLI. `bun` is needed to build the package, but not to run the published CLI.
 
 ## Development
 
 ```sh
 bun install
-bun run --filter serve-sim build         # build the JS bundles
-bun run --filter serve-sim build:swift   # rebuild the Swift helper
-bun run --filter serve-sim dev           # watch mode
+bun run packages/serve-sim/build.ts                    # full production build
+packages/serve-sim/Sources/SimNative/build.sh           # native addon only
+bun run --filter serve-sim dev                          # watch mode
 ```
 
 ## License

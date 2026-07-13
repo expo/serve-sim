@@ -125,6 +125,7 @@ typedef NS_ENUM(NSInteger, SimCamSourceKind) {
 static SimCamSourceKind gActiveSource = SimCamSourceNone;
 static dispatch_queue_t gSourceQueue;        // serial — owns source lifecycle
 static dispatch_source_t gPlaceholderTimer;
+static dispatch_semaphore_t gPlaceholderStopped;
 static AVCaptureSession *gWebcamSession;
 static SimCamSourceKind gPendingSource;     // for status reporting
 static NSString *gActiveArg = nil;          // selected camera name, image path
@@ -317,6 +318,11 @@ static void StartPlaceholderSource(void) {
 
     gPlaceholderTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
         dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+    gPlaceholderStopped = dispatch_semaphore_create(0);
+    dispatch_semaphore_t stopped = gPlaceholderStopped;
+    dispatch_source_set_cancel_handler(gPlaceholderTimer, ^{
+        dispatch_semaphore_signal(stopped);
+    });
     uint64_t intervalNs = NSEC_PER_SEC / 30;
     dispatch_source_set_timer(gPlaceholderTimer,
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)intervalNs), intervalNs, intervalNs / 10);
@@ -331,8 +337,15 @@ static void StartPlaceholderSource(void) {
 
 static void StopPlaceholderSource(void) {
     if (gPlaceholderTimer) {
-        dispatch_source_cancel(gPlaceholderTimer);
+        dispatch_source_t timer = gPlaceholderTimer;
+        dispatch_semaphore_t stopped = gPlaceholderStopped;
         gPlaceholderTimer = NULL;
+        gPlaceholderStopped = nil;
+        dispatch_source_cancel(timer);
+        // Cancellation does not interrupt an event handler already publishing
+        // a frame. Wait for the cancel handler before releasing the IOSurface
+        // ring during shutdown or a source switch.
+        if (stopped) dispatch_semaphore_wait(stopped, DISPATCH_TIME_FOREVER);
     }
 }
 

@@ -14,6 +14,14 @@ export function stateFileForDevice(udid: string): string {
   return join(STATE_DIR, `server-${udid}.json`);
 }
 
+export type HttpStreamCodec = "auto" | "mjpeg" | "h264";
+export type WebRtcStreamCodec = "vp8" | "vp9" | "h264";
+export type WebRtcIceServer = { urls: string[]; username?: string; credential?: string };
+
+export type StreamSettings =
+  | { transport: "http"; codec?: HttpStreamCodec }
+  | { transport: "webrtc"; codec: WebRtcStreamCodec; iceServers?: WebRtcIceServer[] };
+
 /** Runtime record for a device streamed in-process by a preview server. */
 export interface ServeSimDeviceState {
   pid: number;
@@ -22,6 +30,7 @@ export interface ServeSimDeviceState {
   url: string;
   streamUrl: string;
   wsUrl: string;
+  streamSettings?: StreamSettings;
 }
 
 /**
@@ -35,6 +44,7 @@ export function inProcessServeSimState(
   port: number,
   base = "/",
   host = "127.0.0.1",
+  streamSettings?: StreamSettings,
 ): ServeSimDeviceState {
   const h = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   // Normalize to a leading-slash, no-trailing-slash prefix so a base without a
@@ -48,6 +58,7 @@ export function inProcessServeSimState(
     url: `http://${h}:${port}`,
     streamUrl: `http://${h}:${port}${prefix}/helper/${udid}/stream.mjpeg`,
     wsUrl: `ws://${h}:${port}${prefix}/helper/${udid}/ws`,
+    ...(streamSettings ? { streamSettings } : {}),
   };
 }
 
@@ -58,7 +69,9 @@ export function writeServeSimState(state: ServeSimDeviceState): void {
   mkdirSync(STATE_DIR, { recursive: true });
   const file = stateFileForDevice(state.device);
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(state, null, 2));
+  // WebRTC state can contain short-lived TURN credentials. Keep the file
+  // readable only by the account running serve-sim.
+  writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
   renameSync(tmp, file);
 }
 

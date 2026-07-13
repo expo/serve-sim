@@ -246,7 +246,12 @@ actor FrameCapture {
 
         lastCaptureTime = .now
         frameCount += 1
-        let timestamp = CMTime(value: CMTimeValue(frameCount), timescale: 60)
+        // WebRTC consumes this timestamp as the capture presentation time. A
+        // frame counter makes sparse/idle frames look 1/60s apart even when
+        // they were captured hundreds of milliseconds apart, which confuses
+        // the receiver jitter buffer. Host time is monotonic and reflects the
+        // actual capture cadence.
+        let timestamp = CMClockGetTime(CMClockGetHostTimeClock())
         guard let copy = photocopier.copy(pb) else { return }
         onFrame?(copy, timestamp)
     }

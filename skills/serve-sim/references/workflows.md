@@ -17,12 +17,12 @@ Recipes for common end-to-end agent tasks. These compose the primitives document
 Pixel-hunting is fragile across device sizes. Prefer driving taps from the accessibility tree.
 
 ```sh
-# 1. Ensure serve-sim is running and discover the stream port
-URL=$(npx serve-sim --list -q | jq -r '.[0].streamUrl')
-PORT=$(echo "$URL" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|')
+# 1. Ensure serve-sim is running and derive the helper base URL
+STREAM_URL=$(npx serve-sim --list -q | jq -r '.streamUrl // .streams[0].streamUrl')
+HELPER_BASE=${STREAM_URL%/stream.mjpeg}
 
 # 2. Fetch the accessibility tree
-AX=$(curl -s "http://localhost:${PORT}/ax")
+AX=$(curl -s "${HELPER_BASE}/ax")
 
 # 3. Find the element by label (use jq with a query that matches your tree shape)
 TARGET=$(echo "$AX" | jq '.[] | select(.label == "Submit")')
@@ -39,7 +39,7 @@ CX=$(echo "$TARGET" | jq '.frame.x + .frame.width / 2')
 CY=$(echo "$TARGET" | jq '.frame.y + .frame.height / 2')
 
 # 4. Normalize coordinates against the display
-CONFIG=$(curl -s "http://localhost:${PORT}/config")
+CONFIG=$(curl -s "${HELPER_BASE}/config")
 W=$(echo "$CONFIG" | jq '.width')
 H=$(echo "$CONFIG" | jq '.height')
 NX=$(echo "scale=4; $CX / $W" | bc)
@@ -60,15 +60,16 @@ xcrun simctl openurl booted "myapp://products/42"
 # 2. Wait briefly for the app to handle the deep link
 sleep 1
 
-# 3. Resolve the stream endpoint — do not hardcode :3100, it may differ
-PORT=$(npx serve-sim --list -q | jq -r '.[0].streamUrl' | sed -E 's|.*://[^:]+:([0-9]+).*|\1|')
+# 3. Resolve the helper base — its port and path are both runtime-specific
+STREAM_URL=$(npx serve-sim --list -q | jq -r '.streamUrl // .streams[0].streamUrl')
+HELPER_BASE=${STREAM_URL%/stream.mjpeg}
 
 # 4. Verify the frontmost app is yours
-curl -s "http://localhost:${PORT}/foreground" | jq
+curl -s "${HELPER_BASE}/foreground" | jq
 # Expect: {"bundleId":"com.acme.myapp","pid":12345}
 
 # 5. Verify the screen by reading the accessibility tree
-curl -s "http://localhost:${PORT}/ax" | jq '.[] | select(.label | test("Product #42"))'
+curl -s "${HELPER_BASE}/ax" | jq '.[] | select(.label | test("Product #42"))'
 ```
 
 ## Workflow 3: Test a camera capture flow
@@ -106,11 +107,11 @@ npx serve-sim ca-debug blended on
 # 2. Navigate to the screen of interest (via openurl, taps, etc.)
 xcrun simctl openurl booted "myapp://settings"
 
-# 3. Resolve the stream endpoint — do not hardcode :3100, it may differ
-PORT=$(npx serve-sim --list -q | jq -r '.[0].streamUrl' | sed -E 's|.*://[^:]+:([0-9]+).*|\1|')
+# 3. Resolve the stream endpoint — do not hardcode its port or path
+STREAM_URL=$(npx serve-sim --list -q | jq -r '.streamUrl // .streams[0].streamUrl')
 
 # 4. Grab a screenshot from the MJPEG stream
-curl -s "http://localhost:${PORT}/stream.mjpeg?raw=1" \
+curl -s "${STREAM_URL}?raw=1" \
   --max-time 1 -o /tmp/blended.jpg
 
 # 5. Inspect — red regions are blended (expensive); green is opaque (good)
@@ -148,37 +149,37 @@ The full erase is destructive — only do it when the user explicitly asks.
 
 For a complex gesture (long drag, multi-finger choreography), the CLI's `gesture` subcommand is unreliable because each call opens a fresh WebSocket. The reliable path is one persistent WebSocket connection.
 
-In a Node agent:
+In a browser or another environment with a standard `WebSocket` implementation,
+read `wsUrl` from `serve-sim --list -q` and keep one connection open:
 
 ```js
-import WebSocket from "ws";
-import { encodeSingleTouch, encodeMultiTouch } from "serve-sim-client/touch-codec";
+const discoveredWsUrl = "<exact wsUrl from serve-sim --list -q>";
+const ws = new WebSocket(discoveredWsUrl);
+await new Promise((resolve, reject) => {
+  ws.addEventListener("open", resolve, { once: true });
+  ws.addEventListener("error", reject, { once: true });
+});
 
-// 3100 is the default stream port — discover the real one with
-// `serve-sim --list -q` (.streamUrl) when it may differ.
-const ws = new WebSocket("ws://localhost:3100/ws");
-await new Promise((r) => ws.once("open", r));
-
-let seq = 0;
-function send(data) {
-  const buf = data.x1 !== undefined
-    ? encodeMultiTouch(data, seq++)
-    : encodeSingleTouch(data, seq++);
-  ws.send(buf);
+function sendTouch(data) {
+  const json = new TextEncoder().encode(JSON.stringify(data));
+  const message = new Uint8Array(1 + json.length);
+  message[0] = 0x03;
+  message.set(json, 1);
+  ws.send(message);
 }
 
 // Long vertical drag
-send({ type: "begin", x: 0.5, y: 0.2 });
+sendTouch({ type: "begin", x: 0.5, y: 0.2 });
 for (let i = 1; i <= 30; i++) {
-  send({ type: "move", x: 0.5, y: 0.2 + (0.6 * i) / 30 });
+  sendTouch({ type: "move", x: 0.5, y: 0.2 + (0.6 * i) / 30 });
   await new Promise((r) => setTimeout(r, 16));
 }
-send({ type: "end", x: 0.5, y: 0.8 });
+sendTouch({ type: "end", x: 0.5, y: 0.8 });
 
 ws.close();
 ```
 
-If you do not want a Node dependency, you can build the same frames in any language — the binary format is documented in [endpoints.md](endpoints.md).
+The tagged JSON format is documented in [endpoints.md](endpoints.md).
 
 ## Workflow 7: Show the simulator stream in the host's preview
 

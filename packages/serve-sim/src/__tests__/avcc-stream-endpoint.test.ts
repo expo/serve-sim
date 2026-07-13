@@ -75,24 +75,6 @@ describeWithSim(`serve-sim AVCC endpoint (booted sim ${bootedUdid ?? "<skipped>"
     // /helper/<device>/… — derive the AVCC URL from the reported MJPEG one.
     const state = JSON.parse(detach.stdout.trim()) as { streamUrl: string };
     avccUrl = state.streamUrl.replace("stream.mjpeg", "stream.avcc");
-
-    // Wait for capture to warm before the AVCC test connects. The /stream.avcc
-    // response only flushes its 200 once the first envelope is written, and the
-    // on-connect JPEG seed is skipped until at least one frame has landed (so
-    // `latestJpeg` is non-null). On a cold/loaded runner the AVCC fetch can
-    // otherwise arrive before any frame and hang on headers for the whole
-    // budget — distinct from "encoder never warmed", which the test soft-passes.
-    // /config reports width 0 until the first frame, so poll it as the ready
-    // signal. MJPEG capture works even where the H.264 encoder doesn't.
-    const configUrl = state.streamUrl.replace("stream.mjpeg", "config");
-    const warmDeadline = Date.now() + 20_000;
-    while (Date.now() < warmDeadline) {
-      try {
-        const cfg = await fetch(configUrl).then((r) => (r.ok ? r.json() : null)) as { width?: number } | null;
-        if (cfg && (cfg.width ?? 0) > 0) break;
-      } catch {}
-      await new Promise((r) => setTimeout(r, 250));
-    }
   }, 60_000);
 
   afterAll(() => {
@@ -145,15 +127,12 @@ describeWithSim(`serve-sim AVCC endpoint (booted sim ${bootedUdid ?? "<skipped>"
     const decodable = seenTags.has(TAG_DESCRIPTION) && seenTags.has(TAG_KEYFRAME);
 
     // VideoToolbox's H.264 encoder frequently fails to warm on GitHub macOS
-    // runners (no usable hardware encoder in the VM): the endpoint connects
-    // (200) and streams envelopes, but no description/keyframe lands within the
-    // budget. That's an environment condition, not a regression in the
-    // framing/endpoint code this test guards, yet it gates sim-test.yml and the
-    // publish.yml test step. Mirror the AX e2e soft-pass (commit 4b3f718): warn
-    // and return rather than flaking the suite. Anything that *isn't* this
-    // specific "connected but encoder never produced an IDR" shape — a non-200
-    // (the `expect` above throws), or corrupt framing — is still a hard failure.
+    // runners (no usable hardware encoder in the VM). The one-shot JPEG seed
+    // still proves that the endpoint connected and its framing is valid. Only
+    // that specific environment limitation is soft-passed; a non-200 response
+    // or malformed envelope remains a hard failure.
     if (!decodable && connectedStatus === 200) {
+      expect(seenTags.has(TAG_SEED)).toBe(true);
       console.warn(
         `[avcc-test] no decoder description + keyframe within ${STREAM_BUDGET_MS}ms ` +
         `(VideoToolbox H.264 never warmed on this runner; seen tags: ` +

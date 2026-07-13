@@ -230,6 +230,18 @@ server.on("upgrade", (req, socket, head) => middleware.handleUpgrade(req, socket
 
 If you enable `proxyHelpers` but don't wire `upgrade`, the page still loads video over HTTP but loses simulator input and DevTools (their sockets never reach the proxy). When terminating TLS at a reverse proxy, forward `X-Forwarded-Proto` so the helper URLs use `https`/`wss` and avoid mixed-content blocks.
 
+### Context-based upgrades (Expo DevTools plugins)
+
+Hosts that can't hand over the raw upgrade socket — Expo CLI's DevTools plugin request handlers receive a per-request `context` with `upgrade(hooks)` instead — can pass that context as the middleware's second argument:
+
+```ts
+export default function handler(request, context) {
+  return middleware(request, context) ?? null;
+}
+```
+
+For WebSocket Upgrade requests the middleware commits the handshake by returning `context.upgrade(hooks)`, wiring the connection through the `onopen`/`onmessage`/`onclose`/`onerror` lifecycle hooks. This covers all three socket routes — `<basePath>/exec-ws` plus the dynamic `<basePath>/helper/<device>/ws` and `<basePath>/devtools/page/<id>` proxy paths that exact-path `webSocketHandlers` mounts can't express. No `handleWebSocket`/`handleUpgrade` wiring is needed in this mode. The host's `upgrade()` throws for plain HTTP requests — the middleware checks the Upgrade header before calling it.
+
 ## How it works
 
 ```

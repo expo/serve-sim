@@ -26,7 +26,7 @@ export function MetricsTool({ udid, metricsEndpoint }: { udid: string; metricsEn
           <span className="text-[11px] font-semibold text-white/50 uppercase tracking-[0.08em] leading-none inline-flex items-center">
             Activity
           </span>
-          {latest && (
+          {!open && latest && (
             <span className="text-[11px] text-white/40 tabular-nums text-right">
               {formatCpu(latest.cpuPct)} · {formatMem(latest.memBytes)}
             </span>

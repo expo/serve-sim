@@ -41,10 +41,6 @@ import { ServeSimToaster } from "./components/app-toasts";
 import { SimulatorResizeSizeBadge } from "./components/simulator-resize-size-badge";
 import { StreamStatusPill } from "./components/stream-status-pill";
 import { ToolsPanel } from "./components/tools-panel";
-import {
-  CODEC_PREFERENCE_STORAGE_KEY,
-  type CodecPreference,
-} from "./components/stream-settings-tool";
 import { WebKitDevtoolsPanel } from "./components/webkit-devtools-panel";
 import { useMediaDrop } from "./hooks/use-media-drop";
 import { useMjpegStream } from "./hooks/use-mjpeg-stream";
@@ -56,6 +52,7 @@ import { useSimulatorResize } from "./hooks/use-simulator-resize";
 import { useUploadToasts } from "./hooks/use-upload-toasts";
 import { useWebKitDevtools } from "./hooks/use-webkit-devtools";
 import { useGridDevices } from "./hooks/use-grid-devices";
+import { useStreamSettings } from "./hooks/use-stream-settings";
 import type { DeviceKitChromeDescriptor } from "./utils/grid";
 import {
   avccFallbackReducer,
@@ -137,11 +134,6 @@ function App() {
   const [starting, setStarting] = useState<Record<string, boolean>>({});
   const [shuttingDown, setShuttingDown] = useState<Record<string, boolean>>({});
   const [actionErrors, setActionErrors] = useState<Record<string, string | null>>({});
-  // Devices we booted from the UI run the npm-published serve-sim helper, which
-  // (unlike the local build serving this page) may not serve `/stream.avcc`.
-  // Skip the H.264 path for them so the stream paints over MJPEG immediately
-  // instead of stalling on the 4s AVCC-fallback window.
-  const [uiStarted, setUiStarted] = useState<Set<string>>(() => new Set());
   const hasPending =
     Object.values(starting).some(Boolean) || Object.values(shuttingDown).some(Boolean);
   const {
@@ -200,7 +192,6 @@ function App() {
           setActionErrors((e) => ({ ...e, [udid]: json.error ?? `HTTP ${res.status}` }));
           return;
         }
-        setUiStarted((s) => (s.has(udid) ? s : new Set(s).add(udid)));
         // The helper registers asynchronously; once it does, the SSE (subscribed
         // to this udid) delivers its config and the main view starts streaming.
         await waitForHelper(udid);
@@ -300,7 +291,6 @@ function App() {
         deviceName={selectedDevice?.name ?? null}
         deviceRuntime={selectedDevice?.runtime ?? null}
         chrome={selectedDevice?.chrome ?? null}
-        preferMjpeg={uiStarted.has(config.device)}
         axOverlayEnabled={axOverlayEnabled}
         setAxOverlayEnabled={setAxOverlayEnabled}
         devtoolsOpen={devtoolsOpen}
@@ -385,7 +375,6 @@ interface AppWithConfigProps {
   deviceName: string | null;
   deviceRuntime: string | null;
   chrome: DeviceKitChromeDescriptor | null;
-  preferMjpeg: boolean;
   axOverlayEnabled: boolean;
   setAxOverlayEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   devtoolsOpen: boolean;
@@ -404,7 +393,6 @@ function AppWithConfig({
   deviceName,
   deviceRuntime,
   chrome,
-  preferMjpeg,
   axOverlayEnabled,
   setAxOverlayEnabled,
   devtoolsOpen,
@@ -439,26 +427,30 @@ function AppWithConfig({
   // we never pull both streams at once. The AVCC frames are decoded view-side
   // by SimulatorView's `useAvccStream`; this hook just reports browser support.
   //
-  // Browser support is necessary but not sufficient: the helper may not serve
-  // `/stream.avcc` at all. A device started from the UI is spawned via
-  // `bunx serve-sim --detach`, which runs the published `serve-sim` — older
-  // versions predate H.264 and 404 the endpoint (cross-origin that 404 is
-  // opaque to fetch, so "no frame arrived" is the only reliable signal).
-  // `avccFallback` drives a startup timeout: if AVCC decodes no H.264 frame in
-  // time, drop to MJPEG, which every helper serves. See avcc-fallback.ts.
+  // Browser support is necessary but not sufficient: native H.264 encoding can
+  // still fail on a constrained host. If no frame decodes during the startup
+  // window, `avccFallback` drops to MJPEG. See avcc-fallback.ts.
   const avcc = useAvccStream();
-  const streamSettings = config.streamSettings;
-  const useWebRtcVideo = streamSettings?.transport === "webrtc";
+  const streamSettingsState = useStreamSettings({
+    device: config.device,
+    endpoint: config.streamSettingsEndpoint,
+    initialSettings: config.streamSettings,
+  });
+  const streamSettings = streamSettingsState.settings;
+
+  const wantsWebRtcVideo = streamSettings.transport === "webrtc";
+  const [webRtcFallback, setWebRtcFallback] = useState(false);
+  const handledWebRtcFailureRef = useRef<string | null>(null);
+  const useWebRtcVideo = wantsWebRtcVideo && !webRtcFallback;
   const [webRtcCodecOverride, setWebRtcCodecOverride] = useState<WebRtcCodec | null>(null);
-  const [webRtcFailed, setWebRtcFailed] = useState(false);
-  const configuredWebRtcCodec = streamSettings?.transport === "webrtc" ? streamSettings.codec : "h264";
+  const configuredWebRtcCodec = streamSettings.webRtcCodec;
   const effectiveWebRtcCodec = webRtcCodecOverride ?? configuredWebRtcCodec;
   const webrtc = useWebRtcStream({
     offerUrl: webrtcOfferUrlFrom(config),
     closeUrl: webrtcCloseUrlFrom(config),
     enabled: useWebRtcVideo,
     codec: effectiveWebRtcCodec,
-    iceServers: streamSettings?.transport === "webrtc" ? streamSettings.iceServers : undefined,
+    iceServers: streamSettings.iceServers,
   });
   const [avccFallback, dispatchAvccFallback] = useReducer(
     avccFallbackReducer,
@@ -470,23 +462,13 @@ function AppWithConfig({
   const [forceMjpeg] = useState(
     () => new URLSearchParams(window.location.search).get("codec") === "mjpeg",
   );
-  // User-selectable codec preference (Video section of the tools panel). "mjpeg"
-  // forces the software path; the H.264 hardware decoder shares the GPU's
-  // VideoToolbox pipeline with screen recorders, so MJPEG is the fix when the
-  // stream stutters/drops while recording the browser window. Persisted so the
-  // choice survives reloads.
-  const [codecPreference, setCodecPreference] = useState<CodecPreference>(
-    () => (window.localStorage.getItem(CODEC_PREFERENCE_STORAGE_KEY) === "mjpeg" ? "mjpeg" : "auto"),
-  );
-  useEffect(() => {
-    window.localStorage.setItem(CODEC_PREFERENCE_STORAGE_KEY, codecPreference);
-  }, [codecPreference]);
-  // The server can pin the stream codec (`serve-sim --codec mjpeg`) for hosts
-  // whose hardware can't encode H.264 — e.g. VMs lacking the high/low-latency
-  // H.264 profiles. Treat that as a hard override the viewer can't switch off.
-  const serverForcesMjpeg = streamSettings?.transport === "http" && streamSettings.codec === "mjpeg";
+  const useMjpegHttp = streamSettings.httpCodec === "mjpeg";
   const useAvccVideo =
-    !useWebRtcVideo && !serverForcesMjpeg && avcc.supported && !avccFallback.fellBack && !preferMjpeg && !forceMjpeg && codecPreference !== "mjpeg";
+    !useWebRtcVideo &&
+    !useMjpegHttp &&
+    avcc.supported &&
+    !avccFallback.fellBack &&
+    !forceMjpeg;
   const mjpeg = useMjpegStream(useAvccVideo || useWebRtcVideo ? null : mjpegStreamUrlFrom(config));
 
   // Re-arm AVCC whenever the target stream changes (device switch / reconnect).
@@ -494,24 +476,41 @@ function AppWithConfig({
     setStreaming(false);
     dispatchAvccFallback("reset");
     setWebRtcCodecOverride(null);
-    setWebRtcFailed(false);
-  }, [config.streamUrl, setStreaming, streamSettings]);
+    setWebRtcFallback(false);
+  }, [
+    config.streamUrl,
+    setStreaming,
+    streamSettings.transport,
+    streamSettings.httpCodec,
+    streamSettings.webRtcCodec,
+  ]);
   useEffect(() => {
-    if (!useWebRtcVideo) {
+    if (!wantsWebRtcVideo) {
       setWebRtcCodecOverride(null);
-      setWebRtcFailed(false);
+      setWebRtcFallback(false);
       return;
     }
-    if (!webrtc.failedCodec) return;
-    if (webrtc.failedCodec !== effectiveWebRtcCodec) return;
-    const nextCodec = nextWebRtcFallbackCodec(configuredWebRtcCodec, webrtc.failedCodec);
+    if (webRtcFallback || !webrtc.failure) return;
+    if (handledWebRtcFailureRef.current === webrtc.failure.sessionId) return;
+    handledWebRtcFailureRef.current = webrtc.failure.sessionId;
+    if (webrtc.failure.kind === "permanent") {
+      setWebRtcFallback(true);
+      return;
+    }
+    if (webrtc.failure.codec !== effectiveWebRtcCodec) return;
+    const nextCodec = nextWebRtcFallbackCodec(configuredWebRtcCodec, webrtc.failure.codec);
     if (!nextCodec || nextCodec === effectiveWebRtcCodec) {
-      setWebRtcFailed(true);
+      setWebRtcFallback(true);
       return;
     }
-    setWebRtcFailed(false);
     setWebRtcCodecOverride(nextCodec);
-  }, [configuredWebRtcCodec, effectiveWebRtcCodec, useWebRtcVideo, webrtc.failedCodec]);
+  }, [
+    configuredWebRtcCodec,
+    effectiveWebRtcCodec,
+    wantsWebRtcVideo,
+    webRtcFallback,
+    webrtc.failure,
+  ]);
   // One-shot startup window; the JPEG seed paints immediately but only a
   // decoded H.264 frame proves AVCC is viable and cancels this fallback.
   useEffect(() => {
@@ -1003,7 +1002,7 @@ function AppWithConfig({
                 streamMode={useWebRtcVideo ? "webrtc" : useAvccVideo ? "avcc" : "mjpeg"}
                 webRtcStream={webrtc.stream}
                 onWebRtcFrame={webrtc.markFrameDecoded}
-                streamError={webrtc.error ?? (webRtcFailed ? "WebRTC stream failed after trying all configured codecs." : null)}
+                streamError={useWebRtcVideo ? webrtc.error : null}
                 onAvccError={() => dispatchAvccFallback("error")}
                 onAvccDecodedFrame={() => dispatchAvccFallback("decoded-frame")}
                 subscribeFrame={useAvccVideo ? undefined : mjpeg.subscribeFrame}
@@ -1179,11 +1178,14 @@ function AppWithConfig({
         eventLogEventsEndpoint={config.eventLogEventsEndpoint}
         axOverlayEnabled={axOverlayEnabled}
         onToggleAxOverlay={() => setAxOverlayEnabled((enabled) => !enabled)}
-        codecPreference={codecPreference}
-        onCodecPreferenceChange={setCodecPreference}
-        activeCodec={useAvccVideo ? "h264" : "mjpeg"}
+        streamSettings={streamSettings}
+        onStreamPlaybackSettingsChange={streamSettingsState.updatePlayback}
+        onStreamEncoderSettingsChange={streamSettingsState.updateEncoder}
+        activeCodec={useWebRtcVideo ? `webrtc/${effectiveWebRtcCodec}` : useAvccVideo ? "h264" : "mjpeg"}
         avccSupported={avcc.supported}
-        showStreamSettings={!useWebRtcVideo}
+        streamSettingsPending={
+          streamSettingsState.pending || !streamSettingsState.encoderSettingsAvailable
+        }
         width={toolsPanelWidth}
       />
       <ResizeHandle

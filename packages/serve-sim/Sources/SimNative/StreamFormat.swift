@@ -1,5 +1,14 @@
 import Foundation
 
+/// Opt-in AVCC/H.264 diagnostics for staging stream failures. This path is hot
+/// during playback, so keep it off unless explicitly requested.
+let streamDebugEnabled = ProcessInfo.processInfo.environment["SERVE_SIM_DEBUG_STREAM"] != nil
+
+@inline(__always)
+func streamDiagnosticLog(_ message: @autoclosure () -> String) {
+    if streamDebugEnabled { print(message()) }
+}
+
 /// Wire format a viewer can request for the screen stream.
 ///
 /// - `mjpeg`: stateless JPEG-per-frame inside a `multipart/x-mixed-replace`

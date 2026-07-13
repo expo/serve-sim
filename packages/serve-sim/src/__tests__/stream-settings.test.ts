@@ -1,0 +1,61 @@
+import { describe, expect, test } from "bun:test";
+import {
+  DEFAULT_STREAM_CONTROL_SETTINGS,
+  mergeStreamControlSettings,
+  normalizeStreamControlSettings,
+  parseStreamEncoderSettingsPatch,
+  streamControlSettingsFrom,
+} from "../stream-settings";
+
+describe("stream settings", () => {
+  test("uses native resolution and clamps untrusted numeric values", () => {
+    expect(DEFAULT_STREAM_CONTROL_SETTINGS.maxDimension).toBe(0);
+    expect(normalizeStreamControlSettings({
+      mjpegFps: 0,
+      mjpegQuality: 4,
+      maxDimension: -1,
+      h264Bitrate: Number.POSITIVE_INFINITY,
+      h264Fps: 200,
+    })).toMatchObject({
+      mjpegFps: 1,
+      mjpegQuality: 1,
+      maxDimension: 0,
+      h264Bitrate: 6_000_000,
+      h264Fps: 120,
+    });
+  });
+
+  test("maps launch settings into runtime controls", () => {
+    expect(streamControlSettingsFrom({
+      transport: "webrtc",
+      codec: "vp9",
+      iceServers: [{ urls: ["turn:relay.example.test"] }],
+    })).toMatchObject({
+      transport: "webrtc",
+      webRtcCodec: "vp9",
+      mjpegFps: 60,
+      maxDimension: 0,
+      iceServers: [{ urls: ["turn:relay.example.test"] }],
+    });
+  });
+
+  test("merges partial updates and allows ICE servers to be cleared", () => {
+    const current = normalizeStreamControlSettings({
+      transport: "webrtc",
+      iceServers: [{ urls: ["turn:relay.example.test"] }],
+    });
+    const updated = mergeStreamControlSettings(current, { mjpegFps: 15, iceServers: [] });
+    expect(updated.mjpegFps).toBe(15);
+    expect(updated.iceServers).toBeUndefined();
+  });
+
+  test("accepts only non-empty, well-typed encoder setting patches", () => {
+    expect(parseStreamEncoderSettingsPatch({ h264Fps: 30 })).toEqual({ h264Fps: 30 });
+    expect(parseStreamEncoderSettingsPatch(null)).toBeNull();
+    expect(parseStreamEncoderSettingsPatch([])).toBeNull();
+    expect(parseStreamEncoderSettingsPatch({})).toBeNull();
+    expect(parseStreamEncoderSettingsPatch({ h264Fps: "30" })).toBeNull();
+    expect(parseStreamEncoderSettingsPatch({ transport: "webrtc" })).toBeNull();
+    expect(parseStreamEncoderSettingsPatch({ typo: 30 })).toBeNull();
+  });
+});

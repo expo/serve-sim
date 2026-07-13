@@ -1,61 +1,86 @@
 import { useState } from "react";
+import { SlidersHorizontal, Video } from "lucide-react";
 import { CollapsibleSection } from "./collapsible-section";
 import { SettingRow, SettingSelect } from "./simulator-settings-tool";
+import type {
+  HttpStreamCodec,
+  StreamControlSettings,
+  StreamEncoderSettings,
+  StreamPlaybackSettings,
+  WebRtcStreamCodec,
+} from "../../stream-settings";
 
-// Client-side video preference. "auto" decodes H.264 (AVCC via WebCodecs) when
-// the browser supports it; "mjpeg" forces the software JPEG path. H.264 decode
-// runs through the GPU's VideoToolbox pipeline, which a concurrent screen
-// recorder (Screen Studio, QuickTime, …) can starve — producing stutter and
-// reconnect loops. MJPEG decodes in software and is immune to that contention,
-// so it's the escape hatch when recording the browser window.
-export type CodecPreference = "auto" | "mjpeg";
+type StreamTransport = StreamControlSettings["transport"];
 
-export const CODEC_PREFERENCE_STORAGE_KEY = "serve-sim:codec";
-
-const CODEC_OPTIONS = [
-  { value: "auto", label: "H.264 (Hardware)" },
-  { value: "mjpeg", label: "MJPEG (Compatibility)" },
+const TRANSPORT_OPTIONS = [
+  { value: "http", label: "HTTP" },
+  { value: "webrtc", label: "WebRTC" },
+];
+const HTTP_CODEC_OPTIONS = [
+  { value: "auto", label: "Auto" },
+  { value: "h264", label: "H.264" },
+  { value: "mjpeg", label: "MJPEG" },
+];
+const WEBRTC_CODEC_OPTIONS = [
+  { value: "h264", label: "H.264" },
+  { value: "vp9", label: "VP9" },
+  { value: "vp8", label: "VP8" },
+];
+const MAX_DIMENSION_OPTIONS = [
+  { value: "0", label: "Full" },
+  { value: "1920", label: "1920" },
+  { value: "1600", label: "1600" },
+  { value: "1280", label: "1280" },
+  { value: "960", label: "960" },
+  { value: "720", label: "720" },
+];
+const FPS_OPTIONS = ["60", "30", "20", "15", "10", "5"].map((value) => ({ value, label: value }));
+const QUALITY_OPTIONS = [
+  { value: "0.45", label: "45%" },
+  { value: "0.55", label: "55%" },
+  { value: "0.7", label: "70%" },
+  { value: "0.85", label: "85%" },
+  { value: "1", label: "100%" },
+];
+const BITRATE_OPTIONS = [
+  { value: "1500000", label: "1.5 Mbps" },
+  { value: "3000000", label: "3 Mbps" },
+  { value: "6000000", label: "6 Mbps" },
+  { value: "10000000", label: "10 Mbps" },
+  { value: "16000000", label: "16 Mbps" },
 ];
 
-// Inline 14px glyph, stroked at full opacity (no dimmed icons).
-const VideoIcon = (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5" />
-    <rect x="2" y="6" width="14" height="12" rx="2" />
-  </svg>
-);
+const iconClass = "size-3.5";
 
-/**
- * Tools-panel section letting the viewer pick the stream codec (H.264 vs MJPEG)
- * and explaining the trade-off. The control reflects the effective codec —
- * pinned to MJPEG when the browser can't decode H.264, and surfacing when an
- * "auto" preference was downgraded mid-stream — so it never misrepresents what
- * is actually painting.
- */
+function optionsWithCurrentValue(
+  value: number,
+  options: Array<{ value: string; label: string }>,
+  label: (value: number) => string,
+): Array<{ value: string; label: string }> {
+  const current = String(value);
+  return options.some((option) => option.value === current)
+    ? options
+    : [{ value: current, label: label(value) }, ...options];
+}
+
 export function StreamSettingsTool({
-  preference,
-  onPreferenceChange,
+  settings,
+  onPlaybackSettingsChange,
+  onEncoderSettingsChange,
   activeCodec,
   avccSupported,
+  encoderSettingsDisabled = false,
 }: {
-  /** The user's saved codec preference. */
-  preference: CodecPreference;
-  onPreferenceChange: (next: CodecPreference) => void;
-  /** The codec actually painting frames right now. */
-  activeCodec: "h264" | "mjpeg";
-  /** Whether this browser can decode H.264 (WebCodecs available). */
+  settings: StreamControlSettings;
+  onPlaybackSettingsChange: (patch: Partial<StreamPlaybackSettings>) => void;
+  onEncoderSettingsChange: (patch: Partial<StreamEncoderSettings>) => void;
+  activeCodec: string;
   avccSupported: boolean;
+  encoderSettingsDisabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-
-  // Without WebCodecs the only option is MJPEG; reflect that in the control so
-  // it never reads as if H.264 were a live choice.
-  const value: CodecPreference = avccSupported ? preference : "mjpeg";
-  // Auto resolved to MJPEG (startup fallback or a helper that doesn't serve
-  // /stream.avcc) — surface it so the picker doesn't lie about what's on screen.
-  // `value` is already pinned to "mjpeg" when unsupported, so "auto" here implies
-  // the browser can decode H.264 but this stream fell back anyway.
-  const downgraded = value === "auto" && activeCodec === "mjpeg";
+  const httpActive = settings.transport === "http";
+  const webrtcActive = settings.transport === "webrtc";
 
   return (
     <CollapsibleSection
@@ -68,27 +93,103 @@ export function StreamSettingsTool({
           <span className="text-[11px] font-semibold text-white/50 uppercase tracking-[0.08em] leading-none inline-flex items-center">
             Stream
           </span>
-          <span />
+          <span className="text-[11px] text-white/40 justify-self-end uppercase">
+            {activeCodec}
+          </span>
         </>
       }
     >
       <div className="flex flex-col gap-1.5 pb-1.5">
-        <SettingRow icon={VideoIcon} label="Codec">
+        <SettingRow icon={<Video className={iconClass} />} label="Transport">
           <SettingSelect
-            label="Codec"
-            value={value}
-            options={CODEC_OPTIONS}
-            disabled={!avccSupported}
-            onChange={(v) => onPreferenceChange(v as CodecPreference)}
+            label="Transport"
+            value={settings.transport}
+            options={TRANSPORT_OPTIONS}
+            disabled={false}
+            onChange={(v) => onPlaybackSettingsChange({ transport: v as StreamTransport })}
           />
         </SettingRow>
-        <p className="text-[11px] text-white/55 leading-snug px-0.5">
-          {!avccSupported
-            ? "This browser can't decode H.264, so the stream uses MJPEG."
-            : downgraded
-              ? "H.264 was unavailable for this stream, so it fell back to MJPEG."
-              : "Switch to MJPEG if the stream stutters or drops while screen recording the browser window."}
-        </p>
+        <SettingRow icon={<Video className={iconClass} />} label="HTTP codec">
+          <SettingSelect
+            label="HTTP codec"
+            value={avccSupported ? settings.httpCodec : "mjpeg"}
+            options={HTTP_CODEC_OPTIONS}
+            disabled={!httpActive || !avccSupported}
+            onChange={(v) => onPlaybackSettingsChange({ httpCodec: v as HttpStreamCodec })}
+          />
+        </SettingRow>
+        <SettingRow icon={<Video className={iconClass} />} label="WebRTC codec">
+          <SettingSelect
+            label="WebRTC codec"
+            value={settings.webRtcCodec}
+            options={WEBRTC_CODEC_OPTIONS}
+            disabled={!webrtcActive}
+            onChange={(v) => onPlaybackSettingsChange({ webRtcCodec: v as WebRtcStreamCodec })}
+          />
+        </SettingRow>
+        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="Max size">
+          <SettingSelect
+            label="Max size"
+            value={String(settings.maxDimension)}
+            options={optionsWithCurrentValue(
+              settings.maxDimension,
+              MAX_DIMENSION_OPTIONS,
+              String,
+            )}
+            disabled={encoderSettingsDisabled || !httpActive}
+            onChange={(v) => onEncoderSettingsChange({ maxDimension: Number(v) })}
+          />
+        </SettingRow>
+        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="MJPEG FPS">
+          <SettingSelect
+            label="MJPEG FPS"
+            value={String(settings.mjpegFps)}
+            options={optionsWithCurrentValue(settings.mjpegFps, FPS_OPTIONS, String)}
+            disabled={encoderSettingsDisabled || !httpActive}
+            onChange={(v) => onEncoderSettingsChange({ mjpegFps: Number(v) })}
+          />
+        </SettingRow>
+        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="MJPEG quality">
+          <SettingSelect
+            label="MJPEG quality"
+            value={String(settings.mjpegQuality)}
+            options={optionsWithCurrentValue(
+              settings.mjpegQuality,
+              QUALITY_OPTIONS,
+              (value) => `${Math.round(value * 100)}%`,
+            )}
+            disabled={encoderSettingsDisabled || !httpActive}
+            onChange={(v) => onEncoderSettingsChange({ mjpegQuality: Number(v) })}
+          />
+        </SettingRow>
+        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="H.264 FPS">
+          <SettingSelect
+            label="H.264 FPS"
+            value={String(settings.h264Fps)}
+            options={optionsWithCurrentValue(settings.h264Fps, FPS_OPTIONS, String)}
+            disabled={
+              encoderSettingsDisabled || !httpActive || !avccSupported
+              || settings.httpCodec === "mjpeg"
+            }
+            onChange={(v) => onEncoderSettingsChange({ h264Fps: Number(v) })}
+          />
+        </SettingRow>
+        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="H.264 bitrate">
+          <SettingSelect
+            label="H.264 bitrate"
+            value={String(settings.h264Bitrate)}
+            options={optionsWithCurrentValue(
+              settings.h264Bitrate,
+              BITRATE_OPTIONS,
+              (value) => `${value / 1_000_000} Mbps`,
+            )}
+            disabled={
+              encoderSettingsDisabled || !httpActive || !avccSupported
+              || settings.httpCodec === "mjpeg"
+            }
+            onChange={(v) => onEncoderSettingsChange({ h264Bitrate: Number(v) })}
+          />
+        </SettingRow>
       </div>
     </CollapsibleSection>
   );

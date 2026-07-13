@@ -25,6 +25,14 @@ describe("screen config state", () => {
     expect(update?.notifyParent).toBe(true);
   });
 
+  test("notifies for dimensions inferred from media", () => {
+    expect(resolveScreenConfigUpdate(
+      null,
+      { width: 720, height: 1560 },
+      "media",
+    )?.notifyParent).toBe(true);
+  });
+
   test("keeps prior orientation when image dimensions do not include one", () => {
     const update = resolveScreenConfigUpdate(
       { width: 2868, height: 1320, orientation: "landscape_left" },

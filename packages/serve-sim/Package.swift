@@ -5,7 +5,7 @@
 // with node-swift (NodeAPI), so there is no Objective-C++ glue: SimHID /
 // SimCapture are NodeClasses and the accessibility dumps are async NodeFunctions
 // (see Sources/SimNative/sim-module.swift). The reverse-engineered streaming
-// logic in SimStreamHelper is reused verbatim.
+// logic originates in SimStreamHelper and is adapted for the in-process API.
 //
 // The actual .node is produced by Sources/SimNative/build.sh, which drives
 // `swift build --arch arm64` and links

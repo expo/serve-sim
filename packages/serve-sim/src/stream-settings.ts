@@ -1,0 +1,178 @@
+export type HttpStreamCodec = "auto" | "mjpeg" | "h264";
+export type WebRtcStreamCodec = "vp8" | "vp9" | "h264";
+export type WebRtcIceServer = { urls: string[]; username?: string; credential?: string };
+
+export type StreamSettings =
+  | { transport: "http"; codec?: HttpStreamCodec }
+  | { transport: "webrtc"; codec: WebRtcStreamCodec; iceServers?: WebRtcIceServer[] };
+
+export interface StreamPlaybackSettings {
+  transport: "http" | "webrtc";
+  httpCodec: HttpStreamCodec;
+  webRtcCodec: WebRtcStreamCodec;
+  iceServers?: WebRtcIceServer[];
+}
+
+export interface StreamEncoderSettings {
+  mjpegFps: number;
+  mjpegQuality: number;
+  maxDimension: number;
+  h264Bitrate: number;
+  h264Fps: number;
+}
+
+export type StreamControlSettings = StreamPlaybackSettings & StreamEncoderSettings;
+
+export const DEFAULT_STREAM_ENCODER_SETTINGS: StreamEncoderSettings = {
+  mjpegFps: 60,
+  mjpegQuality: 0.7,
+  maxDimension: 0,
+  h264Bitrate: 6_000_000,
+  h264Fps: 60,
+};
+
+export const DEFAULT_STREAM_CONTROL_SETTINGS: StreamControlSettings = {
+  transport: "http",
+  httpCodec: "auto",
+  webRtcCodec: "h264",
+  ...DEFAULT_STREAM_ENCODER_SETTINGS,
+};
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function numberInRange(value: unknown, fallback: number, min: number, max: number): number {
+  const number = finiteNumber(value);
+  return number == null ? fallback : Math.min(max, Math.max(min, number));
+}
+
+function integerInRange(value: unknown, fallback: number, min: number, max: number): number {
+  return Math.round(numberInRange(value, fallback, min, max));
+}
+
+function normalizedIceServers(value: unknown): WebRtcIceServer[] | undefined {
+  if (!Array.isArray(value) || value.length > 16) return undefined;
+  const servers = value.flatMap((entry): WebRtcIceServer[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const urls = (entry as { urls?: unknown }).urls;
+    if (
+      !Array.isArray(urls)
+      || urls.length === 0
+      || urls.length > 16
+      || !urls.every((url) =>
+        typeof url === "string"
+        && url.length <= 2_048
+        && /^(stun|stuns|turn|turns):/i.test(url)
+      )
+    ) {
+      return [];
+    }
+    const username = (entry as { username?: unknown }).username;
+    const credential = (entry as { credential?: unknown }).credential;
+    if (username !== undefined && typeof username !== "string") return [];
+    if (credential !== undefined && typeof credential !== "string") return [];
+    return [{
+      urls,
+      ...(typeof username === "string" ? { username } : {}),
+      ...(typeof credential === "string" ? { credential } : {}),
+    }];
+  });
+  return servers.length > 0 ? servers : undefined;
+}
+
+const STREAM_ENCODER_SETTING_KEYS = new Set<keyof StreamEncoderSettings>([
+  "mjpegFps",
+  "mjpegQuality",
+  "maxDimension",
+  "h264Bitrate",
+  "h264Fps",
+]);
+
+/** Validate an untrusted PATCH body without silently accepting typos or wrong types. */
+export function parseStreamEncoderSettingsPatch(
+  input: unknown,
+): Partial<StreamEncoderSettings> | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const patch = input as Record<string, unknown>;
+  const keys = Object.keys(patch);
+  if (
+    keys.length === 0
+    || keys.some((key) => !STREAM_ENCODER_SETTING_KEYS.has(key as keyof StreamEncoderSettings))
+  ) {
+    return null;
+  }
+  for (const key of ["mjpegFps", "mjpegQuality", "maxDimension", "h264Bitrate", "h264Fps"] as const) {
+    if (key in patch && finiteNumber(patch[key]) == null) return null;
+  }
+  return patch as Partial<StreamEncoderSettings>;
+}
+
+export function normalizeStreamControlSettings(
+  input: Partial<StreamControlSettings> = {},
+  fallback: StreamControlSettings = DEFAULT_STREAM_CONTROL_SETTINGS,
+): StreamControlSettings {
+  const hasIceServers = Object.prototype.hasOwnProperty.call(input, "iceServers");
+  const iceServers = hasIceServers ? normalizedIceServers(input.iceServers) : fallback.iceServers;
+  return {
+    transport: input.transport === "http" || input.transport === "webrtc"
+      ? input.transport
+      : fallback.transport,
+    httpCodec: input.httpCodec === "auto" || input.httpCodec === "mjpeg" || input.httpCodec === "h264"
+      ? input.httpCodec
+      : fallback.httpCodec,
+    webRtcCodec: input.webRtcCodec === "vp8" || input.webRtcCodec === "vp9" || input.webRtcCodec === "h264"
+      ? input.webRtcCodec
+      : fallback.webRtcCodec,
+    ...(iceServers ? { iceServers } : {}),
+    ...normalizeStreamEncoderSettings(input, fallback),
+  };
+}
+
+export function normalizeStreamEncoderSettings(
+  input: Partial<StreamEncoderSettings> = {},
+  fallback: StreamEncoderSettings = DEFAULT_STREAM_ENCODER_SETTINGS,
+): StreamEncoderSettings {
+  return {
+    mjpegFps: integerInRange(input.mjpegFps, fallback.mjpegFps, 1, 120),
+    mjpegQuality: numberInRange(input.mjpegQuality, fallback.mjpegQuality, 0.05, 1),
+    maxDimension: integerInRange(input.maxDimension, fallback.maxDimension, 0, 4096),
+    h264Bitrate: integerInRange(input.h264Bitrate, fallback.h264Bitrate, 100_000, 50_000_000),
+    h264Fps: integerInRange(input.h264Fps, fallback.h264Fps, 1, 120),
+  };
+}
+
+export function streamEncoderSettingsFrom(
+  settings: StreamControlSettings,
+): StreamEncoderSettings {
+  return {
+    mjpegFps: settings.mjpegFps,
+    mjpegQuality: settings.mjpegQuality,
+    maxDimension: settings.maxDimension,
+    h264Bitrate: settings.h264Bitrate,
+    h264Fps: settings.h264Fps,
+  };
+}
+
+export function streamControlSettingsFrom(
+  settings: StreamSettings | undefined,
+): StreamControlSettings {
+  if (settings?.transport === "webrtc") {
+    return normalizeStreamControlSettings({
+      transport: "webrtc",
+      webRtcCodec: settings.codec,
+      iceServers: settings.iceServers,
+    });
+  }
+  return normalizeStreamControlSettings({
+    transport: "http",
+    httpCodec: settings?.codec ?? "auto",
+  });
+}
+
+export function mergeStreamControlSettings(
+  current: StreamControlSettings,
+  patch: Partial<StreamControlSettings>,
+): StreamControlSettings {
+  return normalizeStreamControlSettings({ ...current, ...patch }, current);
+}

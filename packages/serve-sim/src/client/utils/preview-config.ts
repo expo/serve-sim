@@ -26,8 +26,7 @@ export function proxyPreviewConfigForBrowser(
     ...config,
     url: `${httpOrigin}${devicePath}`,
     streamUrl: `${httpOrigin}${devicePath}/stream.mjpeg`,
-    // WS device rides in the query so the socket path stays fixed across
-    // devices (matches rewriteStateForRequestHost on the server).
+    // TMP: Can be removed when Expo CLI DevTools support dynamic WS URLs
     wsUrl: `${wsProtocol}//${location.host}${helperBase}/ws?device=${encodeURIComponent(config.device)}`,
   };
 }

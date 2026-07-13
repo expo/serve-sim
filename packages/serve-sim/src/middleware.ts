@@ -466,9 +466,7 @@ export function rewriteStateForRequestHost(
     ...state,
     url: `${origin}${devicePath}`,
     streamUrl: `${origin}${devicePath}/stream.mjpeg`,
-    // The control WebSocket carries the device in the query (not the path) so
-    // the WS path stays fixed across devices — path-allowlisting proxies can
-    // pin it. The HTTP stream URLs keep the device-scoped path form.
+    // TMP: Can be removed when Expo CLI DevTools support dynamic WS URLs
     wsUrl: `${wsOrigin}${helperBase}/ws?device=${encodeURIComponent(state.device)}`,
   };
 }
@@ -490,13 +488,6 @@ function devtoolsProxyTarget(rawUrl: string, prefix: string): { upstreamPath: st
   return { upstreamPath: `/devtools${suffix}${parsed.search}` };
 }
 
-/**
- * Resolve a `/helper` request to its target device and upstream helper path.
- * The device comes from a leading `/<udid>/` path segment (streams and other
- * HTTP endpoints) or the `?device=` query parameter — the control WebSocket
- * connects to the fixed `/helper/ws?device=<udid>` path so the WS endpoint
- * stays the same across devices.
- */
 function helperProxyTarget(rawUrl: string, prefix: string): { device: string | null; upstreamPath: string } | null {
   const parsed = new URL(rawUrl, "http://serve-sim.local");
   if (parsed.pathname !== prefix && !parsed.pathname.startsWith(`${prefix}/`)) {

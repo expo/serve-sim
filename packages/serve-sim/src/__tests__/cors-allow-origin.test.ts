@@ -10,6 +10,13 @@ describe("corsAllowOriginHeaders", () => {
     });
   });
 
+  test("matches an allowlisted origin case-insensitively", () => {
+    expect(corsAllowOriginHeaders("https://expo.dev", ["HTTPS://Expo.Dev"])).toEqual({
+      "Access-Control-Allow-Origin": "https://expo.dev",
+      Vary: "Origin",
+    });
+  });
+
   test("allows any loopback origin without config", () => {
     for (const origin of ["http://localhost:3000", "http://127.0.0.1:8081", "http://[::1]:9000"]) {
       expect(corsAllowOriginHeaders(origin, [])).toEqual({

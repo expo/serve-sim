@@ -1,9 +1,12 @@
 // CPU/mem of the user's app on a booted sim, measured host-side (%CPU is per-core, can exceed 100).
-// Memory is phys_footprint (the number Xcode's gauge shows), with an RSS fallback.
+// Scopes to the foreground app (the one the tools panel shows) via axFrontmost. Memory is
+// phys_footprint (the number Xcode's gauge shows), with an RSS fallback.
 
 import { execFile } from "node:child_process";
 import { cpus } from "node:os";
 import { promisify } from "node:util";
+
+import { axFrontmostAsync } from "./native";
 
 const execFileAsync = promisify(execFile);
 
@@ -31,22 +34,48 @@ export interface AppProcesses {
   rssKb: number;
 }
 
-// Find the user app's processes (under Containers/Bundle), not the ~190 system daemons.
-export function findUserAppProcesses(output: string, udid: string): AppProcesses | null {
+interface PsRow {
+  pid: number;
+  pcpu: number;
+  rssKb: number;
+  appPath: string; // the `.app` bundle this process runs from (host app + its extensions share it)
+}
+
+// Processes running from the sim's Containers/Bundle path (the user apps), not the ~190 system daemons.
+function parseUserAppRows(output: string, udid: string): PsRow[] {
   const device = `/Devices/${udid}/`.toUpperCase();
-  const pids: number[] = [];
-  let cpuPct = 0;
-  let rssKb = 0;
+  const rows: PsRow[] = [];
   for (const line of output.split("\n")) {
     const m = /^\s*(\d+)\s+([\d.]+)\s+(\d+)\s+(.*)$/.exec(line);
     if (!m) continue;
-    const args = m[4]!.toUpperCase();
-    if (!args.includes(device) || !args.includes("/CONTAINERS/BUNDLE/APPLICATION/")) continue;
-    pids.push(+m[1]!);
-    cpuPct += +m[2]!;
-    rssKb += +m[3]!;
+    const args = m[4]!;
+    const upper = args.toUpperCase();
+    if (!upper.includes(device) || !upper.includes("/CONTAINERS/BUNDLE/APPLICATION/")) continue;
+    // First `.app` in the exec path; extensions live under it (…/MyApp.app/PlugIns/X.appex/X).
+    const app = /^(.*?\.app)\//.exec(args);
+    rows.push({ pid: +m[1]!, pcpu: +m[2]!, rssKb: +m[3]!, appPath: app ? app[1]! : args });
   }
-  return pids.length ? { pids, cpuPct: +cpuPct.toFixed(1), rssKb } : null;
+  return rows;
+}
+
+// Aggregate the user app's processes. With a frontmost pid, narrow to just that app's `.app`
+// bundle (its host process + extensions); without one, sum every user app on the sim.
+export function findUserAppProcesses(
+  output: string,
+  udid: string,
+  frontmostPid?: number,
+): AppProcesses | null {
+  const rows = parseUserAppRows(output, udid);
+  if (!rows.length) return null;
+
+  const front = frontmostPid != null ? rows.find((r) => r.pid === frontmostPid) : undefined;
+  const scoped = front ? rows.filter((r) => r.appPath === front.appPath) : rows;
+
+  return {
+    pids: scoped.map((r) => r.pid),
+    cpuPct: +scoped.reduce((sum, r) => sum + r.pcpu, 0).toFixed(1),
+    rssKb: scoped.reduce((sum, r) => sum + r.rssKb, 0),
+  };
 }
 
 // Sum the per-process `phys_footprint: <n> B` lines (skips _peak and the Summary line).
@@ -61,16 +90,26 @@ export function sumPhysFootprintBytes(output: string): number | null {
 }
 
 async function sampleUserApp(udid: string): Promise<AppUsage | null> {
-  let procs: AppProcesses | null;
+  let psOutput: string;
   try {
-    const { stdout } = await execFileAsync("ps", ["-axo", "pid=,pcpu=,rss=,args="], {
-      timeout: 3000,
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    procs = findUserAppProcesses(stdout, udid);
+    psOutput = (
+      await execFileAsync("ps", ["-axo", "pid=,pcpu=,rss=,args="], {
+        timeout: 3000,
+        maxBuffer: 8 * 1024 * 1024,
+      })
+    ).stdout;
   } catch {
     return null;
   }
+
+  let frontmostPid: number | undefined;
+  try {
+    frontmostPid = (JSON.parse(await axFrontmostAsync(udid)) as { pid?: number }).pid;
+  } catch {
+    // AX bridge warming up or unreachable: fall back to summing every user app.
+  }
+
+  const procs = findUserAppProcesses(psOutput, udid, frontmostPid);
   if (!procs) return null;
 
   let memBytes = procs.rssKb * 1024;

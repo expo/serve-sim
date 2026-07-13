@@ -23,6 +23,14 @@ function psFixture(): string {
   ].join("\n");
 }
 
+// A second user app ("Two Words.app", a space in its path like real "Expo Go.app") on the same sim.
+function psFixtureTwoApps(): string {
+  return [
+    psFixture(),
+    `  106   2.0  50000 /x/Devices/${UDID}/data/Containers/Bundle/Application/BBB/Two Words.app/Two Words`,
+  ].join("\n");
+}
+
 describe("findUserAppProcesses", () => {
   it("collects pids + cpu% + rss over the sim's user-installed app (app + extensions)", () => {
     // app 4.0 + extension 1.0 = 5.0 ; (80000 + 20000) KB — system/host procs excluded
@@ -36,6 +44,29 @@ describe("findUserAppProcesses", () => {
   it("matches the device path case-insensitively", () => {
     const ps = `7 2.0 1000 /x/Devices/${UDID.toLowerCase()}/data/Containers/Bundle/Application/AAA/App.app/App`;
     expect(findUserAppProcesses(ps, UDID)).toEqual({ pids: [7], cpuPct: 2, rssKb: 1000 });
+  });
+
+  it("narrows to the frontmost app's bundle (host + extensions), ignoring other user apps", () => {
+    // frontmost pid 103 -> MyApp.app; sums MyApp + its Share extension, not the other app
+    expect(findUserAppProcesses(psFixtureTwoApps(), UDID, 103)).toEqual({
+      pids: [103, 104],
+      cpuPct: 5,
+      rssKb: 80000 + 20000,
+    });
+    // frontmost is the space-named app -> just that bundle
+    expect(findUserAppProcesses(psFixtureTwoApps(), UDID, 106)).toEqual({
+      pids: [106],
+      cpuPct: 2,
+      rssKb: 50000,
+    });
+  });
+
+  it("sums every user app when the frontmost pid isn't one of them (e.g. SpringBoard)", () => {
+    expect(findUserAppProcesses(psFixtureTwoApps(), UDID, 999999)).toEqual({
+      pids: [103, 104, 106],
+      cpuPct: 7,
+      rssKb: 80000 + 20000 + 50000,
+    });
   });
 
   it("returns null when no user app is running on this sim", () => {

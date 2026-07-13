@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { execFileSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
@@ -16,6 +17,14 @@ const PKG_DIR = join(import.meta.dir, "../..");
 const SRC_DIR = join(PKG_DIR, "src");
 
 const BUNDLES = ["dist/serve-sim.js", "dist/middleware.js", "dist/state.js"] as const;
+const ARM64_MACH_O_ARTIFACTS = [
+  "dist/serve-sim",
+  "dist/native/serve-sim-native.node",
+  "dist/bin/LiveKitWebRTC.framework/LiveKitWebRTC",
+  "dist/simcam/libSimCameraInjector.dylib",
+  "dist/simcam/serve-sim-camera-helper",
+  "dist/simax/serve-sim-ax-settings",
+] as const;
 
 // CI builds dist before running this directory; locally, run
 // `bun run build.ts` first or the suite skips.
@@ -33,6 +42,17 @@ describeIfBuilt("bundle portability", () => {
     const pkg = JSON.parse(readFileSync(join(PKG_DIR, "package.json"), "utf8"));
     expect(pkg.exports["./state"].import).toBe("./dist/state.js");
     expect(existsSync(join(PKG_DIR, "dist/state.js"))).toBe(true);
+  });
+
+  test("the package rejects non-arm64 installations", () => {
+    const pkg = JSON.parse(readFileSync(join(PKG_DIR, "package.json"), "utf8"));
+    expect(pkg.cpu).toEqual(["arm64"]);
+  });
+
+  test.each([...ARM64_MACH_O_ARTIFACTS])("%s is arm64-only", (artifact) => {
+    const path = join(PKG_DIR, artifact);
+    expect(existsSync(path)).toBe(true);
+    expect(execFileSync("lipo", ["-archs", path], { encoding: "utf8" }).trim()).toBe("arm64");
   });
 
   test("the runtime WebRTC framework does not depend on npm-omitted symlinks", () => {

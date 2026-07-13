@@ -14,6 +14,9 @@ fail() {
 if [[ "$(uname -s)" != "Darwin" ]]; then
   fail "serve-sim requires macOS. Detected: $(uname -s)."
 fi
+if [[ "$(uname -m)" != "arm64" ]]; then
+  fail "serve-sim requires Apple silicon (arm64). Detected: $(uname -m)."
+fi
 
 # Xcode CLI tools (simctl)
 if ! command -v xcrun >/dev/null 2>&1; then

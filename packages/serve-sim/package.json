@@ -23,6 +23,9 @@
   "engines": {
     "node": ">=20"
   },
+  "cpu": [
+    "arm64"
+  ],
   "files": [
     "LICENSE",
     "dist/serve-sim.js",

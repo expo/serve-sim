@@ -195,7 +195,7 @@ export class DeviceSession {
 
   constructor(public readonly udid: string) {
     this.hid = new NativeHid(udid);
-    this.capture = new NativeCapture(udid, (data) => this.handleHidMessage(Buffer.from(data)));
+    this.capture = new NativeCapture(udid);
   }
 
   /** Begin capture. Throws if the device isn't booted. Idempotent. */
@@ -408,10 +408,8 @@ export class DeviceSession {
     } catch (err) {
       if (sessionEstablished) await cancelSession();
       if (res.writableEnded || res.destroyed) return;
-      const busy = err instanceof Error && (
-        err.message.includes("WebRTC session already active") ||
-        err.message.includes("WebRTC signaling already in progress")
-      );
+      const busy = err instanceof Error &&
+        err.message.includes("WebRTC signaling already in progress");
       const status = err instanceof WebRtcSignalingError ? err.status : busy ? 409 : 500;
       const code = err instanceof WebRtcSignalingError
         ? err.code

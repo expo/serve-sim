@@ -620,30 +620,13 @@ function AppWithConfig({
   }, [config.wsUrl]);
 
   const sendWs = useCallback((tag: number, payload: object) => {
-    if (useWebRtcVideo && webrtc.dataTarget) {
-      pendingWsMessagesRef.current = sendOrQueueWsMessage(
-        webrtc.dataTarget,
-        pendingWsMessagesRef.current,
-        tag,
-        payload,
-      );
-      return;
-    }
     pendingWsMessagesRef.current = sendOrQueueWsMessage(
       wsRef.current,
       pendingWsMessagesRef.current,
       tag,
       payload,
     );
-  }, [useWebRtcVideo, webrtc.dataTarget]);
-
-  useEffect(() => {
-    if (!useWebRtcVideo || !webrtc.dataTarget) return;
-    pendingWsMessagesRef.current = flushWsMessageQueue(
-      webrtc.dataTarget,
-      pendingWsMessagesRef.current,
-    );
-  }, [useWebRtcVideo, webrtc.dataTarget]);
+  }, []);
 
   const onStreamTouch = useCallback((data: any) => sendWs(0x03, data), [sendWs]);
   const onStreamMultiTouch = useCallback((data: any) => sendWs(0x05, data), [sendWs]);

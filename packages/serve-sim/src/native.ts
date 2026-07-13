@@ -43,7 +43,7 @@ interface SimCaptureHandle {
 
 interface NativeAddon {
   SimHID: new (udid: string) => SimHIDHandle;
-  SimCapture: new (udid: string, onWebRTCInput: (data: Uint8Array) => Promise<void> | void) => SimCaptureHandle;
+  SimCapture: new (udid: string) => SimCaptureHandle;
   axDescribe(udid: string): Promise<string>;
   axFrontmost(udid: string): Promise<string>;
 }
@@ -90,7 +90,7 @@ export const Orientation = {
 function resolveAddon(): string {
   const candidates = [
     // Beside the bun-compiled executable (dist/serve-sim → dist/native/…).
-    // Universal macOS addon; loaded by path so it works under npx, the
+    // Arm64 macOS addon; loaded by path so it works under npx, the
     // compiled binary, and the dev server alike.
     join(dirname(process.execPath), "native", "serve-sim-native.node"),
     // Beside the bundled JS (dist/serve-sim.js or dist/middleware.js).
@@ -195,8 +195,8 @@ export class NativeHid {
 export class NativeCapture {
   private readonly handle: SimCaptureHandle;
 
-  constructor(udid: string, onWebRTCInput: (data: Uint8Array) => Promise<void> | void = () => {}) {
-    this.handle = new (load().SimCapture)(udid, onWebRTCInput);
+  constructor(udid: string) {
+    this.handle = new (load().SimCapture)(udid);
   }
 
   /** Begin capturing. Throws if the device isn't booted. */

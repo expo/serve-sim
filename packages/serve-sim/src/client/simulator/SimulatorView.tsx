@@ -21,7 +21,9 @@ import {
   resolveScreenConfigUpdate,
   type ScreenConfigSource,
 } from "./screen-config-state.js";
+import { resolveSimulatorStreamRouting } from "./simulator-stream-routing.js";
 import { useAvccStream } from "./use-avcc-stream.js";
+import { observeVideoDimensions } from "./video-dimensions.js";
 import { isAvccSupported } from "../avcc-codec.js";
 
 // Custom round cursor matching the finger dot indicator
@@ -49,26 +51,26 @@ export interface SimulatorViewProps {
   className?: string;
   /** Called when the home button is pressed. If not provided, sends via WebSocket. */
   onHomePress?: () => void;
-  /** Relay mode: callback for touch events (bypasses direct WS) */
+  /** External control callback for touch events (bypasses direct WS). */
   onStreamTouch?: (data: { type: "begin" | "move" | "end"; x: number; y: number; edge?: number }) => void;
-  /** Relay mode: callback for multi-touch events */
+  /** External control callback for multi-touch events. */
   onStreamMultiTouch?: (data: { type: "begin" | "move" | "end"; x1: number; y1: number; x2: number; y2: number }) => void;
-  /** Relay mode: callback for button events */
+  /** External control callback for button events. */
   onStreamButton?: (button: string) => void;
-  /** Relay mode: callback for Digital Crown rotation events */
+  /** External control callback for Digital Crown rotation events. */
   onStreamDigitalCrown?: (delta: number) => void;
-  /** Relay mode: callback for scroll-wheel / trackpad pan events. Deltas and the
+  /** External control callback for scroll-wheel / trackpad pan events. Deltas and the
    * `x`/`y` cursor anchor are a fraction of the display in raw device orientation
    * (positive dy = content down). The anchor is where the pan gesture begins. */
   onStreamScroll?: (data: { dx: number; dy: number; x: number; y: number }) => void;
   /** Enables mouse-wheel/trackpad Digital Crown rotation forwarding. */
   enableDigitalCrown?: boolean;
-  /** Relay mode: subscribe to frame updates (bypasses React state for performance).
+  /** External MJPEG frames (bypasses React state for performance).
    * Callback receives a blob URL (object URL) pointing to the JPEG frame. */
   subscribeFrame?: (cb: (blobUrl: string) => void) => () => void;
-  /** Relay mode: latest blob URL JPEG frame from the relay (used for initial render) */
+  /** Latest external blob URL JPEG frame (used for initial render). */
   streamFrame?: string | null;
-  /** Relay mode: screen config from relay */
+  /** Screen config supplied by the parent transport controller. */
   streamConfig?: StreamConfig | null;
   /** Called when the rendered stream reports new dimensions or orientation. */
   onScreenConfigChange?: (config: StreamConfig) => void;
@@ -132,10 +134,19 @@ export function SimulatorView({
   onAvccError,
   onAvccDecodedFrame,
 }: SimulatorViewProps) {
-  const relayMode = !!onStreamTouch;
-  const effectiveStreamMode = streamMode === "avcc" && !isAvccSupported() ? "mjpeg" : streamMode;
-  const useWebRtc = effectiveStreamMode === "webrtc";
-  const useAvcc = effectiveStreamMode === "avcc";
+  const {
+    useWebRtc,
+    useAvcc,
+    externalInput,
+    externalMjpeg,
+    openDirectControlSocket,
+    openDirectMjpeg,
+  } = resolveSimulatorStreamRouting({
+    streamMode,
+    avccSupported: isAvccSupported(),
+    hasExternalInput: !!onStreamTouch,
+    hasExternalFrames: !!subscribeFrame,
+  });
   const imgRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -164,6 +175,17 @@ export function SimulatorView({
   const [fps, setFps] = useState(0);
   const frameCountRef = useRef(0);
   const [showSlowOverlay, setShowSlowOverlay] = useState(false);
+
+  const updateScreenConfig = useCallback((
+    config: StreamConfig | null | undefined,
+    source: ScreenConfigSource = "reported",
+  ) => {
+    const update = resolveScreenConfigUpdate(screenSizeRef.current, config, source);
+    if (!update) return;
+    screenSizeRef.current = update.config;
+    setScreenSize(update.config);
+    if (update.notifyParent) onScreenConfigChangeRef.current?.(update.config);
+  }, []);
 
   useEffect(() => {
     if (!useWebRtc) return;
@@ -206,8 +228,10 @@ export function SimulatorView({
     let settled = false;
     let stopped = false;
     let videoFrameCallback = 0;
+    let dimensionObserver: ReturnType<typeof observeVideoDimensions> | null = null;
     const onFirstFrame = () => {
       if (stopped || settled) return;
+      dimensionObserver?.check();
       settled = true;
       onWebRtcFrame?.();
       setConnected(true);
@@ -215,6 +239,7 @@ export function SimulatorView({
     };
     const onVideoFrame = () => {
       if (stopped) return;
+      dimensionObserver?.check();
       lastFrameAtRef.current = Date.now();
       frameCountRef.current++;
       onFirstFrame();
@@ -223,12 +248,16 @@ export function SimulatorView({
     };
     const onTimeUpdate = () => {
       if (stopped) return;
+      dimensionObserver?.check();
       lastFrameAtRef.current = Date.now();
       onFirstFrame();
       setConnected(true);
     };
     video.srcObject = webRtcStream ?? null;
     if (webRtcStream) {
+      dimensionObserver = observeVideoDimensions(video, (dimensions) => {
+        updateScreenConfig(dimensions);
+      });
       setConnected(false);
       video.addEventListener("loadeddata", onFirstFrame, { once: true });
       const supportsVideoFrameCallback = typeof (video as unknown as {
@@ -247,6 +276,7 @@ export function SimulatorView({
       stopped = true;
       video.removeEventListener("loadeddata", onFirstFrame);
       video.removeEventListener("timeupdate", onTimeUpdate);
+      dimensionObserver?.disconnect();
       if (videoFrameCallback && typeof (video as unknown as {
         cancelVideoFrameCallback?: unknown;
       }).cancelVideoFrameCallback === "function") {
@@ -254,23 +284,12 @@ export function SimulatorView({
       }
       video.srcObject = null;
     };
-  }, [useWebRtc, webRtcStream, onWebRtcFrame]);
+  }, [useWebRtc, webRtcStream, onWebRtcFrame, updateScreenConfig]);
 
   useEffect(() => {
     screenSizeRef.current = null;
     setScreenSize(null);
   }, [url]);
-
-  const updateScreenConfig = useCallback((
-    config: StreamConfig | null | undefined,
-    source: ScreenConfigSource = "reported",
-  ) => {
-    const update = resolveScreenConfigUpdate(screenSizeRef.current, config, source);
-    if (!update) return;
-    screenSizeRef.current = update.config;
-    setScreenSize(update.config);
-    if (update.notifyParent) onScreenConfigChangeRef.current?.(update.config);
-  }, []);
 
   // Notify parent when streaming state changes
   const onStreamingChangeRef = useRef(onStreamingChange);
@@ -279,14 +298,14 @@ export function SimulatorView({
     onStreamingChangeRef.current?.(connected);
   }, [connected]);
 
-  // In relay mode, use streamConfig for screen size
+  // Parent-supplied configuration is authoritative regardless of video mode.
   useEffect(() => {
-    if (relayMode && streamConfig) {
+    if (streamConfig) {
       updateScreenConfig(streamConfig, "external");
     }
-  }, [relayMode, streamConfig, updateScreenConfig]);
+  }, [streamConfig, updateScreenConfig]);
 
-  // In relay mode, subscribe to frames and update img.src directly (bypasses React).
+  // Paint externally supplied MJPEG frames directly, bypassing React.
   const connectedRef = useRef(false);
   connectedRef.current = connected;
   // Latest received-but-not-yet-painted frame, and the one currently shown.
@@ -299,8 +318,7 @@ export function SimulatorView({
   const pendingBlobUrlRef = useRef<string | null>(null);
   const paintedBlobUrlRef = useRef<string | null>(null);
   useEffect(() => {
-    // AVCC paints the canvas via useAvccStream; skip the MJPEG relay <img>.
-    if (!relayMode || !subscribeFrame || useAvcc) return;
+    if (!externalMjpeg || !subscribeFrame) return;
     // Startup watchdog: flag the stream as broken if no frame arrives within
     // the window. Catches the silent-failure mode where the helper accepts
     // the MJPEG connection but its underlying simulator was shut down —
@@ -355,7 +373,7 @@ export function SimulatorView({
         paintedBlobUrlRef.current = null;
       }
     };
-  }, [relayMode, subscribeFrame, useAvcc]);
+  }, [externalMjpeg, subscribeFrame]);
 
   // AVCC (H.264) decode → canvas. Inert unless `useAvcc`. Works in both
   // direct and relay mode (it only needs `url`).
@@ -403,7 +421,7 @@ export function SimulatorView({
       const payload =
         edge === undefined ? { type: touch.type, ...point } : { type: touch.type, ...point, edge };
 
-      if (relayMode) {
+      if (externalInput) {
         onStreamTouch?.(payload);
         return;
       }
@@ -415,11 +433,11 @@ export function SimulatorView({
       msg.set(json, 1);
       ws.send(msg);
     },
-    [relayMode, onStreamTouch],
+    [externalInput, onStreamTouch],
   );
 
   const sendButton = useCallback((button: string) => {
-    if (relayMode) {
+    if (externalInput) {
       onStreamButton?.(button);
       return;
     }
@@ -430,11 +448,11 @@ export function SimulatorView({
     msg[0] = WS_MSG_BUTTON;
     msg.set(json, 1);
     ws.send(msg);
-  }, [relayMode, onStreamButton]);
+  }, [externalInput, onStreamButton]);
 
   const sendDigitalCrown = useCallback((delta: number) => {
     if (!Number.isFinite(delta) || delta === 0) return;
-    if (relayMode) {
+    if (externalInput) {
       onStreamDigitalCrown?.(delta);
       return;
     }
@@ -445,7 +463,7 @@ export function SimulatorView({
     msg[0] = WS_MSG_DIGITAL_CROWN;
     msg.set(json, 1);
     ws.send(msg);
-  }, [relayMode, onStreamDigitalCrown]);
+  }, [externalInput, onStreamDigitalCrown]);
 
   const sendScroll = useCallback(
     (dx: number, dy: number, anchorX: number, anchorY: number) => {
@@ -456,7 +474,7 @@ export function SimulatorView({
       const rawDelta = rawDeltaForDisplayDelta(orientation, dx, dy);
       const rawAnchor = rawPointForDisplayPoint(orientation, anchorX, anchorY);
       const payload = { dx: rawDelta.dx, dy: rawDelta.dy, x: rawAnchor.x, y: rawAnchor.y };
-      if (relayMode) {
+      if (externalInput) {
         onStreamScroll?.(payload);
         return;
       }
@@ -468,7 +486,7 @@ export function SimulatorView({
       msg.set(json, 1);
       ws.send(msg);
     },
-    [relayMode, onStreamScroll],
+    [externalInput, onStreamScroll],
   );
 
   const sendMultiTouch = useCallback(
@@ -490,7 +508,7 @@ export function SimulatorView({
         y2: p2.y,
       };
 
-      if (relayMode) {
+      if (externalInput) {
         onStreamMultiTouch?.(payload);
         return;
       }
@@ -502,66 +520,59 @@ export function SimulatorView({
       msg.set(json, 1);
       ws.send(msg);
     },
-    [relayMode, onStreamMultiTouch],
+    [externalInput, onStreamMultiTouch],
   );
 
   useEffect(() => {
-    // In relay mode, skip direct WS/MJPEG connections. WebRTC owns video and
-    // receives input via the parent-provided data channel.
-    if (relayMode || useWebRtc) return;
+    // Direct consumers need the control WebSocket even when WebRTC carries the
+    // video. Embedded preview pages provide their own socket through callbacks.
+    if (!openDirectControlSocket && !openDirectMjpeg && !useAvcc) return;
 
-    // Connect WebSocket for touch input. The same socket also carries
-    // server->client screen-config pushes (tag 0x82), so direct consumers follow
-    // dimension/orientation changes without polling /config.
-    const wsUrl = wsUrlProp ?? url.replace(/^http/, "ws") + "/ws";
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = "arraybuffer";
-    wsRef.current = ws;
+    let ws: WebSocket | null = null;
+    if (openDirectControlSocket) {
+      const wsUrl = wsUrlProp ?? url.replace(/^http/, "ws") + "/ws";
+      ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer";
+      wsRef.current = ws;
 
-    ws.onmessage = (ev) => {
-      if (!(ev.data instanceof ArrayBuffer)) return;
-      const bytes = new Uint8Array(ev.data);
-      if (bytes.length < 1 || bytes[0] !== 0x82) return;
-      try {
-        updateScreenConfig(JSON.parse(new TextDecoder().decode(bytes.subarray(1))) as StreamConfig);
-      } catch {}
-    };
+      ws.onmessage = (ev) => {
+        if (!(ev.data instanceof ArrayBuffer)) return;
+        const bytes = new Uint8Array(ev.data);
+        if (bytes.length < 1 || bytes[0] !== 0x82) return;
+        try {
+          updateScreenConfig(JSON.parse(new TextDecoder().decode(bytes.subarray(1))) as StreamConfig);
+        } catch {}
+      };
+      ws.onopen = () => setError(null);
+      ws.onclose = () => setConnected(false);
+      ws.onerror = () => {
+        setError("WebSocket connection failed");
+        setConnected(false);
+      };
+    }
 
-    ws.onopen = () => {
-      if (!useAvcc) setConnected(true);
-      setError(null);
-    };
-    ws.onclose = () => {
-      setConnected(false);
-    };
-    ws.onerror = () => {
-      setError("WebSocket connection failed");
-      setConnected(false);
-    };
-
-    // FPS counter: read MJPEG boundary markers
-    const fpsAbort = new AbortController();
-    const fpsInterval = setInterval(() => {
-      setFps(frameCountRef.current);
-      frameCountRef.current = 0;
-    }, 1000);
+    const fpsInterval = useAvcc || openDirectMjpeg
+      ? setInterval(() => {
+          setFps(frameCountRef.current);
+          frameCountRef.current = 0;
+        }, 1000)
+      : null;
+    const fpsAbort = openDirectMjpeg ? new AbortController() : null;
 
     // Startup watchdog: if we open the MJPEG socket but never see a frame
     // boundary, surface a real error instead of leaving the user staring at
     // a blank <img>. This catches the "helper bound to shutdown sim" case
     // where bytes never arrive.
-    // In AVCC mode the decode hook owns the /stream.avcc connection and frame
-    // accounting, so skip the MJPEG reader + its watchdog entirely.
     let sawAnyFrame = false;
-    const startupWatchdog = useAvcc
-      ? null
-      : setTimeout(() => {
+    const startupWatchdog = openDirectMjpeg
+      ? setTimeout(() => {
           if (!sawAnyFrame) {
             setError("Stream is not producing frames. The simulator may have stopped — try reconnecting.");
           }
-        }, 6000);
+        }, 6000)
+      : null;
 
-    if (!useAvcc) (async () => {
+    if (openDirectMjpeg && fpsAbort) void (async () => {
       try {
         const res = await fetch(streamUrl, { signal: fpsAbort.signal });
         const reader = res.body?.getReader();
@@ -584,6 +595,8 @@ export function SimulatorView({
                 if (!sawAnyFrame) {
                   sawAnyFrame = true;
                   if (startupWatchdog) clearTimeout(startupWatchdog);
+                  setConnected(true);
+                  setError(null);
                 }
               }
             }
@@ -595,13 +608,21 @@ export function SimulatorView({
     })();
 
     return () => {
-      fpsAbort.abort();
-      clearInterval(fpsInterval);
+      fpsAbort?.abort();
+      if (fpsInterval) clearInterval(fpsInterval);
       if (startupWatchdog) clearTimeout(startupWatchdog);
-      ws.close();
-      wsRef.current = null;
+      ws?.close();
+      if (wsRef.current === ws) wsRef.current = null;
     };
-  }, [url, streamUrl, relayMode, updateScreenConfig, wsUrlProp, useAvcc, useWebRtc]);
+  }, [
+    openDirectControlSocket,
+    openDirectMjpeg,
+    streamUrl,
+    updateScreenConfig,
+    url,
+    useAvcc,
+    wsUrlProp,
+  ]);
 
   // WebRTC bypasses the direct HTTP/WS effect above. Its video-frame callback
   // still increments the shared counter, so publish that count once a second.
@@ -618,13 +639,11 @@ export function SimulatorView({
     return () => clearInterval(interval);
   }, [useWebRtc]);
 
-  // FPS counter + stale-frame detection for relay mode.
-  // Unlike non-relay mode (where WS close flips connected=false), relay mode
-  // only knows the stream is alive when frames arrive. Without this, killing
-  // the upstream helper leaves the UI stuck on "live" forever.
+  // External MJPEG only knows the stream is alive when frames arrive. Without
+  // this, killing the upstream helper leaves the UI stuck on "live" forever.
   const lastFrameAtRef = useRef(0);
   useEffect(() => {
-    if (!relayMode) return;
+    if (!externalMjpeg) return;
     const STALE_MS = 2000;
     const checkStaleness = () => {
       const last = lastFrameAtRef.current;
@@ -645,13 +664,13 @@ export function SimulatorView({
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [relayMode]);
+  }, [externalMjpeg]);
 
   const getViewElement = useCallback(() => {
     if (useWebRtc) return videoRef.current;
     if (useAvcc) return canvasRef.current;
-    return relayMode ? relayImgRef.current : imgRef.current;
-  }, [relayMode, useAvcc, useWebRtc]);
+    return externalMjpeg ? relayImgRef.current : imgRef.current;
+  }, [externalMjpeg, useAvcc, useWebRtc]);
 
   const getInputRect = useCallback(() => {
     return surfaceRef.current?.getBoundingClientRect()
@@ -941,12 +960,6 @@ export function SimulatorView({
             muted
             playsInline
             autoPlay
-            onLoadedMetadata={(e) => {
-              const el = e.currentTarget;
-              if (el.videoWidth > 0 && el.videoHeight > 0) {
-                updateScreenConfig({ width: el.videoWidth, height: el.videoHeight });
-              }
-            }}
             style={streamImageStyle}
           />
         ) : useAvcc ? (
@@ -954,7 +967,7 @@ export function SimulatorView({
         ) : (
           <img
             ref={imgRef}
-            src={relayMode ? undefined : streamUrl}
+            src={externalMjpeg ? undefined : streamUrl}
             draggable={false}
             onLoad={(e) => {
               const el = e.currentTarget;
@@ -962,10 +975,10 @@ export function SimulatorView({
                 updateScreenConfig({ width: el.naturalWidth, height: el.naturalHeight });
               }
             }}
-            style={relayMode ? { display: "none" } : streamImageStyle}
+            style={externalMjpeg ? { display: "none" } : streamImageStyle}
           />
         )}
-        {relayMode && !useAvcc && !useWebRtc && (
+        {externalMjpeg && (
           <img
             ref={relayImgRef}
             draggable={false}

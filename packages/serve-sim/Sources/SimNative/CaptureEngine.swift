@@ -72,7 +72,6 @@ actor CaptureEngine {
     }
 
     private let deviceUDID: String
-    private let onWebRTCInput: @Sendable (Data) -> Void
     private let frameCapture = FrameCapture()
     private var phase = Phase.unstarted
 
@@ -86,9 +85,8 @@ actor CaptureEngine {
     private var cancelledWebRTCSessionIds = Set<String>()
     private var cancelledWebRTCSessionIdOrder: [String] = []
 
-    init(deviceUDID: String, onWebRTCInput: @escaping @Sendable (Data) -> Void = { _ in }) {
+    init(deviceUDID: String) {
         self.deviceUDID = deviceUDID
-        self.onWebRTCInput = onWebRTCInput
     }
 
     func start() async throws {
@@ -243,9 +241,6 @@ actor CaptureEngine {
         }
 
         let publisher = WebRTCPublisher()
-        publisher.onInput = { [onWebRTCInput] data in
-            onWebRTCInput(data)
-        }
         consumers[UUID()] = WebRTCConsumer(publisher: publisher)
         webRTCPublisher = publisher
         return publisher

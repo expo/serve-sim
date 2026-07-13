@@ -30,13 +30,13 @@ that suffix removed. A standalone server normally uses
 The stream and signaling responses allow cross-origin access. WebRTC media uses
 ICE directly; loading the preview through an HTTP tunnel does not tunnel media.
 Configure TURN when viewers cannot reach direct or server-reflexive candidates.
-Each simulator accepts one active WebRTC viewer at a time; HTTP streams can
-fan out to multiple viewers.
+WebRTC and HTTP streams can fan out to multiple viewers. WebRTC viewers share
+one simulator capture source but use independent peer connections and encoders.
 
 ### Input messages
 
-Each client-to-server WebSocket or WebRTC data-channel message is
-`[tag byte][UTF-8 JSON]`, except tag `0x09`, which has no body.
+Each client-to-server WebSocket message is `[tag byte][UTF-8 JSON]`, except tag
+`0x09`, which has no body.
 
 | Tag | Payload |
 |---|---|

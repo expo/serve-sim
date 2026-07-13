@@ -32,9 +32,9 @@ I develop the Expo framework, but this tool is completely agnostic to React Nati
 
 ## Install
 
-Requires macOS with Xcode command line tools (`xcrun simctl`) and a [maintained Node.js LTS release](https://nodejs.org/en/about/previous-releases) (currently Node 20+). Older or end-of-life Node versions are not supported. `bun` is **not** required to run the CLI. Camera injection uses a host-side helper built for macOS 14+.
+Requires an Apple silicon (`arm64`) Mac with Xcode command line tools (`xcrun simctl`) and a [maintained Node.js LTS release](https://nodejs.org/en/about/previous-releases) (currently Node 20+). Older or end-of-life Node versions are not supported. `bun` is **not** required to run the CLI. Camera injection uses a host-side helper built for macOS 14+.
 
-The bundled native addon and host helpers are universal macOS binaries (`arm64` and `x86_64`).
+The bundled native addon, simulator tools, and host helpers are arm64-only.
 
 ## CLI
 
@@ -98,11 +98,17 @@ Camera options (used with `serve-sim camera <bundle-id>`):
       --build                Rebuild the dylib + helper from source
 ```
 
-WebRTC uses the HTTP/WebSocket server only for signaling. ICE still prefers a
-direct UDP path when one is reachable, even if the page was loaded through a
-tunnel URL; TURN is used as a fallback when direct/STUN candidates fail.
-Each simulator accepts one active WebRTC viewer at a time; HTTP streaming
-continues to support multiple viewers.
+WebRTC uses HTTP for SDP signaling and RTP for video. Simulator input and screen
+metadata continue over the existing helper WebSocket. ICE prefers a direct UDP
+path when one is reachable, even if the page was loaded through a tunnel URL;
+TURN is used as a fallback when direct/STUN candidates fail.
+Multiple WebRTC viewers can use the same simulator simultaneously. They share
+one SimulatorKit capture source, while each viewer has an independent peer
+connection, encoder, congestion controller, and helper WebSocket. HTTP streams
+continue to support multiple viewers as well.
+
+See [WebRTC architecture](docs/webrtc-architecture.md) for the current design,
+control-channel decision, known constraints, and planned direction.
 
 ### Examples
 

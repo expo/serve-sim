@@ -55,7 +55,7 @@ The skill is a folder with a `SKILL.md` file plus reference documents. No build 
 
 The agent checks these for you, but for reference:
 
-- macOS host (any recent version).
+- Apple silicon (`arm64`) macOS host.
 - Xcode command line tools (`xcode-select --install`).
 - Node.js 20+.
 - macOS 14+ if you want camera injection.

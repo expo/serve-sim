@@ -93,27 +93,14 @@ private func u32(_ v: Int) -> UInt32 {
 @NodeClass @NodeActor final class SimCapture {
     private let engine: CaptureEngine
     private let queue: NodeAsyncQueue
-    private let inputQueue: NodeAsyncQueue
-    private let onWebRTCInput: NodeFunction
 
-    @NodeConstructor init(_ udid: String, _ onWebRTCInput: NodeFunction) throws {
+    @NodeConstructor init(_ udid: String) throws {
         // unref'd by NodeAsyncQueue's init, so the frame pipeline alone won't
         // keep the event loop alive. Bounded queue + blocking AVCC preserves
         // inter-frame ordering; MJPEG is nonblocking and drops under backpressure.
         let queue = try NodeAsyncQueue(label: "simCapture", maxQueueSize: 16)
-        let inputQueue = try NodeAsyncQueue(label: "simCaptureWebRTCInput", maxQueueSize: 64)
         self.queue = queue
-        self.inputQueue = inputQueue
-        self.onWebRTCInput = onWebRTCInput
-        self.engine = CaptureEngine(deviceUDID: udid, onWebRTCInput: { data in
-            // Data channels are reliable and ordered; enqueue synchronously so
-            // begin/move/end HID messages reach JS in exactly that order. The
-            // blocking mode applies backpressure instead of dropping a touch-up
-            // when the bounded Node queue is temporarily full.
-            try? inputQueue.run(blocking: true) {
-                _ = try? onWebRTCInput.call([try NodeBuffer(copying: data)])
-            }
-        })
+        self.engine = CaptureEngine(deviceUDID: udid)
     }
 
     // returns a function that can be called to unsubscribe
@@ -177,7 +164,6 @@ private func u32(_ v: Int) -> UInt32 {
     }
 
     deinit {
-        try? inputQueue.close()
         Task { [engine] in await engine.stop() }
     }
 

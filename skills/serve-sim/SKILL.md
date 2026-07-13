@@ -6,7 +6,7 @@ license: Apache-2.0
 
 # serve-sim
 
-Drive an Apple Simulator (iOS, iPad, Apple Watch) from an agent using the [serve-sim](https://github.com/expo/serve-sim) CLI. serve-sim captures simulator IOSurfaces through its in-process native addon, exposes HTTP or WebRTC video plus WebSocket/data-channel input, and serves a React preview UI. This skill teaches an agent the exact CLI surface, the gesture JSON shape, the gotchas, and the recommended workflows.
+Drive an Apple Simulator (iOS, iPad, Apple Watch) from an agent using the [serve-sim](https://github.com/expo/serve-sim) CLI. serve-sim captures simulator IOSurfaces through its in-process native addon, exposes HTTP or WebRTC video plus WebSocket input, and serves a React preview UI. This skill teaches an agent the exact CLI surface, the gesture JSON shape, the gotchas, and the recommended workflows.
 
 ## When to use
 
@@ -32,6 +32,7 @@ Before any other action, verify the host satisfies these. If something is missin
 | Requirement | Check command | Why |
 |---|---|---|
 | macOS host | `uname -s` returns `Darwin` | serve-sim only runs on macOS |
+| Apple silicon | `uname -m` returns `arm64` | bundled native components are arm64-only |
 | Xcode CLI tools | `xcrun --version` exits 0 | `simctl` is the underlying simulator driver |
 | Node.js ≥20 | `node --version` ≥20 | serve-sim supports maintained Node.js LTS releases |
 | macOS 14+ (optional) | `sw_vers -productVersion` ≥14 | Required ONLY for `camera` subcommand |
@@ -45,7 +46,7 @@ A booted simulator is required for most subcommands. Check with `xcrun simctl li
 ```text
 ┌───────────────┐  IOSurface  ┌────────────────────┐  HTTP/WebRTC  ┌─────────┐
 │ iOS Simulator │ ──────────► │ serve-sim process  │ ────────────► │ Browser │
-└───────────────┘              │ + native N-API     │   WS / data   └─────────┘
+└───────────────┘              │ + native N-API     │   WebSocket   └─────────┘
                                └────────────────────┘
                                          ▲
                                   state files in
@@ -64,7 +65,7 @@ Key invariants the agent must respect:
 | Goal | Command | Notes |
 |---|---|---|
 | Start preview server | `npx serve-sim [device]` | Default preview at `http://localhost:3200`; helper routes are same-origin. Foreground process. |
-| Start WebRTC preview | `npx serve-sim --transport webrtc [device]` | Uses WebRTC media and an ordered data channel for input. |
+| Start WebRTC preview | `npx serve-sim --transport webrtc [device]` | Uses WebRTC media and the ordered helper WebSocket for input. |
 | Start headless / daemon | `npx serve-sim --detach [device]` | Returns JSON with `pid`, `port`, `url`. Use for agent loops. |
 | Show stream in host's preview | `npx serve-sim --detach -q` → hand off `url` to host preview tool | See "Showing the stream in your agent's preview" section. |
 | List running streams | `npx serve-sim --list` | Add `-q` for JSON-only output. |

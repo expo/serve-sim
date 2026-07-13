@@ -256,7 +256,7 @@ if (axSettingsBuild.status !== 0) {
 console.log("dist/simax/serve-sim-ax-settings");
 
 // ─── 8. serve-sim-native.node — in-process N-API addon ───────────────────
-// Replaces the spawned serve-sim-bin helper. Universal macOS binary; loaded by
+// Replaces the spawned serve-sim-bin helper. Arm64 macOS binary; loaded by
 // path from both the node bundle (createRequire) and the bun-compiled executable.
 
 const nativeBuild = spawnSync(

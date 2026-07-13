@@ -1,25 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { WebRtcCodec } from "../webrtc-codec-fallback";
+import { webRtcFailureDisposition } from "../webrtc-failure-policy";
 import { WEBRTC_ICE_TRANSPORT_POLICY, type IceServer } from "../webrtc-ice";
-
-export type DataChannelTarget = {
-  readyState: number;
-  send(data: ArrayBuffer): void;
-};
+import {
+  closeWebRtcSession,
+  postWebRtcOffer,
+  WebRtcSignalingBusyError,
+  WebRtcSignalingTimeoutError,
+} from "../webrtc-negotiation";
 
 const DEFAULT_ICE_SERVERS: IceServer[] = [
   { urls: ["stun:stun.l.google.com:19302"] },
   { urls: ["stun:stun1.l.google.com:19302"] },
 ];
 const ICE_GATHERING_TIMEOUT_MS = 3_000;
-// Native signaling has its own 10s deadline. Keep the browser deadline longer
-// so the server always gets the first chance to close a timed-out session.
-const SIGNALING_TIMEOUT_MS = 20_000;
+// Native signaling has its own 10s deadline. Each accepted HTTP attempt gets a
+// fresh browser deadline; time spent retrying 409s cannot consume it.
+const SIGNALING_REQUEST_TIMEOUT_MS = 20_000;
 const FIRST_FRAME_TIMEOUT_MS = 4_000;
 const BUSY_RETRY_INTERVAL_MS = 500;
-// An abandoned native answer is reaped after 10s. Retry beyond that deadline
-// so a replacement viewer can take over without requiring a page reload.
+// Native serializes offer setup. Retry beyond its 10s orphan deadline so one
+// stalled negotiation cannot prevent another viewer from joining.
 const BUSY_RETRY_COUNT = 30;
+const TRANSPORT_RETRY_BASE_MS = 500;
+const TRANSPORT_RETRY_MAX_MS = 5_000;
 
 function createSessionId(): string {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -46,21 +50,14 @@ export function useWebRtcStream({
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [failedCodec, setFailedCodec] = useState<WebRtcCodec | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [dataChannelOpen, setDataChannelOpen] = useState(false);
-  const dataChannelRef = useRef<RTCDataChannel | null>(null);
+  const [retryGeneration, setRetryGeneration] = useState(0);
   const firstFrameTimeoutRef = useRef<number | undefined>(undefined);
   const firstFrameDecodedRef = useRef(false);
-
-  const dataTarget: DataChannelTarget | null =
-    dataChannelOpen && dataChannelRef.current && dataChannelRef.current.readyState === "open"
-      ? {
-          readyState: 1,
-          send: (data) => dataChannelRef.current?.send(data),
-        }
-      : null;
+  const transportRetryAttemptRef = useRef(0);
 
   const markFrameDecoded = useCallback(() => {
     firstFrameDecodedRef.current = true;
+    transportRetryAttemptRef.current = 0;
     if (firstFrameTimeoutRef.current !== undefined) {
       window.clearTimeout(firstFrameTimeoutRef.current);
       firstFrameTimeoutRef.current = undefined;
@@ -68,6 +65,10 @@ export function useWebRtcStream({
     setFailedCodec(null);
     setError(null);
   }, []);
+
+  useEffect(() => {
+    transportRetryAttemptRef.current = 0;
+  }, [enabled, offerUrl, closeUrl, codec, iceServers]);
 
   useEffect(() => {
     if (!enabled || !offerUrl) return;
@@ -80,42 +81,73 @@ export function useWebRtcStream({
 
     let stopped = false;
     let pc: RTCPeerConnection | null = null;
-    let dc: RTCDataChannel | null = null;
-    let offerController: AbortController | null = null;
-    let offerTimeout: number | undefined;
+    let retryTimer: number | undefined;
     let closePromise: Promise<void> | null = null;
     let failing = false;
+    const lifecycleController = new AbortController();
     const sessionId = createSessionId();
     const servers = iceServers?.length ? iceServers : DEFAULT_ICE_SERVERS;
     setStream(null);
     setFailedCodec(null);
     setError(null);
-    setDataChannelOpen(false);
     firstFrameDecodedRef.current = false;
     if (firstFrameTimeoutRef.current !== undefined) {
       window.clearTimeout(firstFrameTimeoutRef.current);
       firstFrameTimeoutRef.current = undefined;
     }
-    dataChannelRef.current = null;
 
     const closeRemoteSession = (keepalive = false): Promise<void> => {
       if (closePromise) return closePromise;
-      closePromise = fetch(closeUrl, {
-        method: "POST",
-        body: JSON.stringify({ sessionId }),
+      closePromise = closeWebRtcSession({
+        url: closeUrl,
+        sessionId,
         keepalive,
-      }).then(() => undefined, () => undefined);
+      });
       return closePromise;
+    };
+    const releaseOnPageHide = () => void closeRemoteSession(true);
+    window.addEventListener("pagehide", releaseOnPageHide);
+    window.addEventListener("beforeunload", releaseOnPageHide);
+
+    const closePeer = () => {
+      setStream(null);
+      pc?.close();
+    };
+
+    const failPermanently = (message: string) => {
+      if (stopped || failing) return;
+      failing = true;
+      setFailedCodec(null);
+      setError(message);
+      closePeer();
+      void closeRemoteSession();
     };
 
     const failCodec = () => {
       if (stopped || failing) return;
       failing = true;
-      setStream(null);
-      dc?.close();
-      pc?.close();
+      closePeer();
       void closeRemoteSession().finally(() => {
         if (!stopped) setFailedCodec(codec);
+      });
+    };
+
+    const retryTransport = (message: string) => {
+      if (stopped || failing) return;
+      failing = true;
+      setFailedCodec(null);
+      const attempt = transportRetryAttemptRef.current++;
+      const delay = Math.min(
+        TRANSPORT_RETRY_BASE_MS * 2 ** Math.min(attempt, 4),
+        TRANSPORT_RETRY_MAX_MS,
+      );
+      setError(`${message} Retrying...`);
+      closePeer();
+      void closeRemoteSession().finally(() => {
+        if (stopped) return;
+        retryTimer = window.setTimeout(() => {
+          if (!stopped) setRetryGeneration((generation) => generation + 1);
+        }, delay);
       });
     };
 
@@ -135,21 +167,18 @@ export function useWebRtcStream({
           resolve();
         };
         const onState = () => {
-          if (connection.iceGatheringState !== "complete") return;
-          finish();
+          if (connection.iceGatheringState === "complete") finish();
         };
         connection.addEventListener("icegatheringstatechange", onState);
         timeout = window.setTimeout(finish, ICE_GATHERING_TIMEOUT_MS);
       });
 
-    (async () => {
+    void (async () => {
       try {
         pc = new RTCPeerConnection({
           iceServers: servers,
           iceTransportPolicy: WEBRTC_ICE_TRANSPORT_POLICY,
         });
-        dc = pc.createDataChannel("input");
-        dataChannelRef.current = dc;
 
         const videoTransceiver = pc.addTransceiver("video", { direction: "recvonly" });
         const videoCapabilities = RTCRtpReceiver.getCapabilities("video");
@@ -170,19 +199,10 @@ export function useWebRtcStream({
           ]);
         }
 
-        dc.onopen = () => {
-          if (!stopped) {
-            setDataChannelOpen(true);
-          }
-        };
-        dc.onclose = () => {
-          if (!stopped) {
-            setDataChannelOpen(false);
-          }
-        };
         pc.ontrack = (event) => {
           if (stopped) return;
           firstFrameDecodedRef.current = false;
+          event.track.onended = () => retryTransport("WebRTC video track ended.");
           setStream(event.streams[0] ?? new MediaStream([event.track]));
           if (firstFrameTimeoutRef.current !== undefined) {
             window.clearTimeout(firstFrameTimeoutRef.current);
@@ -190,13 +210,18 @@ export function useWebRtcStream({
           firstFrameTimeoutRef.current = window.setTimeout(() => {
             firstFrameTimeoutRef.current = undefined;
             if (stopped || firstFrameDecodedRef.current) return;
-            failCodec();
+            const state = pc?.connectionState ?? "closed";
+            if (webRtcFailureDisposition("first-frame-timeout", state) === "codec") {
+              failCodec();
+            } else {
+              retryTransport("WebRTC did not establish a video path.");
+            }
           }, FIRST_FRAME_TIMEOUT_MS);
         };
         pc.onconnectionstatechange = () => {
-          if (stopped || !pc) return;
-          if (pc.connectionState === "failed") {
-            failCodec();
+          if (stopped || !pc || pc.connectionState !== "failed") return;
+          if (webRtcFailureDisposition("connection-failed", pc.connectionState) === "transport") {
+            retryTransport("WebRTC connection failed.");
           }
         };
 
@@ -205,75 +230,65 @@ export function useWebRtcStream({
         await waitForIce(pc);
         const local = pc.localDescription;
         if (!local) throw new Error("WebRTC offer was not created");
-        offerController = new AbortController();
-        offerTimeout = window.setTimeout(() => {
-          offerController?.abort();
-        }, SIGNALING_TIMEOUT_MS);
-        let response: Response | null = null;
-        try {
-          for (let attempt = 0; attempt <= BUSY_RETRY_COUNT; attempt++) {
-            response = await fetch(offerUrl, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              signal: offerController.signal,
-              body: JSON.stringify({
-                type: local.type,
-                sdp: local.sdp,
-                sessionId,
-                codec,
-                iceServers: servers,
-              }),
-            });
-            if (response.status !== 409) break;
-            await response.body?.cancel();
-            if (attempt === BUSY_RETRY_COUNT) {
-              setError("This simulator already has an active WebRTC viewer.");
-              dc?.close();
-              pc?.close();
-              setDataChannelOpen(false);
-              return;
-            }
-            await new Promise((resolve) => window.setTimeout(resolve, BUSY_RETRY_INTERVAL_MS));
-            if (stopped) return;
-          }
-        } finally {
-          if (offerTimeout !== undefined) {
-            window.clearTimeout(offerTimeout);
-            offerTimeout = undefined;
-          }
+        const response = await postWebRtcOffer({
+          url: offerUrl,
+          signal: lifecycleController.signal,
+          requestTimeoutMs: SIGNALING_REQUEST_TIMEOUT_MS,
+          busyRetryIntervalMs: BUSY_RETRY_INTERVAL_MS,
+          busyRetryCount: BUSY_RETRY_COUNT,
+          body: JSON.stringify({
+            type: local.type,
+            sdp: local.sdp,
+            sessionId,
+            codec,
+            iceServers: servers,
+          }),
+        });
+        if (!response.ok) {
+          await response.body?.cancel();
+          failPermanently(`WebRTC offer failed: HTTP ${response.status}`);
+          return;
         }
-        if (!response) throw new Error("WebRTC signaling did not return a response");
-        if (!response.ok) throw new Error(`WebRTC offer failed: HTTP ${response.status}`);
         const answer = await response.json() as RTCSessionDescriptionInit;
         if (stopped) {
           await closeRemoteSession(true);
           return;
         }
-        await pc.setRemoteDescription(answer);
-      } catch {
-        if (!stopped) {
-          await closeRemoteSession();
-          if (!stopped) setFailedCodec(codec);
+        try {
+          await pc.setRemoteDescription(answer);
+        } catch {
+          failPermanently("WebRTC returned an invalid session description.");
+        }
+      } catch (caught) {
+        if (stopped || lifecycleController.signal.aborted) return;
+        if (caught instanceof WebRtcSignalingBusyError) {
+          failPermanently(caught.message);
+          return;
+        }
+        const message = caught instanceof WebRtcSignalingTimeoutError
+          ? "WebRTC signaling timed out."
+          : "WebRTC signaling failed.";
+        if (webRtcFailureDisposition("signaling-failed", pc?.connectionState ?? "closed") === "transport") {
+          retryTransport(message);
         }
       }
     })();
 
     return () => {
       stopped = true;
-      if (offerTimeout !== undefined) window.clearTimeout(offerTimeout);
+      window.removeEventListener("pagehide", releaseOnPageHide);
+      window.removeEventListener("beforeunload", releaseOnPageHide);
+      lifecycleController.abort();
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
       if (firstFrameTimeoutRef.current !== undefined) {
         window.clearTimeout(firstFrameTimeoutRef.current);
         firstFrameTimeoutRef.current = undefined;
       }
-      offerController?.abort();
       void closeRemoteSession(true);
-      dataChannelRef.current = null;
       setStream(null);
-      setDataChannelOpen(false);
-      dc?.close();
       pc?.close();
     };
-  }, [enabled, offerUrl, closeUrl, codec, iceServers]);
+  }, [enabled, offerUrl, closeUrl, codec, iceServers, retryGeneration]);
 
-  return { stream, dataTarget, failedCodec, error, markFrameDecoded };
+  return { stream, failedCodec, error, markFrameDecoded };
 }

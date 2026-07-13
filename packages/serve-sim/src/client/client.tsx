@@ -80,7 +80,7 @@ import {
   type QueuedWsMessage,
 } from "./utils/ws-send-queue";
 import {
-  nextWebRtcFallbackCodec,
+  webRtcFallbackDecision,
   type WebRtcCodec,
 } from "./webrtc-codec-fallback";
 
@@ -437,11 +437,11 @@ function AppWithConfig({
     initialSettings: config.streamSettings,
   });
   const streamSettings = streamSettingsState.settings;
+  const updateStreamPlayback = streamSettingsState.updatePlayback;
 
   const wantsWebRtcVideo = streamSettings.transport === "webrtc";
-  const [webRtcFallback, setWebRtcFallback] = useState(false);
   const handledWebRtcFailureRef = useRef<string | null>(null);
-  const useWebRtcVideo = wantsWebRtcVideo && !webRtcFallback;
+  const useWebRtcVideo = wantsWebRtcVideo;
   const [webRtcCodecOverride, setWebRtcCodecOverride] = useState<WebRtcCodec | null>(null);
   const configuredWebRtcCodec = streamSettings.webRtcCodec;
   const effectiveWebRtcCodec = webRtcCodecOverride ?? configuredWebRtcCodec;
@@ -476,7 +476,6 @@ function AppWithConfig({
     setStreaming(false);
     dispatchAvccFallback("reset");
     setWebRtcCodecOverride(null);
-    setWebRtcFallback(false);
   }, [
     config.streamUrl,
     setStreaming,
@@ -485,30 +484,25 @@ function AppWithConfig({
     streamSettings.webRtcCodec,
   ]);
   useEffect(() => {
-    if (!wantsWebRtcVideo) {
-      setWebRtcCodecOverride(null);
-      setWebRtcFallback(false);
-      return;
-    }
-    if (webRtcFallback || !webrtc.failure) return;
+    if (!wantsWebRtcVideo || !webrtc.failure) return;
     if (handledWebRtcFailureRef.current === webrtc.failure.sessionId) return;
     handledWebRtcFailureRef.current = webrtc.failure.sessionId;
-    if (webrtc.failure.kind === "permanent") {
-      setWebRtcFallback(true);
+    const decision = webRtcFallbackDecision(
+      configuredWebRtcCodec,
+      effectiveWebRtcCodec,
+      webrtc.failure,
+    );
+    if (!decision) return;
+    if (decision.type === "switch-to-http") {
+      updateStreamPlayback({ transport: "http" });
       return;
     }
-    if (webrtc.failure.codec !== effectiveWebRtcCodec) return;
-    const nextCodec = nextWebRtcFallbackCodec(configuredWebRtcCodec, webrtc.failure.codec);
-    if (!nextCodec || nextCodec === effectiveWebRtcCodec) {
-      setWebRtcFallback(true);
-      return;
-    }
-    setWebRtcCodecOverride(nextCodec);
+    setWebRtcCodecOverride(decision.codec);
   }, [
     configuredWebRtcCodec,
     effectiveWebRtcCodec,
+    updateStreamPlayback,
     wantsWebRtcVideo,
-    webRtcFallback,
     webrtc.failure,
   ]);
   // One-shot startup window; the JPEG seed paints immediately but only a

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { WebRtcCodec } from "../webrtc-codec-fallback";
+import type { WebRtcCodec, WebRtcStreamFailure } from "../webrtc-codec-fallback";
 import { webRtcFailureDisposition } from "../webrtc-failure-policy";
 import { WEBRTC_ICE_TRANSPORT_POLICY, type IceServer } from "../webrtc-ice";
 import {
@@ -24,10 +24,6 @@ const BUSY_RETRY_INTERVAL_MS = 500;
 const BUSY_RETRY_COUNT = 30;
 const TRANSPORT_RETRY_BASE_MS = 500;
 const TRANSPORT_RETRY_MAX_MS = 5_000;
-
-type WebRtcStreamFailure =
-  | { sessionId: string; kind: "permanent" }
-  | { sessionId: string; kind: "codec"; codec: WebRtcCodec };
 
 function createSessionId(): string {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();

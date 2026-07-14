@@ -47,6 +47,7 @@ describe("previewConfigForState", () => {
     expect(previewConfigForState(state, "/preview", "/bin/serve-sim", "token-xyz")).toEqual({
       ...state,
       basePath: "/preview",
+      logsEndpoint: "/preview/logs?device=DEVICE-B",
       appStateEndpoint: "/preview/appstate?device=DEVICE-B",
       eventLogEndpoint: "/preview/api/event-log?device=DEVICE-B",
       eventLogEventsEndpoint: "/preview/api/event-log/events?device=DEVICE-B",

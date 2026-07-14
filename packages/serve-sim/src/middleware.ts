@@ -413,6 +413,14 @@ function endpoint(base: string, path: string, device: string): string {
   return `${value}?device=${encodeURIComponent(device)}`;
 }
 
+function streamSettingsEndpointFrom(streamUrl: string): string {
+  const url = new URL(streamUrl);
+  url.pathname = `${url.pathname.slice(0, url.pathname.lastIndexOf("/") + 1)}stream-settings`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
 /**
  * Rewrite the helper URLs in a state for the requesting browser.
  *
@@ -885,11 +893,7 @@ export function previewConfigForState(
     eventLogEventsEndpoint: endpoint(base, "/api/event-log/events", state.device),
     axEndpoint: endpoint(base, "/ax", state.device),
     devtoolsEndpoint: endpoint(base, "/devtools", state.device),
-    streamSettingsEndpoint: endpoint(
-      base,
-      `/helper/${encodeURIComponent(state.device)}/stream-settings`,
-      state.device,
-    ),
+    streamSettingsEndpoint: streamSettingsEndpointFrom(state.streamUrl),
     serveSimBin,
     gridApiEndpoint: gridApiBase,
     gridStartEndpoint: gridApiBase + "/start",

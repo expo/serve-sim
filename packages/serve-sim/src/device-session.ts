@@ -144,6 +144,27 @@ function waitForDrain(res: ServerResponse): Promise<void> {
   });
 }
 
+function writeRetainedChunk(res: ServerResponse, chunk: Uint8Array): Promise<void> {
+  if (res.writableEnded || res.destroyed) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      res.off("close", done);
+      res.off("error", done);
+      resolve();
+    };
+    res.once("close", done);
+    res.once("error", done);
+    try {
+      res.write(chunk, done);
+    } catch {
+      done();
+    }
+  });
+}
+
 function readRequestBody(
   req: IncomingMessage,
   maxBytes: number,
@@ -262,10 +283,10 @@ export class DeviceSession {
   }
 
   /** Write a multipart JPEG part (header + shared frame + boundary) without copying the JPEG. */
-  private writeMjpegFrame(res: ServerResponse, jpeg: Uint8Array): void {
+  private async writeMjpegFrame(res: ServerResponse, jpeg: Uint8Array): Promise<void> {
     res.write(mjpegHeader(jpeg.length));
-    res.write(jpeg);
-    res.write(MJPEG_TRAILER);
+    await writeRetainedChunk(res, jpeg);
+    if (!res.writableEnded && !res.destroyed) res.write(MJPEG_TRAILER);
   }
 
   // ── HTTP handlers ────────────────────────────────────────────────────────
@@ -293,11 +314,17 @@ export class DeviceSession {
         await this.waitForCapture();
         if (closed || res.writableEnded || res.destroyed) return;
         const latestJpeg = this.latestJpeg();
-        if (latestJpeg) this.writeMjpegFrame(res, latestJpeg); // paint immediately
+        if (latestJpeg) {
+          // The shared latest-frame cache can change while Node flushes this
+          // initial paint; live native frames are retained by their callback.
+          await this.writeMjpegFrame(res, Buffer.from(latestJpeg));
+        }
         const unsubscribe = await this.capture.subscribeMjpeg(async (frame) => {
           this.onSharedMjpegFrame(frame);
           await waitForDrain(res);
-          if (!res.writableEnded && !res.destroyed) this.writeMjpegFrame(res, frame.data);
+          if (!res.writableEnded && !res.destroyed) {
+            await this.writeMjpegFrame(res, frame.data);
+          }
         });
         let unsubscribed = false;
         cleanup = () => {
@@ -380,7 +407,9 @@ export class DeviceSession {
             stopSeed();
           }
           await waitForDrain(res);
-          if (!res.writableEnded && !res.destroyed) res.write(frame.data);
+          if (!res.writableEnded && !res.destroyed) {
+            await writeRetainedChunk(res, frame.data);
+          }
         });
         let unsubscribed = false;
         cleanup = () => {

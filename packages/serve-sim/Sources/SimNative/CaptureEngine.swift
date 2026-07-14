@@ -329,6 +329,8 @@ actor MJPEGEncoder: FrameEncoder {
     private var frameRateGate: FrameRateGate
     private var maxDimension: Int
     private var lastImage: (UUID, Data)?
+    private var inFlight: (id: UUID, generation: Int, task: Task<Data, Error>)?
+    private var settingsGeneration = 0
 
     init(fps: Int, quality: Double, maxDimension: Int) {
         self.videoEncoder = VideoEncoder(quality: CGFloat(quality))
@@ -338,19 +340,38 @@ actor MJPEGEncoder: FrameEncoder {
 
     func encode(_ frame: Frame) async throws -> Data? {
         if let (id, data) = lastImage, id == frame.id { return data }
+        if let inFlight {
+            guard inFlight.id == frame.id else { return nil }
+            let data = try await inFlight.task.value
+            return settingsGeneration == inFlight.generation ? data : nil
+        }
         guard frameRateGate.shouldEncode() else { return nil }
         guard let pixelBuffer = scaler.scale(frame.pixelBuffer, maxDimension: maxDimension) else {
             return nil
         }
-        let data = try await videoEncoder.encode(pixelBuffer: pixelBuffer)
-        lastImage = (frame.id, data)
-        return data
+        let generation = settingsGeneration
+        let encoder = videoEncoder
+        let task = Task { try await encoder.encode(pixelBuffer: pixelBuffer) }
+        inFlight = (frame.id, generation, task)
+        do {
+            let data = try await task.value
+            if inFlight?.id == frame.id {
+                inFlight = nil
+            }
+            guard settingsGeneration == generation else { return nil }
+            lastImage = (frame.id, data)
+            return data
+        } catch {
+            if inFlight?.id == frame.id { inFlight = nil }
+            throw error
+        }
     }
 
     func update(fps: Int, quality: Double, maxDimension: Int) {
         frameRateGate.update(fps: fps)
         videoEncoder = VideoEncoder(quality: CGFloat(quality))
         self.maxDimension = maxDimension
+        settingsGeneration += 1
         lastImage = nil
     }
 }

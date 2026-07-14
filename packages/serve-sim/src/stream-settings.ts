@@ -176,3 +176,22 @@ export function mergeStreamControlSettings(
 ): StreamControlSettings {
   return normalizeStreamControlSettings({ ...current, ...patch }, current);
 }
+
+/** Apply shared encoder controls without replacing viewer-local playback values. */
+export function mergeStreamEncoderSettings(
+  current: StreamControlSettings,
+  patch: Partial<StreamEncoderSettings>,
+): StreamControlSettings {
+  const previous = streamEncoderSettingsFrom(current);
+  const next = normalizeStreamEncoderSettings({ ...previous, ...patch }, previous);
+  if (
+    next.mjpegFps === previous.mjpegFps
+    && next.mjpegQuality === previous.mjpegQuality
+    && next.maxDimension === previous.maxDimension
+    && next.h264Bitrate === previous.h264Bitrate
+    && next.h264Fps === previous.h264Fps
+  ) {
+    return current;
+  }
+  return { ...current, ...next };
+}

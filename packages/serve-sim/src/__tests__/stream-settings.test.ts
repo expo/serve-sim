@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_STREAM_CONTROL_SETTINGS,
   mergeStreamControlSettings,
+  mergeStreamEncoderSettings,
   normalizeStreamControlSettings,
   parseStreamEncoderSettingsPatch,
   streamControlSettingsFrom,
@@ -47,6 +48,21 @@ describe("stream settings", () => {
     const updated = mergeStreamControlSettings(current, { mjpegFps: 15, iceServers: [] });
     expect(updated.mjpegFps).toBe(15);
     expect(updated.iceServers).toBeUndefined();
+  });
+
+  test("preserves viewer playback state and identity for unchanged encoder settings", () => {
+    const current = normalizeStreamControlSettings({
+      transport: "webrtc",
+      webRtcCodec: "vp9",
+      iceServers: [{ urls: ["turn:relay.example.test"] }],
+    });
+    const iceServers = current.iceServers;
+
+    expect(mergeStreamEncoderSettings(current, { h264Fps: current.h264Fps })).toBe(current);
+
+    const updated = mergeStreamEncoderSettings(current, { h264Fps: 30 });
+    expect(updated).toMatchObject({ transport: "webrtc", webRtcCodec: "vp9", h264Fps: 30 });
+    expect(updated.iceServers).toBe(iceServers);
   });
 
   test("accepts only non-empty, well-typed encoder setting patches", () => {

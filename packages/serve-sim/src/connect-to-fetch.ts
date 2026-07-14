@@ -27,11 +27,13 @@ export function connectToFetch(
   const requestEvents = new EventEmitter();
   const responseEvents = new EventEmitter();
   const abortController = new AbortController();
+  let requestBodyReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let requestClosed = false;
   const closeRequest = (aborted = false) => {
     if (requestClosed) return;
     requestClosed = true;
     abortController.abort();
+    void requestBodyReader?.cancel().catch(() => {});
     request.signal.removeEventListener("abort", handleRequestAbort);
     if (aborted) requestEvents.emit("aborted");
     requestEvents.emit("close");
@@ -99,11 +101,10 @@ export function connectToFetch(
   const writeChunk = (chunk: Buffer | string | Uint8Array) => {
     ensureResponse();
     if (!statusAllowsBody() || !controllerRef || writableEnded) return true;
-    const data = typeof chunk === "string"
-      ? encoder.encode(chunk)
-      : chunk instanceof Uint8Array
-        ? chunk
-        : new Uint8Array(chunk);
+    // Native capture reuses its callback buffer after write() returns. Web
+    // streams retain enqueued arrays, so every non-string chunk needs owned
+    // storage before the producer is allowed to continue.
+    const data = typeof chunk === "string" ? encoder.encode(chunk) : new Uint8Array(chunk);
     try {
       controllerRef.enqueue(data);
     } catch {
@@ -135,8 +136,15 @@ export function connectToFetch(
       }
       ensureResponse();
     },
-    write(chunk: Buffer | string | Uint8Array) {
-      return writeChunk(chunk);
+    write(
+      chunk: Buffer | string | Uint8Array,
+      encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+      callback?: (error?: Error | null) => void,
+    ) {
+      const accepted = writeChunk(chunk);
+      const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+      done?.();
+      return accepted;
     },
     end(chunk?: Buffer | string | Uint8Array) {
       if (chunk !== undefined) writeChunk(chunk);
@@ -204,19 +212,26 @@ export function connectToFetch(
     });
 
   void (async () => {
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     try {
-      if (request.body) {
-        const reader = request.body.getReader();
+      reader = request.body?.getReader() ?? null;
+      requestBodyReader = reader;
+      if (reader) {
         while (!abortController.signal.aborted) {
           const { done, value } = await reader.read();
           if (done) break;
           requestEvents.emit("data", Buffer.from(value));
         }
-        reader.releaseLock();
       }
       if (!abortController.signal.aborted) requestEvents.emit("end");
     } catch {
-      closeRequest();
+      closeRequest(true);
+    } finally {
+      if (requestBodyReader === reader) requestBodyReader = null;
+      if (reader) {
+        if (abortController.signal.aborted) await reader.cancel().catch(() => {});
+        try { reader.releaseLock(); } catch {}
+      }
     }
   })();
 

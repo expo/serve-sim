@@ -1,7 +1,8 @@
-// CPU/mem of the user's app on a booted sim, measured host-side (%CPU is per-core, can exceed 100).
-// Scopes to the foreground app (the one the tools panel shows) via axFrontmost, tagging each sample
-// with its bundleId. When nothing user-facing is foreground, bundleId is null and the numbers cover
-// every user app. Memory is phys_footprint (the number Xcode's gauge shows), with an RSS fallback.
+// CPU/mem of the user's app on a booted sim, measured host-side. %CPU is per-core (can exceed 100)
+// and computed from the delta in the app's cumulative CPU time between ticks, so it reflects usage
+// during the interval rather than ps's decaying ~1-minute average. Scopes to the foreground app via
+// axFrontmost, tagging each sample with its bundleId (null when nothing user-facing is foreground,
+// in which case the numbers cover every user app). Memory is phys_footprint, with an RSS fallback.
 
 import { execFile } from "node:child_process";
 import { cpus } from "node:os";
@@ -13,14 +14,18 @@ const execFileAsync = promisify(execFile);
 
 export const METRICS_SCHEMA_VERSION = 1;
 
+// One poll's raw reading: cumulative CPU time (the sampler diffs it into a %) and current memory.
 export interface AppUsage {
   bundleId: string | null; // the foreground app these numbers belong to, or null for all user apps
-  cpuPct: number;
+  cpuSeconds: number;
   memBytes: number;
 }
 
-export interface MetricSample extends AppUsage {
+export interface MetricSample {
   t: number; // ms since the sampler started
+  bundleId: string | null;
+  cpuPct: number; // usage over the interval since the previous sample (per-core, can exceed 100)
+  memBytes: number;
 }
 
 export interface MetricsMeta {
@@ -32,15 +37,20 @@ export interface MetricsMeta {
 
 export interface AppProcesses {
   pids: number[];
-  cpuPct: number;
+  cpuSeconds: number;
   rssKb: number;
 }
 
 interface PsRow {
   pid: number;
-  pcpu: number;
+  cpuSeconds: number;
   rssKb: number;
   appPath: string; // the `.app` bundle this process runs from (host app + its extensions share it)
+}
+
+// `ps` cputime is `[HH:]MM:SS.ss` cumulative CPU time; fold it down to seconds.
+function cputimeToSeconds(cputime: string): number {
+  return cputime.split(":").reduce((acc, part) => acc * 60 + Number(part), 0);
 }
 
 // Processes running from the sim's Containers/Bundle path (the user apps), not the ~190 system daemons.
@@ -48,14 +58,14 @@ function parseUserAppRows(output: string, udid: string): PsRow[] {
   const device = `/Devices/${udid}/`.toUpperCase();
   const rows: PsRow[] = [];
   for (const line of output.split("\n")) {
-    const m = /^\s*(\d+)\s+([\d.]+)\s+(\d+)\s+(.*)$/.exec(line);
+    const m = /^\s*(\d+)\s+([\d:.]+)\s+(\d+)\s+(.*)$/.exec(line);
     if (!m) continue;
     const args = m[4]!;
     const upper = args.toUpperCase();
     if (!upper.includes(device) || !upper.includes("/CONTAINERS/BUNDLE/APPLICATION/")) continue;
     // First `.app` in the exec path; extensions live under it (…/MyApp.app/PlugIns/X.appex/X).
     const app = /^(.*?\.app)\//.exec(args);
-    rows.push({ pid: +m[1]!, pcpu: +m[2]!, rssKb: +m[3]!, appPath: app ? app[1]! : args });
+    rows.push({ pid: +m[1]!, cpuSeconds: cputimeToSeconds(m[2]!), rssKb: +m[3]!, appPath: app ? app[1]! : args });
   }
   return rows;
 }
@@ -76,7 +86,7 @@ export function findUserAppProcesses(
 
   return {
     pids: scoped.map((r) => r.pid),
-    cpuPct: +scoped.reduce((sum, r) => sum + r.pcpu, 0).toFixed(1),
+    cpuSeconds: scoped.reduce((sum, r) => sum + r.cpuSeconds, 0),
     rssKb: scoped.reduce((sum, r) => sum + r.rssKb, 0),
   };
 }
@@ -128,7 +138,7 @@ async function sampleForegroundApp(
   deps: Required<SampleDeps>,
 ): Promise<{ procs: AppProcesses; bundleId: string | null } | null> {
   const [psOutput, frontmost] = await Promise.all([
-    deps.exec("ps", ["-axo", "pid=,pcpu=,rss=,args="]).catch(() => null),
+    deps.exec("ps", ["-axo", "pid=,cputime=,rss=,args="]).catch(() => null),
     deps.frontmostApp(udid),
   ]);
   if (psOutput == null) return null;
@@ -159,7 +169,7 @@ export async function sampleUserApp(udid: string, deps: SampleDeps = {}): Promis
   if (!foreground) return null;
   return {
     bundleId: foreground.bundleId,
-    cpuPct: foreground.procs.cpuPct,
+    cpuSeconds: foreground.procs.cpuSeconds,
     memBytes: await sampleMemoryBytes(foreground.procs, resolved),
   };
 }
@@ -182,6 +192,8 @@ export class MetricsSampler {
   private readonly listeners = new Set<(sample: MetricSample) => void>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private startedAt: number | null = null;
+  // Previous reading, to turn cumulative CPU time into a per-interval %.
+  private prev: { t: number; bundleId: string | null; cpuSeconds: number } | null = null;
 
   constructor(opts: MetricsSamplerOptions) {
     this.intervalMs = opts.intervalMs ?? 1000;
@@ -209,9 +221,23 @@ export class MetricsSampler {
     const reading = await this.sample(this.meta.udid);
     if (!reading) return null;
 
-    const sample: MetricSample = { t: this.now() - this.startedAt, ...reading };
+    const t = this.now() - this.startedAt;
+    const cpuPct = this.cpuPctSince(reading, t);
+    this.prev = { t, bundleId: reading.bundleId, cpuSeconds: reading.cpuSeconds };
+
+    const sample: MetricSample = { t, bundleId: reading.bundleId, cpuPct, memBytes: reading.memBytes };
     for (const listener of this.listeners) listener(sample);
     return sample;
+  }
+
+  // %CPU over the interval since the previous reading, from the delta in cumulative CPU time.
+  // Zero on the first tick or right after an app switch (no comparable baseline); a drop in
+  // cumulative time (a process exited) clamps to zero rather than going negative.
+  private cpuPctSince(reading: AppUsage, t: number): number {
+    const prev = this.prev;
+    if (!prev || prev.bundleId !== reading.bundleId || t <= prev.t) return 0;
+    const pct = ((reading.cpuSeconds - prev.cpuSeconds) / ((t - prev.t) / 1000)) * 100;
+    return pct > 0 ? +pct.toFixed(1) : 0;
   }
 
   start(): void {

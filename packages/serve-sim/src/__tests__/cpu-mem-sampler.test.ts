@@ -11,16 +11,16 @@ import {
 
 const UDID = "ABCD1234-0000-0000-0000-0000000000EF";
 
-// `ps -axo pid= pcpu= rss= args=` — the user app and its extension run from the sim's
+// `ps -axo pid= cputime= rss= args=` — the user app and its extension run from the sim's
 // Containers/Bundle/Application path; launchd_sim and a RuntimeRoot daemon do not,
-// and an unrelated host process is off-device. Only the first two count.
+// and an unrelated host process is off-device. Only the first two count. cputime is cumulative.
 function psFixture(): string {
   return [
-    `  101   0.1  15000 launchd_sim /x/Devices/${UDID}/data/var/run/launchd_bootstrap.plist`,
-    `  102  40.0  32000 /Runtime/RuntimeRoot/System/Library/PrivateFrameworks/ApplePushService.framework/apsd`,
-    `  103   4.0  80000 /x/Devices/${UDID}/data/Containers/Bundle/Application/AAA/MyApp.app/MyApp`,
-    `  104   1.0  20000 /x/Devices/${UDID}/data/Containers/Bundle/Application/AAA/MyApp.app/PlugIns/Share.appex/Share`,
-    `  105   9.9 999999 /some/host/process --unrelated`,
+    `  101   0:00.10  15000 launchd_sim /x/Devices/${UDID}/data/var/run/launchd_bootstrap.plist`,
+    `  102   0:40.00  32000 /Runtime/RuntimeRoot/System/Library/PrivateFrameworks/ApplePushService.framework/apsd`,
+    `  103   0:12.00  80000 /x/Devices/${UDID}/data/Containers/Bundle/Application/AAA/MyApp.app/MyApp`,
+    `  104   0:03.00  20000 /x/Devices/${UDID}/data/Containers/Bundle/Application/AAA/MyApp.app/PlugIns/Share.appex/Share`,
+    `  105   0:09.90 999999 /some/host/process --unrelated`,
   ].join("\n");
 }
 
@@ -28,29 +28,29 @@ function psFixture(): string {
 function psFixtureTwoApps(): string {
   return [
     psFixture(),
-    `  106   2.0  50000 /x/Devices/${UDID}/data/Containers/Bundle/Application/BBB/Two Words.app/Two Words`,
+    `  106   0:02.00  50000 /x/Devices/${UDID}/data/Containers/Bundle/Application/BBB/Two Words.app/Two Words`,
   ].join("\n");
 }
 
 describe("findUserAppProcesses", () => {
   it("scopes to the frontmost app's bundle (host + extensions), ignoring other user/system apps", () => {
-    // frontmost pid 103 -> MyApp.app; sums MyApp (4.0) + its Share extension (1.0), not the other app
+    // frontmost pid 103 -> MyApp.app; sums MyApp (12s) + its Share extension (3s), not the other app
     expect(findUserAppProcesses(psFixtureTwoApps(), UDID, 103)).toEqual({
       pids: [103, 104],
-      cpuPct: 5,
+      cpuSeconds: 15,
       rssKb: 80000 + 20000,
     });
     // frontmost is the space-named app -> just that bundle
     expect(findUserAppProcesses(psFixtureTwoApps(), UDID, 106)).toEqual({
       pids: [106],
-      cpuPct: 2,
+      cpuSeconds: 2,
       rssKb: 50000,
     });
   });
 
   it("matches the device path case-insensitively", () => {
-    const ps = `7 2.0 1000 /x/Devices/${UDID.toLowerCase()}/data/Containers/Bundle/Application/AAA/App.app/App`;
-    expect(findUserAppProcesses(ps, UDID, 7)).toEqual({ pids: [7], cpuPct: 2, rssKb: 1000 });
+    const ps = `7 0:02.00 1000 /x/Devices/${UDID.toLowerCase()}/data/Containers/Bundle/Application/AAA/App.app/App`;
+    expect(findUserAppProcesses(ps, UDID, 7)).toEqual({ pids: [7], cpuSeconds: 2, rssKb: 1000 });
   });
 
   it("sums every user app when the frontmost pid is unknown or not a user app", () => {
@@ -58,7 +58,7 @@ describe("findUserAppProcesses", () => {
     for (const pid of [undefined, 999999]) {
       expect(findUserAppProcesses(psFixtureTwoApps(), UDID, pid)).toEqual({
         pids: [103, 104, 106],
-        cpuPct: 7,
+        cpuSeconds: 15 + 2,
         rssKb: 80000 + 20000 + 50000,
       });
     }
@@ -124,7 +124,8 @@ describe("sampleUserApp", () => {
       return footprintFor(pids);
     };
     const usage = await sampleUserApp(UDID, { exec, frontmostApp: frontmost(103, "dev.expo.MyApp") });
-    expect(usage).toEqual({ bundleId: "dev.expo.MyApp", cpuPct: 5, memBytes: 2_000_000 });
+    // cumulative cpu seconds of MyApp (12) + its extension (3); the sampler turns this into a %
+    expect(usage).toEqual({ bundleId: "dev.expo.MyApp", cpuSeconds: 15, memBytes: 2_000_000 });
     expect(seen.sort()).toEqual(["footprint", "ps"]);
   });
 
@@ -134,7 +135,7 @@ describe("sampleUserApp", () => {
       throw new Error("footprint exited non-zero");
     };
     const usage = await sampleUserApp(UDID, { exec, frontmostApp: frontmost(103) });
-    expect(usage).toEqual({ bundleId: "dev.expo.MyApp", cpuPct: 5, memBytes: (80000 + 20000) * 1024 });
+    expect(usage).toEqual({ bundleId: "dev.expo.MyApp", cpuSeconds: 15, memBytes: (80000 + 20000) * 1024 });
   });
 
   it("tags bundleId null and covers all user apps when nothing user-facing is foreground", async () => {
@@ -143,13 +144,13 @@ describe("sampleUserApp", () => {
     // AX unavailable -> no frontmost app: sum all user apps (103 + 104 + 106), bundleId null
     expect(await sampleUserApp(UDID, { exec, frontmostApp: async () => null })).toEqual({
       bundleId: null,
-      cpuPct: 7,
+      cpuSeconds: 17,
       memBytes: 3_000_000,
     });
     // a system app is frontmost (pid not among the user-app processes) -> same
     expect(await sampleUserApp(UDID, { exec, frontmostApp: frontmost(999999) })).toEqual({
       bundleId: null,
-      cpuPct: 7,
+      cpuSeconds: 17,
       memBytes: 3_000_000,
     });
   });
@@ -186,11 +187,16 @@ describe("MetricsSampler", () => {
     });
   });
 
-  it("emits samples with timestamps relative to the sampler start", async () => {
+  it("derives cpuPct from the cpu-time delta over each 1s interval", async () => {
+    // Cumulative cpu seconds per tick, at 1s spacing (fakeClock). Expected cpuPct:
+    //   t1 no baseline -> 0; t2 +0.5s/1s -> 50; t3 drop (churn) -> clamped 0;
+    //   t4 app switch (B) -> 0; t5 +0.6s/1s -> 60.
     const readings = [
-      { bundleId: "dev.expo.A", cpuPct: 10, memBytes: 100 },
-      { bundleId: "dev.expo.A", cpuPct: 30, memBytes: 400 },
-      { bundleId: "dev.expo.B", cpuPct: 20, memBytes: 250 },
+      { bundleId: "dev.expo.A", cpuSeconds: 10.0, memBytes: 100 },
+      { bundleId: "dev.expo.A", cpuSeconds: 10.5, memBytes: 400 },
+      { bundleId: "dev.expo.A", cpuSeconds: 10.4, memBytes: 250 },
+      { bundleId: "dev.expo.B", cpuSeconds: 99.0, memBytes: 260 },
+      { bundleId: "dev.expo.B", cpuSeconds: 99.6, memBytes: 270 },
     ];
     let i = 0;
     const sampler = new MetricsSampler({
@@ -202,14 +208,14 @@ describe("MetricsSampler", () => {
     const got: MetricSample[] = [];
     sampler.onSample((s) => got.push(s));
 
-    await sampler.tickOnce();
-    await sampler.tickOnce();
-    await sampler.tickOnce();
+    for (let n = 0; n < readings.length; n++) await sampler.tickOnce();
 
     expect(got).toEqual([
-      { t: 1000, bundleId: "dev.expo.A", cpuPct: 10, memBytes: 100 },
-      { t: 2000, bundleId: "dev.expo.A", cpuPct: 30, memBytes: 400 },
-      { t: 3000, bundleId: "dev.expo.B", cpuPct: 20, memBytes: 250 },
+      { t: 1000, bundleId: "dev.expo.A", cpuPct: 0, memBytes: 100 },
+      { t: 2000, bundleId: "dev.expo.A", cpuPct: 50, memBytes: 400 },
+      { t: 3000, bundleId: "dev.expo.A", cpuPct: 0, memBytes: 250 },
+      { t: 4000, bundleId: "dev.expo.B", cpuPct: 0, memBytes: 260 },
+      { t: 5000, bundleId: "dev.expo.B", cpuPct: 60, memBytes: 270 },
     ]);
     sampler.stop();
   });
@@ -254,7 +260,7 @@ describe("createMetricsSamplerCache", () => {
   it("fans one sample out to every subscriber", async () => {
     let sampler!: MetricsSampler;
     const cache = createMetricsSamplerCache((udid) => {
-      sampler = new MetricsSampler({ udid, sample: async () => ({ bundleId: "dev.expo.A", cpuPct: 5, memBytes: 9 }), now: (() => { let t = 0; return () => (t += 1000); })(), hostCores: 8 });
+      sampler = new MetricsSampler({ udid, sample: async () => ({ bundleId: "dev.expo.A", cpuSeconds: 5, memBytes: 9 }), now: (() => { let t = 0; return () => (t += 1000); })(), hostCores: 8 });
       return sampler;
     });
     const seen: number[] = [];

@@ -883,6 +883,7 @@ export function previewConfigForState(
   proxyHelpers = false,
 ): ServeSimState & {
   basePath: string;
+  logsEndpoint: string;
   appStateEndpoint: string;
   eventLogEndpoint: string;
   eventLogEventsEndpoint: string;
@@ -909,6 +910,7 @@ export function previewConfigForState(
   return {
     ...state,
     basePath: base,
+    logsEndpoint: endpoint(base, "/logs", state.device),
     appStateEndpoint: endpoint(base, "/appstate", state.device),
     eventLogEndpoint: endpoint(base, "/api/event-log", state.device),
     eventLogEventsEndpoint: endpoint(base, "/api/event-log/events", state.device),
@@ -1470,6 +1472,7 @@ function connectToFetch(
  * Routes handled under `basePath` (default `/.sim`):
  *   GET  {basePath}         — the preview HTML page
  *   GET  {basePath}/api     — serve-sim state JSON
+ *   GET  {basePath}/logs    — SSE stream of simctl logs
  *   GET  {basePath}/ax      — SSE stream of normalized accessibility snapshots
  */
 export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
@@ -2032,6 +2035,53 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         if (watcherRetry) clearTimeout(watcherRetry);
         clearInterval(heartbeat);
         watcher?.close();
+      });
+      return;
+    }
+
+    // SSE: simctl log stream
+    if (url === base + "/logs") {
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      if (!state) {
+        res.writeHead(404);
+        res.end("No serve-sim device");
+        return;
+      }
+      const udid = state.device;
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      res.write(":\n\n");
+
+      const child: ChildProcess = spawn("xcrun", [
+        "simctl", "spawn", udid, "log", "stream",
+        "--style", "ndjson",
+        "--level", "info",
+      ], { stdio: ["ignore", "pipe", "ignore"] });
+
+      let buf = "";
+      child.stdout!.on("data", (chunk: Buffer) => {
+        buf += chunk.toString();
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) !== -1) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (line) res.write("data: " + line + "\n\n");
+        }
+        // Drop a runaway partial line so a malformed/never-terminated
+        // log entry can't grow `buf` without bound.
+        if (buf.length > SSE_LINE_BUFFER_LIMIT) buf = "";
+      });
+
+      child.on("error", () => { try { res.end(); } catch {} });
+      child.on("close", () => res.end());
+      req.on("close", () => {
+        child.stdout?.destroy();
+        child.kill();
       });
       return;
     }

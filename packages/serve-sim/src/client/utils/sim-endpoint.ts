@@ -10,6 +10,7 @@ declare global {
       port: number;
       device: string;
       basePath: string;
+      logsEndpoint?: string;
       axEndpoint?: string;
       cameraStatusEndpoint?: string;
       appStateEndpoint?: string;

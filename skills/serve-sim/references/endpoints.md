@@ -66,6 +66,7 @@ mounts it at `/`. Prefix the paths below with that configured base.
 | `GET` | `/api/events` | SSE stream of selected-device configuration changes. |
 | `GET` | `/api/event-log` | Recent normalized simulator input events. |
 | `GET` | `/api/event-log/events` | SSE event-log updates. |
+| `GET` | `/logs` | SSE stream of simulator console logs (NDJSON events). |
 | `GET` | `/ax` | SSE accessibility snapshots. |
 | `POST` | `/exec` | Host command execution; requires JSON, same-origin checks, and bearer token. |
 | `GET` | `/appstate` | Frontmost-app event stream. |

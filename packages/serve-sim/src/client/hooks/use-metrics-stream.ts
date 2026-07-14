@@ -33,7 +33,14 @@ export function useMetricsStream(path: string): {
         setErrored(false);
         if ("schemaVersion" in parsed) setMeta(parsed as unknown as MetricsMeta);
         else if ("t" in parsed) {
-          setHistory((prev) => [...prev, parsed as unknown as MetricSample].slice(-MAX_POINTS));
+          const sample = parsed as unknown as MetricSample;
+          setHistory((prev) => {
+            // The sampler follows whichever app is foreground, so a bundleId change
+            // means the user switched apps — start a fresh series instead of mixing them.
+            const previous = prev.at(-1);
+            const base = previous && previous.bundleId !== sample.bundleId ? [] : prev;
+            return [...base, sample].slice(-MAX_POINTS);
+          });
         }
       } catch {
         // ignore a malformed frame

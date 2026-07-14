@@ -33,22 +33,8 @@ function psFixtureTwoApps(): string {
 }
 
 describe("findUserAppProcesses", () => {
-  it("collects pids + cpu% + rss over the sim's user-installed app (app + extensions)", () => {
-    // app 4.0 + extension 1.0 = 5.0 ; (80000 + 20000) KB — system/host procs excluded
-    expect(findUserAppProcesses(psFixture(), UDID)).toEqual({
-      pids: [103, 104],
-      cpuPct: 5,
-      rssKb: 80000 + 20000,
-    });
-  });
-
-  it("matches the device path case-insensitively", () => {
-    const ps = `7 2.0 1000 /x/Devices/${UDID.toLowerCase()}/data/Containers/Bundle/Application/AAA/App.app/App`;
-    expect(findUserAppProcesses(ps, UDID)).toEqual({ pids: [7], cpuPct: 2, rssKb: 1000 });
-  });
-
-  it("narrows to the frontmost app's bundle (host + extensions), ignoring other user apps", () => {
-    // frontmost pid 103 -> MyApp.app; sums MyApp + its Share extension, not the other app
+  it("scopes to the frontmost app's bundle (host + extensions), ignoring other user/system apps", () => {
+    // frontmost pid 103 -> MyApp.app; sums MyApp (4.0) + its Share extension (1.0), not the other app
     expect(findUserAppProcesses(psFixtureTwoApps(), UDID, 103)).toEqual({
       pids: [103, 104],
       cpuPct: 5,
@@ -62,12 +48,20 @@ describe("findUserAppProcesses", () => {
     });
   });
 
-  it("sums every user app when the frontmost pid isn't one of them (e.g. SpringBoard)", () => {
-    expect(findUserAppProcesses(psFixtureTwoApps(), UDID, 999999)).toEqual({
-      pids: [103, 104, 106],
-      cpuPct: 7,
-      rssKb: 80000 + 20000 + 50000,
-    });
+  it("matches the device path case-insensitively", () => {
+    const ps = `7 2.0 1000 /x/Devices/${UDID.toLowerCase()}/data/Containers/Bundle/Application/AAA/App.app/App`;
+    expect(findUserAppProcesses(ps, UDID, 7)).toEqual({ pids: [7], cpuPct: 2, rssKb: 1000 });
+  });
+
+  it("sums every user app when the frontmost pid is unknown or not a user app", () => {
+    // no frontmost pid, or one that isn't a user process -> aggregate all user apps
+    for (const pid of [undefined, 999999]) {
+      expect(findUserAppProcesses(psFixtureTwoApps(), UDID, pid)).toEqual({
+        pids: [103, 104, 106],
+        cpuPct: 7,
+        rssKb: 80000 + 20000 + 50000,
+      });
+    }
   });
 
   it("returns null when no user app is running on this sim", () => {
@@ -117,7 +111,9 @@ describe("sampleUserApp", () => {
   const footprintFor = (pids: string[]): string =>
     pids.map((pid) => `App [${pid}]:\nAuxiliary data:\n    phys_footprint: 1000000 B\n`).join("\n");
 
-  it("scopes to the frontmost app and combines ps (cpu) with footprint (mem)", async () => {
+  const frontmost = (pid: number, bundleId = "dev.expo.MyApp") => async () => ({ pid, bundleId });
+
+  it("tags the sample with the frontmost bundleId and combines ps (cpu) with footprint (mem)", async () => {
     const seen: string[] = [];
     const exec = async (file: string, args: string[]): Promise<string> => {
       seen.push(file);
@@ -127,8 +123,8 @@ describe("sampleUserApp", () => {
       expect(pids).toEqual(["103", "104"]);
       return footprintFor(pids);
     };
-    const usage = await sampleUserApp(UDID, { exec, frontmostPid: async () => 103 });
-    expect(usage).toEqual({ cpuPct: 5, memBytes: 2_000_000 });
+    const usage = await sampleUserApp(UDID, { exec, frontmostApp: frontmost(103, "dev.expo.MyApp") });
+    expect(usage).toEqual({ bundleId: "dev.expo.MyApp", cpuPct: 5, memBytes: 2_000_000 });
     expect(seen.sort()).toEqual(["footprint", "ps"]);
   });
 
@@ -137,15 +133,36 @@ describe("sampleUserApp", () => {
       if (file === "ps") return psFixture();
       throw new Error("footprint exited non-zero");
     };
-    const usage = await sampleUserApp(UDID, { exec, frontmostPid: async () => 103 });
-    expect(usage).toEqual({ cpuPct: 5, memBytes: (80000 + 20000) * 1024 });
+    const usage = await sampleUserApp(UDID, { exec, frontmostApp: frontmost(103) });
+    expect(usage).toEqual({ bundleId: "dev.expo.MyApp", cpuPct: 5, memBytes: (80000 + 20000) * 1024 });
   });
 
-  it("returns null when ps fails", async () => {
-    const exec = async (): Promise<string> => {
+  it("tags bundleId null and covers all user apps when nothing user-facing is foreground", async () => {
+    const exec = async (file: string, args: string[]): Promise<string> =>
+      file === "ps" ? psFixtureTwoApps() : footprintFor(args.filter((a) => /^\d+$/.test(a)));
+    // AX unavailable -> no frontmost app: sum all user apps (103 + 104 + 106), bundleId null
+    expect(await sampleUserApp(UDID, { exec, frontmostApp: async () => null })).toEqual({
+      bundleId: null,
+      cpuPct: 7,
+      memBytes: 3_000_000,
+    });
+    // a system app is frontmost (pid not among the user-app processes) -> same
+    expect(await sampleUserApp(UDID, { exec, frontmostApp: frontmost(999999) })).toEqual({
+      bundleId: null,
+      cpuPct: 7,
+      memBytes: 3_000_000,
+    });
+  });
+
+  it("returns null when no user app is running or ps fails", async () => {
+    const psFails = async (): Promise<string> => {
       throw new Error("ps exited non-zero");
     };
-    expect(await sampleUserApp(UDID, { exec, frontmostPid: async () => undefined })).toBeNull();
+    expect(await sampleUserApp(UDID, { exec: psFails, frontmostApp: frontmost(103) })).toBeNull();
+    // ps succeeds but only system processes are present
+    const systemOnly = async (file: string): Promise<string> =>
+      file === "ps" ? `1 0.1 15000 launchd_sim /x/Devices/${UDID}/data/var/run/x.plist` : "";
+    expect(await sampleUserApp(UDID, { exec: systemOnly, frontmostApp: async () => null })).toBeNull();
   });
 });
 
@@ -171,9 +188,9 @@ describe("MetricsSampler", () => {
 
   it("emits samples with timestamps relative to the sampler start", async () => {
     const readings = [
-      { cpuPct: 10, memBytes: 100 },
-      { cpuPct: 30, memBytes: 400 },
-      { cpuPct: 20, memBytes: 250 },
+      { bundleId: "dev.expo.A", cpuPct: 10, memBytes: 100 },
+      { bundleId: "dev.expo.A", cpuPct: 30, memBytes: 400 },
+      { bundleId: "dev.expo.B", cpuPct: 20, memBytes: 250 },
     ];
     let i = 0;
     const sampler = new MetricsSampler({
@@ -190,9 +207,9 @@ describe("MetricsSampler", () => {
     await sampler.tickOnce();
 
     expect(got).toEqual([
-      { t: 1000, cpuPct: 10, memBytes: 100 },
-      { t: 2000, cpuPct: 30, memBytes: 400 },
-      { t: 3000, cpuPct: 20, memBytes: 250 },
+      { t: 1000, bundleId: "dev.expo.A", cpuPct: 10, memBytes: 100 },
+      { t: 2000, bundleId: "dev.expo.A", cpuPct: 30, memBytes: 400 },
+      { t: 3000, bundleId: "dev.expo.B", cpuPct: 20, memBytes: 250 },
     ]);
     sampler.stop();
   });
@@ -237,7 +254,7 @@ describe("createMetricsSamplerCache", () => {
   it("fans one sample out to every subscriber", async () => {
     let sampler!: MetricsSampler;
     const cache = createMetricsSamplerCache((udid) => {
-      sampler = new MetricsSampler({ udid, sample: async () => ({ cpuPct: 5, memBytes: 9 }), now: (() => { let t = 0; return () => (t += 1000); })(), hostCores: 8 });
+      sampler = new MetricsSampler({ udid, sample: async () => ({ bundleId: "dev.expo.A", cpuPct: 5, memBytes: 9 }), now: (() => { let t = 0; return () => (t += 1000); })(), hostCores: 8 });
       return sampler;
     });
     const seen: number[] = [];
@@ -245,5 +262,26 @@ describe("createMetricsSamplerCache", () => {
     cache.subscribe(UDID, () => seen.push(2));
     await sampler.tickOnce();
     expect(seen.sort()).toEqual([1, 2]);
+  });
+
+  it("a stale double-unsubscribe does not evict a replacement sampler", () => {
+    const built: MetricsSampler[] = [];
+    const cache = createMetricsSamplerCache((udid) => {
+      const s = new MetricsSampler({ udid, sample: async () => null, hostCores: 8 });
+      built.push(s);
+      return s;
+    });
+
+    const first = cache.subscribe(UDID, () => {}); // builds sampler #1
+    first.unsubscribe(); // last listener -> stops + evicts #1
+    const second = cache.subscribe(UDID, () => {}); // builds sampler #2 for the same udid
+    expect(built).toHaveLength(2);
+
+    first.unsubscribe(); // stale, replayed: must NOT evict #2
+
+    // #2 is still the active sampler, so a new subscriber reuses it (no #3 built).
+    cache.subscribe(UDID, () => {});
+    expect(built).toHaveLength(2);
+    expect(second.meta.udid).toBe(UDID);
   });
 });

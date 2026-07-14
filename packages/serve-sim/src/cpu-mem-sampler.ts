@@ -1,6 +1,7 @@
 // CPU/mem of the user's app on a booted sim, measured host-side (%CPU is per-core, can exceed 100).
-// Scopes to the foreground app (the one the tools panel shows) via axFrontmost. Memory is
-// phys_footprint (the number Xcode's gauge shows), with an RSS fallback.
+// Scopes to the foreground app (the one the tools panel shows) via axFrontmost, tagging each sample
+// with its bundleId. When nothing user-facing is foreground, bundleId is null and the numbers cover
+// every user app. Memory is phys_footprint (the number Xcode's gauge shows), with an RSS fallback.
 
 import { execFile } from "node:child_process";
 import { cpus } from "node:os";
@@ -13,6 +14,7 @@ const execFileAsync = promisify(execFile);
 export const METRICS_SCHEMA_VERSION = 1;
 
 export interface AppUsage {
+  bundleId: string | null; // the foreground app these numbers belong to, or null for all user apps
   cpuPct: number;
   memBytes: number;
 }
@@ -58,8 +60,9 @@ function parseUserAppRows(output: string, udid: string): PsRow[] {
   return rows;
 }
 
-// Aggregate the user app's processes. With a frontmost pid, narrow to just that app's `.app`
-// bundle (its host process + extensions); without one, sum every user app on the sim.
+// Aggregate the user app's processes. When the frontmost pid maps to a user app, narrow to just
+// that app's `.app` bundle (its host process + extensions). Otherwise sum every user app on the
+// sim (nothing user-facing is foreground). Null only when no user app is running at all.
 export function findUserAppProcesses(
   output: string,
   udid: string,
@@ -89,32 +92,50 @@ export function sumPhysFootprintBytes(output: string): number | null {
   return found ? bytes : null;
 }
 
+export interface FrontmostApp {
+  pid: number;
+  bundleId: string;
+}
+
 // Injected so tests can drive sampleUserApp without spawning real processes.
 export interface SampleDeps {
   exec?: (file: string, args: string[]) => Promise<string>;
-  frontmostPid?: (udid: string) => Promise<number | undefined>;
+  frontmostApp?: (udid: string) => Promise<FrontmostApp | null>;
 }
 
 const runCommand = (file: string, args: string[]): Promise<string> =>
   execFileAsync(file, args, { timeout: 3000, maxBuffer: 8 * 1024 * 1024 }).then((r) => r.stdout);
 
-async function frontmostPidOf(udid: string): Promise<number | undefined> {
+async function frontmostAppOf(udid: string): Promise<FrontmostApp | null> {
   try {
-    return (JSON.parse(await axFrontmostAsync(udid)) as { pid?: number }).pid;
+    const { pid, bundleId } = JSON.parse(await axFrontmostAsync(udid)) as {
+      pid?: number;
+      bundleId?: string;
+    };
+    return pid != null && bundleId ? { pid, bundleId } : null;
   } catch {
-    // AX bridge warming up or unreachable: caller falls back to summing every user app.
-    return undefined;
+    // AX bridge warming up or unreachable: skip this tick (caller returns null).
+    return null;
   }
 }
 
-// CPU side: the foreground app's processes and their %CPU. `ps` and the frontmost
-// probe don't depend on each other, so they run together.
-async function sampleCpu(udid: string, deps: Required<SampleDeps>): Promise<AppProcesses | null> {
-  const [psOutput, frontmostPid] = await Promise.all([
+// CPU side: the app's processes + their %CPU, and which app they belong to. `ps` and the
+// frontmost probe don't depend on each other, so they run together. bundleId is the frontmost
+// app when it's a user app, else null (the numbers then cover every user app). Null only when
+// no user app is running.
+async function sampleForegroundApp(
+  udid: string,
+  deps: Required<SampleDeps>,
+): Promise<{ procs: AppProcesses; bundleId: string | null } | null> {
+  const [psOutput, frontmost] = await Promise.all([
     deps.exec("ps", ["-axo", "pid=,pcpu=,rss=,args="]).catch(() => null),
-    deps.frontmostPid(udid),
+    deps.frontmostApp(udid),
   ]);
-  return psOutput == null ? null : findUserAppProcesses(psOutput, udid, frontmostPid);
+  if (psOutput == null) return null;
+  const procs = findUserAppProcesses(psOutput, udid, frontmost?.pid);
+  if (!procs) return null;
+  const bundleId = frontmost && procs.pids.includes(frontmost.pid) ? frontmost.bundleId : null;
+  return { procs, bundleId };
 }
 
 // Memory side: phys_footprint of the app's processes. Depends on the pids the CPU
@@ -132,11 +153,15 @@ async function sampleMemoryBytes(procs: AppProcesses, deps: Required<SampleDeps>
 export async function sampleUserApp(udid: string, deps: SampleDeps = {}): Promise<AppUsage | null> {
   const resolved: Required<SampleDeps> = {
     exec: deps.exec ?? runCommand,
-    frontmostPid: deps.frontmostPid ?? frontmostPidOf,
+    frontmostApp: deps.frontmostApp ?? frontmostAppOf,
   };
-  const procs = await sampleCpu(udid, resolved);
-  if (!procs) return null;
-  return { cpuPct: procs.cpuPct, memBytes: await sampleMemoryBytes(procs, resolved) };
+  const foreground = await sampleForegroundApp(udid, resolved);
+  if (!foreground) return null;
+  return {
+    bundleId: foreground.bundleId,
+    cpuPct: foreground.procs.cpuPct,
+    memBytes: await sampleMemoryBytes(foreground.procs, resolved),
+  };
 }
 
 export interface MetricsSamplerOptions {
@@ -230,7 +255,9 @@ export function createMetricsSamplerCache(
         meta: sampler.meta,
         unsubscribe: () => {
           off();
-          if (sampler.listenerCount === 0) {
+          // Identity-guard the eviction: a double-called or stale unsubscribe must not
+          // delete a replacement sampler that a later subscriber created for this udid.
+          if (sampler.listenerCount === 0 && byUdid.get(udid) === sampler) {
             sampler.stop();
             byUdid.delete(udid);
           }

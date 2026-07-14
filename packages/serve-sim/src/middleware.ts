@@ -32,6 +32,13 @@ import {
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
 import { type WebMiddleware } from "./runtime-utils";
+import {
+  bridgeUpgradeToWebSocket,
+  execSocketFromUpgrade,
+  hidSocketFromUpgrade,
+  isWebSocketUpgradeRequest,
+  type UpgradeRequestContext,
+} from "./upgrade-context";
 
 type SimReq = IncomingMessage;
 type SimRes = ServerResponse;
@@ -2268,7 +2275,16 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   // mounting this middleware should forward `upgrade` events here (the
   // built-in preview server does); the client falls back to POST /exec when
   // the upgrade never completes.
-  const fetchMiddleware = (async (request: Request) => {
+  const fetchMiddleware = (async (request: Request, context?: UpgradeRequestContext) => {
+    // Hook-based WebSocket upgrades: hosts that can't forward raw Node
+    // `upgrade` events (Expo CLI's DevTools plugin `context.upgrade(hooks)`)
+    // pass an upgrade context instead. This covers the dynamic routes that
+    // static exact-path WebSocket mounts can't — /helper/<device>/ws and
+    // /devtools/page/<id> — plus /exec-ws itself. The header gate matters:
+    // the host's `upgrade()` exists on plain HTTP requests too, but throws.
+    if (context && isWebSocketUpgradeRequest(request)) {
+      return handleContextUpgrade(request, context);
+    }
     return connectToFetch(connectMiddleware, request);
   }) as SimMiddleware;
 
@@ -2297,5 +2313,49 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   fetchMiddleware.handleUpgrade = (req: SimReq, socket: Socket, head: Buffer) => {
     connectMiddleware.handleUpgrade?.(req, socket, head);
   };
+
+  // Hook-based twin of handleUpgrade for hosts that hand us an upgrade
+  // context instead of the raw socket. Returning the context's marker
+  // Response commits the handshake; a plain Response rejects it; undefined
+  // declines so the host can fall through (and typically destroy the socket).
+  function handleContextUpgrade(
+    request: Request,
+    context: UpgradeRequestContext,
+  ): Response | undefined {
+    const requestUrl = new URL(request.url);
+    const rawUrl = `${requestUrl.pathname}${requestUrl.search}`;
+
+    const devtoolsTarget = devtoolsProxyTarget(rawUrl, devtoolsPrefix);
+    if (devtoolsTarget) {
+      return bridgeUpgradeToWebSocket(context, async () => {
+        const bridge = await getInspectWebKitBridge();
+        return `ws://127.0.0.1:${bridge.port}${devtoolsTarget.upstreamPath}`;
+      });
+    }
+
+    const helperTarget = helperProxyTarget(rawUrl, helperPrefix);
+    if (helperTarget) {
+      if (helperTarget.upstreamPath.split("?")[0] !== "/ws") {
+        return new Response("Bad Request", { status: 400 });
+      }
+      const device = helperTarget.device ?? options?.device ?? null;
+      let session: ReturnType<typeof getDeviceSession>;
+      try {
+        if (!device) throw new Error("no device selected");
+        session = getDeviceSession(device);
+      } catch {
+        return new Response("No serve-sim device", { status: 404 });
+      }
+      return hidSocketFromUpgrade(context, (hidSocket) => session.attachHidSocket(hidSocket));
+    }
+
+    const execWsPath = `${base}/exec-ws`;
+    if (requestUrl.pathname === execWsPath || requestUrl.pathname === `${execWsPath}/`) {
+      const { socket, response } = execSocketFromUpgrade(context);
+      if (fetchMiddleware.handleWebSocket?.(request, socket)) return response;
+    }
+    return undefined;
+  }
+
   return fetchMiddleware;
 }

@@ -2,11 +2,20 @@ import { type IncomingMessage, type ServerResponse } from "http";
 import { once } from "events";
 import { Readable } from "stream";
 import { type ExecWebSocket } from "./exec-ws-utils";
+import { type UpgradeRequestContext } from "./upgrade-context";
 
 type RequestInitWithDuplex = RequestInit & { duplex?: "half" };
 
-/** Fetch-style middleware signature, matching what `simMiddleware` returns. */
-export type WebMiddleware = ((request: Request) => Response | undefined | Promise<Response | undefined>) & {
+/**
+ * Fetch-style middleware signature, matching what `simMiddleware` returns.
+ * The optional `context` carries a hook-based WebSocket upgrade capability
+ * (Expo CLI's DevTools plugin `context.upgrade(hooks)`); hosts that forward
+ * raw Node `upgrade` events instead can omit it and use `handleUpgrade`.
+ */
+export type WebMiddleware = ((
+  request: Request,
+  context?: UpgradeRequestContext,
+) => Response | undefined | Promise<Response | undefined>) & {
   /** WebSocket hook (exec channel); returns true when handled. */
   handleWebSocket?: (request: Request, websocket: ExecWebSocket) => boolean;
 };

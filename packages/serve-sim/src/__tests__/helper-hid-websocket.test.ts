@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { simMiddleware } from "../middleware";
-import type { ExecWebSocket } from "../exec-ws-utils";
+import type { UpgradeHandlerWebSocket } from "../middleware-utils";
 
 // handleWebSocket receives host-accepted sockets (Expo CLI plugin WS routes,
 // the standalone hub CLI own the HTTP upgrade), so the helper HID channel must
 // be claimable there — the raw-socket handleUpgrade path never runs for them.
 
-function fakeSocket(): ExecWebSocket & { closed: boolean } {
-  const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
+function fakeSocket(): UpgradeHandlerWebSocket & { closed: boolean } {
+  const listeners: Record<string, Array<(...args: never[]) => void>> = {};
   return {
     OPEN: 1,
     readyState: 1,
@@ -16,7 +16,7 @@ function fakeSocket(): ExecWebSocket & { closed: boolean } {
     close() {
       this.closed = true;
     },
-    on(event: string, listener: (...args: unknown[]) => void) {
+    on(event: string, listener: (...args: never[]) => void) {
       (listeners[event] ??= []).push(listener);
     },
   };

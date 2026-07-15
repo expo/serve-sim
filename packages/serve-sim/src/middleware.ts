@@ -30,7 +30,7 @@ import {
   serveDevicePlaceholderAsset,
 } from "./devicekit-chrome";
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
-import type { ExecWebSocket } from "./exec-ws-utils";
+import type { UpgradeHandlerWebSocket } from "./middleware-utils";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
 import { type WebMiddleware } from "./runtime-utils";
 import { connectToFetch, type ConnectMiddleware } from "./connect-to-fetch";
@@ -2198,7 +2198,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     },
   });
 
-  fetchMiddleware.handleWebSocket = (request: Request, websocket: ExecWebSocket): boolean => {
+  fetchMiddleware.handleWebSocket = (request: Request, websocket: UpgradeHandlerWebSocket): boolean => {
     if (execWebSocketHandler(request, websocket)) return true;
     // Helper HID socket for hosts that own the HTTP upgrade themselves (Expo
     // CLI plugin WS routes, the standalone hub CLI): they hand an accepted
@@ -2220,9 +2220,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       websocket.close(); // not booted / capture unavailable
       return true;
     }
-    // A host-accepted `ws` socket satisfies HidSocket (binary Buffer frames);
-    // the ExecWebSocket surface is the string-frame subset of the same object.
-    session.attachHidSocket(websocket as unknown as HidSocket);
+
+    session.attachHidSocket(websocket);
     return true;
   };
 

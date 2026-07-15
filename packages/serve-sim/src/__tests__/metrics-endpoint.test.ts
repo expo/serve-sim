@@ -8,8 +8,8 @@ import { join } from "path";
  * Skipped automatically when no iOS simulator is booted. On a booted sim it
  * exercises the route contract end-to-end: the `event: meta` frame is emitted
  * first (before any sample), and an unknown device is rejected with a 404. The
- * shared-sampler / last-client-cleanup contract is covered by the unit tests in
- * cpu-mem-sampler.test.ts.
+ * route's meta-ordering, 404, shared-sampler, and last-client-cleanup behavior
+ * is unit-tested against a fake req/res in metrics-route.test.ts.
  */
 
 const CLI_PATH = join(import.meta.dir, "../../src/index.ts");

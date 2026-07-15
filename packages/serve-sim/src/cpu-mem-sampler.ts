@@ -266,6 +266,8 @@ export interface MetricsSubscription {
   unsubscribe: () => void;
 }
 
+export type MetricsSamplerCache = ReturnType<typeof createMetricsSamplerCache>;
+
 // One shared sampler per udid (like the ax streamer cache); ref-counted by subscribers.
 export function createMetricsSamplerCache(
   makeSampler: (udid: string) => MetricsSampler = (udid) => new MetricsSampler({ udid }),

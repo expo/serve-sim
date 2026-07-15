@@ -13,8 +13,11 @@ export function MetricsTool({ udid, metricsEndpoint }: { udid: string; metricsEn
     () => metricsEndpoint ?? `${simEndpoint("metrics")}?device=${encodeURIComponent(udid)}`,
     [metricsEndpoint, udid],
   );
-  const { meta, latest, history, errored } = useMetricsStream(path);
+  const { meta, latest, history, errored, stale } = useMetricsStream(path);
   const [open, setOpen] = useState(true);
+  // Only present the numbers when they're actually current — a stream error or a quiet backend
+  // (no app in the foreground) must not leave the last sample looking live.
+  const live = latest !== null && !errored && !stale;
 
   return (
     <CollapsibleSection
@@ -26,7 +29,7 @@ export function MetricsTool({ udid, metricsEndpoint }: { udid: string; metricsEn
           <span className="text-[11px] font-semibold text-white/50 uppercase tracking-[0.08em] leading-none inline-flex items-center">
             Activity
           </span>
-          {!open && latest && (
+          {!open && live && (
             <span className="text-[11px] text-white/40 tabular-nums text-right">
               {formatCpu(latest.cpuPct)} · {formatMem(latest.memBytes)}
             </span>
@@ -34,7 +37,7 @@ export function MetricsTool({ udid, metricsEndpoint }: { udid: string; metricsEn
         </>
       }
     >
-      {latest ? (
+      {live ? (
         <>
           <MetricRow
             label="CPU"
@@ -51,7 +54,9 @@ export function MetricsTool({ udid, metricsEndpoint }: { udid: string; metricsEn
           />
         </>
       ) : (
-        <div className="text-white/50 text-[12px]">{errored ? "Disconnected" : "Waiting for CPU / memory…"}</div>
+        <div className="text-white/50 text-[12px]">
+          {errored ? "Disconnected" : "Waiting for CPU / memory…"}
+        </div>
       )}
     </CollapsibleSection>
   );

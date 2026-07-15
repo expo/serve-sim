@@ -51,10 +51,12 @@ function integerInRange(value: unknown, fallback: number, min: number, max: numb
   return Math.round(numberInRange(value, fallback, min, max));
 }
 
-function normalizedIceServers(value: unknown): WebRtcIceServer[] | undefined {
-  if (!Array.isArray(value) || value.length > 16) return undefined;
-  const servers = value.flatMap((entry): WebRtcIceServer[] => {
-    if (!entry || typeof entry !== "object") return [];
+/** Invalid input returns null; an empty array is a valid explicit clear. */
+function normalizedIceServers(value: unknown): WebRtcIceServer[] | null {
+  if (!Array.isArray(value) || value.length > 16) return null;
+  const servers: WebRtcIceServer[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") return null;
     const urls = (entry as { urls?: unknown }).urls;
     if (
       !Array.isArray(urls)
@@ -66,19 +68,19 @@ function normalizedIceServers(value: unknown): WebRtcIceServer[] | undefined {
         && /^(stun|stuns|turn|turns):/i.test(url)
       )
     ) {
-      return [];
+      return null;
     }
     const username = (entry as { username?: unknown }).username;
     const credential = (entry as { credential?: unknown }).credential;
-    if (username !== undefined && typeof username !== "string") return [];
-    if (credential !== undefined && typeof credential !== "string") return [];
-    return [{
+    if (username !== undefined && typeof username !== "string") return null;
+    if (credential !== undefined && typeof credential !== "string") return null;
+    servers.push({
       urls,
       ...(typeof username === "string" ? { username } : {}),
       ...(typeof credential === "string" ? { credential } : {}),
-    }];
-  });
-  return servers.length > 0 ? servers : undefined;
+    });
+  }
+  return servers;
 }
 
 const STREAM_ENCODER_SETTING_KEYS = new Set<keyof StreamEncoderSettings>([
@@ -113,7 +115,10 @@ export function normalizeStreamControlSettings(
   fallback: StreamControlSettings = DEFAULT_STREAM_CONTROL_SETTINGS,
 ): StreamControlSettings {
   const hasIceServers = Object.prototype.hasOwnProperty.call(input, "iceServers");
-  const iceServers = hasIceServers ? normalizedIceServers(input.iceServers) : fallback.iceServers;
+  const normalized = hasIceServers ? normalizedIceServers(input.iceServers) : fallback.iceServers;
+  const iceServers = normalized === null
+    ? fallback.iceServers
+    : normalized && normalized.length > 0 ? normalized : undefined;
   return {
     transport: input.transport === "http" || input.transport === "webrtc"
       ? input.transport

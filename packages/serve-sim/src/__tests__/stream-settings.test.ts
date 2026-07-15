@@ -6,6 +6,7 @@ import {
   normalizeStreamControlSettings,
   parseStreamEncoderSettingsPatch,
   streamControlSettingsFrom,
+  type StreamControlSettings,
 } from "../stream-settings";
 
 describe("stream settings", () => {
@@ -48,6 +49,23 @@ describe("stream settings", () => {
     const updated = mergeStreamControlSettings(current, { mjpegFps: 15, iceServers: [] });
     expect(updated.mjpegFps).toBe(15);
     expect(updated.iceServers).toBeUndefined();
+  });
+
+  test("preserves fallback ICE servers when an update is malformed", () => {
+    const current = normalizeStreamControlSettings({
+      transport: "webrtc",
+      iceServers: [{ urls: ["turn:relay.example.test"] }],
+    });
+
+    expect(mergeStreamControlSettings(current, {
+      iceServers: "invalid" as unknown as StreamControlSettings["iceServers"],
+    }).iceServers).toBe(current.iceServers);
+    expect(mergeStreamControlSettings(current, {
+      iceServers: [
+        { urls: ["stun:stun.example.test"] },
+        { urls: ["https://not-an-ice-server.example.test"] },
+      ],
+    }).iceServers).toBe(current.iceServers);
   });
 
   test("preserves viewer playback state and identity for unchanged encoder settings", () => {

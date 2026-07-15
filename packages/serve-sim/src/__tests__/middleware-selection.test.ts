@@ -149,13 +149,13 @@ describe("rewriteStateForRequestHost", () => {
         ...state,
         url: "http://localhost:3200/helper/DEVICE-A",
         streamUrl: "http://localhost:3200/helper/DEVICE-A/stream.mjpeg",
-        wsUrl: "ws://localhost:3200/helper/DEVICE-A/ws",
+        wsUrl: "ws://localhost:3200/helper/ws?device=DEVICE-A",
       });
       expect(proxy("[::1]:3200")).toEqual({
         ...state,
         url: "http://[::1]:3200/helper/DEVICE-A",
         streamUrl: "http://[::1]:3200/helper/DEVICE-A/stream.mjpeg",
-        wsUrl: "ws://[::1]:3200/helper/DEVICE-A/ws",
+        wsUrl: "ws://[::1]:3200/helper/ws?device=DEVICE-A",
       });
     });
 
@@ -164,13 +164,13 @@ describe("rewriteStateForRequestHost", () => {
         ...state,
         url: "http://192.168.1.42:3200/helper/DEVICE-A",
         streamUrl: "http://192.168.1.42:3200/helper/DEVICE-A/stream.mjpeg",
-        wsUrl: "ws://192.168.1.42:3200/helper/DEVICE-A/ws",
+        wsUrl: "ws://192.168.1.42:3200/helper/ws?device=DEVICE-A",
       });
       expect(proxy("tunnel.example.com")).toEqual({
         ...state,
         url: "http://tunnel.example.com/helper/DEVICE-A",
         streamUrl: "http://tunnel.example.com/helper/DEVICE-A/stream.mjpeg",
-        wsUrl: "ws://tunnel.example.com/helper/DEVICE-A/ws",
+        wsUrl: "ws://tunnel.example.com/helper/ws?device=DEVICE-A",
       });
     });
 
@@ -179,7 +179,7 @@ describe("rewriteStateForRequestHost", () => {
         ...state,
         url: "http://localhost:8081/preview/helper/DEVICE-A",
         streamUrl: "http://localhost:8081/preview/helper/DEVICE-A/stream.mjpeg",
-        wsUrl: "ws://localhost:8081/preview/helper/DEVICE-A/ws",
+        wsUrl: "ws://localhost:8081/preview/helper/ws?device=DEVICE-A",
       });
     });
 
@@ -188,7 +188,7 @@ describe("rewriteStateForRequestHost", () => {
         ...state,
         url: "https://tunnel.example.com/helper/DEVICE-A",
         streamUrl: "https://tunnel.example.com/helper/DEVICE-A/stream.mjpeg",
-        wsUrl: "wss://tunnel.example.com/helper/DEVICE-A/ws",
+        wsUrl: "wss://tunnel.example.com/helper/ws?device=DEVICE-A",
       });
     });
   });

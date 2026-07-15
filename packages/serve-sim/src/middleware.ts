@@ -474,7 +474,8 @@ export function rewriteStateForRequestHost(
     ...state,
     url: `${origin}${devicePath}`,
     streamUrl: `${origin}${devicePath}/stream.mjpeg`,
-    wsUrl: `${wsOrigin}${devicePath}/ws`,
+    // TMP: Can be removed when Expo CLI DevTools support dynamic WS URLs
+    wsUrl: `${wsOrigin}${helperBase}/ws?device=${encodeURIComponent(state.device)}`,
   };
 }
 

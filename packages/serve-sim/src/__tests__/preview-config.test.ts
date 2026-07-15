@@ -26,7 +26,7 @@ describe("proxyPreviewConfigForBrowser", () => {
       ...baseConfig,
       url: "http://example.test:3200/helper/DEVICE-A",
       streamUrl: "http://example.test:3200/helper/DEVICE-A/stream.mjpeg",
-      wsUrl: "ws://example.test:3200/helper/DEVICE-A/ws",
+      wsUrl: "ws://example.test:3200/helper/ws?device=DEVICE-A",
     });
   });
 
@@ -44,7 +44,7 @@ describe("proxyPreviewConfigForBrowser", () => {
       basePath: "/.sim",
       url: "https://tunnel.example.com/.sim/helper/DEVICE-A",
       streamUrl: "https://tunnel.example.com/.sim/helper/DEVICE-A/stream.mjpeg",
-      wsUrl: "wss://tunnel.example.com/.sim/helper/DEVICE-A/ws",
+      wsUrl: "wss://tunnel.example.com/.sim/helper/ws?device=DEVICE-A",
     });
   });
 

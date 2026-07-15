@@ -13,7 +13,7 @@ import type { Socket } from "net";
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
-import { createMetricsSamplerCache } from "./cpu-mem-sampler";
+import { createMetricsSamplerCache, type MetricsSamplerCache } from "./cpu-mem-sampler";
 import { closeDeviceSession, getDeviceSession, sendCorsPreflight, type HidSocket } from "./device-session";
 import {
   eventLogEventForCommand,
@@ -1338,6 +1338,38 @@ function isJsonContentType(value: string | undefined): boolean {
  *   GET  {basePath}/logs    — SSE stream of simctl logs
  *   GET  {basePath}/ax      — SSE stream of normalized accessibility snapshots
  */
+export function handleMetricsRequest(
+  req: SimReq,
+  res: SimRes,
+  state: ServeSimState | null,
+  samplerCache: MetricsSamplerCache = metricsSamplerCache,
+): void {
+  if (!state) {
+    res.writeHead(404);
+    res.end("No serve-sim device");
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write(":\n\n");
+  const { meta, unsubscribe } = samplerCache.subscribe(state.device, (sample) => {
+    if (!res.writableEnded) res.write("data: " + JSON.stringify(sample) + "\n\n");
+  });
+  res.write("event: meta\ndata: " + JSON.stringify(meta) + "\n\n");
+  // Heartbeat keeps an idle stream alive through buffering proxies.
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded) res.write(":\n\n");
+  }, 15000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+}
+
 export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const streamSettings = options?.streamSettings ?? httpStreamSettingsFromLegacyCodec(options?.codec);
   const base = (options?.basePath ?? "/.sim").replace(/\/+$/, "");
@@ -1977,30 +2009,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     if (url === base + "/metrics") {
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
-      if (!state) {
-        res.writeHead(404);
-        res.end("No serve-sim device");
-        return;
-      }
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-      });
-      res.write(":\n\n");
-      const { meta, unsubscribe } = metricsSamplerCache.subscribe(state.device, (sample) => {
-        if (!res.writableEnded) res.write("data: " + JSON.stringify(sample) + "\n\n");
-      });
-      res.write("event: meta\ndata: " + JSON.stringify(meta) + "\n\n");
-      // Heartbeat keeps an idle stream alive through buffering proxies.
-      const heartbeat = setInterval(() => {
-        if (!res.writableEnded) res.write(":\n\n");
-      }, 15000);
-      req.on("close", () => {
-        clearInterval(heartbeat);
-        unsubscribe();
-      });
+      handleMetricsRequest(req, res, state);
       return;
     }
 

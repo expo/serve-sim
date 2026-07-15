@@ -30,7 +30,7 @@ import {
   serveDevicePlaceholderAsset,
 } from "./devicekit-chrome";
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
-import type { UpgradeHandlerWebSocket } from "./middleware-utils";
+import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware-utils";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
 import { type WebMiddleware } from "./runtime-utils";
 import { connectToFetch, type ConnectMiddleware } from "./connect-to-fetch";
@@ -2200,29 +2200,12 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
   fetchMiddleware.handleWebSocket = (request: Request, websocket: UpgradeHandlerWebSocket): boolean => {
     if (execWebSocketHandler(request, websocket)) return true;
-    // Helper HID socket for hosts that own the HTTP upgrade themselves (Expo
-    // CLI plugin WS routes, the standalone hub CLI): they hand an accepted
-    // websocket here, so the raw-socket path in handleUpgrade never runs.
-    // Accepts both URL forms helperProxyTarget resolves — /helper/<udid>/ws
-    // and /helper/ws?device=<udid>.
-    const url = new URL(request.url, "http://serve-sim.local");
-    const target = helperProxyTarget(`${url.pathname}${url.search}`, helperPrefix);
-    if (!target || target.upstreamPath !== "/ws") return false;
-    const device = target.device ?? options?.device ?? null;
-    if (!device) {
-      websocket.close();
-      return true;
-    }
-    let session;
-    try {
-      session = getDeviceSession(device, streamSettings);
-    } catch {
-      websocket.close(); // not booted / capture unavailable
-      return true;
-    }
-
-    session.attachHidSocket(websocket);
-    return true;
+    if (claimHelperHidSocket(request, websocket, {
+      helperProxyTarget: (rawUrl) => helperProxyTarget(rawUrl, helperPrefix),
+      fallbackDevice: options?.device ?? null,
+      resolveSession: (device) => getDeviceSession(device, streamSettings),
+    })) return true;
+    return false;
   };
 
   // WebSocket upgrades owned by the preview: the authenticated exec/control

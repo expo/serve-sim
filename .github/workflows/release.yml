@@ -1,24 +1,10 @@
 name: Release @expo/serve-sim
 
-run-name: Release @expo/serve-sim (${{ inputs.bump }}) by @${{ github.triggering_actor }}
+run-name: Release @expo/serve-sim by @${{ github.actor }}
 
 on:
   workflow_dispatch:
-    inputs:
-      bump:
-        description: SemVer component to bump
-        required: true
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
-      confirm:
-        description: Type @expo/serve-sim to confirm the npm release
-        required: true
-        type: string
 
-# Only one release may calculate and publish the next version at a time.
 concurrency:
   group: release-expo-serve-sim
   cancel-in-progress: false
@@ -27,96 +13,17 @@ permissions:
   contents: read
 
 jobs:
-  authorize:
-    name: Authorize release
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require a confirmed manual dispatch from main
-        env:
-          CONFIRM: ${{ inputs.confirm }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
-            echo "::error::Releases must be started with workflow_dispatch."
-            exit 1
-          fi
-          if [ "$GITHUB_REPOSITORY" != "expo/serve-sim" ]; then
-            echo "::error::Releases are only allowed from expo/serve-sim."
-            exit 1
-          fi
-          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error::Releases must be dispatched against main."
-            exit 1
-          fi
-          if [ "$CONFIRM" != "@expo/serve-sim" ]; then
-            echo "::error::Confirmation must exactly match @expo/serve-sim."
-            exit 1
-          fi
-
-      - name: Require maintainer permission
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for USER in "$GITHUB_ACTOR" "$GITHUB_TRIGGERING_ACTOR"; do
-            ROLE=$(gh api \
-              "/repos/$GITHUB_REPOSITORY/collaborators/$USER/permission" \
-              --jq .role_name)
-            case "$ROLE" in
-              admin|maintain)
-                echo "Authorized $USER with the $ROLE role."
-                ;;
-              *)
-                echo "::error::$USER has the $ROLE role; maintain or admin is required."
-                exit 1
-                ;;
-            esac
-          done
-
   release:
-    name: Test, publish, and create release
-    needs: authorize
-    runs-on: macos-26
-    timeout-minutes: 30
-    # Configure this environment with required maintainer reviewers, prevent
-    # self-review, and restrict deployments to main.
-    environment: npm-release
+    name: Build with EAS and publish
+    if: github.repository == 'expo/serve-sim' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
-      contents: write
+      contents: read
       id-token: write
     steps:
-      - name: Checkout main
+      - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Verify the release commit
-        id: retry
-        env:
-          DISPATCH_SHA: ${{ github.sha }}
-          RELEASE_RUN_ID: ${{ github.run_id }}
-        run: |
-          HEAD_SHA=$(git rev-parse HEAD)
-          if [ "$HEAD_SHA" = "$DISPATCH_SHA" ]; then
-            echo "recover=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          LAST_RUN_ID=$(git log -1 --format='%(trailers:key=Release-Run,valueonly)')
-          PARENT_SHA=$(git rev-parse HEAD^)
-          if [ "$LAST_RUN_ID" = "$RELEASE_RUN_ID" ] && [ "$PARENT_SHA" = "$DISPATCH_SHA" ]; then
-            echo "Recovering release run $RELEASE_RUN_ID from $HEAD_SHA."
-            echo "recover=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "::error::main moved after this workflow was dispatched; start a new release from the current main."
-          exit 1
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.3.11
 
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -125,102 +32,90 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Bump package version
-        id: version
-        env:
-          BUMP: ${{ inputs.bump }}
-          RECOVER: ${{ steps.retry.outputs.recover }}
+      - name: Verify package version
         run: |
-          if [ "$RECOVER" = "true" ]; then
-            VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
-          else
-            npm version "$BUMP" --no-git-tag-version --workspace packages/serve-sim
-            bun install --lockfile-only
-            VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=@expo/serve-sim@$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Lint and typecheck
-        run: |
-          bun run lint
-          bun run typecheck
-
-      - name: Build native helpers and package
-        run: bun run --filter '@expo/serve-sim' build
-
-      - name: Boot iOS simulator
-        id: boot-sim
-        run: |
-          UDID=$(xcrun simctl list devices available -j | node -e "
-            const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-            const runtimes = Object.keys(data.devices).filter((runtime) => runtime.includes('iOS')).sort().reverse();
-            for (const runtime of runtimes) {
-              const device = data.devices[runtime].find((item) => item.isAvailable && item.name.includes('iPhone'));
-              if (device) {
-                console.log(device.udid);
-                process.exit(0);
-              }
-            }
-          ")
-          if [ -z "$UDID" ]; then
-            echo "::error::No available iPhone simulator found on the release runner."
+          VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
+          if npm view "@expo/serve-sim@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::@expo/serve-sim@$VERSION is already published. Bump the package version in a pull request first."
             exit 1
           fi
-          xcrun simctl boot "$UDID" || true
-          xcrun simctl bootstatus "$UDID" -b
-          open -ga Simulator || true
-          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
 
-      - name: Run serve-sim tests
+      - name: Build npm package with EAS
         env:
-          UDID: ${{ steps.boot-sim.outputs.udid }}
-        run: bun test --max-concurrency=1 packages/serve-sim/src/__tests__/
-
-      - name: Shutdown simulator
-        if: always() && steps.boot-sim.outputs.udid != ''
-        run: xcrun simctl shutdown "${{ steps.boot-sim.outputs.udid }}" || true
-
-      - name: Verify npm package contents
-        run: npm pack --dry-run --workspace packages/serve-sim
-
-      - name: Commit and push the version bump
-        if: steps.retry.outputs.recover != 'true'
-        env:
-          RELEASE_RUN_ID: ${{ github.run_id }}
-          VERSION: ${{ steps.version.outputs.version }}
+          EXPO_TOKEN: ${{ secrets.EXPO_DEV_EXPO_GITHUB_ROBOT_ACCESS_TOKEN }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add packages/serve-sim/package.json bun.lock
-          git commit -m "chore: release @expo/serve-sim $VERSION" \
-            -m "Release-Run: $RELEASE_RUN_ID"
-          git push origin HEAD:main
+          npx --yes eas-cli@21.0.1 workflow:run .eas/workflows/build-release.yml \
+            --ref "$GITHUB_SHA" \
+            --wait \
+            --non-interactive \
+            --json > /tmp/eas-workflow.json
 
-      - name: Publish to npm
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
+      - name: Download and verify EAS artifact
         run: |
-          if npm view "@expo/serve-sim@$VERSION" version >/dev/null 2>&1; then
-            echo "@expo/serve-sim@$VERSION is already published; continuing recovery."
-          else
-            npm publish --workspace packages/serve-sim
+          EAS_STATUS=$(jq -r '.status // empty' /tmp/eas-workflow.json)
+          if [ "$EAS_STATUS" != "SUCCESS" ]; then
+            echo "::error::EAS workflow finished with status: $EAS_STATUS."
+            exit 1
           fi
 
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "GitHub release $TAG already exists."
-          else
-            gh release create "$TAG" \
-              --target "$(git rev-parse HEAD)" \
-              --title "@expo/serve-sim $VERSION" \
-              --generate-notes
+          EAS_SHA=$(jq -r '.gitCommitHash // empty' /tmp/eas-workflow.json)
+          if [ "$EAS_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::EAS built $EAS_SHA instead of $GITHUB_SHA."
+            exit 1
           fi
+
+          ARTIFACT_COUNT=$(jq '[
+            .jobs[]
+            | .turtleJobRun.artifacts[]?
+            | select(.name == "serve-sim-npm-package" and .downloadUrl != null)
+          ] | length' /tmp/eas-workflow.json)
+          if [ "$ARTIFACT_COUNT" != "1" ]; then
+            echo "::error::Expected one serve-sim npm artifact, found $ARTIFACT_COUNT."
+            exit 1
+          fi
+
+          ARTIFACT_URL=$(jq -er '
+            .jobs[]
+            | .turtleJobRun.artifacts[]?
+            | select(.name == "serve-sim-npm-package" and .downloadUrl != null)
+            | .downloadUrl
+          ' /tmp/eas-workflow.json)
+          echo "::add-mask::$ARTIFACT_URL"
+          curl --fail --location "$ARTIFACT_URL" --output /tmp/serve-sim.tgz
+
+          EXPECTED_VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
+          PACKAGE_JSON=$(tar -xOf /tmp/serve-sim.tgz package/package.json)
+          ACTUAL_NAME=$(printf '%s' "$PACKAGE_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).name')
+          ACTUAL_VERSION=$(printf '%s' "$PACKAGE_JSON" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+          ACTUAL_CPU=$(printf '%s' "$PACKAGE_JSON" | node -p 'JSON.stringify(JSON.parse(require("fs").readFileSync(0, "utf8")).cpu)')
+
+          [ "$ACTUAL_NAME" = "@expo/serve-sim" ] || { echo "::error::Unexpected package name: $ACTUAL_NAME"; exit 1; }
+          [ "$ACTUAL_VERSION" = "$EXPECTED_VERSION" ] || { echo "::error::Expected version $EXPECTED_VERSION, got $ACTUAL_VERSION"; exit 1; }
+          [ "$ACTUAL_CPU" = '["arm64"]' ] || { echo "::error::Unexpected CPU constraint: $ACTUAL_CPU"; exit 1; }
+
+          CONTENTS=$(tar -tzf /tmp/serve-sim.tgz)
+          for REQUIRED_PATH in \
+            package/dist/serve-sim.js \
+            package/dist/native/serve-sim-native.node \
+            package/dist/bin/LiveKitWebRTC.framework/LiveKitWebRTC; do
+            printf '%s\n' "$CONTENTS" | grep -Fxq "$REQUIRED_PATH" || {
+              echo "::error::Missing required package file: $REQUIRED_PATH"
+              exit 1
+            }
+          done
+
+          VERIFY_DIR=$(mktemp -d)
+          tar -xzf /tmp/serve-sim.tgz -C "$VERIFY_DIR" \
+            package/dist/native/serve-sim-native.node \
+            package/dist/bin/LiveKitWebRTC.framework/LiveKitWebRTC
+          for BINARY in \
+            "$VERIFY_DIR/package/dist/native/serve-sim-native.node" \
+            "$VERIFY_DIR/package/dist/bin/LiveKitWebRTC.framework/LiveKitWebRTC"; do
+            file "$BINARY" | grep -q arm64 || {
+              echo "::error::Package contains a non-arm64 binary: $BINARY"
+              exit 1
+            }
+          done
+
+      - name: Publish to npm with OIDC
+        run: npm publish /tmp/serve-sim.tgz

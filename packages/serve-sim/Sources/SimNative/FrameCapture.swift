@@ -5,9 +5,19 @@ import CoreGraphics
 import IOSurface
 import ObjectiveC
 
+typealias ScreenFrameCallback = @convention(block) () -> Void
+typealias ScreenSurfacesChangedCallback = @convention(block) (IOSurface?, IOSurface?) -> Void
+typealias ScreenPropertiesChangedCallback = @convention(block) (AnyObject?) -> Void
+
+private struct ScreenCallbackBlocks {
+    let frame: ScreenFrameCallback
+    let surfacesChanged: ScreenSurfacesChangedCallback
+    let propertiesChanged: ScreenPropertiesChangedCallback
+}
+
 /// Headless simulator frame capture via direct IOSurface access.
 ///
-/// Uses SimulatorKit frame callbacks (via objc_msgSend on the IO port descriptor)
+/// Uses SimulatorKit frame callbacks (via a private Objective-C protocol)
 /// for event-driven capture with zero jitter. Maintains a 5fps idle floor
 /// for late-joining clients.
 ///
@@ -39,6 +49,9 @@ actor FrameCapture {
 
     private var descriptors: [NSObject] = []
     private var callbackUUIDs: [ObjectIdentifier: UUID] = [:]
+    // Keep private-API callback blocks alive until their registrations are removed.
+    private var callbackBlocks: [ObjectIdentifier: ScreenCallbackBlocks] = [:]
+    private var framebufferSurfaces: [ObjectIdentifier: IOSurface] = [:]
     private var ioClient: NSObject?
 
     func start(deviceUDID: String, onFrame: @escaping @Sendable (CVPixelBuffer, CMTime) -> Void) throws {
@@ -81,32 +94,27 @@ actor FrameCapture {
 
         let candidates = try findFramebufferDescriptors(io: io)
 
-        // Tear down old callbacks.
-        let unregSel = NSSelectorFromString("unregisterScreenCallbacksWithUUID:")
-        for oldDesc in descriptors {
-            if let uuid = callbackUUIDs[ObjectIdentifier(oldDesc)],
-               oldDesc.responds(to: unregSel) {
-                oldDesc.perform(unregSel, with: uuid)
-            }
-        }
-        callbackUUIDs.removeAll()
+        unregisterCallbacks()
         lastSeeds.removeAll()
+        framebufferSurfaces.removeAll()
         descriptors = candidates
 
         // Registering screen callbacks is what causes SimulatorKit to wire the
         // display pipeline to our client and populate `framebufferSurface`.
-        for desc in candidates {
-            try registerFrameCallbacks(desc: desc)
+        do {
+            for desc in candidates {
+                try registerFrameCallbacks(desc: desc)
+            }
+        } catch {
+            unregisterCallbacks()
+            descriptors.removeAll()
+            throw error
         }
 
-        if let best = pickBestDescriptor() {
-            let surfSel = NSSelectorFromString("framebufferSurface")
-            if let surfObj = best.perform(surfSel)?.takeUnretainedValue() {
-                let surf = unsafeBitCast(surfObj, to: IOSurface.self)
-                capturedWidth = IOSurfaceGetWidth(surf)
-                capturedHeight = IOSurfaceGetHeight(surf)
-                print("[capture] Framebuffer: \(capturedWidth)x\(capturedHeight) (direct IOSurface, zero-copy)")
-            }
+        if let (_, surface) = pickBestSurface() {
+            capturedWidth = IOSurfaceGetWidth(surface)
+            capturedHeight = IOSurfaceGetHeight(surface)
+            print("[capture] Framebuffer: \(capturedWidth)x\(capturedHeight) (direct IOSurface, zero-copy)")
         }
 
         captureFrame()
@@ -139,41 +147,74 @@ actor FrameCapture {
         return candidates
     }
 
-    /// Return the descriptor whose live surface has the largest area.
+    private func surface(for descriptor: NSObject) -> IOSurface? {
+        let key = ObjectIdentifier(descriptor)
+        if let surface = framebufferSurfaces[key] {
+            return surface
+        }
+
+        let surfaceSelector = NSSelectorFromString("framebufferSurface")
+        guard let surfaceObject = descriptor.perform(surfaceSelector)?.takeUnretainedValue() else {
+            return nil
+        }
+        let surface = unsafeBitCast(surfaceObject, to: IOSurface.self)
+        framebufferSurfaces[key] = surface
+        return surface
+    }
+
+    /// Return the live surface with the largest area.
     /// Secondary planes/overlays are typically smaller than the main screen.
-    private func pickBestDescriptor() -> NSObject? {
-        let surfSel = NSSelectorFromString("framebufferSurface")
-        var best: NSObject?
+    private func pickBestSurface() -> (key: ObjectIdentifier, surface: IOSurface)? {
+        var best: (key: ObjectIdentifier, surface: IOSurface)?
         var bestArea: Int = 0
-        for desc in descriptors {
-            guard let surfObj = desc.perform(surfSel)?.takeUnretainedValue() else { continue }
-            let surf = unsafeBitCast(surfObj, to: IOSurface.self)
-            let area = IOSurfaceGetWidth(surf) * IOSurfaceGetHeight(surf)
+        for descriptor in descriptors {
+            guard let surface = surface(for: descriptor) else { continue }
+            let area = IOSurfaceGetWidth(surface) * IOSurfaceGetHeight(surface)
             if area > bestArea {
-                best = desc
+                best = (ObjectIdentifier(descriptor), surface)
                 bestArea = area
             }
         }
         return best
     }
 
-    // MARK: - Frame callbacks via objc_msgSend
+    // MARK: - Frame callbacks
 
     private func registerFrameCallbacks(desc: AnyObject) throws {
         let regSel = #selector(FramebufferDescriptor.registerScreenCallbacks)
-        guard desc.responds(to: regSel) else {
+        guard let descriptor = desc as? NSObject, descriptor.responds(to: regSel) else {
             throw makeError(8, "Descriptor doesn't support registerScreenCallbacks")
         }
 
         let uuid = UUID()
-        callbackUUIDs[ObjectIdentifier(desc)] = uuid
+        let key = ObjectIdentifier(descriptor)
+        callbackUUIDs[key] = uuid
+
+        let frameCallback: ScreenFrameCallback = { [weak self] in
+            guard let self else { return }
+            self.assumeIsolated { $0.captureFrame() }
+        }
+        let surfacesChangedCallback: ScreenSurfacesChangedCallback = {
+            [weak self, weak descriptor] unmasked, masked in
+            guard let self, let descriptor else { return }
+            self.assumeIsolated {
+                $0.updateSurface(for: descriptor, unmasked: unmasked, masked: masked)
+                $0.captureFrame()
+            }
+        }
+        let propertiesChangedCallback: ScreenPropertiesChangedCallback = { _ in }
+        callbackBlocks[key] = ScreenCallbackBlocks(
+            frame: frameCallback,
+            surfacesChanged: surfacesChangedCallback,
+            propertiesChanged: propertiesChangedCallback
+        )
 
         desc.registerScreenCallbacks(
             uuid: uuid,
             callbackQueue: queue,
-            frameCallback: { [self] in assumeIsolated { $0.captureFrame() } },
-            surfacesChangedCallback: { [self] in assumeIsolated { $0.captureFrame() } },
-            propertiesChangedCallback: {}
+            frameCallback: frameCallback,
+            surfacesChangedCallback: surfacesChangedCallback,
+            propertiesChangedCallback: propertiesChangedCallback
         )
     }
 
@@ -208,19 +249,24 @@ actor FrameCapture {
 
     // MARK: - Frame capture
 
-    private func captureFrame(force: Bool = false) {
-        guard let desc = pickBestDescriptor() else { return }
+    private func updateSurface(for descriptor: NSObject, unmasked: IOSurface?, masked: IOSurface?) {
+        let key = ObjectIdentifier(descriptor)
+        guard let surface = unmasked ?? masked else {
+            framebufferSurfaces.removeValue(forKey: key)
+            lastSeeds.removeValue(forKey: key)
+            return
+        }
+        framebufferSurfaces[key] = surface
+    }
 
-        let surfSel = NSSelectorFromString("framebufferSurface")
-        guard let surfObj = desc.perform(surfSel)?.takeUnretainedValue() else { return }
-        let surface = unsafeBitCast(surfObj, to: IOSurface.self)
+    private func captureFrame(force: Bool = false) {
+        guard let (key, surface) = pickBestSurface() else { return }
 
         // Seed-skip: when the simulator's framebuffer content hasn't changed,
         // don't spend cycles re-encoding the same pixels back-to-back from the
         // frame-callback path. BUT: we must still re-emit at the idle floor
         // (~5 fps) so that downstream consumers keep seeing a live stream —
         // see the `idleInterval` doc-comment for why that matters.
-        let key = ObjectIdentifier(desc)
         let seed = IOSurfaceGetSeed(surface)
         let seedChanged = lastSeeds[key] != seed
         if frameCount > 0, !seedChanged, !force { return }
@@ -265,6 +311,14 @@ actor FrameCapture {
         idleTimer?.cancel()
         idleTimer = nil
 
+        unregisterCallbacks()
+        descriptors.removeAll()
+        lastSeeds.removeAll()
+        framebufferSurfaces.removeAll()
+        ioClient = nil
+    }
+
+    private func unregisterCallbacks() {
         let unregSel = NSSelectorFromString("unregisterScreenCallbacksWithUUID:")
         for desc in descriptors {
             if let uuid = callbackUUIDs[ObjectIdentifier(desc)],
@@ -273,9 +327,7 @@ actor FrameCapture {
             }
         }
         callbackUUIDs.removeAll()
-        descriptors.removeAll()
-        lastSeeds.removeAll()
-        ioClient = nil
+        callbackBlocks.removeAll()
     }
 
     // MARK: - Helpers
@@ -306,8 +358,8 @@ actor FrameCapture {
     func registerScreenCallbacks(
         uuid: UUID,
         callbackQueue: DispatchQueue,
-        frameCallback: @convention(block) @escaping () -> Void,
-        surfacesChangedCallback: @convention(block) @escaping () -> Void,
-        propertiesChangedCallback: @convention(block) @escaping () -> Void
+        frameCallback: @escaping ScreenFrameCallback,
+        surfacesChangedCallback: @escaping ScreenSurfacesChangedCallback,
+        propertiesChangedCallback: @escaping ScreenPropertiesChangedCallback
     )
 }

@@ -32,6 +32,7 @@ import {
   serveDevicePlaceholderAsset,
 } from "./devicekit-chrome";
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
+import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware-utils";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
 import { type WebMiddleware } from "./runtime-utils";
 import { connectToFetch, type ConnectMiddleware } from "./connect-to-fetch";
@@ -2215,7 +2216,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     return connectToFetch(connectMiddleware, request);
   }) as SimMiddleware;
 
-  fetchMiddleware.handleWebSocket = createExecWebSocketHandler({
+  const execWebSocketHandler = createExecWebSocketHandler({
     path: `${base}/exec-ws`,
     execToken,
     ssePrefixes: [
@@ -2235,6 +2236,16 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       }));
     },
   });
+
+  fetchMiddleware.handleWebSocket = (request: Request, websocket: UpgradeHandlerWebSocket): boolean => {
+    if (execWebSocketHandler(request, websocket)) return true;
+    if (claimHelperHidSocket(request, websocket, {
+      helperProxyTarget: (rawUrl) => helperProxyTarget(rawUrl, helperPrefix),
+      fallbackDevice: options?.device ?? null,
+      resolveSession: (device) => getDeviceSession(device, streamSettings),
+    })) return true;
+    return false;
+  };
 
   // WebSocket upgrades owned by the preview: the authenticated exec/control
   // channel plus same-origin helper/devtools proxy sockets.

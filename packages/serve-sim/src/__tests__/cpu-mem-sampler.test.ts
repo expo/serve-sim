@@ -220,6 +220,37 @@ describe("MetricsSampler", () => {
     sampler.stop();
   });
 
+  it("anchors the CPU delta to the observation time, not after the slow memory probe", async () => {
+    let clockMs = 0;
+    const now = () => clockMs;
+    const readings = [
+      { bundleId: "dev.expo.A", cpuSeconds: 10, memBytes: 100 },
+      { bundleId: "dev.expo.A", cpuSeconds: 10.5, memBytes: 100 },
+    ];
+    let i = 0;
+    let footprintMs = 0;
+    // sample() reads cpu up front, then the footprint probe takes `footprintMs` before returning.
+    const sample = async (): Promise<(typeof readings)[number]> => {
+      const reading = readings[i++]!;
+      clockMs += footprintMs;
+      return reading;
+    };
+    const sampler = new MetricsSampler({ udid: UDID, sample, now, hostCores: 8 });
+    const got: MetricSample[] = [];
+    sampler.onSample((s) => got.push(s));
+
+    footprintMs = 0;
+    await sampler.tickOnce(); // baseline
+    clockMs += 1000; // 1s until the next observation
+    footprintMs = 1000; // this tick's footprint probe is slow
+    await sampler.tickOnce();
+
+    // 0.5 cpu-seconds over the 1s observation interval = 50%, unaffected by the 1s footprint latency
+    // (which used to inflate the denominator and would report 25% here).
+    expect(got.at(-1)!.cpuPct).toBe(50);
+    sampler.stop();
+  });
+
   it("skips a tick when the sim isn't up (null reading)", async () => {
     const sampler = new MetricsSampler({
       udid: UDID,

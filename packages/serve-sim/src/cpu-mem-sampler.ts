@@ -218,10 +218,13 @@ export class MetricsSampler {
 
   async tickOnce(): Promise<MetricSample | null> {
     this.startedAt ??= this.now();
+    // Timestamp the observation up front: sample() reads cumulative CPU via `ps` before the slower
+    // footprint probe, so anchoring the delta here (not after sample() returns) keeps variable
+    // footprint latency out of the elapsed-time denominator — otherwise it distorts CPU%.
+    const t = this.now() - this.startedAt;
     const reading = await this.sample(this.meta.udid);
     if (!reading) return null;
 
-    const t = this.now() - this.startedAt;
     const cpuPct = this.cpuPctSince(reading, t);
     this.prev = { t, bundleId: reading.bundleId, cpuSeconds: reading.cpuSeconds };
 

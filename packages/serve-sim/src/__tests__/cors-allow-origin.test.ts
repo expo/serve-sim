@@ -10,11 +10,21 @@ describe("corsAllowOriginHeaders", () => {
     });
   });
 
-  test("matches an allowlisted origin case-insensitively", () => {
-    expect(corsAllowOriginHeaders("https://expo.dev", ["HTTPS://Expo.Dev"])).toEqual({
+  test("canonicalizes configured origins (case, default port, trailing slash) before matching", () => {
+    for (const configured of ["HTTPS://Expo.Dev", "https://expo.dev:443", "https://expo.dev/"]) {
+      expect(corsAllowOriginHeaders("https://expo.dev", [configured])).toEqual({
+        "Access-Control-Allow-Origin": "https://expo.dev",
+        Vary: "Origin",
+      });
+    }
+  });
+
+  test("skips a malformed configured origin instead of throwing", () => {
+    expect(corsAllowOriginHeaders("https://expo.dev", ["not a url", "https://expo.dev"])).toEqual({
       "Access-Control-Allow-Origin": "https://expo.dev",
       Vary: "Origin",
     });
+    expect(corsAllowOriginHeaders("https://expo.dev", ["not a url"])).toEqual({});
   });
 
   test("allows any loopback origin without config", () => {

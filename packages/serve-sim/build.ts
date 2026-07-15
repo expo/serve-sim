@@ -5,11 +5,11 @@
  * Produces, all minified and with no runtime deps on workspace packages:
  *   dist/serve-sim.js      ESM bin (node target) referenced by package.json#bin
  *   dist/serve-sim         Compiled single-file executable (bun --compile)
- *   dist/middleware.js    Public subpath export "serve-sim/middleware" (ESM)
+ *   dist/middleware.js    Public subpath export "@expo/serve-sim/middleware" (ESM)
  *   dist/middleware.cjs   Thin CJS wrapper for the same
  *
  * The bin and middleware bundles target `node` so users without `bun` on
- * their PATH can still run `npx serve-sim` / mount the fetch-style middleware.
+ * their PATH can still run `npx @expo/serve-sim` / mount the fetch-style middleware.
  * Runtime server and timing behavior is implemented with Node stdlib APIs.
  *
  * The preview HTML (bundled client.tsx + Preact, base64
@@ -115,7 +115,7 @@ const PREVIEW_DEFINE = {
   __SERVE_SIM_VERSION__: JSON.stringify(pkgVersion),
 };
 
-// ─── 3. Middleware ESM (serve-sim/middleware) ─────────────────────────────
+// ─── 3. Middleware ESM (@expo/serve-sim/middleware) ─────────────────────────────
 
 // `ws` stays external in the node-target bundles: under Node it resolves to
 // the installed package (a real dependency), and under Bun the module

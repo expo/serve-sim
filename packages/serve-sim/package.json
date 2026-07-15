@@ -1,5 +1,5 @@
 {
-  "name": "serve-sim",
+  "name": "@expo/serve-sim",
   "version": "0.1.34",
   "type": "module",
   "author": {
@@ -16,6 +16,10 @@
   "homepage": "https://github.com/expo/serve-sim#readme",
   "bugs": {
     "url": "https://github.com/expo/serve-sim/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "bin": {
     "serve-sim": "dist/serve-sim.js"

@@ -13,7 +13,8 @@ private func u32(_ v: Int) -> UInt32 {
 // directly in Swift (no Objective-C++ glue): HID and frame capture are
 // NodeClasses, and the accessibility dumps are async NodeFunctions. The
 // reverse-engineered logic (HIDInjector, the CaptureEngine + encoders,
-// AccessibilityBridge) is reused verbatim from SimStreamHelper.
+// AccessibilityBridge) originates in SimStreamHelper and is adapted here for
+// the in-process Node API.
 
 // MARK: - HID
 
@@ -86,21 +87,37 @@ private func u32(_ v: Int) -> UInt32 {
 
 // MARK: - Capture
 
-/// In-process frame capture + encode for one simulator. Each codec runs only
-/// while it has consumers. Encoded frames are produced on a native encode thread
-/// and marshalled onto the JS thread through a NodeAsyncQueue (threadsafe
-/// function), then handed to `onFrame` as (codec, Buffer, width, height, flags).
+/// In-process frame capture + encode for one simulator. HTTP codecs run only
+/// while they have subscribers. Encoded frames are produced on native encode
+/// threads and marshalled onto the JS thread through a NodeAsyncQueue, then
+/// handed to `onFrame` as (codec, Buffer, width, height, flags).
 @NodeClass @NodeActor final class SimCapture {
     private let engine: CaptureEngine
     private let queue: NodeAsyncQueue
 
-    @NodeConstructor init(_ udid: String) throws {
+    @NodeConstructor init(
+        _ udid: String,
+        _ mjpegFps: Int,
+        _ mjpegQuality: Double,
+        _ maxDimension: Int,
+        _ h264Fps: Int,
+        _ h264Bitrate: Int
+    ) throws {
         // unref'd by NodeAsyncQueue's init, so the frame pipeline alone won't
         // keep the event loop alive. Bounded queue + blocking AVCC preserves
         // inter-frame ordering; MJPEG is nonblocking and drops under backpressure.
         let queue = try NodeAsyncQueue(label: "simCapture", maxQueueSize: 16)
         self.queue = queue
-        self.engine = CaptureEngine(deviceUDID: udid)
+        self.engine = CaptureEngine(
+            deviceUDID: udid,
+            options: CaptureEngineOptions(
+                mjpegFps: mjpegFps,
+                mjpegQuality: mjpegQuality,
+                maxDimension: maxDimension,
+                h264Fps: h264Fps,
+                h264Bitrate: h264Bitrate
+            )
+        )
     }
 
     // returns a function that can be called to unsubscribe
@@ -148,6 +165,22 @@ private func u32(_ v: Int) -> UInt32 {
 
     @NodeMethod func stop() async {
         await engine.stop()
+    }
+
+    @NodeMethod func updateStreamSettings(
+        _ mjpegFps: Int,
+        _ mjpegQuality: Double,
+        _ maxDimension: Int,
+        _ h264Fps: Int,
+        _ h264Bitrate: Int
+    ) async {
+        await engine.updateSettings(CaptureEngineOptions(
+            mjpegFps: mjpegFps,
+            mjpegQuality: mjpegQuality,
+            maxDimension: maxDimension,
+            h264Fps: h264Fps,
+            h264Bitrate: h264Bitrate
+        ))
     }
 
     @NodeMethod func handleWebRTCOffer(_ offerJson: String) async throws -> String {

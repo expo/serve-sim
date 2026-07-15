@@ -54,6 +54,7 @@ describe("previewConfigForState", () => {
       axEndpoint: "/preview/ax?device=DEVICE-B",
       cameraStatusEndpoint: "/preview/helper/DEVICE-B/camera/status",
       devtoolsEndpoint: "/preview/devtools?device=DEVICE-B",
+      streamSettingsEndpoint: "http://127.0.0.1:3101/stream-settings",
       serveSimBin: "/bin/serve-sim",
       gridApiEndpoint: "/preview/grid/api",
       gridStartEndpoint: "/preview/grid/api/start",
@@ -68,6 +69,13 @@ describe("previewConfigForState", () => {
     expect(
       "streamSettings" in previewConfigForState(states[0]!, "/preview", "/bin/serve-sim", "token-xyz"),
     ).toBe(false);
+  });
+
+  test("targets settings at the process that owns the rewritten stream", () => {
+    const state = rewriteStateForRequestHost(states[0]!, "preview.example.test", "/preview", "https", true);
+    expect(
+      previewConfigForState(state, "/preview", "/bin/serve-sim", "token-xyz").streamSettingsEndpoint,
+    ).toBe("https://preview.example.test/preview/helper/DEVICE-A/stream-settings");
   });
 
   test("pins the stream codec in the client config", () => {

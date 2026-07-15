@@ -8,7 +8,12 @@ import { CameraTool } from "./camera-tool";
 import { EventLogTool } from "./event-log-tool";
 import { PANEL_BACKGROUND } from "./panel-colors";
 import { SimulatorSettingsTool } from "./simulator-settings-tool";
-import { StreamSettingsTool, type CodecPreference } from "./stream-settings-tool";
+import { StreamSettingsTool } from "./stream-settings-tool";
+import type {
+  StreamControlSettings,
+  StreamEncoderSettings,
+  StreamPlaybackSettings,
+} from "../../stream-settings";
 
 export function ToolsPanel({
   open,
@@ -19,11 +24,12 @@ export function ToolsPanel({
   eventLogEventsEndpoint,
   axOverlayEnabled,
   onToggleAxOverlay,
-  codecPreference,
-  onCodecPreferenceChange,
+  streamSettings,
+  onStreamPlaybackSettingsChange,
+  onStreamEncoderSettingsChange,
   activeCodec,
   avccSupported,
-  showStreamSettings = true,
+  streamSettingsPending,
   width,
 }: {
   open: boolean;
@@ -34,11 +40,12 @@ export function ToolsPanel({
   eventLogEventsEndpoint?: string;
   axOverlayEnabled: boolean;
   onToggleAxOverlay: () => void;
-  codecPreference: CodecPreference;
-  onCodecPreferenceChange: (next: CodecPreference) => void;
-  activeCodec: "h264" | "mjpeg";
+  streamSettings: StreamControlSettings;
+  onStreamPlaybackSettingsChange: (patch: Partial<StreamPlaybackSettings>) => void;
+  onStreamEncoderSettingsChange: (patch: Partial<StreamEncoderSettings>) => void;
+  activeCodec: string;
   avccSupported: boolean;
-  showStreamSettings?: boolean;
+  streamSettingsPending: boolean;
   width: number;
 }) {
   return (
@@ -60,14 +67,14 @@ export function ToolsPanel({
           <CameraTool udid={udid} bundleId={currentApp?.bundleId ?? null} />
           <LocationEmulationTool udid={udid} exec={execOnHost} />
           <AppPermissionsTool udid={udid} bundleId={currentApp?.bundleId ?? null} />
-          {showStreamSettings && (
-            <StreamSettingsTool
-              preference={codecPreference}
-              onPreferenceChange={onCodecPreferenceChange}
-              activeCodec={activeCodec}
-              avccSupported={avccSupported}
-            />
-          )}
+          <StreamSettingsTool
+            settings={streamSettings}
+            onPlaybackSettingsChange={onStreamPlaybackSettingsChange}
+            onEncoderSettingsChange={onStreamEncoderSettingsChange}
+            activeCodec={activeCodec}
+            avccSupported={avccSupported}
+            encoderSettingsDisabled={streamSettingsPending}
+          />
         </div>
       )}
     </Panel>

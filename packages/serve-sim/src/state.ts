@@ -1,6 +1,13 @@
 import { tmpdir } from "os";
 import { join } from "path";
 import { readdirSync, mkdirSync, writeFileSync, renameSync } from "fs";
+import type { StreamSettings } from "./stream-settings";
+export type {
+  HttpStreamCodec,
+  StreamSettings,
+  WebRtcIceServer,
+  WebRtcStreamCodec,
+} from "./stream-settings";
 
 /** Directory where serve-sim stores runtime state. */
 export const STATE_DIR = join(tmpdir(), "serve-sim");
@@ -13,14 +20,6 @@ export const STATE_FILE = join(STATE_DIR, "server.json");
 export function stateFileForDevice(udid: string): string {
   return join(STATE_DIR, `server-${udid}.json`);
 }
-
-export type HttpStreamCodec = "auto" | "mjpeg" | "h264";
-export type WebRtcStreamCodec = "vp8" | "vp9" | "h264";
-export type WebRtcIceServer = { urls: string[]; username?: string; credential?: string };
-
-export type StreamSettings =
-  | { transport: "http"; codec?: HttpStreamCodec }
-  | { transport: "webrtc"; codec: WebRtcStreamCodec; iceServers?: WebRtcIceServer[] };
 
 /** Runtime record for a device streamed in-process by a preview server. */
 export interface ServeSimDeviceState {

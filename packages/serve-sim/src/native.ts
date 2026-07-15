@@ -11,6 +11,10 @@ import { createRequire } from "module";
 import { dirname, join } from "path";
 import { existsSync } from "fs";
 import { fileURLToPath } from "url";
+import {
+  DEFAULT_STREAM_ENCODER_SETTINGS,
+  type StreamEncoderSettings,
+} from "./stream-settings";
 
 const require = createRequire(import.meta.url);
 
@@ -34,16 +38,30 @@ interface SimHIDHandle {
 
 interface SimCaptureHandle {
   start(): Promise<void>;
+  updateStreamSettings(
+    mjpegFps: number,
+    mjpegQuality: number,
+    maxDimension: number,
+    h264Fps: number,
+    h264Bitrate: number,
+  ): Promise<void>;
   handleWebRTCOffer(offerJson: string): Promise<string>;
   closeWebRTCSession(sessionId: string): Promise<void>;
   screenSize(): Promise<{ width: number; height: number }>;
   stop(): Promise<void>;
-  subscribe(codec: number, onFrame: RawFrameCallback): Promise<() => void>;
+  subscribe(codec: number, onFrame: RawFrameCallback): Promise<NativeUnsubscribe>;
 }
 
 interface NativeAddon {
   SimHID: new (udid: string) => SimHIDHandle;
-  SimCapture: new (udid: string) => SimCaptureHandle;
+  SimCapture: new (
+    udid: string,
+    mjpegFps: number,
+    mjpegQuality: number,
+    maxDimension: number,
+    h264Fps: number,
+    h264Bitrate: number,
+  ) => SimCaptureHandle;
   axDescribe(udid: string): Promise<string>;
   axFrontmost(udid: string): Promise<string>;
 }
@@ -74,6 +92,10 @@ export type AvccFrame = {
   isDescription: boolean;
   isKeyframe: boolean;
 };
+
+export type NativeCaptureOptions = StreamEncoderSettings;
+
+export type NativeUnsubscribe = () => Promise<void>;
 
 export type TouchType = "begin" | "move" | "end";
 export type KeyType = "down" | "up";
@@ -195,8 +217,15 @@ export class NativeHid {
 export class NativeCapture {
   private readonly handle: SimCaptureHandle;
 
-  constructor(udid: string) {
-    this.handle = new (load().SimCapture)(udid);
+  constructor(udid: string, options: NativeCaptureOptions = DEFAULT_STREAM_ENCODER_SETTINGS) {
+    this.handle = new (load().SimCapture)(
+      udid,
+      options.mjpegFps,
+      options.mjpegQuality,
+      options.maxDimension,
+      options.h264Fps,
+      options.h264Bitrate,
+    );
   }
 
   /** Begin capturing. Throws if the device isn't booted. */
@@ -204,13 +233,23 @@ export class NativeCapture {
     return this.handle.start();
   }
 
-  subscribeMjpeg(onFrame: (frame: MjpegFrame) => Promise<void>): Promise<() => void> {
+  updateStreamSettings(options: NativeCaptureOptions): Promise<void> {
+    return this.handle.updateStreamSettings(
+      options.mjpegFps,
+      options.mjpegQuality,
+      options.maxDimension,
+      options.h264Fps,
+      options.h264Bitrate,
+    );
+  }
+
+  subscribeMjpeg(onFrame: (frame: MjpegFrame) => Promise<void>): Promise<NativeUnsubscribe> {
     return this.handle.subscribe(CODEC_MJPEG, (data, width, height, _flags) => {
       return onFrame({ data, width, height });
     });
   }
 
-  subscribeAvcc(onFrame: (frame: AvccFrame) => Promise<void>): Promise<() => void> {
+  subscribeAvcc(onFrame: (frame: AvccFrame) => Promise<void>): Promise<NativeUnsubscribe> {
     return this.handle.subscribe(CODEC_AVCC, (data, width, height, flags) => {
       return onFrame({
         data,

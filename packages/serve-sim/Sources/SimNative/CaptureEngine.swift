@@ -3,12 +3,9 @@ import CoreVideo
 import CoreMedia
 import os
 
-// The capture + encode engine, reused verbatim from SimStreamHelper. Replicates
-// main.swift's frameHandler: MJPEG always encodes while clients exist; H.264 runs
-// only while AVCC is active. Encoded bytes (JPEG, or natively-framed AVCC
-// envelopes) are handed back through a Swift closure on a native encode thread;
-// the node-swift binding (sim-module.swift) marshals them onto the JS thread via
-// a NodeAsyncQueue (threadsafe function).
+// JPEG and AVCC encode only while their HTTP transports have subscribers.
+// Encoded bytes are handed to the node-swift binding, which marshals them onto
+// the JS thread through a NodeAsyncQueue. WebRTC owns its session lifecycle.
 
 struct Frame: Identifiable {
     let id = UUID()
@@ -19,6 +16,14 @@ struct Frame: Identifiable {
 protocol FrameEncoder {
     associatedtype Encoded
     func encode(_ frame: Frame) async throws -> Encoded
+}
+
+struct CaptureEngineOptions: Sendable {
+    var mjpegFps: Int
+    var mjpegQuality: Double
+    var maxDimension: Int
+    var h264Fps: Int
+    var h264Bitrate: Int
 }
 
 protocol CaptureConsuming: Sendable {
@@ -49,7 +54,7 @@ actor CaptureConsumer<E: FrameEncoder>: CaptureConsuming {
                     let encoded = try await encoder.encode(frame)
                     await onFrame(encoded)
                 } catch {
-                    print("error encoding frame: \(error)")
+                    streamDiagnosticLog("[stream] frame encode failed: \(error)")
                     continue
                 }
             }
@@ -75,8 +80,10 @@ actor CaptureEngine {
     private let frameCapture = FrameCapture()
     private var phase = Phase.unstarted
 
-    // mjpeg is stateless so we can share a single encoder instance
-    private let mjpegEncoder = MJPEGEncoder()
+    // MJPEG is stateless, so all subscribers share one encoder instance.
+    private let mjpegEncoder: MJPEGEncoder
+    private var avccEncoders = [UUID: AVCCEncoder]()
+    private var options: CaptureEngineOptions
 
     private(set) var screenSize = Dimensions(width: 0, height: 0)
     private var consumers = [UUID: CaptureConsuming]()
@@ -85,8 +92,14 @@ actor CaptureEngine {
     private var cancelledWebRTCSessionIds = Set<String>()
     private var cancelledWebRTCSessionIdOrder: [String] = []
 
-    init(deviceUDID: String) {
+    init(deviceUDID: String, options: CaptureEngineOptions) {
         self.deviceUDID = deviceUDID
+        self.options = options
+        self.mjpegEncoder = MJPEGEncoder(
+            fps: options.mjpegFps,
+            quality: options.mjpegQuality,
+            maxDimension: options.maxDimension
+        )
     }
 
     func start() async throws {
@@ -125,6 +138,7 @@ actor CaptureEngine {
     }
 
     private func addConsumer<E: FrameEncoder>(
+        id: UUID = UUID(),
         encoder: E,
         onFrame: sending @escaping @isolated(any) (E.Encoded) async -> Void
     ) -> (@Sendable () async -> Void) {
@@ -132,7 +146,6 @@ actor CaptureEngine {
             guard let self, await self.phase == .running else { return }
             await onFrame(encoded)
         }
-        let id = UUID()
         consumers[id] = consumer
         return { await self.removeConsumer(id) }
     }
@@ -155,7 +168,7 @@ actor CaptureEngine {
         onFrame: sending @escaping (Dimensions, Data) async -> Void
     ) -> (@Sendable () async -> Void) {
         return addConsumer(encoder: mjpegEncoder, onFrame: { [weak self] data in
-            guard let self else { return }
+            guard let self, let data else { return }
             await onFrame(screenSize, data)
         })
     }
@@ -163,11 +176,19 @@ actor CaptureEngine {
     func addAVCCConsumer(
         onFrame: sending @escaping (Dimensions, Data, Int32) async -> Void
     ) -> (@Sendable () async -> Void) {
-        addConsumer(encoder: AVCCEncoder()) { [weak self] encoded in
+        let id = UUID()
+        let encoder = AVCCEncoder(
+            fps: options.h264Fps,
+            bitrate: options.h264Bitrate,
+            maxDimension: options.maxDimension
+        )
+        avccEncoders[id] = encoder
+        streamDiagnosticLog("[stream:avcc] subscriber added count=\(avccEncoders.count)")
+        _ = addConsumer(id: id, encoder: encoder) { [weak self] encoded in
             let flagDescription: Int32 = 1 << 0
             let flagKeyframe: Int32 = 1 << 1
 
-            guard let self else { return }
+            guard let self, let encoded else { return }
             if let description = encoded.description {
                 await onFrame(
                     screenSize,
@@ -187,6 +208,40 @@ actor CaptureEngine {
                     screenSize,
                     AVCCEnvelope.delta(avcc: encoded.avcc),
                     0,
+                )
+            }
+        }
+        return { await self.removeAVCCConsumer(id) }
+    }
+
+    private func removeAVCCConsumer(_ id: UUID) {
+        consumers.removeValue(forKey: id)
+        avccEncoders.removeValue(forKey: id)
+        streamDiagnosticLog("[stream:avcc] subscriber removed count=\(avccEncoders.count)")
+    }
+
+    func updateSettings(_ options: CaptureEngineOptions) async {
+        let previous = self.options
+        self.options = options
+        if previous.mjpegFps != options.mjpegFps
+            || previous.mjpegQuality != options.mjpegQuality
+            || previous.maxDimension != options.maxDimension {
+            await mjpegEncoder.update(
+                fps: options.mjpegFps,
+                quality: options.mjpegQuality,
+                maxDimension: options.maxDimension
+            )
+        }
+        if previous.h264Fps != options.h264Fps
+            || previous.h264Bitrate != options.h264Bitrate
+            || previous.maxDimension != options.maxDimension {
+            // Actor methods are reentrant at `await`; snapshot the encoders so
+            // an unsubscribe cannot mutate the dictionary during iteration.
+            for encoder in Array(avccEncoders.values) {
+                await encoder.update(
+                    fps: options.h264Fps,
+                    bitrate: options.h264Bitrate,
+                    maxDimension: options.maxDimension
                 )
             }
         }
@@ -232,6 +287,7 @@ actor CaptureEngine {
         webRTCPublisher?.stop()
         webRTCPublisher = nil
         consumers.removeAll()
+        avccEncoders.removeAll()
         await frameCapture.stop()
     }
 
@@ -268,35 +324,89 @@ final class WebRTCConsumer: CaptureConsuming, @unchecked Sendable {
 }
 
 actor MJPEGEncoder: FrameEncoder {
-    private let videoEncoder = VideoEncoder(quality: 0.7)
+    private var videoEncoder: VideoEncoder
+    private let scaler = PixelBufferScaler()
+    private var frameRateGate: FrameRateGate
+    private var maxDimension: Int
     private var lastImage: (UUID, Data)?
+    private var inFlight: (id: UUID, generation: Int, task: Task<Data, Error>)?
+    private var settingsGeneration = 0
 
-    init() {}
+    init(fps: Int, quality: Double, maxDimension: Int) {
+        self.videoEncoder = VideoEncoder(quality: CGFloat(quality))
+        self.frameRateGate = FrameRateGate(fps: fps)
+        self.maxDimension = maxDimension
+    }
 
-    func encode(_ frame: Frame) async throws -> Data {
+    func encode(_ frame: Frame) async throws -> Data? {
         if let (id, data) = lastImage, id == frame.id { return data }
-        let data = try await videoEncoder.encode(pixelBuffer: frame.pixelBuffer)
-        lastImage = (frame.id, data)
-        return data
+        if let inFlight {
+            guard inFlight.id == frame.id else { return nil }
+            let data = try await inFlight.task.value
+            return settingsGeneration == inFlight.generation ? data : nil
+        }
+        guard frameRateGate.shouldEncode() else { return nil }
+        guard let pixelBuffer = scaler.scale(frame.pixelBuffer, maxDimension: maxDimension) else {
+            return nil
+        }
+        let generation = settingsGeneration
+        let encoder = videoEncoder
+        let task = Task { try await encoder.encode(pixelBuffer: pixelBuffer) }
+        inFlight = (frame.id, generation, task)
+        do {
+            let data = try await task.value
+            if inFlight?.id == frame.id {
+                inFlight = nil
+            }
+            guard settingsGeneration == generation else { return nil }
+            lastImage = (frame.id, data)
+            return data
+        } catch {
+            if inFlight?.id == frame.id { inFlight = nil }
+            throw error
+        }
+    }
+
+    func update(fps: Int, quality: Double, maxDimension: Int) {
+        frameRateGate.update(fps: fps)
+        videoEncoder = VideoEncoder(quality: CGFloat(quality))
+        self.maxDimension = maxDimension
+        settingsGeneration += 1
+        lastImage = nil
     }
 }
 
 actor AVCCEncoder: FrameEncoder {
-    private static let timeout: Duration = .milliseconds(500)
+    private let h264Encoder: H264Encoder
+    private let scaler = PixelBufferScaler()
+    private var frameRateGate: FrameRateGate
+    private var maxDimension: Int
+    private var forceKeyframe = true
 
-    let h264Encoder = H264Encoder(fps: 60)
-    var forceKeyframe = true
+    init(fps: Int, bitrate: Int, maxDimension: Int) {
+        self.h264Encoder = H264Encoder(fps: fps, bitrate: bitrate)
+        self.frameRateGate = FrameRateGate(fps: fps)
+        self.maxDimension = maxDimension
+    }
 
-    init() {}
-
-    func encode(_ frame: Frame) async throws -> H264Encoder.Encoded {
-        // TODO: cancel after timeout using TaskGroup
+    func encode(_ frame: Frame) async throws -> H264Encoder.Encoded? {
+        guard frameRateGate.shouldEncode() else { return nil }
+        guard let pixelBuffer = scaler.scale(frame.pixelBuffer, maxDimension: maxDimension) else {
+            return nil
+        }
         let result = try await h264Encoder.encode(
-            frame.pixelBuffer,
+            pixelBuffer,
             forceKeyframe: forceKeyframe,
         )
         forceKeyframe = false
         return result
+    }
+
+    func update(fps: Int, bitrate: Int, maxDimension: Int) async {
+        frameRateGate.update(fps: fps)
+        self.maxDimension = maxDimension
+        forceKeyframe = true
+        await h264Encoder.update(fps: fps, bitrate: bitrate)
     }
 
     deinit {

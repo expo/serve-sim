@@ -158,6 +158,7 @@ export function SimulatorView({
   const [error, setError] = useState<string | null>(null);
   const [screenSize, setScreenSize] = useState<StreamConfig | null>(null);
   const screenSizeRef = useRef<StreamConfig | null>(null);
+  const hasAuthoritativeScreenConfigRef = useRef(false);
   const onScreenConfigChangeRef = useRef(onScreenConfigChange);
   onScreenConfigChangeRef.current = onScreenConfigChange;
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -180,6 +181,10 @@ export function SimulatorView({
     config: StreamConfig | null | undefined,
     source: ScreenConfigSource = "reported",
   ) => {
+    if (source === "media" && hasAuthoritativeScreenConfigRef.current) return;
+    if (source !== "media" && config && config.width > 0 && config.height > 0) {
+      hasAuthoritativeScreenConfigRef.current = true;
+    }
     const update = resolveScreenConfigUpdate(screenSizeRef.current, config, source);
     if (!update) return;
     screenSizeRef.current = update.config;
@@ -256,7 +261,7 @@ export function SimulatorView({
     video.srcObject = webRtcStream ?? null;
     if (webRtcStream) {
       dimensionObserver = observeVideoDimensions(video, (dimensions) => {
-        updateScreenConfig(dimensions);
+        updateScreenConfig(dimensions, "media");
       });
       setConnected(false);
       video.addEventListener("loadeddata", onFirstFrame, { once: true });
@@ -287,9 +292,10 @@ export function SimulatorView({
   }, [useWebRtc, webRtcStream, onWebRtcFrame, updateScreenConfig]);
 
   useEffect(() => {
+    hasAuthoritativeScreenConfigRef.current = false;
     screenSizeRef.current = null;
     setScreenSize(null);
-  }, [url]);
+  }, [url, wsUrlProp]);
 
   // Notify parent when streaming state changes
   const onStreamingChangeRef = useRef(onStreamingChange);
@@ -303,7 +309,7 @@ export function SimulatorView({
     if (streamConfig) {
       updateScreenConfig(streamConfig, "external");
     }
-  }, [streamConfig, updateScreenConfig]);
+  }, [streamConfig, updateScreenConfig, url]);
 
   // Paint externally supplied MJPEG frames directly, bypassing React.
   const connectedRef = useRef(false);
@@ -972,7 +978,7 @@ export function SimulatorView({
             onLoad={(e) => {
               const el = e.currentTarget;
               if (el.naturalWidth > 0 && el.naturalHeight > 0) {
-                updateScreenConfig({ width: el.naturalWidth, height: el.naturalHeight });
+                updateScreenConfig({ width: el.naturalWidth, height: el.naturalHeight }, "media");
               }
             }}
             style={externalMjpeg ? { display: "none" } : streamImageStyle}
@@ -985,7 +991,7 @@ export function SimulatorView({
             onLoad={(e) => {
               const el = e.currentTarget;
               if (el.naturalWidth > 0 && el.naturalHeight > 0) {
-                updateScreenConfig({ width: el.naturalWidth, height: el.naturalHeight });
+                updateScreenConfig({ width: el.naturalWidth, height: el.naturalHeight }, "media");
               }
             }}
             style={streamImageStyle}

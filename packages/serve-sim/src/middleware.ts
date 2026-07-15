@@ -1,6 +1,5 @@
 import { readdirSync, readFileSync, existsSync, unlinkSync, watch, type FSWatcher } from "fs";
 import { execSync, spawn, exec, execFile, type ChildProcess, type ExecException } from "child_process";
-import { EventEmitter } from "events";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createServer as createNetServer } from "net";
@@ -32,6 +31,7 @@ import {
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
 import { type WebMiddleware } from "./runtime-utils";
+import { connectToFetch, type ConnectMiddleware } from "./connect-to-fetch";
 
 type SimReq = IncomingMessage;
 type SimRes = ServerResponse;
@@ -413,6 +413,14 @@ function endpoint(base: string, path: string, device: string): string {
   return `${value}?device=${encodeURIComponent(device)}`;
 }
 
+function streamSettingsEndpointFrom(streamUrl: string): string {
+  const url = new URL(streamUrl);
+  url.pathname = `${url.pathname.slice(0, url.pathname.lastIndexOf("/") + 1)}stream-settings`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
 /**
  * Rewrite the helper URLs in a state for the requesting browser.
  *
@@ -695,22 +703,32 @@ function bridgeWebSocketFrames(req: SimReq, socket: Socket, head: Buffer, upstre
  * NativeHid). Returns false when no session can serve it (device not booted, or
  * an endpoint this path doesn't own) so the caller can respond 404.
  */
-function serveHelperInProcess(req: SimReq, res: SimRes, device: string | null, upstreamPath: string): boolean {
+function serveHelperInProcess(
+  req: SimReq,
+  res: SimRes,
+  device: string | null,
+  upstreamPath: string,
+  initialStreamSettings?: StreamSettings,
+): boolean {
   if (!device) return false;
   const endpoint = upstreamPath.split("?")[0];
-  if ((endpoint === "/webrtc/offer" || endpoint === "/webrtc/close") && req.method === "OPTIONS") {
+  if (
+    (endpoint === "/webrtc/offer" || endpoint === "/webrtc/close" || endpoint === "/stream-settings")
+    && req.method === "OPTIONS"
+  ) {
     sendCorsPreflight(res);
     return true;
   }
   let session;
   try {
-    session = getDeviceSession(device);
+    session = getDeviceSession(device, initialStreamSettings);
   } catch {
     return false; // not booted / capture unavailable → 404
   }
   switch (endpoint) {
     case "/stream.mjpeg": session.handleMjpeg(req, res); return true;
     case "/stream.avcc": session.handleAvcc(req, res); return true;
+    case "/stream-settings": void session.handleStreamSettings(req, res); return true;
     case "/config": session.handleConfig(req, res); return true;
     case "/health": session.handleHealth(req, res); return true;
     case "/webrtc/offer": void session.handleWebRTCOffer(req, res); return true;
@@ -816,11 +834,17 @@ function rawHidSocket(socket: Socket, head: Buffer): HidSocket {
 }
 
 /** Upgrade an in-process HID `/ws` socket onto a DeviceSession. Returns false when no session can serve it. */
-function attachHidInProcess(req: SimReq, socket: Socket, head: Buffer, device: string | null): boolean {
+function attachHidInProcess(
+  req: SimReq,
+  socket: Socket,
+  head: Buffer,
+  device: string | null,
+  initialStreamSettings?: StreamSettings,
+): boolean {
   if (!device) return false;
   let session;
   try {
-    session = getDeviceSession(device);
+    session = getDeviceSession(device, initialStreamSettings);
   } catch {
     return false;
   }
@@ -844,6 +868,7 @@ export function previewConfigForState(
   eventLogEventsEndpoint: string;
   axEndpoint: string;
   devtoolsEndpoint: string;
+  streamSettingsEndpoint: string;
   serveSimBin: string;
   gridApiEndpoint: string;
   gridStartEndpoint: string;
@@ -870,6 +895,7 @@ export function previewConfigForState(
     eventLogEventsEndpoint: endpoint(base, "/api/event-log/events", state.device),
     axEndpoint: endpoint(base, "/ax", state.device),
     devtoolsEndpoint: endpoint(base, "/devtools", state.device),
+    streamSettingsEndpoint: streamSettingsEndpointFrom(state.streamUrl),
     serveSimBin,
     gridApiEndpoint: gridApiBase,
     gridStartEndpoint: gridApiBase + "/start",
@@ -1251,174 +1277,6 @@ function isJsonContentType(value: string | undefined): boolean {
   return mediaType === "application/json";
 }
 
-type ConnectMiddleware = {
-  (req: SimReq, res: SimRes, next?: SimNext): Promise<void>;
-  handleUpgrade?: (req: SimReq, socket: Socket, head: Buffer) => void;
-};
-
-function headersFromRequest(request: Request): Record<string, string> {
-  const headers: Record<string, string> = {};
-  request.headers.forEach((value, key) => {
-    headers[key.toLowerCase()] = value;
-  });
-  if (!headers.host) {
-    headers.host = new URL(request.url).host;
-  }
-  return headers;
-}
-
-function connectToFetch(
-  handler: ConnectMiddleware,
-  request: Request,
-): Promise<Response | undefined> {
-  const requestUrl = new URL(request.url);
-  const rawUrl = `${requestUrl.pathname}${requestUrl.search}`;
-  const requestEvents = new EventEmitter();
-  const abortController = new AbortController();
-  const fakeReq = Object.assign(requestEvents, {
-    method: request.method,
-    url: rawUrl,
-    headers: headersFromRequest(request),
-    socket: {
-      localPort: Number(requestUrl.port) || undefined,
-    },
-    destroy() {
-      abortController.abort();
-      requestEvents.emit("close");
-    },
-  }) as SimReq;
-
-  let status = 200;
-  let responseHeaders = new Headers();
-  let headersSent = false;
-  let writableEnded = false;
-  let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
-  let resolveResponse!: (response: Response | undefined) => void;
-  let rejectResponse!: (error: unknown) => void;
-  let resolved = false;
-  const encoder = new TextEncoder();
-
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controllerRef = controller;
-    },
-    cancel() {
-      requestEvents.emit("close");
-    },
-  });
-
-  const resolveOnce = (response: Response | undefined) => {
-    if (resolved) return;
-    resolved = true;
-    resolveResponse(response);
-  };
-
-  const statusAllowsBody = () => status !== 101 && status !== 204 && status !== 205 && status !== 304;
-
-  const ensureResponse = () => {
-    if (headersSent) return;
-    headersSent = true;
-    resolveOnce(new Response(statusAllowsBody() ? body : null, { status, headers: responseHeaders }));
-  };
-
-  const writeChunk = (chunk: Buffer | string | Uint8Array) => {
-    ensureResponse();
-    if (!statusAllowsBody() || !controllerRef || writableEnded) return true;
-    const data = typeof chunk === "string"
-      ? encoder.encode(chunk)
-      : chunk instanceof Uint8Array
-        ? chunk
-        : new Uint8Array(chunk);
-    try {
-      controllerRef.enqueue(data);
-    } catch {
-      return false;
-    }
-    return true;
-  };
-
-  const fakeRes = {
-    get headersSent() {
-      return headersSent;
-    },
-    get writableEnded() {
-      return writableEnded;
-    },
-    statusCode: 200,
-    writeHead(nextStatus: number, headers?: Record<string, string | number | string[]>) {
-      status = nextStatus;
-      fakeRes.statusCode = nextStatus;
-      if (headers) {
-        responseHeaders = new Headers();
-        for (const [key, value] of Object.entries(headers)) {
-          if (Array.isArray(value)) {
-            for (const item of value) responseHeaders.append(key, item);
-          } else {
-            responseHeaders.set(key, String(value));
-          }
-        }
-      }
-      ensureResponse();
-    },
-    write(chunk: Buffer | string | Uint8Array) {
-      return writeChunk(chunk);
-    },
-    end(chunk?: Buffer | string | Uint8Array) {
-      if (chunk !== undefined) writeChunk(chunk);
-      ensureResponse();
-      writableEnded = true;
-      try {
-        controllerRef?.close();
-      } catch {}
-      requestEvents.emit("close");
-    },
-    on() {
-      return fakeRes;
-    },
-    once() {
-      return fakeRes;
-    },
-    off() {
-      return fakeRes;
-    },
-  } as unknown as SimRes;
-
-  const responsePromise = new Promise<Response | undefined>((resolve, reject) => {
-    resolveResponse = resolve;
-    rejectResponse = reject;
-  });
-
-  void (async () => {
-    try {
-      await handler(fakeReq, fakeRes, async () => {
-        resolveOnce(undefined);
-      });
-      if (!resolved && writableEnded) resolveOnce(new Response(null, { status, headers: responseHeaders }));
-    } catch (error) {
-      rejectResponse(error);
-    }
-  })();
-
-  void (async () => {
-    try {
-      if (request.body) {
-        const reader = request.body.getReader();
-        while (!abortController.signal.aborted) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          requestEvents.emit("data", Buffer.from(value));
-        }
-        reader.releaseLock();
-      }
-      if (!abortController.signal.aborted) requestEvents.emit("end");
-    } catch {
-      requestEvents.emit("close");
-    }
-  })();
-
-  return responsePromise;
-}
-
 /**
  * Connect-style middleware that serves the simulator preview UI.
  *
@@ -1484,7 +1342,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       const device = helperTarget.device ?? selectedDevice;
       // The device's helper endpoints are served from an in-process
       // NativeCapture/NativeHid DeviceSession.
-      if (serveHelperInProcess(req, res, device, helperTarget.upstreamPath)) return;
+      if (serveHelperInProcess(req, res, device, helperTarget.upstreamPath, streamSettings)) return;
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("No serve-sim device");
       return;
@@ -2256,7 +2114,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     const device = helperTarget.device ?? selectedDevice;
     if (helperTarget.upstreamPath === "/ws") {
       // HID input is delivered to the in-process DeviceSession.
-      if (attachHidInProcess(req, socket, head, device)) return;
+      if (attachHidInProcess(req, socket, head, device, streamSettings)) return;
       socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
       return;
     }

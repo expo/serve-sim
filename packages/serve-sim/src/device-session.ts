@@ -5,6 +5,7 @@
  *
  *   /stream.mjpeg  multipart/x-mixed-replace JPEG fan-out (?raw=1 → octet-stream)
  *   /stream.avcc   length-prefixed AVCC envelopes (seed + decoder config replay)
+ *   /stream-settings runtime encoder configuration
  *   /ws            binary HID input protocol ([tag][JSON]) → NativeHid
  *   /config        { width, height, orientation }
  *   /health        { status: "ok" }
@@ -22,6 +23,7 @@ import {
   axDescribeAsync,
   axFrontmostAsync,
   type MjpegFrame,
+  type NativeUnsubscribe,
 } from "./native";
 import { eventLogEventForHidMessage, formatEventLogPoint, recordEventLogEvent, updateEventLogEvent } from "./event-log";
 import {
@@ -30,6 +32,14 @@ import {
   parseWebRtcCloseRequest,
   parseWebRtcOffer,
 } from "./webrtc-signaling";
+import {
+  normalizeStreamEncoderSettings,
+  parseStreamEncoderSettingsPatch,
+  streamControlSettingsFrom,
+  streamEncoderSettingsFrom,
+  type StreamEncoderSettings,
+  type StreamSettings,
+} from "./stream-settings";
 
 /**
  * Minimal WebSocket surface the HID input channel needs. Satisfied by both the
@@ -46,7 +56,7 @@ export interface HidSocket {
 
 export const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
@@ -134,7 +144,36 @@ function waitForDrain(res: ServerResponse): Promise<void> {
   });
 }
 
-function readRequestBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+function writeRetainedChunk(res: ServerResponse, chunk: Uint8Array): Promise<void> {
+  if (res.writableEnded || res.destroyed) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      res.off("close", done);
+      res.off("error", done);
+      resolve();
+    };
+    res.once("close", done);
+    res.once("error", done);
+    try {
+      res.write(chunk, done);
+    } catch {
+      done();
+    }
+  });
+}
+
+function readRequestBody(
+  req: IncomingMessage,
+  maxBytes: number,
+  bodyTooLargeError = new WebRtcSignalingError(
+    "WebRTC signaling body is too large",
+    413,
+    "body_too_large",
+  ),
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let bytes = 0;
@@ -149,7 +188,7 @@ function readRequestBody(req: IncomingMessage, maxBytes: number): Promise<Buffer
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       bytes += buffer.length;
       if (bytes > maxBytes) {
-        fail(new WebRtcSignalingError("WebRTC signaling body is too large", 413, "body_too_large"));
+        fail(bodyTooLargeError);
         return;
       }
       chunks.push(buffer);
@@ -192,10 +231,14 @@ export class DeviceSession {
   private latestJpegLength = 0;
   private readonly hidSockets = new Set<HidSocket>();
   private touchGestureLog?: TouchGestureLog;
+  private encoderSettings: StreamEncoderSettings;
+  private streamSettingsUpdate: Promise<void> = Promise.resolve();
 
-  constructor(public readonly udid: string) {
+  constructor(public readonly udid: string, initialStreamSettings?: StreamSettings) {
+    const streamSettings = streamControlSettingsFrom(initialStreamSettings);
+    this.encoderSettings = streamEncoderSettingsFrom(streamSettings);
     this.hid = new NativeHid(udid);
-    this.capture = new NativeCapture(udid);
+    this.capture = new NativeCapture(udid, this.encoderSettings);
   }
 
   /** Begin capture. Throws if the device isn't booted. Idempotent. */
@@ -240,10 +283,10 @@ export class DeviceSession {
   }
 
   /** Write a multipart JPEG part (header + shared frame + boundary) without copying the JPEG. */
-  private writeMjpegFrame(res: ServerResponse, jpeg: Uint8Array): void {
+  private async writeMjpegFrame(res: ServerResponse, jpeg: Uint8Array): Promise<void> {
     res.write(mjpegHeader(jpeg.length));
-    res.write(jpeg);
-    res.write(MJPEG_TRAILER);
+    await writeRetainedChunk(res, jpeg);
+    if (!res.writableEnded && !res.destroyed) res.write(MJPEG_TRAILER);
   }
 
   // ── HTTP handlers ────────────────────────────────────────────────────────
@@ -259,27 +302,37 @@ export class DeviceSession {
 
     void (async () => {
       let cleanup = () => {};
+      let closed = false;
+      const handleClose = () => {
+        closed = true;
+        cleanup();
+      };
+      req.once("aborted", handleClose);
+      res.once("close", handleClose);
+      res.once("error", handleClose);
       try {
         await this.waitForCapture();
+        if (closed || res.writableEnded || res.destroyed) return;
         const latestJpeg = this.latestJpeg();
-        if (latestJpeg) this.writeMjpegFrame(res, latestJpeg); // paint immediately
+        if (latestJpeg) {
+          // The shared latest-frame cache can change while Node flushes this
+          // initial paint; live native frames are retained by their callback.
+          await this.writeMjpegFrame(res, Buffer.from(latestJpeg));
+        }
         const unsubscribe = await this.capture.subscribeMjpeg(async (frame) => {
           this.onSharedMjpegFrame(frame);
           await waitForDrain(res);
-          if (!res.writableEnded && !res.destroyed) this.writeMjpegFrame(res, frame.data);
+          if (!res.writableEnded && !res.destroyed) {
+            await this.writeMjpegFrame(res, frame.data);
+          }
         });
         let unsubscribed = false;
         cleanup = () => {
           if (unsubscribed) return;
           unsubscribed = true;
-          unsubscribe();
+          void unsubscribe().catch(() => {});
         };
-        if (res.writableEnded || res.destroyed) {
-          cleanup();
-        } else {
-          res.once("close", cleanup);
-          res.once("error", cleanup);
-        }
+        if (closed || res.writableEnded || res.destroyed) cleanup();
       } catch {
         cleanup();
         res.destroy();
@@ -287,7 +340,7 @@ export class DeviceSession {
     })();
   }
 
-  handleAvcc(_req: IncomingMessage, res: ServerResponse): void {
+  handleAvcc(req: IncomingMessage, res: ServerResponse): void {
     res.writeHead(200, {
       "Content-Type": "application/octet-stream",
       "Cache-Control": "no-cache, no-store",
@@ -297,16 +350,25 @@ export class DeviceSession {
 
     void (async () => {
       let cleanup = () => {};
+      let closed = false;
+      const handleClose = () => {
+        closed = true;
+        cleanup();
+      };
+      req.once("aborted", handleClose);
+      res.once("close", handleClose);
+      res.once("error", handleClose);
       try {
         await this.waitForCapture();
+        if (closed || res.writableEnded || res.destroyed) return;
         let streamStarted = false;
         let stopSeedRequested = false;
-        let unsubscribeSeed: (() => void) | undefined;
+        let unsubscribeSeed: NativeUnsubscribe | undefined;
         const stopSeed = () => {
           stopSeedRequested = true;
           const unsubscribe = unsubscribeSeed;
           unsubscribeSeed = undefined;
-          unsubscribe?.();
+          if (unsubscribe) void unsubscribe().catch(() => {});
         };
         cleanup = stopSeed;
 
@@ -333,6 +395,11 @@ export class DeviceSession {
           if (stopSeedRequested) stopSeed();
         }
 
+        if (closed || res.writableEnded || res.destroyed) {
+          stopSeed();
+          return;
+        }
+
         const unsubscribeAvcc = await this.capture.subscribeAvcc(async (frame) => {
           this.updateScreenSize(frame.width, frame.height);
           if (!streamStarted) {
@@ -340,21 +407,18 @@ export class DeviceSession {
             stopSeed();
           }
           await waitForDrain(res);
-          if (!res.writableEnded && !res.destroyed) res.write(frame.data);
+          if (!res.writableEnded && !res.destroyed) {
+            await writeRetainedChunk(res, frame.data);
+          }
         });
         let unsubscribed = false;
         cleanup = () => {
           if (unsubscribed) return;
           unsubscribed = true;
           stopSeed();
-          unsubscribeAvcc();
+          void unsubscribeAvcc().catch(() => {});
         };
-        if (res.writableEnded || res.destroyed) {
-          cleanup();
-        } else {
-          res.once("close", cleanup);
-          res.once("error", cleanup);
-        }
+        if (closed || res.writableEnded || res.destroyed) cleanup();
       } catch {
         cleanup();
         res.destroy();
@@ -368,6 +432,63 @@ export class DeviceSession {
 
   handleHealth(_req: IncomingMessage, res: ServerResponse): void {
     this.sendJson(res, 200, { status: "ok" });
+  }
+
+  async handleStreamSettings(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === "GET") {
+      await this.streamSettingsUpdate;
+      if (!res.writableEnded && !res.destroyed) this.sendJson(res, 200, this.encoderSettings);
+      return;
+    }
+    if (req.method !== "PATCH") {
+      this.sendJson(res, 405, { error: "method_not_allowed" });
+      return;
+    }
+    if (!isJsonRequest(req)) {
+      this.sendJson(res, 415, { error: "unsupported_media_type" });
+      return;
+    }
+
+    try {
+      const body = await readRequestBody(
+        req,
+        16 * 1024,
+        new WebRtcSignalingError("Stream settings body is too large", 413, "body_too_large"),
+      );
+      const patch = parseStreamEncoderSettingsPatch(
+        parseJsonBody(body, "invalid_stream_settings"),
+      );
+      if (!patch) {
+        throw new WebRtcSignalingError(
+          "Invalid stream settings",
+          400,
+          "invalid_stream_settings",
+        );
+      }
+      const settings = await this.updateStreamSettings(patch);
+      if (!res.writableEnded && !res.destroyed) this.sendJson(res, 200, settings);
+    } catch (error) {
+      if (res.writableEnded || res.destroyed) return;
+      const status = error instanceof WebRtcSignalingError ? error.status : 500;
+      const code = error instanceof WebRtcSignalingError ? error.code : "stream_settings_failed";
+      this.sendJson(res, status, { error: code });
+    }
+  }
+
+  private updateStreamSettings(
+    patch: Partial<StreamEncoderSettings>,
+  ): Promise<StreamEncoderSettings> {
+    const update = this.streamSettingsUpdate.then(async () => {
+      const next = normalizeStreamEncoderSettings(
+        { ...this.encoderSettings, ...patch },
+        this.encoderSettings,
+      );
+      await this.capture.updateStreamSettings(next);
+      this.encoderSettings = next;
+      return next;
+    });
+    this.streamSettingsUpdate = update.then(() => {}, () => {});
+    return update;
   }
 
   async handleWebRTCOffer(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -760,10 +881,10 @@ const sessions = new Map<string, DeviceSession>();
  * Get (lazily creating + starting) the in-process session for `udid`. Throws if
  * the device isn't booted. The session lives until `closeDeviceSession`.
  */
-export function getDeviceSession(udid: string): DeviceSession {
+export function getDeviceSession(udid: string, initialStreamSettings?: StreamSettings): DeviceSession {
   let session = sessions.get(udid);
   if (!session) {
-    const createdSession = new DeviceSession(udid);
+    const createdSession = new DeviceSession(udid, initialStreamSettings);
     session = createdSession;
     sessions.set(udid, createdSession);
     try {

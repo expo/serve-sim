@@ -15,10 +15,21 @@ describe("ToolsPanel", () => {
         currentApp={null}
         axOverlayEnabled={false}
         onToggleAxOverlay={noop}
-        codecPreference="auto"
-        onCodecPreferenceChange={noop}
+        streamSettings={{
+          transport: "http",
+          httpCodec: "auto",
+          webRtcCodec: "h264",
+          mjpegFps: 60,
+          mjpegQuality: 0.7,
+          maxDimension: 0,
+          h264Bitrate: 6_000_000,
+          h264Fps: 60,
+        }}
+        onStreamPlaybackSettingsChange={noop}
+        onStreamEncoderSettingsChange={noop}
         activeCodec="h264"
         avccSupported
+        streamSettingsPending={false}
         width={320}
       />,
     );

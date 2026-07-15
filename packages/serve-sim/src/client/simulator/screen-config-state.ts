@@ -1,6 +1,6 @@
 import type { StreamConfig } from "../types.js";
 
-export type ScreenConfigSource = "external" | "reported";
+export type ScreenConfigSource = "external" | "media" | "reported";
 
 export interface ScreenConfigUpdate {
   config: StreamConfig;
@@ -27,6 +27,6 @@ export function resolveScreenConfigUpdate(
   }
   return {
     config: next,
-    notifyParent: source === "reported",
+    notifyParent: source !== "external",
   };
 }

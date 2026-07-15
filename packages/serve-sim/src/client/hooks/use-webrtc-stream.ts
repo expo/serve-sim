@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { WebRtcCodec } from "../webrtc-codec-fallback";
+import type { WebRtcCodec, WebRtcStreamFailure } from "../webrtc-codec-fallback";
 import { webRtcFailureDisposition } from "../webrtc-failure-policy";
 import { WEBRTC_ICE_TRANSPORT_POLICY, type IceServer } from "../webrtc-ice";
 import {
@@ -48,7 +48,7 @@ export function useWebRtcStream({
   iceServers?: IceServer[];
 }) {
   const [stream, setStream] = useState<MediaStream | null>(null);
-  const [failedCodec, setFailedCodec] = useState<WebRtcCodec | null>(null);
+  const [failure, setFailure] = useState<WebRtcStreamFailure | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
   const firstFrameTimeoutRef = useRef<number | undefined>(undefined);
@@ -62,7 +62,7 @@ export function useWebRtcStream({
       window.clearTimeout(firstFrameTimeoutRef.current);
       firstFrameTimeoutRef.current = undefined;
     }
-    setFailedCodec(null);
+    setFailure(null);
     setError(null);
   }, []);
 
@@ -72,10 +72,11 @@ export function useWebRtcStream({
 
   useEffect(() => {
     if (!enabled || !offerUrl) return;
+    setFailure(null);
     if (typeof RTCPeerConnection === "undefined" || typeof RTCRtpReceiver === "undefined") {
       setStream(null);
-      setFailedCodec(null);
       setError("WebRTC is not supported by this browser.");
+      setFailure({ sessionId: createSessionId(), kind: "permanent" });
       return;
     }
 
@@ -88,7 +89,7 @@ export function useWebRtcStream({
     const sessionId = createSessionId();
     const servers = iceServers?.length ? iceServers : DEFAULT_ICE_SERVERS;
     setStream(null);
-    setFailedCodec(null);
+    setFailure(null);
     setError(null);
     firstFrameDecodedRef.current = false;
     if (firstFrameTimeoutRef.current !== undefined) {
@@ -117,8 +118,8 @@ export function useWebRtcStream({
     const failPermanently = (message: string) => {
       if (stopped || failing) return;
       failing = true;
-      setFailedCodec(null);
       setError(message);
+      setFailure({ sessionId, kind: "permanent" });
       closePeer();
       void closeRemoteSession();
     };
@@ -128,14 +129,14 @@ export function useWebRtcStream({
       failing = true;
       closePeer();
       void closeRemoteSession().finally(() => {
-        if (!stopped) setFailedCodec(codec);
+        if (!stopped) setFailure({ sessionId, kind: "codec", codec });
       });
     };
 
     const retryTransport = (message: string) => {
       if (stopped || failing) return;
       failing = true;
-      setFailedCodec(null);
+      setFailure(null);
       const attempt = transportRetryAttemptRef.current++;
       const delay = Math.min(
         TRANSPORT_RETRY_BASE_MS * 2 ** Math.min(attempt, 4),
@@ -290,5 +291,5 @@ export function useWebRtcStream({
     };
   }, [enabled, offerUrl, closeUrl, codec, iceServers, retryGeneration]);
 
-  return { stream, failedCodec, error, markFrameDecoded };
+  return { stream, failure, error, markFrameDecoded };
 }

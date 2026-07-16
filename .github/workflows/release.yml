@@ -1,6 +1,6 @@
 name: Release @expo/serve-sim
 
-run-name: Release @expo/serve-sim (${{ inputs.bump }}) by @${{ github.actor }}
+run-name: Release @expo/serve-sim (${{ inputs.bump }}) by @${{ github.triggering_actor }}
 
 on:
   workflow_dispatch:
@@ -14,6 +14,7 @@ on:
           - minor
           - major
 
+# Only one release may calculate and publish the next version at a time.
 concurrency:
   group: release-expo-serve-sim
   cancel-in-progress: false
@@ -54,12 +55,10 @@ jobs:
           LAST_RUN_ID=$(git log -1 --format='%(trailers:key=Release-Run,valueonly)')
           if [ "$LAST_RUN_ID" = "$RELEASE_RUN_ID" ] && [ "$(git rev-parse HEAD^)" = "$DISPATCH_SHA" ]; then
             echo "Reusing the release commit created by this run."
+          elif [ "$(git rev-parse HEAD)" != "$DISPATCH_SHA" ]; then
+            echo "::error::main moved after this release was started. Start a new release from the latest main."
+            exit 1
           else
-            if [ "$(git rev-parse HEAD)" != "$DISPATCH_SHA" ]; then
-              echo "::error::main moved after this release was started. Start a new release from the latest main."
-              exit 1
-            fi
-
             npm version "$BUMP" --no-git-tag-version --no-package-lock --workspace packages/serve-sim
             VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
             git config user.name "github-actions[bot]"

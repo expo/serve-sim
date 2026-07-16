@@ -74,7 +74,7 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_DEV_EXPO_GITHUB_ROBOT_ACCESS_TOKEN }}
         run: |
-          npx --yes eas-cli@21.0.1 workflow:run .eas/workflows/build-release.yml \
+          npx --yes eas-cli@latest workflow:run .eas/workflows/build-release.yml \
             --ref "${{ steps.release.outputs.sha }}" \
             --wait \
             --non-interactive \

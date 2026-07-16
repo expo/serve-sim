@@ -13,6 +13,7 @@ import type { Socket } from "net";
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
+import { createMetricsSamplerCache, type MetricsSamplerCache } from "./cpu-mem-sampler";
 import { closeDeviceSession, getDeviceSession, sendCorsPreflight, type HidSocket } from "./device-session";
 import {
   eventLogEventForCommand,
@@ -109,6 +110,8 @@ type ExecRequestBody = { command?: string };
 export type ServeSimState = ServeSimDeviceState;
 
 const axStreamerCache = createAxStreamerCache();
+// One shared cpu/mem sampler per udid; every /metrics viewer subscribes.
+const metricsSamplerCache = createMetricsSamplerCache();
 
 // Hard cap on the SSE line-assembly buffer for child-process stdout.
 // A malformed log entry without a newline can't grow this beyond 1 MB;
@@ -911,6 +914,7 @@ export function previewConfigForState(
   appStateEndpoint: string;
   eventLogEndpoint: string;
   eventLogEventsEndpoint: string;
+  metricsEndpoint: string;
   axEndpoint: string;
   cameraStatusEndpoint: string;
   devtoolsEndpoint: string;
@@ -939,6 +943,7 @@ export function previewConfigForState(
     appStateEndpoint: endpoint(base, "/appstate", state.device),
     eventLogEndpoint: endpoint(base, "/api/event-log", state.device),
     eventLogEventsEndpoint: endpoint(base, "/api/event-log/events", state.device),
+    metricsEndpoint: endpoint(base, "/metrics", state.device),
     axEndpoint: endpoint(base, "/ax", state.device),
     cameraStatusEndpoint: `${base === "/" ? "" : base}/helper/${encodeURIComponent(state.device)}/camera/status`,
     devtoolsEndpoint: endpoint(base, "/devtools", state.device),
@@ -1333,6 +1338,38 @@ function isJsonContentType(value: string | undefined): boolean {
  *   GET  {basePath}/logs    — SSE stream of simctl logs
  *   GET  {basePath}/ax      — SSE stream of normalized accessibility snapshots
  */
+export function handleMetricsRequest(
+  req: SimReq,
+  res: SimRes,
+  state: ServeSimState | null,
+  samplerCache: MetricsSamplerCache = metricsSamplerCache,
+): void {
+  if (!state) {
+    res.writeHead(404);
+    res.end("No serve-sim device");
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write(":\n\n");
+  const { meta, unsubscribe } = samplerCache.subscribe(state.device, (sample) => {
+    if (!res.writableEnded) res.write("data: " + JSON.stringify(sample) + "\n\n");
+  });
+  res.write("event: meta\ndata: " + JSON.stringify(meta) + "\n\n");
+  // Heartbeat keeps an idle stream alive through buffering proxies.
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded) res.write(":\n\n");
+  }, 15000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+}
+
 export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const streamSettings = options?.streamSettings ?? httpStreamSettingsFromLegacyCodec(options?.codec);
   const base = (options?.basePath ?? "/.sim").replace(/\/+$/, "");
@@ -1967,6 +2004,15 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       return;
     }
 
+    // SSE of the user app's live CPU/memory: an `event: meta` frame (schema,
+    // udid, hostCores, cadence), then one `data:` line per sample.
+    if (url === base + "/metrics") {
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      handleMetricsRequest(req, res, state);
+      return;
+    }
+
     // POST /exec — run a shell command on the host. Gated by a per-process
     // bearer token injected only into the same-origin preview HTML, with
     // Content-Type + Origin checks to block CORS-simple CSRF (a malicious
@@ -2185,6 +2231,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       `${base}/api/event-log/events`,
       `${base}/appstate`,
       `${base}/logs`,
+      `${base}/metrics`,
       `${base}/ax`,
     ],
     onUiRequest: handleUiRequest,

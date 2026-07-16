@@ -18,7 +18,8 @@
     "url": "https://github.com/expo/serve-sim/issues"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   },
   "bin": {
     "serve-sim": "dist/serve-sim.js"

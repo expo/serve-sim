@@ -14,6 +14,7 @@ import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
 import { createMetricsSamplerCache, type MetricsSamplerCache } from "./cpu-mem-sampler";
+import { corsAllowOriginHeaders } from "./middleware-utils";
 import { closeDeviceSession, getDeviceSession, sendCorsPreflight, type HidSocket } from "./device-session";
 import {
   eventLogEventForCommand,
@@ -1291,6 +1292,12 @@ export interface SimMiddlewareOptions {
   execToken?: string;
   /** Stream transport and codec settings for the preview. */
   streamSettings?: StreamSettings;
+  /**
+   * Origins allowed to read the `/metrics` SSE stream cross-origin (e.g. a
+   * hosted dashboard). Read-only telemetry only; the control routes stay
+   * same-origin + token-gated regardless. Loopback is always allowed.
+   */
+  metricsCorsOrigins?: string[];
   /** @deprecated Use `streamSettings: { transport: "http", codec }`. */
   codec?: string;
   /**
@@ -1343,6 +1350,7 @@ export function handleMetricsRequest(
   res: SimRes,
   state: ServeSimState | null,
   samplerCache: MetricsSamplerCache = metricsSamplerCache,
+  corsOrigins: readonly string[] = [],
 ): void {
   if (!state) {
     res.writeHead(404);
@@ -1354,6 +1362,7 @@ export function handleMetricsRequest(
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
+    ...corsAllowOriginHeaders(req.headers.origin, corsOrigins),
   });
   res.write(":\n\n");
   const { meta, unsubscribe } = samplerCache.subscribe(state.device, (sample) => {
@@ -1381,6 +1390,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   // can call /exec; cross-origin pages and LAN clients cannot, because they
   // can't read this value (it's only injected into the preview page's config).
   const execToken = options?.execToken ?? randomBytes(32).toString("base64url");
+  const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
 
   // Simulator-settings requests run in-process (just the underlying simctl /
   // ax-tool spawn) instead of round-tripping a full `node <cli>` exec per
@@ -2009,7 +2019,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     if (url === base + "/metrics") {
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
-      handleMetricsRequest(req, res, state);
+      handleMetricsRequest(req, res, state, metricsSamplerCache, metricsCorsOrigins);
       return;
     }
 

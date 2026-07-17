@@ -1,3 +1,4 @@
+import { TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useMetricsStream } from "../hooks/use-metrics-stream";
 import { formatCpu, formatMem, sparklinePath } from "../utils/format-metrics";
@@ -7,33 +8,64 @@ import { CollapsibleSection } from "./collapsible-section";
 const SPARK_W = 96;
 const SPARK_H = 24;
 
-// Live CPU/memory readout for the sim's user app, with a sparkline for each.
-export function MetricsTool({ udid, metricsEndpoint }: { udid: string; metricsEndpoint?: string }) {
+/** Live CPU/memory readout for the sim's user app, with a sparkline for each. */
+export function MetricsTool({
+  udid,
+  currentAppBundleId,
+  metricsEndpoint,
+}: {
+  udid: string;
+  currentAppBundleId: string | null;
+  metricsEndpoint?: string;
+}) {
   const path = useMemo(
     () => metricsEndpoint ?? `${simEndpoint("metrics")}?device=${encodeURIComponent(udid)}`,
     [metricsEndpoint, udid],
   );
   const { meta, latest, history, errored, stale } = useMetricsStream(path);
   const [open, setOpen] = useState(true);
-  // Only present the numbers when they're actually current — a stream error or a quiet backend
-  // (no app in the foreground) must not leave the last sample looking live.
-  const live = latest !== null && !errored && !stale;
+  // Only measure user apps. Idle when /appstate positively reports a system app in the foreground,
+  // so a fresh load (signal not yet known) still shows the running app.
+  const foregroundIsSystemApp =
+    currentAppBundleId != null && currentAppBundleId.startsWith("com.apple.");
+  const live = latest !== null && !errored && !stale && !foregroundIsSystemApp;
+  // When there's nothing to show, a header glyph carries the reason on hover instead of a body line.
+  const idleReason = errored
+    ? "The metrics stream disconnected"
+    : foregroundIsSystemApp
+      ? "Only your app is measured; a system app is in the foreground"
+      : "Waiting for CPU / memory data";
 
   return (
     <CollapsibleSection
       open={open}
       onOpenChange={setOpen}
       summaryClassName="grid [grid-template-columns:auto_1fr_auto] items-center gap-2 text-left"
+      bodyClassName={live ? undefined : "hidden"}
       summary={
         <>
           <span className="text-[11px] font-semibold text-white/50 uppercase tracking-[0.08em] leading-none inline-flex items-center">
             Activity
           </span>
-          {!open && live && (
-            <span className="text-[11px] text-white/40 tabular-nums text-right">
-              {formatCpu(latest.cpuPct)} · {formatMem(latest.memBytes)}
-            </span>
-          )}
+          {live
+            ? !open && (
+                <span className="text-[11px] text-white/40 tabular-nums text-right">
+                  {formatCpu(latest.cpuPct)} · {formatMem(latest.memBytes)}
+                </span>
+              )
+            : (
+                <span
+                  data-metrics-warning
+                  role="status"
+                  className="group relative justify-self-end inline-flex items-center"
+                >
+                  <TriangleAlert aria-hidden="true" className="w-3.5 h-3.5 text-amber-400/80" />
+                  <span className="sr-only">{idleReason}</span>
+                  <span className="pointer-events-none absolute right-0 top-full z-10 mt-1 hidden w-max max-w-[220px] rounded-md bg-black/90 px-2 py-1 text-[11px] leading-snug text-white/90 shadow-lg group-hover:block">
+                    {idleReason}
+                  </span>
+                </span>
+              )}
         </>
       }
     >
@@ -53,15 +85,12 @@ export function MetricsTool({ udid, metricsEndpoint }: { udid: string; metricsEn
             className="text-sky-400"
           />
         </>
-      ) : (
-        <div className="text-white/50 text-[12px]">
-          {errored ? "Disconnected" : "Waiting for CPU / memory…"}
-        </div>
-      )}
+      ) : null}
     </CollapsibleSection>
   );
 }
 
+/** One labeled metric: its current value with a sparkline of recent history. */
 function MetricRow({
   label,
   value,
@@ -89,6 +118,7 @@ function MetricRow({
   );
 }
 
+/** Minimal filled-area sparkline for a series of values. */
 function Sparkline({ values, className }: { values: number[]; className: string }) {
   const line = sparklinePath(values, SPARK_W, SPARK_H);
   // Close the line down to the baseline and back to fill the area under it.

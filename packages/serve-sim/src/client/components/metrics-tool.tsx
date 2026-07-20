@@ -24,11 +24,13 @@ export function MetricsTool({
   );
   const { meta, latest, history, errored, stale } = useMetricsStream(path);
   const [open, setOpen] = useState(true);
-  // Only measure user apps. Idle when /appstate positively reports a system app in the foreground,
-  // so a fresh load (signal not yet known) still shows the running app.
+  // Live only while the backend actually scoped to a user app: each sample carries that app's
+  // bundleId, and null when a system app is in front (those run outside the sampler's reach) or
+  // nothing is running. Keying on the sampler's own output keeps this from drifting from what it can
+  // measure; currentAppBundleId (from /appstate) only words the idle reason.
+  const live = latest !== null && latest.bundleId !== null && !errored && !stale;
   const foregroundIsSystemApp =
     currentAppBundleId != null && currentAppBundleId.startsWith("com.apple.");
-  const live = latest !== null && !errored && !stale && !foregroundIsSystemApp;
   // When there's nothing to show, a header glyph carries the reason on hover instead of a body line.
   const idleReason = errored
     ? "The metrics stream disconnected"
@@ -59,7 +61,7 @@ export function MetricsTool({
                   role="status"
                   className="group relative justify-self-end inline-flex items-center"
                 >
-                  <TriangleAlert aria-hidden="true" className="w-3.5 h-3.5 text-amber-400/80" />
+                  <TriangleAlert aria-hidden="true" className="w-3.5 h-3.5 text-amber-400" />
                   <span className="sr-only">{idleReason}</span>
                   <span className="pointer-events-none absolute right-0 top-full z-10 mt-1 hidden w-max max-w-[220px] rounded-md bg-black/90 px-2 py-1 text-[11px] leading-snug text-white/90 shadow-lg group-hover:block">
                     {idleReason}

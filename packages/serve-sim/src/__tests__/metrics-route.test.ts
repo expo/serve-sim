@@ -65,7 +65,14 @@ function createTrackingCache() {
       intervalMs: 1_000_000,
       now: () => 0,
       hostCores: 8,
-      sample: async () => ({ bundleId: "com.example.app", processKey: "1", cpuSeconds: 1, memBytes: 2048 }),
+      sample: async () => ({
+        bundleId: "com.example.app",
+        processKey: "1",
+        cpuSeconds: 1,
+        memBytes: 2048,
+        netInBytesPerSec: 4096,
+        netOutBytesPerSec: 1024,
+      }),
     });
     created.push(sampler);
     return sampler;
@@ -110,6 +117,12 @@ describe("handleMetricsRequest", () => {
 
     await firstSampler(created).tickOnce();
     expect(sampleFrames(writes)).toHaveLength(1);
+
+    // The new network fields must survive serialization into the SSE sample frame.
+    const body = sampleFrames(writes)[0]!;
+    const parsed = JSON.parse(body.slice(body.indexOf("data:") + "data:".length).trim());
+    expect(parsed.netInBytesPerSec).toBe(4096);
+    expect(parsed.netOutBytesPerSec).toBe(1024);
 
     close();
     created.forEach((s) => s.stop());

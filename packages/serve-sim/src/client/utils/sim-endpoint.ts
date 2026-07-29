@@ -12,6 +12,7 @@ declare global {
       basePath: string;
       logsEndpoint?: string;
       metricsEndpoint?: string;
+      captureEndpoint?: string;
       axEndpoint?: string;
       cameraStatusEndpoint?: string;
       appStateEndpoint?: string;

@@ -9,3 +9,7 @@ dist/
 *.tsbuildinfo
 /packages/serve-sim/.xcode-build
 *.bun-build
+
+# Python bytecode from the mitmproxy addon
+__pycache__/
+*.pyc

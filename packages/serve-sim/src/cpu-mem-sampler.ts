@@ -317,6 +317,12 @@ export async function sampleUserApp(udid: string, deps: SampleDeps = {}): Promis
 
 export interface MetricsSamplerOptions {
   udid: string;
+  /**
+   * Network rate from a source that supersedes the host counters, or null to keep using them. Used
+   * when capture is routing the app through a local proxy, which makes its traffic invisible to the
+   * host's per-process accounting.
+   */
+  networkRateOverride?: () => NetInOut | null;
   intervalMs?: number;
   sample?: (udid: string) => Promise<AppUsage | null>;
   now?: () => number;
@@ -349,7 +355,11 @@ export class MetricsSampler {
     } else {
       const network = new NetworkThroughputMonitor();
       this.network = network;
-      this.sample = (udid) => sampleUserApp(udid, { networkRate: (pids) => network.rateForPids(pids) });
+      const override = opts.networkRateOverride;
+      this.sample = (udid) =>
+        sampleUserApp(udid, {
+          networkRate: (pids) => override?.() ?? network.rateForPids(pids),
+        });
     }
     this.meta = {
       schemaVersion: METRICS_SCHEMA_VERSION,

@@ -13,7 +13,8 @@ import type { Socket } from "net";
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
-import { createMetricsSamplerCache, type MetricsSamplerCache } from "./cpu-mem-sampler";
+import { createCaptureSessionCache, type CaptureSessionCache } from "./capture-session";
+import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./cpu-mem-sampler";
 import { foregroundTracker, type ForegroundApp, type ForegroundTrackerCache } from "./foreground-tracker";
 import { corsAllowOriginHeaders } from "./middleware-utils";
 import { closeDeviceSession, getDeviceSession, sendCorsPreflight, type HidSocket } from "./device-session";
@@ -111,8 +112,16 @@ type ExecRequestBody = { command?: string };
 export type ServeSimState = ServeSimDeviceState;
 
 const axStreamerCache = createAxStreamerCache();
-// One shared cpu/mem sampler per udid; every /metrics viewer subscribes.
-const metricsSamplerCache = createMetricsSamplerCache();
+// One shared capture session per udid; every /network-capture viewer subscribes. Nothing starts
+// until the first subscriber, so no proxy is spawned and no trust is installed unless asked for.
+const captureSessionCache = createCaptureSessionCache();
+// One shared cpu/mem sampler per udid; every /metrics viewer subscribes. While capture is routing the
+// app through the local proxy its traffic never touches an external interface, so the host counters
+// report it as idle — the proxy's own byte totals are the only true source, and take precedence.
+const metricsSamplerCache = createMetricsSamplerCache(
+  (udid) =>
+    new MetricsSampler({ udid, networkRateOverride: () => captureSessionCache.throughputFor(udid) }),
+);
 
 // Hard cap on the SSE line-assembly buffer for child-process stdout.
 // A malformed log entry without a newline can't grow this beyond 1 MB;
@@ -885,6 +894,26 @@ function attachHidInProcess(
   return true;
 }
 
+/**
+ * SSE routes the exec WebSocket may proxy.
+ *
+ * The bridge refuses anything not listed here, and refuses it by ending the subscription — which the
+ * client can only report as a dropped stream. A route added to the middleware but forgotten here
+ * therefore works over plain HTTP and fails only in the browser, with no usable diagnosis. Exported so a
+ * test can hold this list against the endpoints the preview config advertises.
+ */
+export function sseStreamPaths(base: string): string[] {
+  return [
+    `${base}/api/events`,
+    `${base}/api/event-log/events`,
+    `${base}/appstate`,
+    `${base}/logs`,
+    `${base}/metrics`,
+    `${base}/network-capture`,
+    `${base}/ax`,
+  ];
+}
+
 export function previewConfigForState(
   state: ServeSimState,
   base: string,
@@ -899,6 +928,7 @@ export function previewConfigForState(
   eventLogEndpoint: string;
   eventLogEventsEndpoint: string;
   metricsEndpoint: string;
+  captureEndpoint: string;
   axEndpoint: string;
   cameraStatusEndpoint: string;
   devtoolsEndpoint: string;
@@ -928,6 +958,7 @@ export function previewConfigForState(
     eventLogEndpoint: endpoint(base, "/api/event-log", state.device),
     eventLogEventsEndpoint: endpoint(base, "/api/event-log/events", state.device),
     metricsEndpoint: endpoint(base, "/metrics", state.device),
+    captureEndpoint: endpoint(base, "/network-capture", state.device),
     axEndpoint: endpoint(base, "/ax", state.device),
     cameraStatusEndpoint: `${base === "/" ? "" : base}/helper/${encodeURIComponent(state.device)}/camera/status`,
     devtoolsEndpoint: endpoint(base, "/devtools", state.device),
@@ -1312,6 +1343,38 @@ function safeEqualString(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
+/**
+ * Whether a request could only have come from our own preview page.
+ *
+ * Capture is not a read-only route: subscribing starts a proxy, installs a certificate authority into the
+ * simulator, and relaunches the app. So it needs the same protection as `/exec` — but an SSE subscription
+ * cannot carry a bearer header, and checking `Origin` alone is not enough. A same-origin `EventSource`
+ * sends no `Origin` at all, and neither does a cross-site `<script src>` or `<img src>`, which would
+ * happily trigger the route's side effects from any page the developer visits.
+ *
+ * `Sec-Fetch-*` is what separates those two cases: browsers set `site` to `same-origin` only for our own
+ * page, and set `dest` to `empty` for fetch/EventSource but `script`/`image` for a tag. A non-browser
+ * caller sends neither header and is admitted only with the token.
+ */
+function isTrustedSameOriginRequest(req: SimReq, execToken: string, url: string): boolean {
+  const token = new URL(url, "http://127.0.0.1").searchParams.get("token");
+  if (token && safeEqualString(token, execToken)) return true;
+
+  const origin = req.headers.origin;
+  if (origin) {
+    try {
+      if (new URL(origin).host !== req.headers.host) return false;
+    } catch {
+      return false;
+    }
+  }
+  const site = req.headers["sec-fetch-site"];
+  if (typeof site === "string" && site !== "same-origin") return false;
+  const dest = req.headers["sec-fetch-dest"];
+  if (typeof dest === "string" && dest !== "empty") return false;
+  return true;
+}
+
 function isJsonContentType(value: string | undefined): boolean {
   if (!value) return false;
   // `application/json; charset=utf-8` etc. — only the media type matters.
@@ -1365,6 +1428,84 @@ export function handleMetricsRequest(
     unsubscribe();
     foreground.unsubscribe();
   });
+}
+
+/**
+ * SSE of the app's HTTPS traffic. Subscribing starts the capture session for this device — the proxy
+ * and the simulator trust install — so opening this stream is what turns capture on, and closing the
+ * last one turns it off. Emits an `event: meta` frame (schema, udid, proxy address) followed by a
+ * replay of the requests already recorded, then live frames.
+ */
+export function handleNetworkCaptureRequest(
+  req: SimReq,
+  res: SimRes,
+  state: ServeSimState | null,
+  sessionCache: CaptureSessionCache = captureSessionCache,
+  corsOrigins: readonly string[] = [],
+): void {
+  if (!state) {
+    res.writeHead(404);
+    res.end("No serve-sim device");
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+    ...corsAllowOriginHeaders(req.headers.origin, corsOrigins),
+  });
+  res.write(":\n\n");
+
+  const { meta, unsubscribe } = sessionCache.subscribe(state.device, (event) => {
+    if (!res.writableEnded) res.write("data: " + JSON.stringify(event) + "\n\n");
+  });
+
+  // The proxy address is only known once it is listening, so the meta frame waits for it. A viewer
+  // needs that address to point an app at the proxy, and a session that failed to start reports a
+  // null address rather than leaving the client waiting.
+  void sessionCache.whenReady(state.device).then(() => {
+    if (res.writableEnded) return;
+    res.write("event: meta\ndata: " + JSON.stringify(meta) + "\n\n");
+    const store = sessionCache.storeFor(state.device);
+    for (const request of store?.list() ?? []) {
+      if (res.writableEnded) return;
+      res.write("data: " + JSON.stringify({ type: "finished", request }) + "\n\n");
+    }
+  });
+
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded) res.write(":\n\n");
+  }, 15000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+}
+
+/**
+ * Headers and bodies for one captured request, fetched on demand. Bodies are deliberately kept off
+ * the live stream: a viewer only pays for the one row it expands.
+ */
+export function handleCaptureBodyRequest(
+  req: SimReq,
+  res: SimRes,
+  state: ServeSimState | null,
+  id: string,
+  sessionCache: CaptureSessionCache = captureSessionCache,
+  corsOrigins: readonly string[] = [],
+): void {
+  const cors = corsAllowOriginHeaders(req.headers.origin, corsOrigins);
+  const store = state ? sessionCache.storeFor(state.device) : null;
+  const body = store?.body(id) ?? null;
+  if (!body) {
+    // No session, or a request that aged out of the window — the row is gone, not empty.
+    res.writeHead(404, { "Content-Type": "application/json", ...cors });
+    res.end(JSON.stringify({ error: "No captured body for that request" }));
+    return;
+  }
+  res.writeHead(200, { "Content-Type": "application/json", ...cors });
+  res.end(JSON.stringify(body));
 }
 
 export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
@@ -2048,6 +2189,36 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       return;
     }
 
+    // SSE of the app's HTTPS requests. Subscribing is what starts capture for this device — it spawns a
+    // proxy, trusts a certificate inside the simulator and relaunches the app — so it is gated like a
+    // control route rather than like telemetry.
+    if (url === base + "/network-capture") {
+      if (!isTrustedSameOriginRequest(req, execToken, url)) {
+        res.writeHead(403, { "Content-Type": "text/plain" });
+        res.end("Cross-origin request blocked");
+        return;
+      }
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      handleNetworkCaptureRequest(req, res, state, captureSessionCache, metricsCorsOrigins);
+      return;
+    }
+
+    // Headers + bodies for one captured request, fetched only when a row is expanded. Gated too: these
+    // carry the app's own Authorization and Cookie headers.
+    if (url.startsWith(base + "/network-capture/")) {
+      if (!isTrustedSameOriginRequest(req, execToken, url)) {
+        res.writeHead(403, { "Content-Type": "text/plain" });
+        res.end("Cross-origin request blocked");
+        return;
+      }
+      const id = url.slice((base + "/network-capture/").length);
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      handleCaptureBodyRequest(req, res, state, decodeURIComponent(id), captureSessionCache, metricsCorsOrigins);
+      return;
+    }
+
     // POST /exec — run a shell command on the host. Gated by a per-process
     // bearer token injected only into the same-origin preview HTML, with
     // Content-Type + Origin checks to block CORS-simple CSRF (a malicious
@@ -2218,14 +2389,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   fetchMiddleware.handleWebSocket = createExecWebSocketHandler({
     path: `${base}/exec-ws`,
     execToken,
-    ssePrefixes: [
-      `${base}/api/events`,
-      `${base}/api/event-log/events`,
-      `${base}/appstate`,
-      `${base}/logs`,
-      `${base}/metrics`,
-      `${base}/ax`,
-    ],
+    ssePrefixes: sseStreamPaths(base),
     onUiRequest: handleUiRequest,
     onCommandResult: (command, result) => recordCommandEvent(command, result),
     onSseRequest(path, websocketRequest) {

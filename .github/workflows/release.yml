@@ -60,7 +60,7 @@ jobs:
             echo "::error::expo moved after this release was started. Start a new release from the latest expo."
             exit 1
           else
-            npm version "$BUMP" --no-git-tag-version --no-package-lock --workspace packages/serve-sim
+            npm version "$BUMP" --no-git-tag-version --no-package-lock --no-workspaces-update --workspace packages/serve-sim
             VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

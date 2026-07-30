@@ -32,11 +32,19 @@ describe("stream settings", () => {
       transport: "webrtc",
       codec: "vp9",
       iceServers: [{ urls: ["turn:relay.example.test"] }],
+      mjpegFps: 10,
+      mjpegQuality: 0.55,
+      maxDimension: 1280,
+      h264Bitrate: 3_000_000,
+      h264Fps: 30,
     })).toMatchObject({
       transport: "webrtc",
       webRtcCodec: "vp9",
-      mjpegFps: 60,
-      maxDimension: 0,
+      mjpegFps: 10,
+      mjpegQuality: 0.55,
+      maxDimension: 1280,
+      h264Bitrate: 3_000_000,
+      h264Fps: 30,
       iceServers: [{ urls: ["turn:relay.example.test"] }],
     });
   });

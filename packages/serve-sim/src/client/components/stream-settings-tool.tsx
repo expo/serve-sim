@@ -136,7 +136,7 @@ export function StreamSettingsTool({
               MAX_DIMENSION_OPTIONS,
               String,
             )}
-            disabled={encoderSettingsDisabled || !httpActive}
+            disabled={encoderSettingsDisabled}
             onChange={(v) => onEncoderSettingsChange({ maxDimension: Number(v) })}
           />
         </SettingRow>
@@ -162,21 +162,21 @@ export function StreamSettingsTool({
             onChange={(v) => onEncoderSettingsChange({ mjpegQuality: Number(v) })}
           />
         </SettingRow>
-        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="H.264 FPS">
+        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="Video FPS">
           <SettingSelect
-            label="H.264 FPS"
+            label="Video FPS"
             value={String(settings.h264Fps)}
             options={optionsWithCurrentValue(settings.h264Fps, FPS_OPTIONS, String)}
             disabled={
-              encoderSettingsDisabled || !httpActive || !avccSupported
-              || settings.httpCodec === "mjpeg"
+              encoderSettingsDisabled
+              || (httpActive && (!avccSupported || settings.httpCodec === "mjpeg"))
             }
             onChange={(v) => onEncoderSettingsChange({ h264Fps: Number(v) })}
           />
         </SettingRow>
-        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="H.264 bitrate">
+        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="Video bitrate">
           <SettingSelect
-            label="H.264 bitrate"
+            label="Video bitrate"
             value={String(settings.h264Bitrate)}
             options={optionsWithCurrentValue(
               settings.h264Bitrate,
@@ -184,8 +184,8 @@ export function StreamSettingsTool({
               (value) => `${value / 1_000_000} Mbps`,
             )}
             disabled={
-              encoderSettingsDisabled || !httpActive || !avccSupported
-              || settings.httpCodec === "mjpeg"
+              encoderSettingsDisabled
+              || (httpActive && (!avccSupported || settings.httpCodec === "mjpeg"))
             }
             onChange={(v) => onEncoderSettingsChange({ h264Bitrate: Number(v) })}
           />

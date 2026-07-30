@@ -244,6 +244,11 @@ actor CaptureEngine {
                     maxDimension: options.maxDimension
                 )
             }
+            await webRTCPublisher?.updateSettings(
+                maxFps: options.h264Fps,
+                targetBitrate: options.h264Bitrate,
+                maxDimension: options.maxDimension
+            )
         }
     }
 
@@ -296,7 +301,11 @@ actor CaptureEngine {
             return webRTCPublisher
         }
 
-        let publisher = WebRTCPublisher()
+        let publisher = WebRTCPublisher(
+            maxFps: options.h264Fps,
+            targetBitrate: options.h264Bitrate,
+            maxDimension: options.maxDimension
+        )
         consumers[UUID()] = WebRTCConsumer(publisher: publisher)
         webRTCPublisher = publisher
         return publisher

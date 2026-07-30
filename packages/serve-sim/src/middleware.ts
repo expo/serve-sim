@@ -1768,6 +1768,43 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       return;
     }
 
+    if (url === base + "/healthz") {
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      res.end(JSON.stringify({ status: "ok" }));
+      return;
+    }
+
+    if (url === base + "/readyz") {
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      if (!state) {
+        res.writeHead(503, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify({ status: "starting" }));
+        return;
+      }
+      try {
+        await getDeviceSession(state.device, streamSettings).start();
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify({ status: "ready", device: state.device }));
+      } catch {
+        res.writeHead(503, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify({ status: "starting" }));
+      }
+      return;
+    }
+
     // JSON API: serve-sim state
     if (url === base + "/api") {
       const states = await readServeSimStates();

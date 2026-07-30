@@ -41,7 +41,7 @@ describe("streamRuntimeArgs", () => {
         mjpegQuality: 0.55,
         maxDimension: 1280,
         h264Bitrate: 3_000_000,
-        h264Fps: 30,
+        h264Fps: 60,
         iceServers: [
           { urls: ["stun:stun.example.com:19302"] },
           {
@@ -70,10 +70,10 @@ describe("streamRuntimeArgs", () => {
       "0.55",
       "--max-dimension",
       "1280",
-      "--h264-bitrate",
+      "--video-bitrate",
       "3000000",
-      "--h264-fps",
-      "30",
+      "--video-fps",
+      "60",
     ]);
   });
 });

@@ -89,10 +89,10 @@ Options:
                       MJPEG quality (0.05-1)
       --max-dimension <pixels>
                       Maximum captured width or height; 0 keeps native resolution
-      --h264-bitrate <bits-per-second>
-                      H.264 target bitrate
-      --h264-fps <fps>
-                      H.264 frame rate (1-120)
+      --video-bitrate <bits-per-second>
+                      H.264/WebRTC target bitrate
+      --video-fps <fps>
+                      H.264/WebRTC frame rate (1-120)
       --list [device] List running streams
       --kill [device] Kill running stream(s)
 

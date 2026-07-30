@@ -1807,14 +1807,14 @@ program
     (value) => parseNumberInRange(value, "--max-dimension", 0, 4096, true),
   )
   .option(
-    "--h264-bitrate <bits-per-second>",
-    "H.264 target bitrate (100000-50000000)",
-    (value) => parseNumberInRange(value, "--h264-bitrate", 100_000, 50_000_000, true),
+    "--video-bitrate <bits-per-second>",
+    "H.264/WebRTC target bitrate (100000-50000000)",
+    (value) => parseNumberInRange(value, "--video-bitrate", 100_000, 50_000_000, true),
   )
   .option(
-    "--h264-fps <fps>",
-    "H.264 frame rate (1-120)",
-    (value) => parseNumberInRange(value, "--h264-fps", 1, 120, true),
+    "--video-fps <fps>",
+    "H.264/WebRTC frame rate (1-120)",
+    (value) => parseNumberInRange(value, "--video-fps", 1, 120, true),
   )
   .option(
     "--metrics-cors-origin <origin>",
@@ -1890,15 +1890,15 @@ Examples:
       "mjpegFps",
       "mjpegQuality",
       "maxDimension",
-      "h264Bitrate",
-      "h264Fps",
+      "videoBitrate",
+      "videoFps",
     ];
     const encoderOptions = {
       ...(wasProvided("mjpegFps") ? { mjpegFps: opts.mjpegFps } : {}),
       ...(wasProvided("mjpegQuality") ? { mjpegQuality: opts.mjpegQuality } : {}),
       ...(wasProvided("maxDimension") ? { maxDimension: opts.maxDimension } : {}),
-      ...(wasProvided("h264Bitrate") ? { h264Bitrate: opts.h264Bitrate } : {}),
-      ...(wasProvided("h264Fps") ? { h264Fps: opts.h264Fps } : {}),
+      ...(wasProvided("videoBitrate") ? { h264Bitrate: opts.videoBitrate } : {}),
+      ...(wasProvided("videoFps") ? { h264Fps: opts.videoFps } : {}),
     };
     const stream: StreamRuntimeOptions = opts.transport === "webrtc"
       ? {

@@ -18,7 +18,9 @@ export interface StreamEncoderSettings {
   mjpegFps: number;
   mjpegQuality: number;
   maxDimension: number;
+  /** Shared target bitrate for H.264/AVCC and WebRTC video. */
   h264Bitrate: number;
+  /** Shared target frame rate for H.264/AVCC and WebRTC video. */
   h264Fps: number;
 }
 

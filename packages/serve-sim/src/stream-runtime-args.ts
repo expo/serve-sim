@@ -93,8 +93,8 @@ export function streamRuntimeArgs(settings?: StreamSettings): string[] {
   if (settings.mjpegFps !== undefined) args.push("--mjpeg-fps", String(settings.mjpegFps));
   if (settings.mjpegQuality !== undefined) args.push("--mjpeg-quality", String(settings.mjpegQuality));
   if (settings.maxDimension !== undefined) args.push("--max-dimension", String(settings.maxDimension));
-  if (settings.h264Bitrate !== undefined) args.push("--h264-bitrate", String(settings.h264Bitrate));
-  if (settings.h264Fps !== undefined) args.push("--h264-fps", String(settings.h264Fps));
+  if (settings.h264Bitrate !== undefined) args.push("--video-bitrate", String(settings.h264Bitrate));
+  if (settings.h264Fps !== undefined) args.push("--video-fps", String(settings.h264Fps));
 
   return args;
 }

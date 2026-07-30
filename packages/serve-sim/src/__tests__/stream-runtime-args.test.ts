@@ -37,6 +37,11 @@ describe("streamRuntimeArgs", () => {
       streamRuntimeArgs({
         transport: "webrtc",
         codec: "vp8",
+        mjpegFps: 10,
+        mjpegQuality: 0.55,
+        maxDimension: 1280,
+        h264Bitrate: 3_000_000,
+        h264Fps: 30,
         iceServers: [
           { urls: ["stun:stun.example.com:19302"] },
           {
@@ -59,6 +64,16 @@ describe("streamRuntimeArgs", () => {
       "user",
       "--turn-credential",
       "pass",
+      "--mjpeg-fps",
+      "10",
+      "--mjpeg-quality",
+      "0.55",
+      "--max-dimension",
+      "1280",
+      "--h264-bitrate",
+      "3000000",
+      "--h264-fps",
+      "30",
     ]);
   });
 });
@@ -80,6 +95,25 @@ describe("streamSettingsEqual", () => {
     expect(streamSettingsEqual(
       { transport: "webrtc", codec: "vp8" },
       { transport: "webrtc", codec: "vp9" },
+    )).toBe(false);
+  });
+
+  test("compares normalized encoder settings", () => {
+    expect(streamSettingsEqual(
+      { transport: "webrtc", codec: "h264" },
+      {
+        transport: "webrtc",
+        codec: "h264",
+        mjpegFps: 60,
+        mjpegQuality: 0.7,
+        maxDimension: 0,
+        h264Bitrate: 6_000_000,
+        h264Fps: 60,
+      },
+    )).toBe(true);
+    expect(streamSettingsEqual(
+      { transport: "webrtc", codec: "h264", maxDimension: 1280 },
+      { transport: "webrtc", codec: "h264", maxDimension: 0 },
     )).toBe(false);
   });
 });

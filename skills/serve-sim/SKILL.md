@@ -1,6 +1,6 @@
 ---
 name: serve-sim
-description: Control and stream a running iOS, iPad, or Apple Watch Simulator with npx serve-sim. Use for simulator preview, taps, gestures, hardware buttons, rotation, camera injection, permissions, accessibility, and CoreAnimation debug.
+description: Control and stream a running iOS, iPad, or Apple Watch Simulator with npx @expo/serve-sim. Use for simulator preview, taps, gestures, hardware buttons, rotation, camera injection, permissions, accessibility, and CoreAnimation debug.
 license: Apache-2.0
 ---
 
@@ -64,21 +64,21 @@ Key invariants the agent must respect:
 
 | Goal | Command | Notes |
 |---|---|---|
-| Start preview server | `npx serve-sim [device]` | Default preview at `http://localhost:3200`; helper routes are same-origin. Foreground process. |
-| Start WebRTC preview | `npx serve-sim --transport webrtc [device]` | Uses WebRTC media and the ordered helper WebSocket for input. |
-| Start headless / daemon | `npx serve-sim --detach [device]` | Returns JSON with `pid`, `port`, `url`. Use for agent loops. |
-| Show stream in host's preview | `npx serve-sim --detach -q` → hand off `url` to host preview tool | See "Showing the stream in your agent's preview" section. |
-| List running streams | `npx serve-sim --list` | Add `-q` for JSON-only output. |
-| Stop all helpers | `npx serve-sim --kill` | Pass `[device]` to stop a specific one. |
-| Single tap | `npx serve-sim tap <x> <y>` | `<x> <y>` in `0..1`. **Use this, not `gesture`, for plain taps.** See "Critical gotcha" below. |
-| Multi-step gesture | `npx serve-sim gesture '<json>'` | See [references/gestures.md](references/gestures.md). |
-| Hardware button | `npx serve-sim button <name>` | Names: `home`, `swipe_home`, `app_switcher`, `lock`, `siri`, `side_button`. See [references/buttons-rotation.md](references/buttons-rotation.md). |
-| Rotate device | `npx serve-sim rotate <orientation>` | `portrait`, `portrait_upside_down`, `landscape_left`, `landscape_right`. |
-| Simulate memory warning | `npx serve-sim memory-warning` | Equivalent to Debug → Simulate Memory Warning. |
-| CoreAnimation debug | `npx serve-sim ca-debug <option> <on\|off>` | Options: `blended`, `copies`, `misaligned`, `offscreen`, `slow-animations`. See [references/ca-debug.md](references/ca-debug.md). |
-| Inject camera feed | `npx serve-sim camera <bundle-id> [--file <path>\|--webcam [name]]` | (Re)launches the app with the camera dylib attached. macOS 14+ only. See [references/camera.md](references/camera.md). |
-| Hot-swap camera source | `npx serve-sim camera switch <placeholder\|webcam\|file> [arg]` | No app relaunch. |
-| Manage app permissions | `npx serve-sim permissions <grant\|revoke\|reset\|list> <permission> <bundle-id>` | Camera, photos, location, **push notifications**, contacts, etc. See [references/permissions.md](references/permissions.md). |
+| Start preview server | `npx @expo/serve-sim [device]` | Default preview at `http://localhost:3200`; helper routes are same-origin. Foreground process. |
+| Start WebRTC preview | `npx @expo/serve-sim --transport webrtc [device]` | Uses WebRTC media and the ordered helper WebSocket for input. |
+| Start headless / daemon | `npx @expo/serve-sim --detach [device]` | Returns JSON with `pid`, `port`, `url`. Use for agent loops. |
+| Show stream in host's preview | `npx @expo/serve-sim --detach -q` → hand off `url` to host preview tool | See "Showing the stream in your agent's preview" section. |
+| List running streams | `npx @expo/serve-sim --list` | Add `-q` for JSON-only output. |
+| Stop all helpers | `npx @expo/serve-sim --kill` | Pass `[device]` to stop a specific one. |
+| Single tap | `npx @expo/serve-sim tap <x> <y>` | `<x> <y>` in `0..1`. **Use this, not `gesture`, for plain taps.** See "Critical gotcha" below. |
+| Multi-step gesture | `npx @expo/serve-sim gesture '<json>'` | See [references/gestures.md](references/gestures.md). |
+| Hardware button | `npx @expo/serve-sim button <name>` | Names: `home`, `swipe_home`, `app_switcher`, `lock`, `siri`, `side_button`. See [references/buttons-rotation.md](references/buttons-rotation.md). |
+| Rotate device | `npx @expo/serve-sim rotate <orientation>` | `portrait`, `portrait_upside_down`, `landscape_left`, `landscape_right`. |
+| Simulate memory warning | `npx @expo/serve-sim memory-warning` | Equivalent to Debug → Simulate Memory Warning. |
+| CoreAnimation debug | `npx @expo/serve-sim ca-debug <option> <on\|off>` | Options: `blended`, `copies`, `misaligned`, `offscreen`, `slow-animations`. See [references/ca-debug.md](references/ca-debug.md). |
+| Inject camera feed | `npx @expo/serve-sim camera <bundle-id> [--file <path>\|--webcam [name]]` | (Re)launches the app with the camera dylib attached. macOS 14+ only. See [references/camera.md](references/camera.md). |
+| Hot-swap camera source | `npx @expo/serve-sim camera switch <placeholder\|webcam\|file> [arg]` | No app relaunch. |
+| Manage app permissions | `npx @expo/serve-sim permissions <grant\|revoke\|reset\|list> <permission> <bundle-id>` | Camera, photos, location, **push notifications**, contacts, etc. See [references/permissions.md](references/permissions.md). |
 | Read accessibility tree | Derive `/ax` from the helper base in `streamUrl` | Returns axe-style JSON. See [references/endpoints.md](references/endpoints.md). |
 
 Most subcommands accept `-d <udid|name>` to target a specific device when several are booted.
@@ -94,9 +94,9 @@ Each `serve-sim gesture` call opens its own WebSocket. If you issue two back-to-
 When multiple simulators are booted, every subcommand accepts `-d <udid|name>`. The name match is case-insensitive against the device name returned by `xcrun simctl list devices booted`. Examples:
 
 ```sh
-npx serve-sim tap 0.5 0.5 -d "iPhone 16 Pro"
-npx serve-sim button home -d ABC12345-...
-npx serve-sim --list                                # show all running streams
+npx @expo/serve-sim tap 0.5 0.5 -d "iPhone 16 Pro"
+npx @expo/serve-sim button home -d ABC12345-...
+npx @expo/serve-sim --list                                # show all running streams
 ```
 
 If the user has only one booted simulator, omit `-d` entirely. The skill should prefer auto-detection over hard-coding device names.
@@ -106,9 +106,9 @@ If the user has only one booted simulator, omit `-d` entirely. The skill should 
 By default, serve-sim prints human-readable status to stdout. For agent loops, prefer JSON output:
 
 ```sh
-npx serve-sim --list -q          # JSON object; one stream is top-level, many are under .streams
-npx serve-sim --detach -q        # JSON with pid/port/url after spawn
-npx serve-sim camera status -q   # JSON with {alive, source, mirror, ...}
+npx @expo/serve-sim --list -q          # JSON object; one stream is top-level, many are under .streams
+npx @expo/serve-sim --detach -q        # JSON with pid/port/url after spawn
+npx @expo/serve-sim camera status -q   # JSON with {alive, source, mirror, ...}
 ```
 
 Parse `-q` output programmatically. Never parse the non-`-q` human output — it can change between versions.
@@ -121,7 +121,7 @@ Steps:
 
 1. Start serve-sim and capture the URL:
    ```sh
-   npx serve-sim --detach -q
+   npx @expo/serve-sim --detach -q
    ```
    This returns JSON like `{"pid":..., "port":3100, "url":"http://localhost:3100", "streamUrl":"http://localhost:3100/helper/<udid>/stream.mjpeg", ...}`. The `url` field is the human-facing preview UI; `streamUrl` is the raw MJPEG endpoint.
 
@@ -135,7 +135,7 @@ Steps:
 
 4. **Do not assume any specific preview tool exists.** Inspect the tools available to you in the current session. If one matches the description above, use it. If none does, fall back to step 2 (print the URL prominently).
 
-The stream stays alive until `npx serve-sim --kill`. Multiple clients (the host's preview + the user's browser + a tunnel) can read the same URL simultaneously.
+The stream stays alive until `npx @expo/serve-sim --kill`. Multiple clients (the host's preview + the user's browser + a tunnel) can read the same URL simultaneously.
 
 See [references/workflows.md](references/workflows.md) workflow "Show the simulator stream in the host's preview" for the full recipe.
 
@@ -148,8 +148,8 @@ For complete end-to-end recipes (UI automation, camera testing, accessibility-dr
 Always stop helpers when finished, unless the user explicitly wants them to keep running:
 
 ```sh
-npx serve-sim --kill            # stop all
-npx serve-sim --kill "iPhone 16 Pro"  # stop one
+npx @expo/serve-sim --kill            # stop all
+npx @expo/serve-sim --kill "iPhone 16 Pro"  # stop one
 ```
 
 Orphan servers occupy their recorded ports and prevent fresh starts.
@@ -158,11 +158,11 @@ Orphan servers occupy their recorded ports and prevent fresh starts.
 
 - **Do not pass pixel coordinates.** All coords are normalized `0..1`. If the user gives pixel values, divide by the screen dimensions reported by `GET /config`.
 - **Do not use `gesture` for plain taps.** Use `tap`. See "Critical gotcha" above.
-- **Do not assume `npx serve-sim` is already running.** Verify with `--list` or by checking `$TMPDIR/serve-sim/server-{udid}.json`. If absent, start it explicitly.
+- **Do not assume `npx @expo/serve-sim` is already running.** Verify with `--list` or by checking `$TMPDIR/serve-sim/server-{udid}.json`. If absent, start it explicitly.
 - **Do not skip the prerequisites check** on the first invocation in a session. Wrong macOS version, missing Xcode CLI tools, or Node <20 produce confusing errors downstream.
 - **Do not invent button names.** Only these six are valid: `home`, `swipe_home`, `app_switcher`, `lock`, `siri`, `side_button`. See [references/buttons-rotation.md](references/buttons-rotation.md) for the source-of-truth list.
 - **Do not parse the non-quiet human output.** Use `-q` for JSON.
-- **Do not leave camera helpers running** across unrelated tasks. Stop them with `npx serve-sim camera --stop-webcam` when done.
+- **Do not leave camera helpers running** across unrelated tasks. Stop them with `npx @expo/serve-sim camera --stop-webcam` when done.
 - **Do not guess coordinates when an accessibility lookup returns no match.** If you fetched the AX tree (e.g. `GET /ax`) to find a target element and the query returned no result, fail loudly — tapping a guessed spot is almost always worse than reporting "target not found" back to the user. See [references/workflows.md](references/workflows.md) workflow 1 for the guard pattern.
 
 ## Reference index

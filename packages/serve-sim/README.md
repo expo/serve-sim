@@ -5,7 +5,7 @@ The `npx serve` of Apple Simulators.
 Host your simulator for use with Agent tools like Codex, Cursor, or Claude Desktop — locally, over your LAN, or host on a remote mac and tunnel anywhere. 
 
 ```sh
-npx serve-sim
+npx @expo/serve-sim
 # → Preview at http://localhost:3200
 ```
 
@@ -207,10 +207,10 @@ No other configuration needed.
 
 ## Embed in your dev server
 
-`serve-sim/middleware` is a **fetch-style** middleware. `simMiddleware(options)` returns a Web-standard request handler with a `.handleWebSocket` hook, so it mounts in any server that speaks `Request`/`Response` (Bun, Deno, Hono, a Node adapter, …). Run `serve-sim --detach` once to start the streaming helper, then wire the two entry points:
+`@expo/serve-sim/middleware` is a **fetch-style** middleware. `simMiddleware(options)` returns a Web-standard request handler with a `.handleWebSocket` hook, so it mounts in any server that speaks `Request`/`Response` (Bun, Deno, Hono, a Node adapter, …). Run `serve-sim --detach` once to start the streaming helper, then wire the two entry points:
 
 ```ts
-import { simMiddleware } from "serve-sim/middleware";
+import { simMiddleware } from "@expo/serve-sim/middleware";
 
 const middleware = simMiddleware({ basePath: "/.sim" });
 

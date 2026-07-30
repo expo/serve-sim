@@ -6,7 +6,7 @@ server. Do not hardcode a port or helper prefix. Discover `url`, `streamUrl`,
 and `wsUrl` with:
 
 ```sh
-npx serve-sim --list -q
+npx @expo/serve-sim --list -q
 ```
 
 For a `streamUrl` ending in `/stream.mjpeg`, its helper base is the URL with
@@ -77,7 +77,7 @@ mounts it at `/`. Prefix the paths below with that configured base.
 | `GET` | `/devtools` | WebKit Inspector target list. |
 
 ```ts
-import { simMiddleware } from "serve-sim/middleware";
+import { simMiddleware } from "@expo/serve-sim/middleware";
 
 const middleware = simMiddleware({ basePath: "/.sim" });
 ```
@@ -93,5 +93,5 @@ file under `$TMPDIR/serve-sim/server-<udid>.json`. Stream, input, accessibility,
 and signaling routes are intentionally unauthenticated, so expose serve-sim only
 on trusted networks or behind an authenticated proxy.
 
-Prefer `npx serve-sim --list -q` over reading state files directly. The state
+Prefer `npx @expo/serve-sim --list -q` over reading state files directly. The state
 format is internal and may also contain short-lived TURN credentials.

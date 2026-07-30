@@ -1,18 +1,8 @@
-# Reports what mitmproxy saw to the capture session that started it.
+# Reports what mitmproxy saw to the capture session that started it. Forwards only; the session owns the
+# store and the streamed record.
 #
-# Deliberately thin: the session owns the request store and the streamed record, so this only forwards.
-# Keeping the two in step then means keeping one TypeScript module honest rather than a Python addon and a
-# TypeScript backend.
-#
-# Two hooks carry the whole contract, and they are why this engine replaced the previous one:
-#
-#   response — documented to fire only after the entire body has been read, so a record is complete when
-#              it arrives. The previous engine reported at response-header time and had to poll an
-#              undocumented endpoint for a completeness marker, silently losing every body that was not
-#              already finished.
-#   error    — a separate hook, guaranteed mutually exclusive with response, so a connection that never
-#              reached the origin is reported as a reason instead of a synthesised 502 that reads like a
-#              real server error.
+# `response` fires only after the whole body is read, and `error` is mutually exclusive with it — so a
+# record is complete when it arrives, and a failure is a reason rather than a synthesised status.
 
 import base64 as b64
 import json

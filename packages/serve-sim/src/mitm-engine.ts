@@ -1,19 +1,7 @@
 // Capture engine: mitmproxy, driven by a loopback control port.
 //
-// Replaces a whistle-based engine. The reason is not capability but contract. whistle reports a response
-// when its *headers* arrive, and withholds the record until the body has drained, so completing a record
-// meant polling an undocumented endpoint until a marker appeared — and any response that was not already
-// finished silently arrived empty. It also had no first-class error signal, so a connection that never
-// reached the origin surfaced as whistle's own synthesised 502 and read as a real server error.
-//
-// mitmproxy's addon API answers both directly: `response` is documented to fire only after the entire
-// body has been read, and `error` is a separate hook guaranteed mutually exclusive with it. That deletes
-// the polling loop and makes the failure reason exact. The rest of the trade is maintenance — mitmproxy
-// is a team project, where whistle is 99% one author.
-//
-// Only the app the session relaunched reaches this proxy: an injected library sets the proxy on that
-// process alone, never on the host. So everything arriving here is by definition traffic we were asked to
-// record, and there is no per-connection attribution to get wrong.
+// Only the app the session relaunched reaches this proxy — an injected library sets the proxy on that
+// process alone, never on the host — so everything arriving here is traffic we were asked to record.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -381,7 +369,7 @@ export async function startMitmProxy(
     // Throughput has to come from these byte counts. The app reaches the network through the proxy over
     // loopback, which the host's counters deliberately exclude — so they report the app as idle and the
     // graph would sit flat. What the proxy moved is the only remaining measure.
-    store.noteTraffic(responseBytes, requestBytes);
+    store.noteTraffic(responseBytes, requestBytes, record.durationMs ?? 0);
 
     store.update(
       storeId,

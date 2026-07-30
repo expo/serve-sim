@@ -54,7 +54,7 @@ function stubCache() {
       }) as CaptureProxy,
     trustCa: async () => {},
     targetApp: async () => "com.example.app",
-    injection: { attach: async () => {} },
+    attach: async () => {},
     teardownGraceMs: 0,
   });
   return { cache, closed };

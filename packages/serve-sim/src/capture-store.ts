@@ -181,22 +181,29 @@ export class CaptureStore {
   }
 
   /**
-   * Count bytes as they flow, so throughput can be reported from what the proxy actually moved.
+   * Record a transfer at the rate it flowed, spread over the time it took.
    *
-   * While capture is attachment, the app talks to the proxy over loopback, which the host-level byte
-   * counters deliberately exclude — so they report the app as idle. The proxy is the only place that
-   * still sees the real volume.
+   * A request is only reported once it finishes, so adding its whole size at that instant would put a
+   * 30-second download in one 100ms slice: the graph reads zero throughout, then spikes. Dividing the
+   * bytes across the slices the transfer spanned makes the reading a rate.
    */
-  noteTraffic(inBytes: number, outBytes: number): void {
-    const bucket = Math.floor(this.now() / TRAFFIC_BUCKET_MS);
-    const current = this.traffic.get(bucket) ?? { in: 0, out: 0 };
-    current.in += inBytes;
-    current.out += outBytes;
-    this.traffic.set(bucket, current);
-    this.pruneTraffic(bucket);
+  noteTraffic(inBytes: number, outBytes: number, durationMs = 0): void {
+    const current = Math.floor(this.now() / TRAFFIC_BUCKET_MS);
+    const slices = Math.ceil(Math.max(TRAFFIC_BUCKET_MS, durationMs) / TRAFFIC_BUCKET_MS);
+    const share = { in: inBytes / slices, out: outBytes / slices };
+
+    // Slices outside the window can't affect a reading, so a long transfer costs no more than a short one.
+    const earliest = Math.max(current - slices + 1, current - TRAFFIC_WINDOW_BUCKETS);
+    for (let bucket = earliest; bucket <= current; bucket++) {
+      const entry = this.traffic.get(bucket) ?? { in: 0, out: 0 };
+      entry.in += share.in;
+      entry.out += share.out;
+      this.traffic.set(bucket, entry);
+    }
+    this.pruneTraffic(current);
   }
 
-  /** Bytes per second over the trailing window, from the proxy's own accounting. */
+  /** Bytes per second over the trailing second, from the proxy's own accounting. */
   throughput(): { in: number; out: number } {
     const bucket = Math.floor(this.now() / TRAFFIC_BUCKET_MS);
     this.pruneTraffic(bucket);
@@ -207,7 +214,7 @@ export class CaptureStore {
       outTotal += o;
     }
     // The window is a whole second, so the sum across it is already a per-second rate.
-    return { in: inTotal, out: outTotal };
+    return { in: Math.round(inTotal), out: Math.round(outTotal) };
   }
 
   private pruneTraffic(currentBucket: number): void {

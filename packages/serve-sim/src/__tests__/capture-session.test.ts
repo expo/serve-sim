@@ -38,11 +38,9 @@ function harness(
       (async (_udid, pem) => void calls.push(`trusted:${pem === CA_PEM ? "ok" : "wrong-pem"}`)),
     targetApp: overrides.targetApp ?? (async () => BUNDLE_ID),
     teardownGraceMs: overrides.teardownGraceMs ?? 0,
-    injection: {
-      attach:
-        overrides.attach ??
-        (async (_udid, bundleId, port) => void calls.push(`attached:${bundleId}:${port}`)),
-    },
+    attach:
+      overrides.attach ??
+      (async (_udid, bundleId, port) => void calls.push(`attached:${bundleId}:${port}`)),
   });
   return { cache, calls };
 }
@@ -199,7 +197,7 @@ describe("capture session", () => {
       trustCa: async () => {},
       targetApp: async () => BUNDLE_ID,
       teardownGraceMs: 0,
-      injection: { attach: async () => {} },
+      attach: async () => {},
     });
     cache.subscribe(UDID, (event) => frames.push(event.type));
     expect((await cache.whenReady(UDID))?.attachment).toBe("attached");

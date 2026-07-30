@@ -1,16 +1,8 @@
-// One capture session per device: the proxy, its store, the simulator trust install, and the app
-// relaunch that points that app's traffic through the proxy. Started on the first subscriber and torn
-// down after the last, ref-counted like the metrics sampler cache, so several viewers of one device
-// share a single session rather than each standing up their own.
-//
-// Everything a session changes lives inside the app it launched. It does not touch the host's network
-// settings, so there is no machine-wide state to reconcile, no claim to arbitrate between processes, and
-// nothing left broken if this process dies — which is what an earlier host-system-proxy version could
-// not promise.
+// One capture session per device: the proxy, its store, the certificate trust, and the app relaunch that
+// points that app through the proxy. Ref-counted, so several viewers share one session.
 
 import { CaptureStore, type CaptureEvent, type CaptureMeta, CAPTURE_SCHEMA_VERSION } from "./capture-store";
-import { trustCaInSimulator } from "./capture-ca";
-import { captureInjection, type CaptureInjection } from "./capture-injection";
+import { attachApp, trustCaInSimulator } from "./capture-device";
 import { foregroundTracker, frontmostAppViaAx, isUserFacingBundle } from "./foreground-tracker";
 import { startMitmProxy, type CaptureProxy } from "./mitm-engine";
 
@@ -54,7 +46,7 @@ export interface CaptureSessionCacheOptions {
     onUnexpectedExit: (reason: string) => void,
   ) => Promise<CaptureProxy>;
   trustCa?: (udid: string, caPem: string) => Promise<void>;
-  injection?: CaptureInjection;
+  attach?: (udid: string, bundleId: string, proxyPort: number) => Promise<void>;
   /** The app to capture; defaults to whatever is frontmost on the device. */
   targetApp?: (udid: string) => Promise<string | null>;
   /** How long a session outlives its last viewer. Overridden in tests to avoid waiting it out. */
@@ -84,7 +76,7 @@ export function createCaptureSessionCache(options: CaptureSessionCacheOptions = 
     ((store: CaptureStore, _udid: string, onUnexpectedExit: (reason: string) => void) =>
       startMitmProxy(store, { onUnexpectedExit }));
   const trustCa = options.trustCa ?? trustCaInSimulator;
-  const injection = options.injection ?? captureInjection;
+  const attach = options.attach ?? attachApp;
   const targetApp = options.targetApp ?? defaultTargetApp;
   const teardownGraceMs = options.teardownGraceMs ?? TEARDOWN_GRACE_MS;
 
@@ -158,7 +150,7 @@ export function createCaptureSessionCache(options: CaptureSessionCacheOptions = 
 
           const [, port] = proxy.address.split(":");
           try {
-            await injection.attach(udid, bundleId, Number(port));
+            await attach(udid, bundleId, Number(port));
             created.attached = bundleId;
             meta.attachment = "attached";
           } catch (error) {

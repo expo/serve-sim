@@ -193,6 +193,22 @@ describe("CaptureStore throughput", () => {
     expect(store.throughput()).toEqual({ in: 300, out: 0 });
   });
 
+  it("reports a long transfer as a rate, not as a spike when it finishes", () => {
+    const { store, advance } = clocked();
+    advance(30_000);
+    // 10MB that took 30s is 333KB/s. Charging it all to the settle instant would read 10MB/s for one
+    // second and zero either side, which is what made the graph spiky.
+    store.noteTraffic(10_000_000, 0, 30_000);
+    expect(store.throughput().in).toBe(333_333);
+  });
+
+  it("keeps a short transfer whole, since it fits inside the window", () => {
+    const { store, advance } = clocked();
+    advance(50);
+    store.noteTraffic(5_000, 0, 50);
+    expect(store.throughput()).toEqual({ in: 5_000, out: 0 });
+  });
+
   it("bounds its bookkeeping regardless of how many writes arrive", () => {
     const { store, advance } = clocked();
     for (let i = 0; i < 2000; i++) {

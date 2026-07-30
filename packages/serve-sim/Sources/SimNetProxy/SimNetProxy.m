@@ -1,16 +1,7 @@
-// Per-app proxy for network capture.
+// Per-app proxy for network capture. Injected at app launch (SIMCTL_CHILD_DYLD_INSERT_LIBRARIES) and sets
+// `connectionProxyDictionary` on that process's URL sessions, so nothing outside the app is affected.
 //
-// An iOS simulator has no network configuration of its own; it reads the host's. Pointing a simulator at
-// a capture proxy therefore used to mean setting the *machine's* system proxy, which sends every process
-// on the developer's Mac through it and leaves their network broken if the proxy dies. This library
-// removes that: it is injected into one app at launch (SIMCTL_CHILD_DYLD_INSERT_LIBRARIES) and sets the
-// proxy on that process's own URL sessions. Nothing outside the app is touched, so there is nothing to
-// restore and nothing to leak if we crash.
-//
-// The mechanism is `NSURLSessionConfiguration.connectionProxyDictionary`. Every session the app builds
-// comes from one of a handful of factory methods, so those are swizzled to stamp the proxy on the way
-// out. Traffic that does not go through NSURLSession (a raw socket, a bundled network stack) is not
-// covered, and neither is a session built before this library loads.
+// Not covered: traffic that bypasses NSURLSession, and sessions built before this library loads.
 
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

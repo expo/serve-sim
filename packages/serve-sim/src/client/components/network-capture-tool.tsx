@@ -45,8 +45,21 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
   );
   const bodyBase = useMemo(() => path.split("?")[0]!, [path]);
   const [open, setOpen] = useState(true);
-  const [enabled, setEnabled] = useState(false);
-  const { meta, requests, errored, clear } = useCaptureStream(path, enabled);
+  const [rebooting, setRebooting] = useState(false);
+  // Read-only: capture belongs to the booted device, so watching it cannot turn it on or off.
+  const { meta, requests, errored, clear } = useCaptureStream(path, open);
+  const capturing = meta?.attachment === "capturing";
+
+  const reboot = async (enable: boolean) => {
+    setRebooting(true);
+    try {
+      await fetch(`${bodyBase}/reboot?device=${encodeURIComponent(udid)}&enabled=${enable ? "1" : "0"}`, {
+        method: "POST",
+      });
+    } finally {
+      setRebooting(false);
+    }
+  };
 
   return (
     <CollapsibleSection
@@ -58,7 +71,7 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
           <span className="text-[11px] font-semibold text-white/50 uppercase tracking-[0.08em] leading-none inline-flex items-center">
             Network requests
           </span>
-          {enabled && !errored ? (
+          {capturing && !errored ? (
             <span className="text-[11px] text-white/40 tabular-nums text-right">{requests.length}</span>
           ) : errored ? (
             <span className="group relative justify-self-end inline-flex items-center" role="status">
@@ -74,15 +87,21 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
     >
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setEnabled((on) => !on)}
+          <span
             className={`inline-flex items-center gap-1.5 rounded px-2 py-1 text-[11px] ${
-              enabled ? "bg-emerald-500/15 text-emerald-300" : "bg-white/5 text-white/60 hover:bg-white/10"
+              capturing ? "bg-amber-500/15 text-amber-300" : "bg-white/5 text-white/50"
             }`}
           >
             <Radio aria-hidden="true" className="w-3 h-3" />
-            {enabled ? "Capturing" : "Start capture"}
+            {capturing ? "Intercepted" : "Not capturing"}
+          </span>
+          <button
+            type="button"
+            disabled={rebooting}
+            onClick={() => void reboot(!capturing)}
+            className="rounded px-2 py-1 text-[11px] text-white/60 hover:bg-white/10 disabled:opacity-50"
+          >
+            {rebooting ? "Rebooting…" : capturing ? "Reboot without capture" : "Reboot with capture"}
           </button>
           {requests.length > 0 && (
             <button
@@ -95,16 +114,14 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
           )}
         </div>
 
-        {enabled && (
-          <ProxyHint
-            address={meta?.proxyAddress ?? null}
-            attachment={meta?.attachment ?? "pending"}
-            attachError={meta?.attachError ?? null}
-          />
-        )}
+        <ProxyHint
+          address={meta?.proxyAddress ?? null}
+          attachment={meta?.attachment ?? "not-enabled"}
+          attachError={meta?.attachError ?? null}
+        />
 
-        {enabled ? (
-          requests.length === 0 ? (
+        {capturing &&
+          (requests.length === 0 ? (
             <span className="text-[11px] text-white/40">No requests captured yet.</span>
           ) : (
             <div className="flex flex-col divide-y divide-white/5">
@@ -112,25 +129,17 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
                 <RequestRow key={request.id} request={request} bodyBase={bodyBase} />
               ))}
             </div>
-          )
-        ) : (
-          <span className="text-[11px] text-white/40">
-            Capture is off. Starting it relaunches the foreground app through a local proxy and trusts a
-            development certificate inside this simulator. Your Mac&apos;s network settings aren&apos;t
-            changed.
-          </span>
-        )}
+          ))}
       </div>
     </CollapsibleSection>
   );
 }
 
 /**
- * Whether capture is actually going to see anything, and why not when it isn't.
+ * Whether this device is capturing, and why not when it isn't.
  *
- * A session can be running with nothing reaching it — the certificate was refused, or no app was in the
- * foreground to relaunch. Reporting the reason is the whole point: an empty list with a healthy-looking
- * proxy address is indistinguishable from an app that made no requests.
+ * Reporting the reason is the whole point: an empty list with a healthy-looking proxy address is
+ * indistinguishable from an app that made no requests.
  */
 function ProxyHint({
   address,
@@ -151,19 +160,25 @@ function ProxyHint({
       </span>
     );
   }
-  if (!address || attachment === "pending") {
-    return <span className="text-[11px] text-white/40">Starting the capture proxy…</span>;
+  if (attachment === "starting") {
+    return <span className="text-[11px] text-white/40">Starting capture on this device…</span>;
   }
-  const detail =
-    attachment === "attached"
-      ? { text: "Capturing this app's traffic.", tone: "text-emerald-400/70" }
-      : { text: attachError ?? "Capture is not receiving this app's traffic.", tone: "text-amber-400/80" };
+  if (attachment === "not-enabled" || !address) {
+    return (
+      <span className="whitespace-pre-line text-[11px] leading-snug text-white/40">
+        {attachError ?? "This device is not capturing."}
+      </span>
+    );
+  }
   return (
     <div className="flex flex-col gap-0.5">
       <span className="text-[11px] text-white/50">
         Proxy <span className="tabular-nums text-white/80">{address}</span>
       </span>
-      <span className={`text-[10px] leading-snug ${detail.tone}`}>{detail.text}</span>
+      <span className="text-[10px] leading-snug text-amber-400/80">
+        Every app on this device has its HTTPS traffic decrypted and read. Apps that pin their certificate
+        will refuse to connect until this device is rebooted without capture.
+      </span>
     </div>
   );
 }

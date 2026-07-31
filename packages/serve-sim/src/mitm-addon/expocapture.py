@@ -111,6 +111,8 @@ def running():
 
 def done():
     """Flush what is queued before mitmproxy exits, since the reporter thread is a daemon."""
+    if not CONTROL:
+        return
     _outbox.put_nowait(None)
     _reporter.join(timeout=2)
 

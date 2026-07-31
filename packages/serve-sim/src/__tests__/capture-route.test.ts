@@ -2,14 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "events";
 import type { IncomingMessage, ServerResponse } from "http";
 
-import { createCaptureSessionCache } from "../capture-session";
+import { createCaptureRuntime } from "../capture-runtime";
 import { type CaptureProxy } from "../mitm-engine";
 import { handleCaptureBodyRequest, handleNetworkCaptureRequest } from "../middleware";
 import { inProcessServeSimState } from "../state";
 
 /**
- * Unit tests for the `/network-capture` routes, driven with a fake req/res and a session cache whose
- * proxy and trust install are stubbed — so they run without opening sockets or touching a simulator.
+ * Unit tests for the `/network-capture` routes, driven with a fake req/res and a runtime whose proxy,
+ * trust install, and injection are stubbed — so they run without opening sockets or touching a simulator.
  */
 
 function createFakeReq(): { req: IncomingMessage; close: () => void } {
@@ -42,67 +42,88 @@ function createFakeRes(): { res: ServerResponse; writes: string[]; status: () =>
   return { res: res as unknown as ServerResponse, writes, status: () => statusCode };
 }
 
-/** A cache that reports a fixed proxy address and touches nothing on the device. */
-function stubCache() {
+/** A runtime that reports a fixed proxy address and touches nothing on the device. */
+function stubRuntime() {
   const closed: string[] = [];
-  const cache = createCaptureSessionCache({
+  const runtime = createCaptureRuntime({
     startProxy: async () =>
       ({
         address: "127.0.0.1:9999",
+        portFile: "/tmp/fake-confdir/proxy-port",
         caPem: async () => "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n",
         close: async () => void closed.push("x"),
       }) as CaptureProxy,
     trustCa: async () => {},
-    targetApp: async () => "com.example.app",
-    attach: async () => {},
-    teardownGraceMs: 0,
+    inject: async () => {},
+    clearInjection: async () => {},
   });
-  return { cache, closed };
+  return { runtime, closed };
 }
 
 const dataFrames = (writes: string[]): string[] => writes.filter((w) => w.startsWith("data:"));
+const metaFrom = (writes: string[]) => {
+  const frame = writes.find((w) => w.startsWith("event: meta"));
+  expect(frame).toBeDefined();
+  return JSON.parse(frame!.slice("event: meta\ndata:".length).trim());
+};
 
 describe("handleNetworkCaptureRequest", () => {
-  test("responds 404 for an unknown device without starting a session", () => {
-    const { cache } = stubCache();
+  test("responds 404 when no device is selected", () => {
+    const { runtime } = stubRuntime();
     const { req } = createFakeReq();
     const { res, status } = createFakeRes();
 
-    handleNetworkCaptureRequest(req, res, null, cache, []);
+    handleNetworkCaptureRequest(req, res, null, runtime, []);
 
     expect(status()).toBe(404);
-    expect(cache.storeFor("anything")).toBeNull();
   });
 
-  test("writes a meta frame carrying the proxy address once the session is ready", async () => {
-    const { cache } = stubCache();
+  test("writes a meta frame carrying the proxy address and that the device is intercepted", async () => {
+    const { runtime } = stubRuntime();
+    await runtime.enableForDevice("UDID-1");
     const { req, close } = createFakeReq();
     const { res, writes } = createFakeRes();
     const state = inProcessServeSimState("UDID-1", 4000);
 
-    handleNetworkCaptureRequest(req, res, state, cache, []);
-    await cache.whenReady("UDID-1");
-    await Promise.resolve();
+    handleNetworkCaptureRequest(req, res, state, runtime, []);
 
-    const metaFrame = writes.find((w) => w.startsWith("event: meta"));
-    expect(metaFrame).toBeDefined();
-    const meta = JSON.parse(metaFrame!.slice("event: meta\ndata:".length).trim());
+    const meta = metaFrom(writes);
     expect(meta.udid).toBe("UDID-1");
     expect(meta.proxyAddress).toBe("127.0.0.1:9999");
+    expect(meta.attachment).toBe("capturing");
+    expect(meta.intercepted).toBe(true);
+
+    close();
+  });
+
+  test("explains itself on a device that was not booted with capture", () => {
+    const { runtime } = stubRuntime();
+    const { req, close } = createFakeReq();
+    const { res, writes } = createFakeRes();
+    const state = inProcessServeSimState("UDID-NOT-ENABLED", 4000);
+
+    handleNetworkCaptureRequest(req, res, state, runtime, []);
+
+    // A reason rather than an empty stream, which would read as an idle app.
+    const meta = metaFrom(writes);
+    expect(meta.attachment).toBe("not-enabled");
+    expect(meta.intercepted).toBe(false);
+    expect(meta.attachError).toContain("reboot");
+    expect(dataFrames(writes)).toHaveLength(0);
 
     close();
   });
 
   test("streams captured requests to the subscriber as started/finished frames", async () => {
-    const { cache } = stubCache();
+    const { runtime } = stubRuntime();
+    await runtime.enableForDevice("UDID-1");
     const { req, close } = createFakeReq();
     const { res, writes } = createFakeRes();
     const state = inProcessServeSimState("UDID-1", 4000);
 
-    handleNetworkCaptureRequest(req, res, state, cache, []);
-    await cache.whenReady("UDID-1");
+    handleNetworkCaptureRequest(req, res, state, runtime, []);
 
-    const store = cache.storeFor("UDID-1")!;
+    const store = runtime.storeFor("UDID-1")!;
     const id = store.start("GET", "https://example.com/a");
     store.update(id, { status: 200, durationMs: 5 }, /* settled */ true);
 
@@ -114,61 +135,55 @@ describe("handleNetworkCaptureRequest", () => {
     close();
   });
 
-  test("replays requests already recorded so a late viewer is not blind", async () => {
-    const { cache } = stubCache();
-    const first = createFakeReq();
-    const firstRes = createFakeRes();
+  test("replays requests recorded before the viewer arrived, including from before it opened", async () => {
+    const { runtime } = stubRuntime();
+    await runtime.enableForDevice("UDID-1");
     const state = inProcessServeSimState("UDID-1", 4000);
 
-    handleNetworkCaptureRequest(first.req, firstRes.res, state, cache, []);
-    await cache.whenReady("UDID-1");
-    cache.storeFor("UDID-1")!.start("GET", "https://example.com/early");
+    // Recorded with nobody watching at all — the case boot-time capture exists for.
+    runtime.storeFor("UDID-1")!.start("GET", "https://example.com/startup");
 
-    // A second viewer joins after the fact and must still see the earlier request.
-    const second = createFakeReq();
-    const secondRes = createFakeRes();
-    handleNetworkCaptureRequest(second.req, secondRes.res, state, cache, []);
-    await cache.whenReady("UDID-1");
-    await Promise.resolve();
+    const viewer = createFakeReq();
+    const viewerRes = createFakeRes();
+    handleNetworkCaptureRequest(viewer.req, viewerRes.res, state, runtime, []);
 
-    const urls = dataFrames(secondRes.writes)
+    const urls = dataFrames(viewerRes.writes)
       .map((w) => JSON.parse(w.slice("data:".length).trim()))
       .map((f) => f.request?.url);
-    expect(urls).toContain("https://example.com/early");
+    expect(urls).toContain("https://example.com/startup");
 
-    first.close();
-    second.close();
+    viewer.close();
   });
 
-  test("shares one session across viewers and tears it down after the last closes", async () => {
-    const { cache, closed } = stubCache();
+  test("keeps the device capturing after every viewer closes", async () => {
+    const { runtime, closed } = stubRuntime();
+    await runtime.enableForDevice("UDID-1");
     const state = inProcessServeSimState("UDID-1", 4000);
     const a = createFakeReq();
     const b = createFakeReq();
 
-    handleNetworkCaptureRequest(a.req, createFakeRes().res, state, cache, []);
-    handleNetworkCaptureRequest(b.req, createFakeRes().res, state, cache, []);
-    await cache.whenReady("UDID-1");
+    handleNetworkCaptureRequest(a.req, createFakeRes().res, state, runtime, []);
+    handleNetworkCaptureRequest(b.req, createFakeRes().res, state, runtime, []);
 
     a.close();
-    expect(cache.storeFor("UDID-1")).not.toBeNull(); // still live for b
     b.close();
-    // Teardown puts the app back and removes the CA before closing the proxy, so it settles a tick later.
     await Bun.sleep(10);
-    expect(cache.storeFor("UDID-1")).toBeNull();
-    expect(closed).toHaveLength(1);
+
+    // Capture belongs to the booted device. A closed panel must not stop it, or the developer would lose
+    // the traffic they were about to look at — and the app would be left pointed at a dead port.
+    expect(runtime.storeFor("UDID-1")).not.toBeNull();
+    expect(runtime.metaFor("UDID-1").attachment).toBe("capturing");
+    expect(closed).toHaveLength(0);
   });
 });
 
 describe("handleCaptureBodyRequest", () => {
   test("returns the stored headers and bodies for a captured request", async () => {
-    const { cache } = stubCache();
+    const { runtime } = stubRuntime();
+    await runtime.enableForDevice("UDID-1");
     const state = inProcessServeSimState("UDID-1", 4000);
-    const sub = createFakeReq();
-    handleNetworkCaptureRequest(sub.req, createFakeRes().res, state, cache, []);
-    await cache.whenReady("UDID-1");
 
-    const store = cache.storeFor("UDID-1")!;
+    const store = runtime.storeFor("UDID-1")!;
     const id = store.start("POST", "https://example.com/upload");
     store.setBody(id, {
       requestHeaders: { "content-type": "application/json" },
@@ -183,38 +198,30 @@ describe("handleCaptureBodyRequest", () => {
 
     const { req } = createFakeReq();
     const { res, writes, status } = createFakeRes();
-    handleCaptureBodyRequest(req, res, state, id, cache, []);
+    handleCaptureBodyRequest(req, res, state, id, runtime, []);
 
     expect(status()).toBe(200);
     const body = JSON.parse(writes.join(""));
     expect(body.requestBody).toBe('{"a":1}');
     expect(body.responseBody).toBe('{"ok":true}');
     expect(body.responseTruncated).toBe(true);
-
-    sub.close();
   });
 
-  test("404s for an unknown id, a device with no session, and no device at all", async () => {
-    const { cache } = stubCache();
+  test("404s for an unknown id, a device not capturing, and no device at all", async () => {
+    const { runtime } = stubRuntime();
     const state = inProcessServeSimState("UDID-1", 4000);
 
-    // No session running for this device yet.
-    const noSession = createFakeRes();
-    handleCaptureBodyRequest(createFakeReq().req, noSession.res, state, "r1", cache, []);
-    expect(noSession.status()).toBe(404);
+    const notCapturing = createFakeRes();
+    handleCaptureBodyRequest(createFakeReq().req, notCapturing.res, state, "r1", runtime, []);
+    expect(notCapturing.status()).toBe(404);
 
-    // No device selected.
     const noDevice = createFakeRes();
-    handleCaptureBodyRequest(createFakeReq().req, noDevice.res, null, "r1", cache, []);
+    handleCaptureBodyRequest(createFakeReq().req, noDevice.res, null, "r1", runtime, []);
     expect(noDevice.status()).toBe(404);
 
-    // Session running, but the id was never recorded.
-    const sub = createFakeReq();
-    handleNetworkCaptureRequest(sub.req, createFakeRes().res, state, cache, []);
-    await cache.whenReady("UDID-1");
+    await runtime.enableForDevice("UDID-1");
     const unknown = createFakeRes();
-    handleCaptureBodyRequest(createFakeReq().req, unknown.res, state, "r404", cache, []);
+    handleCaptureBodyRequest(createFakeReq().req, unknown.res, state, "r404", runtime, []);
     expect(unknown.status()).toBe(404);
-    sub.close();
   });
 });

@@ -58,6 +58,7 @@ jobs:
             }
             process.exit(1);
           ')
+          echo "::warning::serve-sim tests failed on the first attempt and were retried; a green result here means the suite is flaky, not clean"
           echo "Test run failed; rebooting $UDID and retrying once"
           xcrun simctl shutdown "$UDID" || true
           sleep 3

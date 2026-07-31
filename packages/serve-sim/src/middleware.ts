@@ -13,7 +13,7 @@ import type { Socket } from "net";
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
-import { createCaptureSessionCache, type CaptureSessionCache } from "./capture-session";
+import { captureRuntime, type CaptureRuntime } from "./capture-runtime";
 import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./cpu-mem-sampler";
 import { foregroundTracker, type ForegroundApp, type ForegroundTrackerCache } from "./foreground-tracker";
 import { corsAllowOriginHeaders } from "./middleware-utils";
@@ -114,13 +114,12 @@ export type ServeSimState = ServeSimDeviceState;
 const axStreamerCache = createAxStreamerCache();
 // One shared capture session per udid; every /network-capture viewer subscribes. Nothing starts
 // until the first subscriber, so no proxy is spawned and no trust is installed unless asked for.
-const captureSessionCache = createCaptureSessionCache();
 // One shared cpu/mem sampler per udid; every /metrics viewer subscribes. While capture is routing the
 // app through the local proxy its traffic never touches an external interface, so the host counters
 // report it as idle — the proxy's own byte totals are the only true source, and take precedence.
 const metricsSamplerCache = createMetricsSamplerCache(
   (udid) =>
-    new MetricsSampler({ udid, networkRateOverride: () => captureSessionCache.throughputFor(udid) }),
+    new MetricsSampler({ udid, networkRateOverride: () => captureRuntime.throughputFor(udid) }),
 );
 
 // Hard cap on the SSE line-assembly buffer for child-process stdout.
@@ -1431,16 +1430,18 @@ export function handleMetricsRequest(
 }
 
 /**
- * SSE of the app's HTTPS traffic. Subscribing starts the capture session for this device — the proxy
- * and the simulator trust install — so opening this stream is what turns capture on, and closing the
- * last one turns it off. Emits an `event: meta` frame (schema, udid, proxy address) followed by a
- * replay of the requests already recorded, then live frames.
+ * SSE of the device's HTTPS traffic. Read-only: capture belongs to the booted device, so opening or
+ * closing this stream cannot start or stop it. Emits an `event: meta` frame (schema, udid, proxy address,
+ * whether the device is intercepted) followed by a replay of what is already recorded, then live frames.
+ *
+ * A device booted without capture still gets a meta frame, carrying the reason and no rows — the panel
+ * needs something to explain, and an empty stream would look like an idle app.
  */
 export function handleNetworkCaptureRequest(
   req: SimReq,
   res: SimRes,
   state: ServeSimState | null,
-  sessionCache: CaptureSessionCache = captureSessionCache,
+  runtime: CaptureRuntime = captureRuntime,
   corsOrigins: readonly string[] = [],
 ): void {
   if (!state) {
@@ -1457,22 +1458,16 @@ export function handleNetworkCaptureRequest(
   });
   res.write(":\n\n");
 
-  const { meta, unsubscribe } = sessionCache.subscribe(state.device, (event) => {
+  const { meta, unsubscribe } = runtime.subscribe(state.device, (event) => {
     if (!res.writableEnded) res.write("data: " + JSON.stringify(event) + "\n\n");
   });
 
-  // The proxy address is only known once it is listening, so the meta frame waits for it. A viewer
-  // needs that address to point an app at the proxy, and a session that failed to start reports a
-  // null address rather than leaving the client waiting.
-  void sessionCache.whenReady(state.device).then(() => {
-    if (res.writableEnded) return;
-    res.write("event: meta\ndata: " + JSON.stringify(meta) + "\n\n");
-    const store = sessionCache.storeFor(state.device);
-    for (const request of store?.list() ?? []) {
-      if (res.writableEnded) return;
-      res.write("data: " + JSON.stringify({ type: "finished", request }) + "\n\n");
-    }
-  });
+  // Known at once, because the proxy started when the device booted rather than when this stream opened.
+  res.write("event: meta\ndata: " + JSON.stringify(meta) + "\n\n");
+  for (const request of runtime.storeFor(state.device)?.list() ?? []) {
+    if (res.writableEnded) break;
+    res.write("data: " + JSON.stringify({ type: "finished", request }) + "\n\n");
+  }
 
   const heartbeat = setInterval(() => {
     if (!res.writableEnded) res.write(":\n\n");
@@ -1492,11 +1487,11 @@ export function handleCaptureBodyRequest(
   res: SimRes,
   state: ServeSimState | null,
   id: string,
-  sessionCache: CaptureSessionCache = captureSessionCache,
+  runtime: CaptureRuntime = captureRuntime,
   corsOrigins: readonly string[] = [],
 ): void {
   const cors = corsAllowOriginHeaders(req.headers.origin, corsOrigins);
-  const store = state ? sessionCache.storeFor(state.device) : null;
+  const store = state ? runtime.storeFor(state.device) : null;
   const body = store?.body(id) ?? null;
   if (!body) {
     // No session, or a request that aged out of the window — the row is gone, not empty.
@@ -2190,8 +2185,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
 
     // SSE of the app's HTTPS requests. Subscribing is what starts capture for this device — it spawns a
-    // proxy, trusts a certificate inside the simulator and relaunches the app — so it is gated like a
-    // control route rather than like telemetry.
+    // carries the app's own requests, including its Authorization and Cookie headers — so it is gated like
+    // a control route rather than like telemetry.
     if (url === base + "/network-capture") {
       if (!isTrustedSameOriginRequest(req, execToken, url)) {
         res.writeHead(403, { "Content-Type": "text/plain" });
@@ -2200,7 +2195,44 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       }
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
-      handleNetworkCaptureRequest(req, res, state, captureSessionCache, metricsCorsOrigins);
+      handleNetworkCaptureRequest(req, res, state, captureRuntime, metricsCorsOrigins);
+      return;
+    }
+
+    // Turn capture on or off for this device. Capture is applied at boot, so this reboots the simulator —
+    // a destructive action, hence POST behind the same gate, and never inferred from a GET.
+    if (
+      new URL(url, "http://127.0.0.1").pathname === base + "/network-capture/reboot" &&
+      req.method === "POST"
+    ) {
+      if (!isTrustedSameOriginRequest(req, execToken, url)) {
+        res.writeHead(403, { "Content-Type": "text/plain" });
+        res.end("Cross-origin request blocked");
+        return;
+      }
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      if (!state) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "No serve-sim device" }));
+        return;
+      }
+      const enabled = new URL(url, "http://127.0.0.1").searchParams.get("enabled") !== "0";
+      const { rebootWithCapture } = await import("./capture-reboot");
+      try {
+        const meta = await rebootWithCapture(state.device, enabled);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(meta));
+      } catch (error) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: `Could not reboot the device: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          }),
+        );
+      }
       return;
     }
 
@@ -2215,7 +2247,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       const id = url.slice((base + "/network-capture/").length);
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
-      handleCaptureBodyRequest(req, res, state, decodeURIComponent(id), captureSessionCache, metricsCorsOrigins);
+      handleCaptureBodyRequest(req, res, state, decodeURIComponent(id), captureRuntime, metricsCorsOrigins);
       return;
     }
 

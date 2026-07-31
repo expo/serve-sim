@@ -5,6 +5,7 @@
 
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -38,6 +39,23 @@ static NSDictionary *SimNetProxyDictionary(void) {
         @"HTTPSProxy" : kSimNetProxyHost,
         @"HTTPSPort" : @(simNetProxyPort),
     };
+}
+
+/**
+ * The port, read from the file the proxy wrote.
+ *
+ * A path rather than a number, because the file lives in the proxy's own directory and is removed whenever
+ * the proxy dies — including on a signal, where no cleanup code of ours gets to run. An app launched after
+ * that finds nothing here and stays unproxied, instead of trusting a port number that some unrelated
+ * process may have since bound.
+ */
+static long SimNetProxyPortFromFile(const char *path) {
+    FILE *handle = fopen(path, "r");
+    if (handle == NULL) return 0;
+    char buffer[32] = {0};
+    size_t read = fread(buffer, 1, sizeof(buffer) - 1, handle);
+    fclose(handle);
+    return read > 0 ? atol(buffer) : 0;
 }
 
 /**
@@ -110,12 +128,16 @@ static BOOL SwizzleClassMethod(Class cls, SEL orig, SEL swiz) {
 __attribute__((constructor))
 static void SimNetProxyInit(void) {
     @autoreleasepool {
+        // The file is what a device booted for capture is given. The bare port remains for a caller that
+        // applies the library to a single launch itself.
+        const char *portFile = getenv("SIMNET_PROXY_PORT_FILE");
         const char *port = getenv("SIMNET_PROXY_PORT");
-        if (port == NULL || atol(port) <= 0) {
-            // Nothing to do: the app was launched without capture enabled.
+        long candidate = portFile != NULL ? SimNetProxyPortFromFile(portFile)
+                                          : (port != NULL ? atol(port) : 0);
+        if (candidate <= 0) {
+            // Nothing to do: the app was launched without capture enabled, or the proxy is gone.
             return;
         }
-        long candidate = atol(port);
         if (!SimNetProxyPortIsListening(candidate)) {
             // A stale launch: this app was captured before, but that session is gone. Leave its
             // networking alone rather than pointing it at a port nobody answers.

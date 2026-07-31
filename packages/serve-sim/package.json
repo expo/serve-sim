@@ -56,6 +56,8 @@
     "Sources/SimCameraInjector/build.sh",
     "Sources/SimCameraHelper/main.m",
     "Sources/SimCameraHelper/build.sh",
+    "Sources/SimNetProxy/SimNetProxy.m",
+    "Sources/SimNetProxy/build.sh",
     "Sources/SimAXSettings/sim-ax-settings.m",
     "Sources/SimAXSettings/build.sh",
     "dist/native/serve-sim-native.node",

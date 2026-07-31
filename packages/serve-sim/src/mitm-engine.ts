@@ -5,7 +5,17 @@
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { accessSync, constants, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -33,6 +43,15 @@ const MAX_CONTROL_BODY_BYTES = 4 * 1024 * 1024;
 export interface CaptureProxy {
   /** Loopback address the app is pointed at, e.g. "127.0.0.1:9123". */
   address: string;
+  /**
+   * File holding the port, for the injected library to read at app launch.
+   *
+   * The port is passed as a path rather than as a number so a stale reference cannot outlive the proxy:
+   * this file lives in the session's confdir, which is removed on every death path including a signal, so
+   * an app launched after the proxy is gone finds nothing and leaves its networking alone. A bare port
+   * number left in the simulator's environment would instead point at a freely reassigned high port.
+   */
+  portFile: string;
   /** PEM of the root the device must trust, for `simctl keychain … add-root-cert`. */
   caPem: () => Promise<string>;
   close: () => Promise<void>;
@@ -331,6 +350,7 @@ export async function startMitmProxy(
   // living in the developer's home directory across runs.
   const confdir = mkdtempSync(join(tmpdir(), CONFDIR_PREFIX));
   const caFile = join(confdir, "mitmproxy-ca-cert.pem");
+  const portFile = join(confdir, "proxy-port");
 
   // The control port is loopback-only, but any local process could still post to it and inject rows or
   // drive the reader. A per-session secret in the path makes that require the secret.
@@ -438,6 +458,8 @@ export async function startMitmProxy(
   });
   // After startup a server-level error would otherwise be an uncaught exception.
   control.on("error", () => {});
+
+  writeFileSync(portFile, String(proxyPort));
 
   const child: ChildProcess = spawn(
     mitmdump,
@@ -576,6 +598,7 @@ export async function startMitmProxy(
     if (existsSync(caFile) && announced) {
       return {
         address: `127.0.0.1:${proxyPort}`,
+        portFile,
         caPem: async () => readFileSync(caFile, "utf8"),
         close,
       };

@@ -59,16 +59,16 @@ export interface CapturedBody {
 }
 
 /**
- * Whether the app's traffic is reaching the proxy:
- *   pending   — the proxy is starting and the app has not been relaunched yet
- *   attached  — the app was relaunched with the proxy applied to its own process
- *   no-target — the proxy is up but no app was relaunched, so nothing will arrive
- *   failed    — capture could not start; `captureError` says why
+ * Whether this device is capturing:
+ *   starting    — the proxy is coming up; only seen while a device reboots into capture
+ *   capturing   — the proxy is up and the device points every app it launches at it
+ *   not-enabled — the device was not booted with capture, so nothing will arrive
+ *   failed      — capture was asked for but could not start; `attachError` says why
  *
- * Nothing here touches the host. The proxy is applied inside the app by an injected library, so there is
- * no machine-wide setting to set or restore.
+ * Nothing here touches the host. The proxy is applied inside the simulator by an injected library, so
+ * there is no machine-wide setting to set or restore.
  */
-export type CaptureAttachment = "no-target" | "pending" | "attached" | "failed";
+export type CaptureAttachment = "starting" | "capturing" | "not-enabled" | "failed";
 
 export interface CaptureMeta {
   schemaVersion: number;
@@ -76,8 +76,16 @@ export interface CaptureMeta {
   /** Proxy address apps should be pointed at, e.g. "127.0.0.1:9123". */
   proxyAddress: string | null;
   attachment: CaptureAttachment;
-  /** Why routing failed, for a UI that must explain an empty capture. */
+  /** Why capture is not running, for a UI that must explain an empty list. */
   attachError: string | null;
+  /**
+   * True while the device's traffic is being decrypted and read.
+   *
+   * Surfaced so the UI can say so plainly. It holds for the device's whole boot session rather than only
+   * while someone is watching, and a certificate-pinned app will refuse to connect for that whole time —
+   * so leaving it implicit would be a footgun.
+   */
+  intercepted: boolean;
 }
 
 type Listener = (event: CaptureEvent) => void;

@@ -17,6 +17,7 @@ import {
 } from "./state";
 import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from "./text-to-keys";
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
+import { bootInjectedLibraries } from "./capture-device";
 import { killPortHolder } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
 import { permissions } from "./permissions";
@@ -1554,9 +1555,12 @@ Examples:
     execSync(`xcrun simctl terminate "${udid}" "${bundleId}"`, { stdio: "ignore" });
   } catch {}
 
+  // Merged, not replaced: on a device booted with network capture the simulator's launchd already inserts
+  // the capture library, and setting this variable for the launch would drop it for this app alone.
+  const captureLibrary = bootInjectedLibraries(udid);
   const env = {
     ...process.env,
-    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: dylib,
+    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: captureLibrary ? `${captureLibrary}:${dylib}` : dylib,
     SIMCTL_CHILD_SIMCAM_SHM_NAME: shmName,
     ...(mirror !== "auto" ? { SIMCTL_CHILD_SIMCAM_MIRROR_MODE: mirror } : {}),
   };
@@ -1626,6 +1630,7 @@ async function serve(
   options: {
     stream?: StreamRuntimeOptions;
     metricsCorsOrigins?: string[];
+    networkCapture?: boolean;
   } = {},
 ) {
   // Boot the target simulators; the preview server streams them in-process
@@ -1636,6 +1641,21 @@ async function serve(
   }
   for (const udid of targetDevices) await ensureBooted(udid);
   const targetDevice = targetDevices[0];
+
+  // Capture is applied to the device, not to a viewer, so it belongs here: after the device is up and
+  // before anything can launch an app on it.
+  const capture = options.networkCapture ? await import("./capture-runtime") : null;
+  for (const udid of capture ? targetDevices : []) {
+    const meta = await capture!.captureRuntime.enableForDevice(udid);
+    if (meta.attachment === "capturing") {
+      console.log(
+        `Network capture on for ${udid} via ${meta.proxyAddress}. This device's HTTPS traffic is ` +
+          "decrypted for its whole boot session; certificate-pinned apps will refuse to connect.",
+      );
+    } else {
+      console.error(`Network capture could not start for ${udid}. ${meta.attachError ?? ""}`);
+    }
+  }
 
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
@@ -1703,9 +1723,19 @@ async function serve(
   }
   console.log("");
 
-  // Exit cleanly on Ctrl+C
-  process.on("SIGINT", () => process.exit(0));
-  process.on("SIGTERM", () => process.exit(0));
+  // Exit cleanly on Ctrl+C. Capture is stopped first so the device is not left pointing new launches at a
+  // proxy that is about to die — bounded, because a hung simctl must not stop us from exiting.
+  const shutdown = async () => {
+    if (capture) {
+      await Promise.race([
+        capture.captureRuntime.disableAll().catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ]);
+    }
+    process.exit(0);
+  };
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
   await new Promise(() => {});
 }
 
@@ -1750,6 +1780,12 @@ program
   .option("--detach", "Spawn helper and exit (daemon mode)")
   .option("-q, --quiet", "Suppress human-readable output, JSON only")
   .option("--no-preview", "Skip the web preview server; stream in foreground only")
+  .option(
+    "--network-capture",
+    "Record this device's HTTPS traffic. Applied when the device boots, so it covers every app and its " +
+      "startup requests. The device's traffic stays decrypted for its whole boot session and " +
+      "certificate-pinned apps will refuse to connect. Requires mitmproxy.",
+  )
   .option("--transport <http|webrtc>", "Stream transport", "http")
   .option(
     "--codec <codec>",
@@ -1926,6 +1962,7 @@ Examples:
       await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, {
         stream,
         metricsCorsOrigins: opts.metricsCorsOrigin,
+        networkCapture: !!opts.networkCapture,
       });
     }
   });

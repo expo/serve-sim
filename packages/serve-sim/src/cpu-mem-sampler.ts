@@ -32,6 +32,7 @@ export interface MetricSample {
 export interface MetricsMeta {
   schemaVersion: number;
   udid: string;
+  deviceName?: string;
   hostCores: number;
   sampleIntervalMs: number;
 }
@@ -179,6 +180,7 @@ export async function sampleUserApp(udid: string, deps: SampleDeps = {}): Promis
 
 export interface MetricsSamplerOptions {
   udid: string;
+  deviceName?: string;
   intervalMs?: number;
   sample?: (udid: string) => Promise<AppUsage | null>;
   now?: () => number;
@@ -206,6 +208,8 @@ export class MetricsSampler {
     this.meta = {
       schemaVersion: METRICS_SCHEMA_VERSION,
       udid: opts.udid,
+      // Omit when unknown so the frame stays clean; JSON.stringify drops undefined.
+      deviceName: opts.deviceName,
       hostCores: opts.hostCores ?? cpus().length,
       sampleIntervalMs: this.intervalMs,
     };

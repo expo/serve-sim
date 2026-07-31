@@ -13,7 +13,7 @@ import type { Socket } from "net";
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
-import { createMetricsSamplerCache, type MetricsSamplerCache } from "./cpu-mem-sampler";
+import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./cpu-mem-sampler";
 import { foregroundTracker, type ForegroundApp, type ForegroundTrackerCache } from "./foreground-tracker";
 import { corsAllowOriginHeaders } from "./middleware-utils";
 import { closeDeviceSession, getDeviceSession, sendCorsPreflight, type HidSocket } from "./device-session";
@@ -94,7 +94,7 @@ type CdpHttpListEntry = {
 type CdpHttpVersion = { Browser?: string };
 
 type SimctlBootedList = {
-  devices: Record<string, Array<{ udid: string; state: string }>>;
+  devices: Record<string, Array<{ udid: string; state: string; name: string }>>;
 };
 
 type SimctlAllList = {
@@ -111,8 +111,11 @@ type ExecRequestBody = { command?: string };
 export type ServeSimState = ServeSimDeviceState;
 
 const axStreamerCache = createAxStreamerCache();
-// One shared cpu/mem sampler per udid; every /metrics viewer subscribes.
-const metricsSamplerCache = createMetricsSamplerCache();
+// One shared cpu/mem sampler per udid; every /metrics viewer subscribes. Stamp the device name
+// (from the last booted-device snapshot) into the sampler's meta frame when we know it.
+const metricsSamplerCache = createMetricsSamplerCache(
+  (udid) => new MetricsSampler({ udid, deviceName: bootedDeviceName(udid) }),
+);
 
 // Hard cap on the SSE line-assembly buffer for child-process stdout.
 // A malformed log entry without a newline can't grow this beyond 1 MB;
@@ -237,7 +240,11 @@ export function matchInstalledAppByDisplayName(
 // Cache simctl's booted-device set briefly so per-request cost stays bounded.
 // The middleware runs inside the user's dev server (Metro etc.) and
 // readServeSimStates() is called on every /api and every page load.
-let bootedSnapshot: { at: number; booted: Set<string> | null } = { at: 0, booted: null };
+let bootedSnapshot: { at: number; booted: Set<string> | null; names: Map<string, string> } = {
+  at: 0,
+  booted: null,
+  names: new Map(),
+};
 async function getBootedUdids(): Promise<Set<string> | null> {
   const now = Date.now();
   if (bootedSnapshot.booted && now - bootedSnapshot.at < 1500) {
@@ -260,16 +267,26 @@ async function getBootedUdids(): Promise<Set<string> | null> {
     });
     const data = JSON.parse(stdout) as SimctlBootedList;
     const booted = new Set<string>();
+    const names = new Map<string, string>();
     for (const runtime of Object.values(data.devices)) {
       for (const device of runtime) {
-        if (device.state === "Booted") booted.add(device.udid);
+        if (device.state === "Booted") {
+          booted.add(device.udid);
+          names.set(device.udid, device.name);
+        }
       }
     }
-    bootedSnapshot = { at: now, booted };
+    bootedSnapshot = { at: now, booted, names };
     return booted;
   } catch {
     return null;
   }
+}
+
+// Display name for a booted udid, from the last simctl snapshot (refreshed on grid polls).
+// Undefined until the first snapshot lands or if the device isn't booted.
+function bootedDeviceName(udid: string): string | undefined {
+  return bootedSnapshot.names.get(udid);
 }
 
 // The device the user most recently opened in Simulator.app, regardless of
@@ -1617,7 +1634,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         closeDeviceSession(udid);
         // Drop the snapshot so the next /grid/api call re-queries simctl
         // and prunes any helper bound to this now-shutdown device.
-        bootedSnapshot = { at: 0, booted: null };
+        bootedSnapshot = { at: 0, booted: null, names: new Map() };
         execFile("xcrun", ["simctl", "shutdown", udid], { timeout: 30_000 }, (err, _stdout, stderr) => {
           if (err) {
             res.writeHead(500, { "Content-Type": "application/json" });

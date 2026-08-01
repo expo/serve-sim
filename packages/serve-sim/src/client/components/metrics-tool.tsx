@@ -1,14 +1,14 @@
 import { TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useMetricsStream } from "../hooks/use-metrics-stream";
-import { formatCpu, formatMem, sparklinePath } from "../utils/format-metrics";
+import { formatCpu, formatMem, formatRate, sparklinePath } from "../utils/format-metrics";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
 
 const SPARK_W = 96;
 const SPARK_H = 24;
 
-/** Live CPU/memory readout for the sim's user app, with a sparkline for each. */
+/** Live CPU, memory, and network readout for the sim's user app, with a sparkline for each. */
 export function MetricsTool({
   udid,
   currentAppBundleId,
@@ -36,7 +36,7 @@ export function MetricsTool({
     ? "The metrics stream disconnected"
     : foregroundIsSystemApp
       ? "Only your app is measured; a system app is in the foreground"
-      : "Waiting for CPU / memory data";
+      : "Waiting for activity data";
 
   return (
     <CollapsibleSection
@@ -86,6 +86,12 @@ export function MetricsTool({
             values={history.map((s) => s.memBytes)}
             className="text-sky-400"
           />
+          <NetworkRow
+            down={latest.netInBytesPerSec}
+            up={latest.netOutBytesPerSec}
+            downValues={history.map((s) => s.netInBytesPerSec)}
+            upValues={history.map((s) => s.netOutBytesPerSec)}
+          />
         </>
       ) : null}
     </CollapsibleSection>
@@ -120,6 +126,20 @@ function MetricRow({
   );
 }
 
+/** One sparkline stroke, styled consistently across the CPU/memory and network graphs. */
+function SparkPath({ d, className }: { d: string; className?: string }) {
+  return (
+    <path
+      d={d}
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      vectorEffect="non-scaling-stroke"
+    />
+  );
+}
+
 /** Minimal filled-area sparkline for a series of values. */
 function Sparkline({ values, className }: { values: number[]; className: string }) {
   const line = sparklinePath(values, SPARK_W, SPARK_H);
@@ -132,13 +152,45 @@ function Sparkline({ values, className }: { values: number[]; className: string 
       className={`w-full h-8 ${className}`}
     >
       <path d={area} fill="currentColor" opacity={0.12} stroke="none" />
-      <path
-        d={line}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={1.5}
-        vectorEffect="non-scaling-stroke"
-      />
+      <SparkPath d={line} />
+    </svg>
+  );
+}
+
+/** Network with download / upload broken out: a value pair and a two-line graph on a shared scale. */
+function NetworkRow({
+  down,
+  up,
+  downValues,
+  upValues,
+}: {
+  down: number;
+  up: number;
+  downValues: number[];
+  upValues: number[];
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-baseline justify-between">
+        <span className="text-white/50 text-[11px]">Network</span>
+        <span className="tabular-nums text-[11px]">
+          <span className="text-cyan-400">↓ {formatRate(down)}</span>
+          <span className="text-white/30 mx-1.5">·</span>
+          <span className="text-violet-400">↑ {formatRate(up)}</span>
+        </span>
+      </div>
+      <DualSparkline down={downValues} up={upValues} />
+    </div>
+  );
+}
+
+/** Two lines (download, upload) on one shared vertical scale so their magnitudes are comparable. */
+function DualSparkline({ down, up }: { down: number[]; up: number[] }) {
+  const max = Math.max(...down.map((v) => v ?? 0), ...up.map((v) => v ?? 0), 1);
+  return (
+    <svg viewBox={`0 0 ${SPARK_W} ${SPARK_H}`} preserveAspectRatio="none" className="w-full h-8">
+      <SparkPath d={sparklinePath(down, SPARK_W, SPARK_H, max)} className="text-cyan-400" />
+      <SparkPath d={sparklinePath(up, SPARK_W, SPARK_H, max)} className="text-violet-400" />
     </svg>
   );
 }

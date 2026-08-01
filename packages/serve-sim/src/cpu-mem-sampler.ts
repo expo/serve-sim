@@ -20,6 +20,8 @@ export interface AppUsage {
   processKey: string; // identity of the sampled pid set; the CPU baseline resets when it changes
   cpuSeconds: number;
   memBytes: number;
+  netInBytesPerSec: number; // download throughput (bytes/s) for the app's processes, from the nettop poller
+  netOutBytesPerSec: number; // upload throughput (bytes/s)
 }
 
 export interface MetricSample {
@@ -27,6 +29,8 @@ export interface MetricSample {
   bundleId: string | null;
   cpuPct: number; // usage over the interval since the previous sample (per-core, can exceed 100)
   memBytes: number;
+  netInBytesPerSec: number; // latest download throughput (bytes/s) from the nettop poller
+  netOutBytesPerSec: number; // latest upload throughput (bytes/s) from the nettop poller
 }
 
 export interface MetricsMeta {
@@ -115,11 +119,12 @@ export function sumPhysFootprintBytes(output: string): number | null {
 export interface SampleDeps {
   exec?: (file: string, args: string[]) => Promise<string>;
   frontmostApp?: (udid: string) => Promise<ForegroundApp | null>;
+  networkRate?: (pids: number[]) => NetInOut; // down/up bytes/s for the app's pids
 }
 
 /** Run a host command with a bounded timeout and output buffer, resolving its stdout. */
-const runCommand = (file: string, args: string[]): Promise<string> =>
-  execFileAsync(file, args, { timeout: 3000, maxBuffer: 8 * 1024 * 1024 }).then((r) => r.stdout);
+const runCommand = (file: string, args: string[], signal?: AbortSignal): Promise<string> =>
+  execFileAsync(file, args, { timeout: 3000, maxBuffer: 8 * 1024 * 1024, signal }).then((r) => r.stdout);
 
 /** The current foreground app: the tracker when it's warm, else the AX bridge; null when unknown. */
 function frontmostAppOf(udid: string): Promise<ForegroundApp | null> {
@@ -162,19 +167,137 @@ async function sampleMemoryBytes(procs: AppProcesses, deps: Required<SampleDeps>
   }
 }
 
-/** One poll of the foreground user app: its cumulative CPU time, memory, and the bundleId they belong to. */
+// Bounded `nettop -d -L 2` run: last block is per-interval bytes/s. A long-lived stream never
+// flushes when piped; external interfaces only (skip loopback/dev).
+const NETTOP_ARGS = ["-x", "-P", "-n", "-d", "-L", "2", "-s", "1", "-t", "external"];
+
+/** Download/upload pair (bytes or bytes/s depending on the parser stage). */
+export interface NetInOut {
+  in: number;
+  out: number;
+}
+
+/** Parse one `nettop -x -P` CSV sample block into download/upload bytes per pid. */
+export function parseNetSampleByPid(block: string): Map<number, NetInOut> {
+  const byPid = new Map<number, NetInOut>();
+  const lines = block.split("\n").filter((line) => line.length > 0);
+  const header = lines.find((line) => line.startsWith("time,"))?.split(",");
+  const inIdx = header?.indexOf("bytes_in") ?? -1;
+  const outIdx = header?.indexOf("bytes_out") ?? -1;
+  if (inIdx === -1 || outIdx === -1) return byPid;
+  for (const line of lines) {
+    if (line.startsWith("time,")) continue;
+    const cols = line.split(",");
+    const proc = cols[1] ?? ""; // "processName.pid"
+    const dot = proc.lastIndexOf(".");
+    const pid = dot === -1 ? NaN : Number(proc.slice(dot + 1));
+    if (Number.isNaN(pid)) continue;
+    // `-P` aggregates per process, so each pid appears on a single row — take it as-is.
+    byPid.set(pid, { in: Number(cols[inIdx]) || 0, out: Number(cols[outIdx]) || 0 });
+  }
+  return byPid;
+}
+
+/** Split `nettop` CSV output into its per-sample blocks (each begins with a `time,` header). */
+function splitNetSampleBlocks(output: string): string[] {
+  const blocks: string[] = [];
+  let current: string[] = [];
+  for (const line of output.split("\n")) {
+    if (line.startsWith("time,")) {
+      if (current.length > 0) blocks.push(current.join("\n"));
+      current = [line];
+    } else if (current.length > 0) {
+      current.push(line);
+    }
+  }
+  if (current.length > 0) blocks.push(current.join("\n"));
+  return blocks;
+}
+
+/** Per-pid bytes/s from a `nettop -d -L 2` run; needs ≥2 blocks (first is cumulative since start). */
+export function netRatesFromSamples(output: string): Map<number, NetInOut> {
+  const blocks = splitNetSampleBlocks(output);
+  if (blocks.length < 2) return new Map();
+  return parseNetSampleByPid(blocks[blocks.length - 1]!);
+}
+
+/** Polls nettop for per-pid bytes/s. Failures clear rates so the UI doesn't show stale activity. */
+export class NetworkThroughputMonitor {
+  private running = false;
+  private rate = new Map<number, NetInOut>();
+  /** Bumped on start/stop so an in-flight run can't write after stop or overlap a restart. */
+  private generation = 0;
+  private inFlight: AbortController | null = null;
+
+  constructor(
+    private readonly runNettop: (signal?: AbortSignal) => Promise<string> = (signal) =>
+      runCommand("nettop", NETTOP_ARGS, signal),
+  ) {}
+
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+    void this.loop(++this.generation);
+  }
+
+  stop(): void {
+    this.running = false;
+    this.generation++;
+    this.inFlight?.abort();
+    this.inFlight = null;
+    this.rate.clear();
+  }
+
+  /** Current down/up throughput (bytes/s) summed across the given pids. */
+  rateForPids(pids: number[]): NetInOut {
+    let inTotal = 0;
+    let outTotal = 0;
+    for (const pid of pids) {
+      const r = this.rate.get(pid);
+      if (r) {
+        inTotal += r.in;
+        outTotal += r.out;
+      }
+    }
+    return { in: inTotal, out: outTotal };
+  }
+
+  private async loop(generation: number): Promise<void> {
+    while (this.running && this.generation === generation) {
+      const controller = new AbortController();
+      this.inFlight = controller;
+      try {
+        const output = await this.runNettop(controller.signal);
+        if (this.generation !== generation) return;
+        this.rate = netRatesFromSamples(output);
+      } catch {
+        if (this.generation !== generation) return;
+        this.rate.clear();
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      } finally {
+        if (this.inFlight === controller) this.inFlight = null;
+      }
+    }
+  }
+}
+
+/** One poll of the foreground user app: its cumulative CPU time, memory, network rate, and the bundleId they belong to. */
 export async function sampleUserApp(udid: string, deps: SampleDeps = {}): Promise<AppUsage | null> {
   const resolved: Required<SampleDeps> = {
     exec: deps.exec ?? runCommand,
     frontmostApp: deps.frontmostApp ?? frontmostAppOf,
+    networkRate: deps.networkRate ?? (() => ({ in: 0, out: 0 })),
   };
   const foreground = await sampleForegroundApp(udid, resolved);
   if (!foreground) return null;
+  const net = resolved.networkRate(foreground.procs.pids);
   return {
     bundleId: foreground.bundleId,
     processKey: [...foreground.procs.pids].sort((a, b) => a - b).join(","),
     cpuSeconds: foreground.procs.cpuSeconds,
     memBytes: await sampleMemoryBytes(foreground.procs, resolved),
+    netInBytesPerSec: net.in,
+    netOutBytesPerSec: net.out,
   };
 }
 
@@ -199,12 +322,22 @@ export class MetricsSampler {
   private startedAt: number | null = null;
   // Previous reading, to turn cumulative CPU time into a per-interval %.
   private prev: { t: number; bundleId: string | null; processKey: string; cpuSeconds: number } | null = null;
+  // The default sampler owns a nettop poller and feeds its rate into sampleUserApp; an injected
+  // `sample` (tests) supplies the network rate itself, so no poller is spawned.
+  private readonly network: NetworkThroughputMonitor | null;
 
   /** Build a sampler for one udid, resolving the interval, clock, and host core count. */
   constructor(opts: MetricsSamplerOptions) {
     this.intervalMs = opts.intervalMs ?? 1000;
-    this.sample = opts.sample ?? sampleUserApp;
     this.now = opts.now ?? (() => performance.now()); // monotonic: immune to NTP clock jumps in the CPU delta
+    if (opts.sample) {
+      this.sample = opts.sample;
+      this.network = null;
+    } else {
+      const network = new NetworkThroughputMonitor();
+      this.network = network;
+      this.sample = (udid) => sampleUserApp(udid, { networkRate: (pids) => network.rateForPids(pids) });
+    }
     this.meta = {
       schemaVersion: METRICS_SCHEMA_VERSION,
       udid: opts.udid,
@@ -239,7 +372,14 @@ export class MetricsSampler {
     const cpuPct = this.cpuPctSince(reading, t);
     this.prev = { t, bundleId: reading.bundleId, processKey: reading.processKey, cpuSeconds: reading.cpuSeconds };
 
-    const sample: MetricSample = { t, bundleId: reading.bundleId, cpuPct, memBytes: reading.memBytes };
+    const sample: MetricSample = {
+      t,
+      bundleId: reading.bundleId,
+      cpuPct,
+      memBytes: reading.memBytes,
+      netInBytesPerSec: reading.netInBytesPerSec, // already rates from the nettop poller
+      netOutBytesPerSec: reading.netOutBytesPerSec,
+    };
     for (const listener of this.listeners) {
       try {
         listener(sample);
@@ -265,9 +405,10 @@ export class MetricsSampler {
     return pct > 0 ? +pct.toFixed(1) : 0;
   }
 
-  /** Begin the poll loop; a no-op if it is already running. */
+  /** Begin the poll loop (and the network poller); a no-op if it is already running. */
   start(): void {
     if (this.timer) return;
+    this.network?.start();
     this.startedAt ??= this.now();
     // Track this loop's own timer identity: a stop()+start() during an in-flight tick would make
     // this.timer truthy again, so a bare `if (this.timer)` check would schedule a second, overlapping
@@ -284,8 +425,9 @@ export class MetricsSampler {
     this.timer = currentTimer;
   }
 
-  /** Stop the poll loop. */
+  /** Stop the poll loop and the network poller. */
   stop(): void {
+    this.network?.stop();
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;

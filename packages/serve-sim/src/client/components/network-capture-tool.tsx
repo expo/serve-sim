@@ -161,7 +161,6 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
         </div>
 
         <CaptureState
-          address={meta?.proxyAddress ?? null}
           attachment={meta?.attachment ?? "not-enabled"}
           attachError={meta?.attachError ?? null}
         />
@@ -233,22 +232,19 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
 }
 
 /**
- * Whether this device is capturing, and why not when it isn't.
+ * Why this device is not giving you rows. Nothing at all when it is.
  *
- * Reporting the reason is the whole point: an empty list with a healthy-looking proxy address is
- * indistinguishable from an app that made no requests.
+ * Reporting the reason is the whole point: an empty list otherwise looks the same whether capture never
+ * started or the app simply made no requests. A healthy session says nothing, because the badge already has.
  */
 export function CaptureState({
-  address,
   attachment,
   attachError,
 }: {
-  address: string | null;
   attachment: CaptureAttachment;
   attachError: string | null;
 }) {
-  // Checked before the address: a failure has no address, and replacing its reason with a spinner that
-  // never resolves is the one outcome worse than the failure itself.
+  if (attachment === "capturing") return null;
   if (attachment === "failed") {
     return (
       <span className="whitespace-pre-line text-[11px] leading-snug text-amber-400/80">
@@ -259,23 +255,10 @@ export function CaptureState({
   if (attachment === "starting") {
     return <span className="text-[11px] text-white/40">Starting capture on this device…</span>;
   }
-  if (attachment === "not-enabled" || !address) {
-    return (
-      <span className="whitespace-pre-line text-[11px] leading-snug text-white/40">
-        {attachError ?? "This device is not capturing."}
-      </span>
-    );
-  }
   return (
-    <div className="flex flex-col gap-0.5">
-      <span className="text-[11px] text-white/50">
-        Proxy <span className="tabular-nums text-white/80">{address}</span>
-      </span>
-      <span className="text-[10px] leading-snug text-amber-400/70">
-        Every app on this device has its HTTPS traffic decrypted and read. Apps that pin their certificate
-        will refuse to connect until this device is rebooted without capture.
-      </span>
-    </div>
+    <span className="whitespace-pre-line text-[11px] leading-snug text-white/40">
+      {attachError ?? "This device is not capturing."}
+    </span>
   );
 }
 
@@ -291,12 +274,12 @@ export function DomainSection({
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <div>
+    <div className="border-b border-white/5 last:border-b-0">
       <button
         type="button"
         onClick={() => setOpen((on) => !on)}
         aria-expanded={open}
-        className="w-full flex items-center gap-1.5 py-1.5 text-left border-b border-white/5"
+        className="w-full flex items-center gap-1.5 py-1.5 text-left"
       >
         {open ? (
           <ChevronDown aria-hidden="true" className="w-3 h-3 shrink-0 text-white/30" />
@@ -366,12 +349,12 @@ export function RequestFacts({ request }: { request: CapturedRequest }) {
   const total = request.durationMs;
   return (
     <div className="grid grid-cols-[auto_1fr] gap-x-2.5 gap-y-0.5 text-[10px]">
-      <Fact label="method" value={request.method} />
-      <Fact label="type" value={request.mimeType} />
-      <Fact label="sent" value={request.requestBytes > 0 ? formatBytes(request.requestBytes) : null} />
-      <Fact label="received" value={formatBytes(request.responseBytes)} />
-      <Fact label="waiting" value={wait !== null ? formatMs(wait) : null} />
-      <Fact label="total" value={total !== null ? formatMs(total) : null} />
+      <Fact label="Method" value={request.method} />
+      <Fact label="Type" value={request.mimeType} />
+      <Fact label="Sent" value={request.requestBytes > 0 ? formatBytes(request.requestBytes) : null} />
+      <Fact label="Received" value={formatBytes(request.responseBytes)} />
+      <Fact label="Waiting" value={wait !== null ? formatMs(wait) : null} />
+      <Fact label="Total" value={total !== null ? formatMs(total) : null} />
     </div>
   );
 }
@@ -435,7 +418,7 @@ export function RequestRow({
   }
 
   return (
-    <div className="py-1.5 border-b border-white/5">
+    <div className="py-1.5 border-b border-white/5 last:border-b-0">
       <button type="button" onClick={toggle} className="w-full text-left">
         <div className="flex items-center gap-1.5">
           <span className={`shrink-0 rounded px-1 text-[10px] tabular-nums ${statusTint(request)}`}>

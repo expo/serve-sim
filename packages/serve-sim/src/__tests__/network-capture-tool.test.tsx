@@ -78,6 +78,26 @@ describe("RequestRow", () => {
   });
 });
 
+describe("list separators", () => {
+  test("drops the last row's rule, which would otherwise double up with the footer", () => {
+    expect(row()).toContain("last:border-b-0");
+  });
+
+  test("puts a group's rule on the group, so an expanded one closes after its rows", () => {
+    const html = renderToStaticMarkup(
+      <DomainSection
+        group={{ host: "a.test", requests: [request()], bytes: 100, failed: 0 }}
+        bodyBase="/network-capture"
+        slowestMs={171}
+      />,
+    );
+
+    expect(html).toContain("border-b border-white/5 last:border-b-0");
+    // Not on the header, or a collapsed group would draw one and an expanded group two.
+    expect(html).not.toContain("text-left border-b");
+  });
+});
+
 describe("TimingBar", () => {
   test("scales the wait and transfer segments against the slowest request on screen", () => {
     const html = renderToStaticMarkup(
@@ -172,7 +192,7 @@ describe("DomainSection", () => {
 describe("CaptureState", () => {
   test("explains a device that was not booted with capture", () => {
     const html = renderToStaticMarkup(
-      <CaptureState address={null} attachment="not-enabled" attachError="Needs a reboot with capture." />,
+      <CaptureState attachment="not-enabled" attachError="Needs a reboot with capture." />,
     );
 
     expect(html).toContain("Needs a reboot with capture.");
@@ -180,7 +200,7 @@ describe("CaptureState", () => {
 
   test("keeps the reason visible when capture failed, rather than showing a spinner", () => {
     const html = renderToStaticMarkup(
-      <CaptureState address={null} attachment="failed" attachError="mitmproxy is not installed" />,
+      <CaptureState attachment="failed" attachError="mitmproxy is not installed" />,
     );
 
     expect(html).toContain("mitmproxy is not installed");
@@ -188,20 +208,19 @@ describe("CaptureState", () => {
 
   test("says it is starting while a device reboots into capture", () => {
     const html = renderToStaticMarkup(
-      <CaptureState address={null} attachment="starting" attachError={null} />,
+      <CaptureState attachment="starting" attachError={null} />,
     );
 
     expect(html).toContain("Starting capture");
   });
 
-  test("names the proxy and warns that the whole device is intercepted", () => {
+  test("says nothing at all while capture is healthy", () => {
     const html = renderToStaticMarkup(
-      <CaptureState address="127.0.0.1:52248" attachment="capturing" attachError={null} />,
+      <CaptureState attachment="capturing" attachError={null} />,
     );
 
-    expect(html).toContain("127.0.0.1:52248");
-    // The warning is load-bearing: a pinned app will fail for as long as this device stays up.
-    expect(html).toContain("pin their certificate");
+    // The badge already says it. Pinning is explained per request, on the row that failed.
+    expect(html).toBe("");
   });
 });
 
@@ -209,11 +228,11 @@ describe("RequestFacts", () => {
   test("names each figure, so nothing has to be inferred from a glyph", () => {
     const html = renderToStaticMarkup(<RequestFacts request={request({ requestBytes: 412 })} />);
 
-    expect(html).toContain("method");
-    expect(html).toContain("received");
-    expect(html).toContain("sent");
-    expect(html).toContain("waiting");
-    expect(html).toContain("total");
+    expect(html).toContain("Method");
+    expect(html).toContain("Received");
+    expect(html).toContain("Sent");
+    expect(html).toContain("Waiting");
+    expect(html).toContain("Total");
     expect(html).toContain("412 B");
   });
 
@@ -222,9 +241,9 @@ describe("RequestFacts", () => {
       <RequestFacts request={request({ requestBytes: 0, mimeType: null, ttfbMs: null })} />,
     );
 
-    expect(html).not.toContain("sent");
-    expect(html).not.toContain("type");
-    expect(html).not.toContain("waiting");
+    expect(html).not.toContain("Sent");
+    expect(html).not.toContain("Type");
+    expect(html).not.toContain("Waiting");
   });
 });
 

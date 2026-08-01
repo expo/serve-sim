@@ -106,6 +106,40 @@ export function bootInjectedLibraries(udid: string): string | null {
 }
 
 /**
+ * Whether the device is still pointed at this proxy.
+ *
+ * Capture is applied to a boot session, so anything that ends that session — Simulator's own restart, a
+ * crash, `simctl shutdown` — silently drops the injection while this process still believes it is
+ * capturing. Asking the device is the only way to know; remembering what we set is what produces a panel
+ * that claims to be recording an app it cannot see.
+ */
+export async function deviceIsInjected(
+  udid: string,
+  portFile: string,
+  deps: InjectionDeps & { read?: (args: string[]) => Promise<string> } = {},
+): Promise<boolean> {
+  const read =
+    deps.read ??
+    (async (args: string[]) => {
+      const { stdout } = await execFileAsync("xcrun", ["simctl", ...args], {
+        timeout: SIMCTL_TIMEOUT_MS,
+        encoding: "utf8",
+      });
+      return stdout;
+    });
+  try {
+    const value = await read(["spawn", udid, "launchctl", "getenv", "SIMNET_PROXY_PORT_FILE"]);
+    // The injected library logs from every process it loads into, this `launchctl` included.
+    return value
+      .split("\n")
+      .some((line) => line.trim() === portFile);
+  } catch {
+    // A device that cannot be reached is not capturing.
+    return false;
+  }
+}
+
+/**
  * Stop pointing newly launched apps at the proxy.
  *
  * Best-effort by design. The proxy stops answering when the session ends, and the injected library checks

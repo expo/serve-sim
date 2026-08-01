@@ -1469,8 +1469,14 @@ export function handleNetworkCaptureRequest(
     res.write("data: " + JSON.stringify({ type: "finished", request }) + "\n\n");
   }
 
+  // The device can stop capturing on its own — a restart ends the boot session the injection belongs to.
+  // Checked when the panel opens, then on the heartbeat, so a stale claim corrects itself rather than
+  // waiting for the developer to notice an empty list. `refreshForDevice` only publishes on a change.
+  void runtime.refreshForDevice(state.device);
   const heartbeat = setInterval(() => {
-    if (!res.writableEnded) res.write(":\n\n");
+    if (res.writableEnded) return;
+    res.write(":\n\n");
+    void runtime.refreshForDevice(state.device);
   }, 15000);
   req.on("close", () => {
     clearInterval(heartbeat);

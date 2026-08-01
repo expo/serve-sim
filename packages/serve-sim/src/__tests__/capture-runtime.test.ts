@@ -18,6 +18,7 @@ function harness(
     trustCa?: (udid: string, caPem: string) => Promise<void>;
     inject?: (udid: string, portFile: string) => Promise<void>;
     clearInjection?: (udid: string) => Promise<void>;
+    isInjected?: (udid: string, portFile: string) => Promise<boolean>;
   } = {},
 ) {
   const calls: string[] = [];
@@ -38,6 +39,7 @@ function harness(
       (async (_udid, pem) => void calls.push(`trusted:${pem === CA_PEM ? "ok" : "wrong-pem"}`)),
     inject: overrides.inject ?? (async (_udid, portFile) => void calls.push(`injected:${portFile}`)),
     clearInjection: overrides.clearInjection ?? (async () => void calls.push("injection-cleared")),
+    isInjected: overrides.isInjected ?? (async () => true),
   });
   return { runtime, calls };
 }
@@ -225,6 +227,105 @@ describe("capture runtime", () => {
 
     expect(calls).toContain("proxy-closed");
     expect(runtime.storeFor(UDID)).toBeNull();
+  });
+
+  it("reports a device that quietly stopped capturing, and says a reboot ended it", async () => {
+    const { runtime } = harness({ isInjected: async () => false });
+    const frames: string[] = [];
+    await runtime.enableForDevice(UDID);
+    runtime.subscribe(UDID, (event) => frames.push(event.type));
+
+    const meta = await runtime.refreshForDevice(UDID);
+
+    // The device was restarted out from under us: the injection belongs to a boot session that has ended.
+    expect(meta.attachment).toBe("failed");
+    expect(meta.intercepted).toBe(false);
+    expect(meta.attachError).toContain("restarted");
+    expect(frames).toContain("meta");
+  });
+
+  it("asks the device once when several viewers check at the same moment", async () => {
+    let asks = 0;
+    const { runtime } = harness({
+      isInjected: async () => {
+        asks++;
+        return true;
+      },
+    });
+    await runtime.enableForDevice(UDID);
+
+    await Promise.all([
+      runtime.refreshForDevice(UDID),
+      runtime.refreshForDevice(UDID),
+      runtime.refreshForDevice(UDID),
+    ]);
+
+    // Each ask launches a process inside the simulator, so one question gets one answer.
+    expect(asks).toBe(1);
+  });
+
+  it("does not ask again straight away, however often it is called", async () => {
+    let asks = 0;
+    const { runtime } = harness({
+      isInjected: async () => {
+        asks++;
+        return true;
+      },
+    });
+    await runtime.enableForDevice(UDID);
+
+    await runtime.refreshForDevice(UDID);
+    await runtime.refreshForDevice(UDID);
+
+    // Every open panel heartbeats on its own timer; without this they would add up.
+    expect(asks).toBe(1);
+  });
+
+  it("leaves a healthy device alone and tells nobody", async () => {
+    const { runtime } = harness();
+    const frames: string[] = [];
+    await runtime.enableForDevice(UDID);
+    runtime.subscribe(UDID, (event) => frames.push(event.type));
+
+    expect((await runtime.refreshForDevice(UDID)).attachment).toBe("capturing");
+    // No frame, or every heartbeat would republish the same state to every viewer.
+    expect(frames).toEqual([]);
+  });
+
+  it("keeps an existing failure reason rather than replacing it with a vaguer one", async () => {
+    const { runtime } = harness({
+      trustCa: async () => {
+        throw new Error("simctl refused");
+      },
+      isInjected: async () => false,
+    });
+    await runtime.enableForDevice(UDID);
+
+    expect((await runtime.refreshForDevice(UDID)).attachError).toContain("simctl refused");
+  });
+
+  it("reports a device it never enabled as not enabled, without asking the device", async () => {
+    let asked = false;
+    const { runtime } = harness({
+      isInjected: async () => {
+        asked = true;
+        return true;
+      },
+    });
+
+    expect((await runtime.refreshForDevice(UDID)).attachment).toBe("not-enabled");
+    expect(asked).toBe(false);
+  });
+
+  it("treats a device that cannot be reached as not capturing", async () => {
+    const { runtime } = harness({
+      isInjected: async () => {
+        throw new Error("device not found");
+      },
+    });
+    await runtime.enableForDevice(UDID);
+
+    expect((await runtime.refreshForDevice(UDID)).attachment).toBe("failed");
   });
 
   it("hands a subscriber the live store without changing what the device does", async () => {

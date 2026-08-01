@@ -5,7 +5,12 @@
 // cannot change what the device does — and an app's first request is captured, which is impossible when
 // attaching has to relaunch the app to take effect.
 
-import { clearBootInjection, injectAtBoot, trustCaInSimulator } from "./capture-device";
+import {
+  clearBootInjection,
+  deviceIsInjected,
+  injectAtBoot,
+  trustCaInSimulator,
+} from "./capture-device";
 import {
   CAPTURE_SCHEMA_VERSION,
   CaptureStore,
@@ -14,10 +19,16 @@ import {
 } from "./capture-store";
 import { startMitmProxy, type CaptureProxy } from "./mitm-engine";
 
+/** How often a device is re-checked against reality, however many panels are watching it. */
+const CHECK_INTERVAL_MS = 10_000;
+
 interface Device {
   store: CaptureStore;
   meta: CaptureMeta;
   proxy: CaptureProxy | null;
+  /** In-flight check, shared so concurrent viewers ask the device once. */
+  checking?: Promise<CaptureMeta>;
+  checkedAt?: number;
 }
 
 export interface CaptureRuntimeOptions {
@@ -25,6 +36,8 @@ export interface CaptureRuntimeOptions {
   trustCa?: (udid: string, caPem: string) => Promise<void>;
   inject?: (udid: string, portFile: string) => Promise<void>;
   clearInjection?: (udid: string) => Promise<void>;
+  /** Whether the device is still pointed at the proxy. Asked rather than remembered. */
+  isInjected?: (udid: string, portFile: string) => Promise<boolean>;
 }
 
 function notEnabledMeta(udid: string): CaptureMeta {
@@ -51,6 +64,7 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   const trustCa = options.trustCa ?? trustCaInSimulator;
   const inject = options.inject ?? injectAtBoot;
   const clearInjection = options.clearInjection ?? clearBootInjection;
+  const isInjected = options.isInjected ?? deviceIsInjected;
 
   const byUdid = new Map<string, Device>();
 
@@ -135,6 +149,48 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
 
     metaFor(udid: string): CaptureMeta {
       return byUdid.get(udid)?.meta ?? notEnabledMeta(udid);
+    },
+
+    /**
+     * Re-check a device against reality and report its state.
+     *
+     * The device can stop capturing without telling us — its boot session ends and the injection goes with
+     * it — so a panel that trusted `metaFor` alone would keep claiming to record an app whose traffic it
+     * can no longer see. Viewers are told when the answer changes.
+     */
+    async refreshForDevice(udid: string): Promise<CaptureMeta> {
+      const device = byUdid.get(udid);
+      if (!device) return notEnabledMeta(udid);
+      // A failure already has a reason on it; re-checking would only replace it with a vaguer one.
+      if (device.meta.attachment !== "capturing" || !device.proxy) return device.meta;
+
+      // Shared and rate-limited across viewers. Asking costs a process launched inside the simulator,
+      // which loads the injected library and probes the port — so every open panel doing it on its own
+      // heartbeat would be a steady drip of work and log noise for one question with one answer.
+      const now = Date.now();
+      if (device.checking) return device.checking;
+      if (device.checkedAt !== undefined && now - device.checkedAt < CHECK_INTERVAL_MS) return device.meta;
+
+      const portFile = device.proxy.portFile;
+      device.checking = (async () => {
+        try {
+          const live = await isInjected(udid, portFile).catch(() => false);
+          if (live) return device.meta;
+
+          device.meta.attachment = "failed";
+          device.meta.intercepted = false;
+          device.meta.attachError =
+            "This device stopped capturing. It was restarted, or shut down, since capture was applied — " +
+            "capture is set up when a device boots, so it does not survive a restart. Reboot with capture " +
+            "to start again.";
+          device.store.publishMeta(device.meta);
+          return device.meta;
+        } finally {
+          device.checkedAt = Date.now();
+          device.checking = undefined;
+        }
+      })();
+      return device.checking;
     },
 
     /** The live store for a device, or null when it is not capturing. */

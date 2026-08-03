@@ -282,11 +282,30 @@ export class DeviceSession {
     return this.latestJpegBuffer.subarray(0, this.latestJpegLength);
   }
 
-  /** Write a multipart JPEG part (header + shared frame + boundary) without copying the JPEG. */
+  /**
+   * Write one multipart JPEG part (header + JPEG + trailing CRLF) as a **single
+   * `write()`** — the whole part is concatenated into one buffer first.
+   *
+   * The previous version emitted three separate writes (header, JPEG, trailing
+   * `\r\n`). Under Bun that corrupted ~1 frame in 20: the 2-byte trailer chunk
+   * got misordered relative to the neighbouring parts as it passed through the
+   * fetch bridge's ReadableStream + `Readable.fromWeb().pipe()`, landing between
+   * the next part's header and its JPEG (Node's stream ordering never tripped on
+   * it). One valid-but-malformed part is enough — a browser's native multipart
+   * `<img>` decoder can't resync past it and freezes on the first corrupt frame.
+   * One buffer per frame means there are no sub-frame chunk boundaries left to
+   * reorder. It also copies `jpeg`, so we no longer depend on the native frame
+   * buffer staying valid past the call. Awaiting drain provides backpressure.
+   */
   private async writeMjpegFrame(res: ServerResponse, jpeg: Uint8Array): Promise<void> {
-    res.write(mjpegHeader(jpeg.length));
-    await writeRetainedChunk(res, jpeg);
-    if (!res.writableEnded && !res.destroyed) res.write(MJPEG_TRAILER);
+    if (res.writableEnded || res.destroyed) return;
+    const header = mjpegHeader(jpeg.length);
+    const frame = Buffer.allocUnsafe(header.length + jpeg.length + MJPEG_TRAILER.length);
+    header.copy(frame, 0);
+    frame.set(jpeg, header.length);
+    MJPEG_TRAILER.copy(frame, header.length + jpeg.length);
+    res.write(frame);
+    await waitForDrain(res);
   }
 
   // ── HTTP handlers ────────────────────────────────────────────────────────
@@ -315,9 +334,11 @@ export class DeviceSession {
         if (closed || res.writableEnded || res.destroyed) return;
         const latestJpeg = this.latestJpeg();
         if (latestJpeg) {
-          // The shared latest-frame cache can change while Node flushes this
-          // initial paint; live native frames are retained by their callback.
-          await this.writeMjpegFrame(res, Buffer.from(latestJpeg));
+          // `latestJpeg` is a view into the shared latest-frame cache, which the
+          // native callback overwrites in place. writeMjpegFrame copies it into
+          // the outgoing buffer synchronously (before its first await), so the
+          // view can't be mutated mid-flush — no snapshot copy needed here.
+          await this.writeMjpegFrame(res, latestJpeg);
         }
         const unsubscribe = await this.capture.subscribeMjpeg(async (frame) => {
           this.onSharedMjpegFrame(frame);

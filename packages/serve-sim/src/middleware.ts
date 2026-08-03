@@ -271,8 +271,10 @@ async function getBootedUdids(): Promise<Set<string> | null> {
     for (const runtime of Object.values(data.devices)) {
       for (const device of runtime) {
         if (device.state === "Booted") {
-          booted.add(device.udid);
-          names.set(device.udid, device.name);
+          // simctl's JSON is uppercase; canonicalize so Map/Set lookups stay case-insensitive.
+          const udid = device.udid.toUpperCase();
+          booted.add(udid);
+          names.set(udid, device.name);
         }
       }
     }
@@ -283,10 +285,18 @@ async function getBootedUdids(): Promise<Set<string> | null> {
   }
 }
 
+/** Look up a display name in a simctl udid→name map. Keys are stored uppercase. */
+export function deviceNameFromBootedNames(
+  names: Map<string, string>,
+  udid: string,
+): string | undefined {
+  return names.get(udid.toUpperCase());
+}
+
 // Display name for a booted udid, from the last simctl snapshot (refreshed on grid polls).
 // Undefined until the first snapshot lands or if the device isn't booted.
 function bootedDeviceName(udid: string): string | undefined {
-  return bootedSnapshot.names.get(udid);
+  return deviceNameFromBootedNames(bootedSnapshot.names, udid);
 }
 
 // The device the user most recently opened in Simulator.app, regardless of

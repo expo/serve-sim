@@ -169,8 +169,9 @@ async function sampleMemoryBytes(procs: AppProcesses, deps: Required<SampleDeps>
 }
 
 // Bounded `nettop -d -L 2` run: last block is per-interval bytes/s. A long-lived stream never
-// flushes when piped; external interfaces only (skip loopback/dev).
-const NETTOP_ARGS = ["-x", "-P", "-n", "-d", "-L", "2", "-s", "1", "-t", "external"];
+// flushes when piped. Default interfaces (include loopback) so Simulator → Metro / localhost
+// APIs are counted; rates are still scoped to the foreground app's pids.
+const NETTOP_ARGS = ["-x", "-P", "-n", "-d", "-L", "2", "-s", "1"];
 
 /** Download/upload throughput (bytes/s). Same field names as AppUsage / MetricSample. */
 export interface NetInOut {

@@ -1,8 +1,9 @@
-// CPU/mem of the user's app on a booted sim, measured host-side. %CPU is per-core (can exceed 100)
-// and computed from the delta in the app's cumulative CPU time between ticks, so it reflects usage
-// during the interval rather than ps's decaying ~1-minute average. Scopes to the foreground app via
-// the foreground tracker, tagging each sample with its bundleId (null when nothing user-facing is
-// foreground, in which case the numbers cover every user app). Memory is phys_footprint, RSS fallback.
+// App metrics for the user's sim process set, measured host-side: CPU, memory, and network
+// throughput. %CPU is per-core (can exceed 100) and computed from the delta in the app's cumulative
+// CPU time between ticks, so it reflects usage during the interval rather than ps's decaying
+// ~1-minute average. Scopes to the foreground app via the foreground tracker, tagging each sample
+// with its bundleId (null when nothing user-facing is foreground, in which case the numbers cover
+// every user app). Memory is phys_footprint, RSS fallback. Network rates come from a nettop poller.
 
 import { execFile } from "node:child_process";
 import { cpus } from "node:os";
@@ -171,10 +172,10 @@ async function sampleMemoryBytes(procs: AppProcesses, deps: Required<SampleDeps>
 // flushes when piped; external interfaces only (skip loopback/dev).
 const NETTOP_ARGS = ["-x", "-P", "-n", "-d", "-L", "2", "-s", "1", "-t", "external"];
 
-/** Download/upload pair (bytes or bytes/s depending on the parser stage). */
+/** Download/upload throughput (bytes/s). Same field names as AppUsage / MetricSample. */
 export interface NetInOut {
-  in: number;
-  out: number;
+  netInBytesPerSec: number;
+  netOutBytesPerSec: number;
 }
 
 /** Parse one `nettop -x -P` CSV sample block into download/upload bytes per pid. */
@@ -193,13 +194,16 @@ export function parseNetSampleByPid(block: string): Map<number, NetInOut> {
     const pid = dot === -1 ? NaN : Number(proc.slice(dot + 1));
     if (Number.isNaN(pid)) continue;
     // `-P` aggregates per process, so each pid appears on a single row — take it as-is.
-    byPid.set(pid, { in: Number(cols[inIdx]) || 0, out: Number(cols[outIdx]) || 0 });
+    byPid.set(pid, {
+      netInBytesPerSec: Number(cols[inIdx]) || 0,
+      netOutBytesPerSec: Number(cols[outIdx]) || 0,
+    });
   }
   return byPid;
 }
 
-/** Split `nettop` CSV output into its per-sample blocks (each begins with a `time,` header). */
-function splitNetSampleBlocks(output: string): string[] {
+/** Per-pid bytes/s from a `nettop -d -L 2` run; needs ≥2 blocks (first is cumulative since start). */
+export function netRatesFromSamples(output: string): Map<number, NetInOut> {
   const blocks: string[] = [];
   let current: string[] = [];
   for (const line of output.split("\n")) {
@@ -211,14 +215,10 @@ function splitNetSampleBlocks(output: string): string[] {
     }
   }
   if (current.length > 0) blocks.push(current.join("\n"));
-  return blocks;
-}
-
-/** Per-pid bytes/s from a `nettop -d -L 2` run; needs ≥2 blocks (first is cumulative since start). */
-export function netRatesFromSamples(output: string): Map<number, NetInOut> {
-  const blocks = splitNetSampleBlocks(output);
   if (blocks.length < 2) return new Map();
-  return parseNetSampleByPid(blocks[blocks.length - 1]!);
+  const last = blocks[blocks.length - 1];
+  if (last === undefined) return new Map();
+  return parseNetSampleByPid(last);
 }
 
 /** Polls nettop for per-pid bytes/s. Failures clear rates so the UI doesn't show stale activity. */
@@ -250,16 +250,16 @@ export class NetworkThroughputMonitor {
 
   /** Current down/up throughput (bytes/s) summed across the given pids. */
   rateForPids(pids: number[]): NetInOut {
-    let inTotal = 0;
-    let outTotal = 0;
+    let netInBytesPerSec = 0;
+    let netOutBytesPerSec = 0;
     for (const pid of pids) {
       const r = this.rate.get(pid);
       if (r) {
-        inTotal += r.in;
-        outTotal += r.out;
+        netInBytesPerSec += r.netInBytesPerSec;
+        netOutBytesPerSec += r.netOutBytesPerSec;
       }
     }
-    return { in: inTotal, out: outTotal };
+    return { netInBytesPerSec, netOutBytesPerSec };
   }
 
   private async loop(generation: number): Promise<void> {
@@ -286,7 +286,7 @@ export async function sampleUserApp(udid: string, deps: SampleDeps = {}): Promis
   const resolved: Required<SampleDeps> = {
     exec: deps.exec ?? runCommand,
     frontmostApp: deps.frontmostApp ?? frontmostAppOf,
-    networkRate: deps.networkRate ?? (() => ({ in: 0, out: 0 })),
+    networkRate: deps.networkRate ?? (() => ({ netInBytesPerSec: 0, netOutBytesPerSec: 0 })),
   };
   const foreground = await sampleForegroundApp(udid, resolved);
   if (!foreground) return null;
@@ -296,8 +296,8 @@ export async function sampleUserApp(udid: string, deps: SampleDeps = {}): Promis
     processKey: [...foreground.procs.pids].sort((a, b) => a - b).join(","),
     cpuSeconds: foreground.procs.cpuSeconds,
     memBytes: await sampleMemoryBytes(foreground.procs, resolved),
-    netInBytesPerSec: net.in,
-    netOutBytesPerSec: net.out,
+    netInBytesPerSec: net.netInBytesPerSec,
+    netOutBytesPerSec: net.netOutBytesPerSec,
   };
 }
 

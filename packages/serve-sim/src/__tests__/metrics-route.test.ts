@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "events";
 import type { IncomingMessage, ServerResponse } from "http";
-import { MetricsSampler, createMetricsSamplerCache } from "../cpu-mem-sampler";
+import { MetricsSampler, createMetricsSamplerCache } from "../metrics-sampler";
 import type { ForegroundTrackerCache } from "../foreground-tracker";
 import { handleMetricsRequest } from "../middleware";
 import { inProcessServeSimState } from "../state";

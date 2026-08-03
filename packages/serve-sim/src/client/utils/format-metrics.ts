@@ -29,7 +29,7 @@ export function sparklinePath(
   sharedMax?: number,
 ): string {
   if (values.length < 2) return "";
-  const max = sharedMax != null && sharedMax > 0 ? sharedMax : Math.max(...values, 1);
+  const max = sharedMax !== undefined && sharedMax > 0 ? sharedMax : Math.max(...values, 1);
   const stepX = width / (values.length - 1);
   const pts = values.map((v, i) => ({ x: i * stepX, y: height - (v / max) * height }));
 

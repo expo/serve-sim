@@ -10,7 +10,7 @@ import {
   sampleUserApp,
   sumPhysFootprintBytes,
   type MetricSample,
-} from "../cpu-mem-sampler";
+} from "../metrics-sampler";
 
 const UDID = "ABCD1234-0000-0000-0000-0000000000EF";
 
@@ -127,8 +127,8 @@ describe("parseNetSampleByPid", () => {
         { pid: 104, bytesIn: 100, bytesOut: 100 },
       ]),
     );
-    expect(byPid.get(103)).toEqual({ in: 500, out: 300 });
-    expect(byPid.get(104)).toEqual({ in: 100, out: 100 });
+    expect(byPid.get(103)).toEqual({ netInBytesPerSec: 500, netOutBytesPerSec: 300 });
+    expect(byPid.get(104)).toEqual({ netInBytesPerSec: 100, netOutBytesPerSec: 100 });
     expect(byPid.get(999)).toBeUndefined();
   });
 
@@ -152,8 +152,8 @@ describe("netRatesFromSamples", () => {
         [{ pid: 42, bytesIn: 500, bytesOut: 200 }, { pid: 7, bytesIn: 0, bytesOut: 0 }],
       ]),
     );
-    expect(rate.get(42)).toEqual({ in: 500, out: 200 });
-    expect(rate.get(7)).toEqual({ in: 0, out: 0 }); // idle this interval, reported as zero
+    expect(rate.get(42)).toEqual({ netInBytesPerSec: 500, netOutBytesPerSec: 200 });
+    expect(rate.get(7)).toEqual({ netInBytesPerSec: 0, netOutBytesPerSec: 0 }); // idle this interval, reported as zero
   });
 
   it("keeps a busy process's rate when one of its connections closes", () => {
@@ -165,7 +165,7 @@ describe("netRatesFromSamples", () => {
         [{ pid: 42, bytesIn: 1000, bytesOut: 0 }],
       ]),
     );
-    expect(rate.get(42)).toEqual({ in: 1000, out: 0 });
+    expect(rate.get(42)).toEqual({ netInBytesPerSec: 1000, netOutBytesPerSec: 0 });
   });
 
   it("returns empty when a run produced only the cumulative first sample", () => {
@@ -204,12 +204,12 @@ describe("NetworkThroughputMonitor", () => {
     monitor.start();
     await until(() => calls.length === 1); // first run in flight
     calls[0]!.resolve(netWindow(2000));
-    await until(() => monitor.rateForPids([42]).in === 2000);
-    expect(monitor.rateForPids([42])).toEqual({ in: 2000, out: 0 });
+    await until(() => monitor.rateForPids([42]).netInBytesPerSec === 2000);
+    expect(monitor.rateForPids([42])).toEqual({ netInBytesPerSec: 2000, netOutBytesPerSec: 0 });
     await until(() => calls.length === 2); // loops for the next window
 
     monitor.stop();
-    expect(monitor.rateForPids([42])).toEqual({ in: 0, out: 0 }); // the live pid's rate is cleared on stop
+    expect(monitor.rateForPids([42])).toEqual({ netInBytesPerSec: 0, netOutBytesPerSec: 0 }); // the live pid's rate is cleared on stop
   });
 
   it("drops a pid's rate when its next window is idle, rather than replaying the stale value", async () => {
@@ -219,12 +219,12 @@ describe("NetworkThroughputMonitor", () => {
     monitor.start();
     await until(() => calls.length === 1);
     calls[0]!.resolve(netWindow(2000)); // busy interval
-    await until(() => monitor.rateForPids([42]).in === 2000);
+    await until(() => monitor.rateForPids([42]).netInBytesPerSec === 2000);
 
     await until(() => calls.length === 2);
     calls[1]!.resolve(netWindow(0)); // idle interval
-    await until(() => monitor.rateForPids([42]).in === 0);
-    expect(monitor.rateForPids([42])).toEqual({ in: 0, out: 0 });
+    await until(() => monitor.rateForPids([42]).netInBytesPerSec === 0);
+    expect(monitor.rateForPids([42])).toEqual({ netInBytesPerSec: 0, netOutBytesPerSec: 0 });
 
     monitor.stop();
   });
@@ -241,10 +241,10 @@ describe("NetworkThroughputMonitor", () => {
 
     calls[0]!.resolve(netWindow(9999));
     await new Promise((r) => setTimeout(r, 5));
-    expect(monitor.rateForPids([42])).toEqual({ in: 0, out: 0 });
+    expect(monitor.rateForPids([42])).toEqual({ netInBytesPerSec: 0, netOutBytesPerSec: 0 });
 
     calls[1]!.resolve(netWindow(2000));
-    await until(() => monitor.rateForPids([42]).in === 2000);
+    await until(() => monitor.rateForPids([42]).netInBytesPerSec === 2000);
     await until(() => calls.length === 3);
     await new Promise((r) => setTimeout(r, 10));
     expect(calls).toHaveLength(3);
@@ -259,12 +259,12 @@ describe("NetworkThroughputMonitor", () => {
     monitor.start();
     await until(() => calls.length === 1);
     calls[0]!.resolve(netWindow(2000));
-    await until(() => monitor.rateForPids([42]).in === 2000);
+    await until(() => monitor.rateForPids([42]).netInBytesPerSec === 2000);
 
     await until(() => calls.length === 2);
     calls[1]!.reject(new Error("nettop gone"));
-    await until(() => monitor.rateForPids([42]).in === 0);
-    expect(monitor.rateForPids([42])).toEqual({ in: 0, out: 0 });
+    await until(() => monitor.rateForPids([42]).netInBytesPerSec === 0);
+    expect(monitor.rateForPids([42])).toEqual({ netInBytesPerSec: 0, netOutBytesPerSec: 0 });
 
     monitor.stop();
   });
@@ -286,9 +286,9 @@ describe("sampleUserApp", () => {
       return footprintFor(pids);
     };
     let ratePids: number[] = [];
-    const networkRate = (pids: number[]): { in: number; out: number } => {
+    const networkRate = (pids: number[]): { netInBytesPerSec: number; netOutBytesPerSec: number } => {
       ratePids = pids;
-      return { in: 1000, out: 234 };
+      return { netInBytesPerSec: 1000, netOutBytesPerSec: 234 };
     };
     const usage = await sampleUserApp(UDID, {
       exec,
@@ -327,7 +327,7 @@ describe("sampleUserApp", () => {
     const exec = async (file: string, args: string[]): Promise<string> =>
       file === "ps" ? psFixtureTwoApps() : footprintFor(args.filter((a) => /^\d+$/.test(a)));
     // AX unavailable -> no frontmost app: sum all user apps (103 + 104 + 106), bundleId null
-    const networkRate = () => ({ in: 55, out: 0 });
+    const networkRate = () => ({ netInBytesPerSec: 55, netOutBytesPerSec: 0 });
     expect(await sampleUserApp(UDID, { exec, frontmostApp: async () => null, networkRate })).toEqual({
       bundleId: null,
       processKey: "103,104,106",

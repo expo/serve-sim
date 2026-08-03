@@ -186,7 +186,7 @@ function NetworkRow({
 
 /** Two lines (download, upload) on one shared vertical scale so their magnitudes are comparable. */
 function DualSparkline({ down, up }: { down: number[]; up: number[] }) {
-  const max = Math.max(...down.map((v) => v ?? 0), ...up.map((v) => v ?? 0), 1);
+  const max = Math.max(...down, ...up, 1);
   return (
     <svg viewBox={`0 0 ${SPARK_W} ${SPARK_H}`} preserveAspectRatio="none" className="w-full h-8">
       <SparkPath d={sparklinePath(down, SPARK_W, SPARK_H, max)} className="text-cyan-400" />

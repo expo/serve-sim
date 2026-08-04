@@ -191,6 +191,18 @@ describe("MetricsSampler", () => {
     });
   });
 
+  it("stamps deviceName into meta when supplied", () => {
+    const sampler = new MetricsSampler({ udid: UDID, deviceName: "iPhone 15", hostCores: 8 });
+    expect(sampler.meta.deviceName).toBe("iPhone 15");
+  });
+
+  it("omits deviceName from meta (and the serialized frame) when not supplied", () => {
+    const sampler = new MetricsSampler({ udid: UDID, hostCores: 8 });
+    expect(sampler.meta.deviceName).toBeUndefined();
+    // JSON.stringify drops undefined, so the SSE meta frame carries no deviceName key.
+    expect("deviceName" in JSON.parse(JSON.stringify(sampler.meta))).toBe(false);
+  });
+
   it("derives cpuPct from the cpu-time delta over each 1s interval", async () => {
     // Cumulative cpu seconds per tick, at 1s spacing (fakeClock). Expected cpuPct:
     //   t1 no baseline -> 0; t2 +0.5s/1s -> 50; t3 drop (churn) -> clamped 0;

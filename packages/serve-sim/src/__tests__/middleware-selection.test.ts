@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  deviceNameFromBootedNames,
   matchInstalledAppByDisplayName,
   previewConfigForState,
   rewriteStateForRequestHost,
@@ -246,5 +247,18 @@ describe("matchInstalledAppByDisplayName", () => {
         " example   app ",
       ),
     ).toBe("com.example.App");
+  });
+});
+
+describe("deviceNameFromBootedNames", () => {
+  const udid = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE";
+  const names = new Map([[udid, "iPhone 15"]]);
+
+  test("finds the name for a lowercase udid against uppercase map keys", () => {
+    expect(deviceNameFromBootedNames(names, udid.toLowerCase())).toBe("iPhone 15");
+  });
+
+  test("returns undefined when the udid is unknown", () => {
+    expect(deviceNameFromBootedNames(names, "00000000-0000-0000-0000-000000000000")).toBeUndefined();
   });
 });

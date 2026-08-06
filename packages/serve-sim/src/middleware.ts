@@ -39,6 +39,8 @@ import {
   serveDevicePlaceholderAsset,
 } from "./devicekit-chrome";
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
+import { crashRuntime, type CrashRuntime } from "./crash/runtime";
+import type { CrashRecord, CrashSummary } from "./crash/store";
 import { logBufferCache, type LogBufferCache, type LogLine } from "./log-buffer";
 import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware-utils";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
@@ -1618,6 +1620,161 @@ export function handleLogsRequest(
   });
 }
 
+/** The list carries the line count; `/crashes/<id>` carries the lines. */
+function summarize(record: CrashRecord): CrashSummary {
+  const { logTail, occurrences, ...rest } = record;
+  return { ...rest, logTailLines: logTail.length, occurrenceCount: occurrences.length };
+}
+
+/** JSON by default; SSE on `Accept: text/event-stream`. */
+export function handleCrashesRequest(
+  req: SimReq,
+  res: SimRes,
+  state: ServeSimState | null,
+  runtime: CrashRuntime = crashRuntime
+): void {
+  if (!state) {
+    res.writeHead(404, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(JSON.stringify({ error: "No serve-sim device" }));
+    return;
+  }
+  const udid = state.device;
+  const wantsStream = (req.headers.accept ?? "").includes("text/event-stream");
+  // A client that aborted during the caller's await never fires `close` here.
+  if (wantsStream && (res.destroyed || req.destroyed)) return;
+  const open = (): boolean => !res.writableEnded && !res.destroyed;
+
+  if (!wantsStream) {
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(
+      JSON.stringify({ meta: runtime.meta(), crashes: runtime.listFor(udid).map(summarize) })
+    );
+    return;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write(":\n\n");
+
+  const { crashes, unsubscribe } = runtime.subscribe(
+    udid,
+    (event) => {
+      if (!open()) return;
+      const frame = { type: event.type, record: summarize(event.record) };
+      res.write("data: " + JSON.stringify(frame) + "\n\n");
+    },
+    () => {
+      if (open()) res.end();
+    }
+  );
+
+  let lastMeta = JSON.stringify(runtime.meta());
+  res.write(`data: {"type":"meta","meta":${lastMeta}}\n\n`);
+  for (const record of crashes) {
+    if (!open()) break;
+    res.write("data: " + JSON.stringify({ type: "crash", record: summarize(record) }) + "\n\n");
+  }
+
+  const heartbeat = setInterval(() => {
+    if (!open()) return;
+    const next = JSON.stringify(runtime.meta());
+    if (next !== lastMeta) {
+      lastMeta = next;
+      res.write(`data: {"type":"meta","meta":${next}}\n\n`);
+    }
+    res.write(":\n\n");
+  }, 15000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+}
+
+export async function handleCrashReportRequest(
+  _req: SimReq,
+  res: SimRes,
+  state: ServeSimState | null,
+  id: string,
+  occurrenceParam: string | null = null,
+  runtime: CrashRuntime = crashRuntime,
+  readReport: (path: string) => Promise<string> = (path) => readFile(path, "utf8")
+): Promise<void> {
+  const fail = (status: number, error: string): void => {
+    res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(JSON.stringify({ error }));
+  };
+
+  if (!state) return fail(404, "No serve-sim device");
+  const record = runtime.getFor(state.device, id);
+  if (!record) return fail(404, "No crash with that id for this device");
+
+  const total = record.occurrences.length;
+  const requested = occurrenceParam === null ? total - 1 : Number(occurrenceParam);
+  if (!Number.isInteger(requested) || requested < 0 || requested >= total) {
+    return fail(400, `Occurrence must be 0-${total - 1} for this crash.`);
+  }
+  const occurrence = record.occurrences[requested]!;
+
+  let report: string | null = null;
+  let reportError: string | null = null;
+  try {
+    report = await readReport(occurrence.rawPath);
+  } catch {
+    reportError =
+      `The crash report file is gone (${occurrence.rawPath}); macOS moves older reports into ` +
+      "Retired/ and eventually deletes them. The summary is all that is left.";
+  }
+
+  res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+  res.end(
+    JSON.stringify({
+      record: summarize(record),
+      occurrence: { ...occurrence, index: requested, total },
+      report,
+      reportError,
+    })
+  );
+}
+
+// Dup of the /exec gate minus the Content-Type check (no body on a GET); fold into the
+// shared session-auth helper when the network-capture stack lands.
+function requireSessionToken(req: SimReq, res: SimRes, token: string): boolean {
+  const origin = req.headers.origin;
+  if (origin) {
+    let originHost: string;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid Origin" }));
+      return false;
+    }
+    if (originHost !== req.headers.host) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Cross-origin request blocked" }));
+      return false;
+    }
+  }
+
+  const match = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
+  if (!match || !safeEqualString(match[1]!.trim(), token)) {
+    res.writeHead(401, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        error:
+          "Unauthorized. This route needs the session bearer token; read it as `execToken` from " +
+          "the preview server's /api response.",
+      })
+    );
+    return false;
+  }
+  return true;
+}
+
 /**
  * Connect-style middleware that serves the simulator preview UI.
  *
@@ -1625,6 +1782,7 @@ export function handleLogsRequest(
  *   GET  {basePath}         — the preview HTML page
  *   GET  {basePath}/api     — serve-sim state JSON
  *   GET  {basePath}/logs    — simctl logs (JSON snapshot, or SSE)
+ *   GET  {basePath}/crashes — crash reports (bearer token)
  *   GET  {basePath}/ax      — SSE stream of normalized accessibility snapshots
  */
 export function handleMetricsRequest(
@@ -1679,6 +1837,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const execToken = options?.execToken ?? randomBytes(32).toString("base64url");
   const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
 
+  // The watch starts on the first `/crashes` read, so building a middleware never touches the
+  // host's crash directory.
+  crashRuntime.arm();
 
   // Simulator-settings requests run in-process (just the underlying simctl /
   // ax-tool spawn) instead of round-tripping a full `node <cli>` exec per
@@ -2422,10 +2583,50 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       return;
     }
 
+    if (url === base + "/crashes" || url === base + "/crashes/") {
+      if (!requireSessionToken(req, res, execToken)) return;
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      void crashRuntime.start().catch(() => {});
+      const live = states.map((s) => s.device);
+      crashRuntime.prune(live);
+      logBufferCache.prune(live);
+      // The tail can only hold lines the buffer already had, and `/logs` may never be opened.
+      if (state) logBufferCache.ensure(state.device);
+      handleCrashesRequest(req, res, state);
+      return;
+    }
+
+    if (url.startsWith(base + "/crashes/")) {
+      if (!requireSessionToken(req, res, execToken)) return;
+      const rawId = url.slice((base + "/crashes/").length);
+      let id: string;
+      try {
+        id = decodeURIComponent(rawId);
+      } catch {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error:
+              `Malformed percent-escape in the crash id (${rawId}). Copy the id verbatim from ` +
+              `GET ${base}/crashes.`,
+          })
+        );
+        return;
+      }
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      const occurrenceParam = new URL(rawUrl, "http://127.0.0.1").searchParams.get("occurrence");
+      await handleCrashReportRequest(req, res, state, id, occurrenceParam);
+      return;
+    }
+
     if (url === base + "/logs") {
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
-      logBufferCache.prune(states.map((s) => s.device));
+      const liveDevices = states.map((s) => s.device);
+      logBufferCache.prune(liveDevices);
+      crashRuntime.prune(liveDevices);
       handleLogsRequest(req, res, state, rawUrl);
       return;
     }

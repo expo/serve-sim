@@ -41,6 +41,7 @@ import {
   type DeviceKitChromeDescriptor,
 } from "./devicekit-chrome";
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
+import { logBufferCache, type LogBufferCache, type LogLine } from "./log-buffer";
 import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware-utils";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
 import { type WebMiddleware } from "./runtime-utils";
@@ -127,10 +128,6 @@ const metricsSamplerCache = createMetricsSamplerCache(
   (udid) => new MetricsSampler({ udid, deviceName: bootedDeviceName(udid) }),
 );
 
-// Hard cap on the SSE line-assembly buffer for child-process stdout.
-// A malformed log entry without a newline can't grow this beyond 1 MB;
-// the partial line is dropped rather than retained indefinitely.
-const SSE_LINE_BUFFER_LIMIT = 1024 * 1024;
 let inspectWebKitBridge: Promise<WebKitBridge> | null = null;
 
 function eventLogLimit(rawUrl: string): number | undefined {
@@ -1526,6 +1523,106 @@ function httpStreamSettingsFromLegacyCodec(codec: string | undefined): StreamSet
   return undefined;
 }
 
+function nonNegativeIntParam(params: URLSearchParams, name: string): number | undefined {
+  const raw = params.get(name)?.trim();
+  if (!raw) return undefined;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/** `?flag=0` and `?flag=false` mean off, not "present so on". */
+function booleanParam(params: URLSearchParams, name: string): boolean {
+  const raw = params.get(name);
+  if (raw === null) return false;
+  const value = raw.trim().toLowerCase();
+  return value !== "0" && value !== "false" && value !== "no";
+}
+
+/** SSE by default (the preview UI); JSON on `Accept: application/json` or `?snapshot`. */
+export function handleLogsRequest(
+  req: SimReq,
+  res: SimRes,
+  state: ServeSimState | null,
+  rawUrl: string,
+  cache: LogBufferCache = logBufferCache
+): void {
+  if (!state) {
+    res.writeHead(404, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(JSON.stringify({ error: "No serve-sim device" }));
+    return;
+  }
+
+  const params = new URL(rawUrl, "http://127.0.0.1").searchParams;
+  const since = nonNegativeIntParam(params, "since");
+  const limit = nonNegativeIntParam(params, "limit");
+  const wantsJson =
+    booleanParam(params, "snapshot") || (req.headers.accept ?? "").includes("application/json");
+  // The raw line is already JSON, so default frames are unwrapped.
+  const wantsEnvelope = booleanParam(params, "envelope");
+
+  // `writableEnded` never fires on this path; an aborted client shows up as `destroyed`.
+  const logsOpen = (): boolean => !res.writableEnded && !res.destroyed;
+  const buffer = cache.ensure(state.device);
+
+  if (wantsJson) {
+    const lines = buffer.read({ since, limit });
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(
+      JSON.stringify({
+        device: state.device,
+        latestSeq: buffer.latestSeq,
+        oldestSeq: buffer.oldestSeq,
+        bufferedBytes: buffer.byteLength,
+        status: buffer.status,
+        streamError: buffer.error,
+        lines,
+      })
+    );
+    return;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write(":\n\n");
+
+  const frame = (line: LogLine): string =>
+    "data: " +
+    (wantsEnvelope ? JSON.stringify({ seq: line.seq, at: line.at, raw: line.raw }) : line.raw) +
+    "\n\n";
+
+  // Must stay synchronous between read and subscribe: lines arrive on a separate macrotask,
+  // so an await here would drop whatever landed in the gap.
+  let lastSent = since ?? 0;
+  for (const line of buffer.read({ since, limit })) {
+    if (!logsOpen()) break;
+    res.write(frame(line));
+    lastSent = line.seq;
+  }
+
+  const unsubscribe = buffer.subscribe(
+    (line) => {
+      if (!logsOpen() || line.seq <= lastSent) return;
+      lastSent = line.seq;
+      res.write(frame(line));
+    },
+    () => {
+      if (logsOpen()) res.end();
+    }
+  );
+
+  const heartbeat = setInterval(() => {
+    if (logsOpen()) res.write(":\n\n");
+  }, 15000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+}
+
 /**
  * Connect-style middleware that serves the simulator preview UI.
  *
@@ -1588,6 +1685,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const requirePreviewToken = options?.requirePreviewToken ?? false;
   const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
   const frameAncestors = options?.frameAncestors ?? [];
+
 
   // Simulator-settings requests run in-process (just the underlying simctl /
   // ax-tool spawn) instead of round-tripping a full `node <cli>` exec per
@@ -2365,50 +2463,11 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       return;
     }
 
-    // SSE: simctl log stream
     if (url === base + "/logs") {
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
-      if (!state) {
-        res.writeHead(404);
-        res.end("No serve-sim device");
-        return;
-      }
-      const udid = state.device;
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-      });
-      res.write(":\n\n");
-
-      const child: ChildProcess = spawn("xcrun", [
-        "simctl", "spawn", udid, "log", "stream",
-        "--style", "ndjson",
-        "--level", "info",
-      ], { stdio: ["ignore", "pipe", "ignore"] });
-
-      let buf = "";
-      child.stdout!.on("data", (chunk: Buffer) => {
-        buf += chunk.toString();
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) !== -1) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (line) res.write("data: " + line + "\n\n");
-        }
-        // Drop a runaway partial line so a malformed/never-terminated
-        // log entry can't grow `buf` without bound.
-        if (buf.length > SSE_LINE_BUFFER_LIMIT) buf = "";
-      });
-
-      child.on("error", () => { try { res.end(); } catch {} });
-      child.on("close", () => res.end());
-      req.on("close", () => {
-        child.stdout?.destroy();
-        child.kill();
-      });
+      logBufferCache.prune(states.map((s) => s.device));
+      handleLogsRequest(req, res, state, rawUrl);
       return;
     }
 

@@ -16,6 +16,7 @@ import {
   type WebRtcIceServer,
 } from "./state";
 import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from "./text-to-keys";
+import { logBufferCache } from "./log-buffer";
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
 import { killPortHolder } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
@@ -507,6 +508,7 @@ async function follow(
     if (shuttingDown) return;
     shuttingDown = true;
     if (!quiet) console.log("\nShutting down...");
+    logBufferCache.stopAll();
     for (const [udid, child] of children) {
       const pid = child.pid;
       if (pid) stopProcess(pid);
@@ -535,6 +537,7 @@ async function follow(
 
   // Last-resort synchronous cleanup if something else exits the process
   process.on("exit", () => {
+    logBufferCache.stopAll();
     for (const [udid, child] of children) {
       try { if (child.pid) process.kill(child.pid, "SIGTERM"); } catch {}
       try { clearState(udid); } catch {}

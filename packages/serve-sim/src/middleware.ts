@@ -173,6 +173,11 @@ function isSimulatorUdid(value: string): boolean {
   return /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(value);
 }
 
+const SCREENSHOT_RESPONSE_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Cache-Control": "no-store",
+};
+
 /** What to do with a persisted device state when reaping during a grid poll. */
 type StaleStateAction = "keep" | "recycle-self" | "recycle-helper";
 
@@ -1815,18 +1820,30 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // ?device= selection with a booted-simulator fallback.
     if (url === base + "/api/screenshot") {
       if (req.method !== "POST") {
+        res.writeHead(405, {
+          ...SCREENSHOT_RESPONSE_HEADERS,
+          "Content-Type": "text/plain; charset=utf-8",
+        });
         res.end("method not allowed");
         return;
       }
       let udid = selectedDevice;
+      if (udid && !isSimulatorUdid(udid)) {
+        res.writeHead(400, {
+          ...SCREENSHOT_RESPONSE_HEADERS,
+          "Content-Type": "application/json",
+        });
+        res.end(JSON.stringify({ ok: false, error: "Invalid simulator device ID" }));
+        return;
+      }
       if (!udid) {
         const booted = await getBootedUdids();
         udid = (booted && [...booted][0]) ?? null;
       }
-      if (!udid || !isSimulatorUdid(udid)) {
+      if (!udid) {
         res.writeHead(400, {
+          ...SCREENSHOT_RESPONSE_HEADERS,
           "Content-Type": "application/json",
-          "Cache-Control": "no-store",
         });
         res.end(JSON.stringify({ ok: false, error: "No booted simulator to screenshot" }));
         return;
@@ -1848,9 +1865,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         });
         const png = await readFile(file);
         res.writeHead(200, {
+          ...SCREENSHOT_RESPONSE_HEADERS,
           "Content-Type": "image/png",
-          "Cache-Control": "no-store",
-          "Access-Control-Allow-Origin": "*",
         });
         res.end(png);
       } catch (err) {
@@ -1859,8 +1875,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           (typeof stderr === "string" && stderr.trim()) ||
           (err instanceof Error ? err.message : String(err));
         res.writeHead(500, {
+          ...SCREENSHOT_RESPONSE_HEADERS,
           "Content-Type": "application/json",
-          "Cache-Control": "no-store",
         });
         res.end(JSON.stringify({ ok: false, error: message }));
       } finally {

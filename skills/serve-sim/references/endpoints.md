@@ -64,6 +64,7 @@ mounts it at `/`. Prefix the paths below with that configured base.
 | `GET` | `/` | Preview HTML. |
 | `GET` | `/api` | Selected simulator state and browser endpoint configuration. |
 | `GET` | `/api/events` | SSE stream of selected-device configuration changes. |
+| `POST` | `/api/screenshot` | Still PNG of the selected simulator (`simctl io <udid> screenshot`). |
 | `GET` | `/api/event-log` | Recent normalized simulator input events. |
 | `GET` | `/api/event-log/events` | SSE event-log updates. |
 | `GET` | `/logs` | SSE stream of simulator console logs (NDJSON events). |

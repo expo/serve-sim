@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync, existsSync, unlinkSync, watch, type FSWatcher } from "fs";
+import { readFile, unlink } from "fs/promises";
 import { execSync, spawn, exec, execFile, type ChildProcess, type ExecException } from "child_process";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -165,6 +166,11 @@ const RN_MARKERS = [
 function isSimulatorUdid(value: string): boolean {
   return /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(value);
 }
+
+const SCREENSHOT_RESPONSE_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Cache-Control": "no-store",
+};
 
 /** What to do with a persisted device state when reaping during a grid poll. */
 type StaleStateAction = "keep" | "recycle-self" | "recycle-helper";
@@ -1858,6 +1864,78 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       });
       const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
       res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers) : null));
+      return;
+    }
+
+    // Still-PNG capture via `simctl io <udid> screenshot`. Consumed by the
+    // Expo Device Hub dashboard's save-screenshot action (the serve-sim web UI
+    // shells out over exec-ws instead, so it never hits this route). Uses the
+    // ?device= selection with a booted-simulator fallback.
+    if (url === base + "/api/screenshot") {
+      if (req.method !== "POST") {
+        res.writeHead(405, {
+          ...SCREENSHOT_RESPONSE_HEADERS,
+          "Content-Type": "text/plain; charset=utf-8",
+        });
+        res.end("method not allowed");
+        return;
+      }
+      let udid = selectedDevice;
+      if (udid && !isSimulatorUdid(udid)) {
+        res.writeHead(400, {
+          ...SCREENSHOT_RESPONSE_HEADERS,
+          "Content-Type": "application/json",
+        });
+        res.end(JSON.stringify({ ok: false, error: "Invalid simulator device ID" }));
+        return;
+      }
+      if (!udid) {
+        const booted = await getBootedUdids();
+        udid = (booted && [...booted][0]) ?? null;
+      }
+      if (!udid) {
+        res.writeHead(400, {
+          ...SCREENSHOT_RESPONSE_HEADERS,
+          "Content-Type": "application/json",
+        });
+        res.end(JSON.stringify({ ok: false, error: "No booted simulator to screenshot" }));
+        return;
+      }
+      // simctl only writes to a file, so round-trip through a private tmp path
+      // instead of streaming; captures are a few MB at most.
+      const file = join(tmpdir(), `serve-sim-screenshot-${randomBytes(8).toString("hex")}.png`);
+      try {
+        await new Promise<void>((resolve, reject) => {
+          execFile(
+            "xcrun",
+            ["simctl", "io", udid, "screenshot", file],
+            { timeout: 5_000 },
+            (err, _stdout, stderr) => {
+              if (err) reject(Object.assign(err, { stderr: stderr?.toString() }));
+              else resolve();
+            },
+          );
+        });
+        const png = await readFile(file);
+        res.writeHead(200, {
+          ...SCREENSHOT_RESPONSE_HEADERS,
+          "Content-Type": "image/png",
+        });
+        res.end(png);
+      } catch (err) {
+        const stderr = (err as { stderr?: unknown }).stderr;
+        const message =
+          (typeof stderr === "string" && stderr.trim()) ||
+          (err instanceof Error ? err.message : String(err));
+        res.writeHead(500, {
+          ...SCREENSHOT_RESPONSE_HEADERS,
+          "Content-Type": "application/json",
+        });
+        res.end(JSON.stringify({ ok: false, error: message }));
+      } finally {
+        // Best-effort cleanup; the PNG is already in memory by now.
+        await unlink(file).catch(() => {});
+      }
       return;
     }
 

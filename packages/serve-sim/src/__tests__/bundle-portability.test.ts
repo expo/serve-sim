@@ -8,7 +8,7 @@ import { join } from "path";
 // replaces a bare CommonJS `__dirname` with the *build machine's* source
 // directory as a string constant, which resolves fine on the machine that
 // built the package (masking the bug in local testing) and on nobody
-// else's — `npx serve-sim` then fails with "sim-ax-settings binary not
+// else's — `npx @expo/serve-sim` then fails with "sim-ax-settings binary not
 // found". Modules needing __dirname must shadow it with
 // `dirnameOf(import.meta.url)` (see src/runtime.ts); this suite catches
 // any bundle that picked up the compile-time constant instead.

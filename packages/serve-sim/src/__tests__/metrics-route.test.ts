@@ -1,9 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "events";
 import type { IncomingMessage, ServerResponse } from "http";
-import { MetricsSampler, createMetricsSamplerCache } from "../cpu-mem-sampler";
+import { MetricsSampler, createMetricsSamplerCache } from "../metrics-sampler";
+import type { ForegroundTrackerCache } from "../foreground-tracker";
 import { handleMetricsRequest } from "../middleware";
 import { inProcessServeSimState } from "../state";
+
+// The route keeps the foreground tail warm; these unit tests don't exercise it, so a no-op
+// tracker keeps them off a real `log stream`.
+const noopTracker: ForegroundTrackerCache = {
+  subscribe: () => ({ unsubscribe: () => {} }),
+  peek: () => null,
+};
 
 /**
  * Unit tests for the `/metrics` route handler. These exercise the route's own
@@ -57,7 +65,14 @@ function createTrackingCache() {
       intervalMs: 1_000_000,
       now: () => 0,
       hostCores: 8,
-      sample: async () => ({ bundleId: "com.example.app", cpuSeconds: 1, memBytes: 2048 }),
+      sample: async () => ({
+        bundleId: "com.example.app",
+        processKey: "1",
+        cpuSeconds: 1,
+        memBytes: 2048,
+        netInBytesPerSec: 4096,
+        netOutBytesPerSec: 1024,
+      }),
     });
     created.push(sampler);
     return sampler;
@@ -81,7 +96,7 @@ describe("handleMetricsRequest", () => {
     const { req } = createFakeReq();
     const { res, status } = createFakeRes();
 
-    handleMetricsRequest(req, res, null, cache);
+    handleMetricsRequest(req, res, null, cache, [], noopTracker);
 
     expect(status()).toBe(404);
     expect(created).toHaveLength(0);
@@ -89,10 +104,10 @@ describe("handleMetricsRequest", () => {
 
   test("writes the meta frame before any sample", async () => {
     const { cache, created } = createTrackingCache();
-    const { req } = createFakeReq();
+    const { req, close } = createFakeReq();
     const { res, writes } = createFakeRes();
 
-    handleMetricsRequest(req, res, inProcessServeSimState("UDID-1", 4000), cache);
+    handleMetricsRequest(req, res, inProcessServeSimState("UDID-1", 4000), cache, [], noopTracker);
 
     const metaFrame = writes[1] ?? "";
     expect(metaFrame).toStartWith("event: meta\ndata:");
@@ -103,6 +118,13 @@ describe("handleMetricsRequest", () => {
     await firstSampler(created).tickOnce();
     expect(sampleFrames(writes)).toHaveLength(1);
 
+    // The new network fields must survive serialization into the SSE sample frame.
+    const body = sampleFrames(writes)[0]!;
+    const parsed = JSON.parse(body.slice(body.indexOf("data:") + "data:".length).trim());
+    expect(parsed.netInBytesPerSec).toBe(4096);
+    expect(parsed.netOutBytesPerSec).toBe(1024);
+
+    close();
     created.forEach((s) => s.stop());
   });
 
@@ -114,8 +136,8 @@ describe("handleMetricsRequest", () => {
     const resA = createFakeRes();
     const resB = createFakeRes();
 
-    handleMetricsRequest(a.req, resA.res, state, cache);
-    handleMetricsRequest(b.req, resB.res, state, cache);
+    handleMetricsRequest(a.req, resA.res, state, cache, [], noopTracker);
+    handleMetricsRequest(b.req, resB.res, state, cache, [], noopTracker);
 
     expect(created).toHaveLength(1);
 
@@ -123,6 +145,8 @@ describe("handleMetricsRequest", () => {
     expect(sampleFrames(resA.writes)).toEqual(sampleFrames(resB.writes));
     expect(sampleFrames(resA.writes)).toHaveLength(1);
 
+    a.close();
+    b.close();
     created.forEach((s) => s.stop());
   });
 
@@ -132,8 +156,8 @@ describe("handleMetricsRequest", () => {
     const a = createFakeReq();
     const b = createFakeReq();
 
-    handleMetricsRequest(a.req, createFakeRes().res, state, cache);
-    handleMetricsRequest(b.req, createFakeRes().res, state, cache);
+    handleMetricsRequest(a.req, createFakeRes().res, state, cache, [], noopTracker);
+    handleMetricsRequest(b.req, createFakeRes().res, state, cache, [], noopTracker);
     expect(created).toHaveLength(1);
 
     a.close();
@@ -143,9 +167,11 @@ describe("handleMetricsRequest", () => {
     expect(firstSampler(created).listenerCount).toBe(0);
 
     // With the shared sampler evicted, a fresh subscriber builds a new one.
-    handleMetricsRequest(createFakeReq().req, createFakeRes().res, state, cache);
+    const c = createFakeReq();
+    handleMetricsRequest(c.req, createFakeRes().res, state, cache, [], noopTracker);
     expect(created).toHaveLength(2);
 
+    c.close();
     created.forEach((s) => s.stop());
   });
 });

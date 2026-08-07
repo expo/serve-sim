@@ -16,6 +16,7 @@ import type {
   StreamPlaybackSettings,
 } from "../../stream-settings";
 
+/** The preview's collapsible tools panel: app detection, metrics, camera, permissions, and settings. */
 export function ToolsPanel({
   open,
   onClose,
@@ -61,7 +62,11 @@ export function ToolsPanel({
       {open && (
         <div className="p-3.5 overflow-y-auto flex-1 flex flex-col gap-3">
           <AppDetectionTool udid={udid} currentApp={currentApp} />
-          <MetricsTool udid={udid} metricsEndpoint={metricsEndpoint} />
+          <MetricsTool
+            udid={udid}
+            currentAppBundleId={currentApp?.bundleId ?? null}
+            metricsEndpoint={metricsEndpoint}
+          />
           <EventLogTool udid={udid} eventsEndpoint={eventLogEventsEndpoint} />
           <SimulatorSettingsTool udid={udid} runtime={deviceRuntime} />
           <AxTreeTool

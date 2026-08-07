@@ -14,7 +14,8 @@ import type { Socket } from "net";
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
-import { createMetricsSamplerCache, type MetricsSamplerCache } from "./cpu-mem-sampler";
+import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./metrics-sampler";
+import { foregroundTracker, type ForegroundApp, type ForegroundTrackerCache } from "./foreground-tracker";
 import { corsAllowOriginHeaders } from "./middleware-utils";
 import { closeDeviceSession, getDeviceSession, sendCorsPreflight, type HidSocket } from "./device-session";
 import {
@@ -23,7 +24,6 @@ import {
   recordEventLogEvent,
   subscribeEventLog,
 } from "./event-log";
-import { axFrontmostAsync } from "./native";
 import { inProcessServeSimState, writeServeSimState, type ServeSimDeviceState, type StreamSettings } from "./state";
 import { debugMw } from "./debug";
 import {
@@ -33,6 +33,7 @@ import {
   serveDevicePlaceholderAsset,
 } from "./devicekit-chrome";
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
+import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware-utils";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
 import { type WebMiddleware } from "./runtime-utils";
 import { connectToFetch, type ConnectMiddleware } from "./connect-to-fetch";
@@ -95,7 +96,7 @@ type CdpHttpListEntry = {
 type CdpHttpVersion = { Browser?: string };
 
 type SimctlBootedList = {
-  devices: Record<string, Array<{ udid: string; state: string }>>;
+  devices: Record<string, Array<{ udid: string; state: string; name: string }>>;
 };
 
 type SimctlAllList = {
@@ -112,8 +113,11 @@ type ExecRequestBody = { command?: string };
 export type ServeSimState = ServeSimDeviceState;
 
 const axStreamerCache = createAxStreamerCache();
-// One shared cpu/mem sampler per udid; every /metrics viewer subscribes.
-const metricsSamplerCache = createMetricsSamplerCache();
+// One shared cpu/mem sampler per udid; every /metrics viewer subscribes. Stamp the device name
+// (from the last booted-device snapshot) into the sampler's meta frame when we know it.
+const metricsSamplerCache = createMetricsSamplerCache(
+  (udid) => new MetricsSampler({ udid, deviceName: bootedDeviceName(udid) }),
+);
 
 // Hard cap on the SSE line-assembly buffer for child-process stdout.
 // A malformed log entry without a newline can't grow this beyond 1 MB;
@@ -159,16 +163,6 @@ const RN_MARKERS = [
   "main.jsbundle",
 ];
 
-// Processes that SpringBoard logs as "Foreground" but are not the visible
-// user-facing app — widgets, extensions, background services. Emitting
-// these to the client causes the app indicator to flicker as the user
-// actually-foreground app switches mid-launch.
-const NON_UI_BUNDLE_RE = /(WidgetRenderer|ExtensionHost|\.extension(\.|$)|Service|PlaceholderApp|InCallService|CallUI|InCallUI|com\.apple\.Preferences\.Cellular|com\.apple\.purplebuddy|com\.apple\.chrono|com\.apple\.shuttle|com\.apple\.usernotificationsui)/i;
-
-function isUserFacingBundle(bundleId: string): boolean {
-  return !NON_UI_BUNDLE_RE.test(bundleId);
-}
-
 function isSimulatorUdid(value: string): boolean {
   return /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(value);
 }
@@ -200,13 +194,6 @@ function classifyStaleState(
     return state.pid === selfPid ? "recycle-self" : "recycle-helper";
   }
   return "keep";
-}
-
-export function parseForegroundAppLogMessage(message: string): { bundleId: string; pid: number } | null {
-  // e.g. "[app<com.apple.mobilesafari>:43117] Setting process visibility to: Foreground"
-  const match = /\[app<([^>]+)>:(\d+)\] Setting process visibility to: Foreground/.exec(message);
-  if (!match) return null;
-  return { bundleId: match[1]!, pid: parseInt(match[2]!, 10) };
 }
 
 function detectReactNative(udid: string, bundleId: string): Promise<boolean> {
@@ -260,7 +247,11 @@ export function matchInstalledAppByDisplayName(
 // Cache simctl's booted-device set briefly so per-request cost stays bounded.
 // The middleware runs inside the user's dev server (Metro etc.) and
 // readServeSimStates() is called on every /api and every page load.
-let bootedSnapshot: { at: number; booted: Set<string> | null } = { at: 0, booted: null };
+let bootedSnapshot: { at: number; booted: Set<string> | null; names: Map<string, string> } = {
+  at: 0,
+  booted: null,
+  names: new Map(),
+};
 async function getBootedUdids(): Promise<Set<string> | null> {
   const now = Date.now();
   if (bootedSnapshot.booted && now - bootedSnapshot.at < 1500) {
@@ -283,16 +274,36 @@ async function getBootedUdids(): Promise<Set<string> | null> {
     });
     const data = JSON.parse(stdout) as SimctlBootedList;
     const booted = new Set<string>();
+    const names = new Map<string, string>();
     for (const runtime of Object.values(data.devices)) {
       for (const device of runtime) {
-        if (device.state === "Booted") booted.add(device.udid);
+        if (device.state === "Booted") {
+          // simctl's JSON is uppercase; canonicalize so Map/Set lookups stay case-insensitive.
+          const udid = device.udid.toUpperCase();
+          booted.add(udid);
+          names.set(udid, device.name);
+        }
       }
     }
-    bootedSnapshot = { at: now, booted };
+    bootedSnapshot = { at: now, booted, names };
     return booted;
   } catch {
     return null;
   }
+}
+
+/** Look up a display name in a simctl udid→name map. Keys are stored uppercase. */
+export function deviceNameFromBootedNames(
+  names: Map<string, string>,
+  udid: string,
+): string | undefined {
+  return names.get(udid.toUpperCase());
+}
+
+// Display name for a booted udid, from the last simctl snapshot (refreshed on grid polls).
+// Undefined until the first snapshot lands or if the device isn't booted.
+function bootedDeviceName(udid: string): string | undefined {
+  return deviceNameFromBootedNames(bootedSnapshot.names, udid);
 }
 
 // The device the user most recently opened in Simulator.app, regardless of
@@ -1357,6 +1368,7 @@ export function handleMetricsRequest(
   state: ServeSimState | null,
   samplerCache: MetricsSamplerCache = metricsSamplerCache,
   corsOrigins: readonly string[] = [],
+  tracker: ForegroundTrackerCache = foregroundTracker,
 ): void {
   if (!state) {
     res.writeHead(404);
@@ -1371,6 +1383,9 @@ export function handleMetricsRequest(
     ...corsAllowOriginHeaders(req.headers.origin, corsOrigins),
   });
   res.write(":\n\n");
+  // Keep the foreground tail warm for this stream's lifetime so the sampler can scope to the
+  // current app even when no /appstate client is open.
+  const foreground = tracker.subscribe(state.device);
   const { meta, unsubscribe } = samplerCache.subscribe(state.device, (sample) => {
     if (!res.writableEnded) res.write("data: " + JSON.stringify(sample) + "\n\n");
   });
@@ -1382,6 +1397,7 @@ export function handleMetricsRequest(
   req.on("close", () => {
     clearInterval(heartbeat);
     unsubscribe();
+    foreground.unsubscribe();
   });
 }
 
@@ -1635,7 +1651,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         closeDeviceSession(udid);
         // Drop the snapshot so the next /grid/api call re-queries simctl
         // and prunes any helper bound to this now-shutdown device.
-        bootedSnapshot = { at: 0, booted: null };
+        bootedSnapshot = { at: 0, booted: null, names: new Map() };
         execFile("xcrun", ["simctl", "shutdown", udid], { timeout: 30_000 }, (err, _stdout, stderr) => {
           if (err) {
             res.writeHead(500, { "Content-Type": "application/json" });
@@ -1783,6 +1799,43 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           }));
         }
       });
+      return;
+    }
+
+    if (url === base + "/healthz") {
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      res.end(JSON.stringify({ status: "ok" }));
+      return;
+    }
+
+    if (url === base + "/readyz") {
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      if (!state) {
+        res.writeHead(503, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify({ status: "starting" }));
+        return;
+      }
+      try {
+        await getDeviceSession(state.device, streamSettings).start();
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify({ status: "ready", device: state.device }));
+      } catch {
+        res.writeHead(503, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify({ status: "starting" }));
+      }
       return;
     }
 
@@ -2200,71 +2253,28 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       });
       res.write(":\n\n");
 
-      // Bootstrap: SpringBoard's log feed is edge-triggered, so a fresh
-      // subscriber would otherwise see nothing until the user re-foregrounds
-      // an app (the bug: tools couldn't reconnect after a page reload). Ask
-      // the helper's AX bridge for the current frontmost app via
-      // `proc_pidpath`+Info.plist resolution and emit it before tailing.
-      let lastBundle = "";
-      try {
-        const info = JSON.parse(await axFrontmostAsync(udid)) as { bundleId?: string; pid?: number };
-        if (!info.bundleId || !isUserFacingBundle(info.bundleId)) return;
-        if (res.writableEnded) return;
-        lastBundle = info.bundleId;
-        const isReactNative = await detectReactNative(udid, info.bundleId);
-        if (res.writableEnded) return;
-        res.write("data: " + JSON.stringify({ bundleId: info.bundleId, pid: info.pid, isReactNative }) + "\n\n");
-      } catch {
-        // AX bridge may be warming up — the log tail fills in once anything moves.
-      }
-
-      const child: ChildProcess = spawn("xcrun", [
-        "simctl", "spawn", udid, "log", "stream",
-        "--style", "ndjson",
-        "--level", "info",
-        "--predicate",
-        'process == "SpringBoard" AND eventMessage CONTAINS "Setting process visibility to: Foreground"',
-      ], { stdio: ["ignore", "pipe", "ignore"] });
-
-      let closed = false;
-      const emitApp = async (bundleId: string, pid?: number) => {
-        if (!isUserFacingBundle(bundleId)) return;
-        if (bundleId === lastBundle) return;
-        lastBundle = bundleId;
-        const isReactNative = await detectReactNative(udid, bundleId);
-        if (!closed) {
-          res.write("data: " + JSON.stringify({ bundleId, pid, isReactNative }) + "\n\n");
+      // SpringBoard's foreground feed is edge-triggered, so a fresh subscriber sees nothing until
+      // the next app switch. The shared tracker seeds itself from the AX bridge on start, so replay
+      // its current app (once known) before streaming changes.
+      let lastApp: ForegroundApp | null = null;
+      let generation = 0;
+      const emit = async (app: ForegroundApp) => {
+        // Dedup on bundleId and pid: the tracker emits same-bundle relaunches with a fresh pid, and
+        // clients need the live pid.
+        if (res.writableEnded || (app.bundleId === lastApp?.bundleId && app.pid === lastApp.pid)) return;
+        lastApp = app;
+        // detectReactNative is awaited, so a later switch can resolve first; only write if no newer
+        // emit has started, otherwise a slow lookup could overwrite the client with a stale app.
+        const generationAtStart = ++generation;
+        const isReactNative = await detectReactNative(udid, app.bundleId);
+        if (!res.writableEnded && generationAtStart === generation) {
+          res.write("data: " + JSON.stringify({ bundleId: app.bundleId, pid: app.pid, isReactNative }) + "\n\n");
         }
       };
-
-
-      let buf = "";
-      child.stdout!.on("data", (chunk: Buffer) => {
-        buf += chunk.toString();
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) !== -1) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line) continue;
-          let msg: string;
-          try { msg = JSON.parse(line).eventMessage ?? ""; } catch { continue; }
-          const event = parseForegroundAppLogMessage(msg);
-          if (!event) continue;
-          emitApp(event.bundleId, event.pid);
-        }
-        if (buf.length > SSE_LINE_BUFFER_LIMIT) buf = "";
-      });
-
-      child.on("error", () => {
-        closed = true;
-        try { res.end(); } catch {}
-      });
-      child.on("close", () => res.end());
-      req.on("close", () => {
-        closed = true;
-        child.stdout?.destroy();
-        child.kill();
-      });
+      const subscription = foregroundTracker.subscribe(udid, (app) => void emit(app));
+      const current = foregroundTracker.peek(udid);
+      if (current) void emit(current);
+      req.on("close", () => subscription.unsubscribe());
       return;
     }
 
@@ -2311,7 +2321,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     return connectToFetch(connectMiddleware, request);
   }) as SimMiddleware;
 
-  fetchMiddleware.handleWebSocket = createExecWebSocketHandler({
+  const execWebSocketHandler = createExecWebSocketHandler({
     path: `${base}/exec-ws`,
     execToken,
     ssePrefixes: [
@@ -2331,6 +2341,16 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       }));
     },
   });
+
+  fetchMiddleware.handleWebSocket = (request: Request, websocket: UpgradeHandlerWebSocket): boolean => {
+    if (execWebSocketHandler(request, websocket)) return true;
+    if (claimHelperHidSocket(request, websocket, {
+      helperProxyTarget: (rawUrl) => helperProxyTarget(rawUrl, helperPrefix),
+      fallbackDevice: options?.device ?? null,
+      resolveSession: (device) => getDeviceSession(device, streamSettings),
+    })) return true;
+    return false;
+  };
 
   // WebSocket upgrades owned by the preview: the authenticated exec/control
   // channel plus same-origin helper/devtools proxy sockets.

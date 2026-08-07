@@ -5,7 +5,7 @@ The `npx serve` of Apple Simulators.
 Host your simulator for use with Agent tools like Codex, Cursor, or Claude Desktop — locally, over your LAN, or host on a remote mac and tunnel anywhere. 
 
 ```sh
-npx serve-sim
+npx @expo/serve-sim
 # → Preview at http://localhost:3200
 ```
 
@@ -83,6 +83,16 @@ Options:
                       TURN username
       --turn-credential <credential>
                       TURN credential
+      --mjpeg-fps <fps>
+                      MJPEG frame rate (1-120)
+      --mjpeg-quality <quality>
+                      MJPEG quality (0.05-1)
+      --max-dimension <pixels>
+                      Maximum captured width or height; 0 keeps native resolution
+      --video-bitrate <bits-per-second>
+                      H.264/WebRTC target bitrate
+      --video-fps <fps>
+                      H.264/WebRTC frame rate (1-120)
       --list [device] List running streams
       --kill [device] Kill running stream(s)
 
@@ -144,6 +154,10 @@ serve-sim camera --stop-webcam
 ```
 
 Multiple booted simulators are supported by passing several device names. With no device argument, serve-sim selects an existing stream, a booted simulator, or a default simulator to boot.
+
+Supervisors can probe `GET /healthz` to confirm that the preview server is
+listening and `GET /readyz` to wait until the selected simulator and native
+capture session are ready. Both endpoints return JSON and disable caching.
 
 ### Camera
 
@@ -207,10 +221,10 @@ No other configuration needed.
 
 ## Embed in your dev server
 
-`serve-sim/middleware` is a **fetch-style** middleware. `simMiddleware(options)` returns a Web-standard request handler with a `.handleWebSocket` hook, so it mounts in any server that speaks `Request`/`Response` (Bun, Deno, Hono, a Node adapter, …). Run `serve-sim --detach` once to start the streaming helper, then wire the two entry points:
+`@expo/serve-sim/middleware` is a **fetch-style** middleware. `simMiddleware(options)` returns a Web-standard request handler with a `.handleWebSocket` hook, so it mounts in any server that speaks `Request`/`Response` (Bun, Deno, Hono, a Node adapter, …). Run `serve-sim --detach` once to start the streaming helper, then wire the two entry points:
 
 ```ts
-import { simMiddleware } from "serve-sim/middleware";
+import { simMiddleware } from "@expo/serve-sim/middleware";
 
 const middleware = simMiddleware({ basePath: "/.sim" });
 

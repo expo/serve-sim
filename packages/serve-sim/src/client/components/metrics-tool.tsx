@@ -1,39 +1,73 @@
+import { TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useMetricsStream } from "../hooks/use-metrics-stream";
-import { formatCpu, formatMem, sparklinePath } from "../utils/format-metrics";
+import { formatCpu, formatMem, formatRate, sparklinePath } from "../utils/format-metrics";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
 
 const SPARK_W = 96;
 const SPARK_H = 24;
 
-// Live CPU/memory readout for the sim's user app, with a sparkline for each.
-export function MetricsTool({ udid, metricsEndpoint }: { udid: string; metricsEndpoint?: string }) {
+/** Live CPU, memory, and network readout for the sim's user app, with a sparkline for each. */
+export function MetricsTool({
+  udid,
+  currentAppBundleId,
+  metricsEndpoint,
+}: {
+  udid: string;
+  currentAppBundleId: string | null;
+  metricsEndpoint?: string;
+}) {
   const path = useMemo(
     () => metricsEndpoint ?? `${simEndpoint("metrics")}?device=${encodeURIComponent(udid)}`,
     [metricsEndpoint, udid],
   );
   const { meta, latest, history, errored, stale } = useMetricsStream(path);
   const [open, setOpen] = useState(true);
-  // Only present the numbers when they're actually current — a stream error or a quiet backend
-  // (no app in the foreground) must not leave the last sample looking live.
-  const live = latest !== null && !errored && !stale;
+  // Live only while the backend actually scoped to a user app: each sample carries that app's
+  // bundleId, and null when a system app is in front (those run outside the sampler's reach) or
+  // nothing is running. Keying on the sampler's own output keeps this from drifting from what it can
+  // measure; currentAppBundleId (from /appstate) only words the idle reason.
+  const live = latest !== null && latest.bundleId !== null && !errored && !stale;
+  const foregroundIsSystemApp =
+    currentAppBundleId != null && currentAppBundleId.startsWith("com.apple.");
+  // When there's nothing to show, a header glyph carries the reason on hover instead of a body line.
+  const idleReason = errored
+    ? "The metrics stream disconnected"
+    : foregroundIsSystemApp
+      ? "Only your app is measured; a system app is in the foreground"
+      : "Waiting for activity data";
 
   return (
     <CollapsibleSection
       open={open}
       onOpenChange={setOpen}
       summaryClassName="grid [grid-template-columns:auto_1fr_auto] items-center gap-2 text-left"
+      bodyClassName={live ? undefined : "hidden"}
       summary={
         <>
           <span className="text-[11px] font-semibold text-white/50 uppercase tracking-[0.08em] leading-none inline-flex items-center">
             Activity
           </span>
-          {!open && live && (
-            <span className="text-[11px] text-white/40 tabular-nums text-right">
-              {formatCpu(latest.cpuPct)} · {formatMem(latest.memBytes)}
-            </span>
-          )}
+          {live
+            ? !open && (
+                <span className="text-[11px] text-white/40 tabular-nums text-right">
+                  {formatCpu(latest.cpuPct)} · {formatMem(latest.memBytes)}
+                </span>
+              )
+            : (
+                <span
+                  data-metrics-warning
+                  role="status"
+                  className="group relative justify-self-end inline-flex items-center"
+                >
+                  <TriangleAlert aria-hidden="true" className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="sr-only">{idleReason}</span>
+                  <span className="pointer-events-none absolute right-0 top-full z-10 mt-1 hidden w-max max-w-[220px] rounded-md bg-black/90 px-2 py-1 text-[11px] leading-snug text-white/90 shadow-lg group-hover:block">
+                    {idleReason}
+                  </span>
+                </span>
+              )}
         </>
       }
     >
@@ -52,16 +86,19 @@ export function MetricsTool({ udid, metricsEndpoint }: { udid: string; metricsEn
             values={history.map((s) => s.memBytes)}
             className="text-sky-400"
           />
+          <NetworkRow
+            down={latest.netInBytesPerSec}
+            up={latest.netOutBytesPerSec}
+            downValues={history.map((s) => s.netInBytesPerSec)}
+            upValues={history.map((s) => s.netOutBytesPerSec)}
+          />
         </>
-      ) : (
-        <div className="text-white/50 text-[12px]">
-          {errored ? "Disconnected" : "Waiting for CPU / memory…"}
-        </div>
-      )}
+      ) : null}
     </CollapsibleSection>
   );
 }
 
+/** One labeled metric: its current value with a sparkline of recent history. */
 function MetricRow({
   label,
   value,
@@ -89,6 +126,21 @@ function MetricRow({
   );
 }
 
+/** One sparkline stroke, styled consistently across the CPU/memory and network graphs. */
+function SparkPath({ d, className }: { d: string; className?: string }) {
+  return (
+    <path
+      d={d}
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      vectorEffect="non-scaling-stroke"
+    />
+  );
+}
+
+/** Minimal filled-area sparkline for a series of values. */
 function Sparkline({ values, className }: { values: number[]; className: string }) {
   const line = sparklinePath(values, SPARK_W, SPARK_H);
   // Close the line down to the baseline and back to fill the area under it.
@@ -100,13 +152,45 @@ function Sparkline({ values, className }: { values: number[]; className: string 
       className={`w-full h-8 ${className}`}
     >
       <path d={area} fill="currentColor" opacity={0.12} stroke="none" />
-      <path
-        d={line}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={1.5}
-        vectorEffect="non-scaling-stroke"
-      />
+      <SparkPath d={line} />
+    </svg>
+  );
+}
+
+/** Network with download / upload broken out: a value pair and a two-line graph on a shared scale. */
+function NetworkRow({
+  down,
+  up,
+  downValues,
+  upValues,
+}: {
+  down: number;
+  up: number;
+  downValues: number[];
+  upValues: number[];
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-baseline justify-between">
+        <span className="text-white/50 text-[11px]">Network</span>
+        <span className="tabular-nums text-[11px]">
+          <span className="text-cyan-400">↓ {formatRate(down)}</span>
+          <span className="text-white/30 mx-1.5">·</span>
+          <span className="text-violet-400">↑ {formatRate(up)}</span>
+        </span>
+      </div>
+      <DualSparkline down={downValues} up={upValues} />
+    </div>
+  );
+}
+
+/** Two lines (download, upload) on one shared vertical scale so their magnitudes are comparable. */
+function DualSparkline({ down, up }: { down: number[]; up: number[] }) {
+  const max = Math.max(...down, ...up, 1);
+  return (
+    <svg viewBox={`0 0 ${SPARK_W} ${SPARK_H}`} preserveAspectRatio="none" className="w-full h-8">
+      <SparkPath d={sparklinePath(down, SPARK_W, SPARK_H, max)} className="text-cyan-400" />
+      <SparkPath d={sparklinePath(up, SPARK_W, SPARK_H, max)} className="text-violet-400" />
     </svg>
   );
 }

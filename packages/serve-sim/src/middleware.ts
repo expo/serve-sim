@@ -1814,8 +1814,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // shells out over exec-ws instead, so it never hits this route). Uses the
     // ?device= selection with a booted-simulator fallback.
     if (url === base + "/api/screenshot") {
-      if (req.method !== "GET" && req.method !== "POST") {
-        res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
+      if (req.method !== "POST") {
         res.end("method not allowed");
         return;
       }

@@ -102,9 +102,17 @@ final class WebRTCPublisher: @unchecked Sendable {
     private let h264PixelBufferConverter = H264WebRTCPixelBufferConverter()
     private lazy var h264WebRTCSupport = Self.detectH264WebRTCSupport()
     private let h264FrameModeOverride: H264WebRTCFrameMode?
-    private let maxFps = 30
-    private let targetBitrate = 6_000_000
-    init() {
+    private var maxFps: Int
+    private var targetBitrate: Int
+    private var maxDimension: Int
+    private var frameIntervalNs: UInt64
+
+    init(maxFps: Int, targetBitrate: Int, maxDimension: Int) {
+        let normalizedMaxFps = max(1, min(120, maxFps))
+        self.maxFps = normalizedMaxFps
+        self.targetBitrate = max(100_000, targetBitrate)
+        self.maxDimension = max(0, maxDimension)
+        self.frameIntervalNs = UInt64(1_000_000_000 / normalizedMaxFps)
         h264FrameModeOverride = Self.h264FrameModeOverride()
         let defaultEncoderFactory = LKRTCDefaultVideoEncoderFactory()
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()
@@ -121,6 +129,35 @@ final class WebRTCPublisher: @unchecked Sendable {
             "h264=\(h264SupportDescription()) h264FrameMode=\(h264FrameModeDescription()) " +
             "senderCodecs=\(senderCodecSummary())"
         )
+    }
+
+    func updateSettings(maxFps: Int, targetBitrate: Int, maxDimension: Int) async {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                let normalizedMaxFps = max(1, min(120, maxFps))
+                self.frameLock.lock()
+                self.maxFps = normalizedMaxFps
+                self.frameIntervalNs = UInt64(1_000_000_000 / normalizedMaxFps)
+                self.frameLock.unlock()
+                self.targetBitrate = max(100_000, targetBitrate)
+                self.maxDimension = max(0, maxDimension)
+                if self.lastOutputWidth > 0, self.lastOutputHeight > 0 {
+                    self.videoSource.adaptOutputFormat(
+                        toWidth: Int32(self.lastOutputWidth),
+                        height: Int32(self.lastOutputHeight),
+                        fps: Int32(self.maxFps)
+                    )
+                }
+                for session in self.sessions.values {
+                    self.applyBitrateSettings(to: session)
+                }
+                streamLog(
+                    "[webrtc] Settings updated fps=\(self.maxFps) bitrate=\(self.targetBitrate) " +
+                    "maxDimension=\(self.maxDimension)"
+                )
+                continuation.resume()
+            }
+        }
     }
 
     func handleOffer(_ request: WebRTCOfferPayload) async throws -> WebRTCAnswerPayload {
@@ -177,9 +214,9 @@ final class WebRTCPublisher: @unchecked Sendable {
         let frame = PendingWebRTCFrame(pixelBuffer: pixelBuffer, timestamp: timestamp)
         var scheduleDelayNs: UInt64?
         let nowNs = DispatchTime.now().uptimeNanoseconds
-        let frameIntervalNs = UInt64(1_000_000_000 / maxFps)
         let schedulingToleranceNs: UInt64 = 1_000_000
         frameLock.lock()
+        let frameIntervalNs = self.frameIntervalNs
         guard acceptsFrames else {
             frameLock.unlock()
             return
@@ -222,6 +259,9 @@ final class WebRTCPublisher: @unchecked Sendable {
                 height: Int32(height),
                 fps: Int32(maxFps)
             )
+            for session in sessions.values {
+                applyBitrateSettings(to: session)
+            }
             streamLog("[webrtc] Video source output format: \(width)x\(height) @ \(maxFps)fps")
         }
         let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
@@ -326,9 +366,9 @@ final class WebRTCPublisher: @unchecked Sendable {
 
     private func drainFramePump() {
         let nowNs = DispatchTime.now().uptimeNanoseconds
-        let frameIntervalNs = UInt64(1_000_000_000 / maxFps)
         let schedulingToleranceNs: UInt64 = 1_000_000
         frameLock.lock()
+        let frameIntervalNs = self.frameIntervalNs
         guard acceptsFrames else {
             pendingFrame = nil
             framePumpScheduled = false
@@ -822,13 +862,18 @@ final class WebRTCPublisher: @unchecked Sendable {
             ? [LKRTCRtpEncodingParameters()]
             : parameters.encodings
         let maxBitrate = NSNumber(value: targetBitrate)
-        let minBitrate = NSNumber(value: max(100_000, targetBitrate / 4))
+        let minBitrate = NSNumber(value: max(100_000, targetBitrate / 5))
         let fps = NSNumber(value: maxFps)
+        let sourceMaxDimension = max(lastOutputWidth, lastOutputHeight)
+        let scaleResolutionDownBy = maxDimension > 0 && sourceMaxDimension > maxDimension
+            ? Double(sourceMaxDimension) / Double(maxDimension)
+            : 1.0
         for encoding in encodings {
             encoding.isActive = true
             encoding.maxBitrateBps = maxBitrate
             encoding.minBitrateBps = minBitrate
             encoding.maxFramerate = fps
+            encoding.scaleResolutionDownBy = NSNumber(value: scaleResolutionDownBy)
         }
         parameters.encodings = encodings
         sender.parameters = parameters
@@ -839,7 +884,8 @@ final class WebRTCPublisher: @unchecked Sendable {
         )
         streamLog(
             "[webrtc] Sender parameters fps=\(maxFps) minBitrate=\(minBitrate) " +
-            "maxBitrate=\(maxBitrate) bweUpdated=\(bweUpdated)"
+            "maxBitrate=\(maxBitrate) maxDimension=\(maxDimension) " +
+            "scaleDown=\(String(format: "%.3f", scaleResolutionDownBy)) bweUpdated=\(bweUpdated)"
         )
     }
 

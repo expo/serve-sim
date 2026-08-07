@@ -3,7 +3,7 @@
  *
  * The client commits to AVCC whenever the *browser* can decode H.264
  * (WebCodecs). But the *server* may not actually serve `/stream.avcc`: a
- * device started from the UI is spawned via `bunx serve-sim --detach`, which
+ * device started from the UI is spawned via `bunx @expo/serve-sim --detach`, which
  * runs the published `serve-sim` — older versions predate H.264 and 404 the
  * endpoint. Cross-origin that 404 is opaque to `fetch`, so the only reliable
  * signal is "no decoded frame ever arrived." This reducer drives a one-shot

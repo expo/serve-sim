@@ -397,7 +397,7 @@ function App() {
             <h1 className="text-[18px] m-0 text-white/90">No simulators available</h1>
             <p className="text-white/55 text-[14px] max-w-120">
               Create a simulator in Xcode, or start one with{" "}
-              <code className="bg-[#222] px-1.5 py-0.5 rounded text-[13px]">bunx serve-sim --detach</code>.
+              <code className="bg-[#222] px-1.5 py-0.5 rounded text-[13px]">bunx @expo/serve-sim --detach</code>.
             </p>
           </div>
         )}
@@ -1238,6 +1238,7 @@ function AppWithConfig({
         deviceRuntime={deviceRuntime}
         currentApp={currentApp}
         eventLogEventsEndpoint={config.eventLogEventsEndpoint}
+        metricsEndpoint={config.metricsEndpoint}
         axOverlayEnabled={axOverlayEnabled}
         onToggleAxOverlay={() => setAxOverlayEnabled((enabled) => !enabled)}
         streamSettings={streamSettings}

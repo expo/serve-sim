@@ -2,9 +2,10 @@ export type HttpStreamCodec = "auto" | "mjpeg" | "h264";
 export type WebRtcStreamCodec = "vp8" | "vp9" | "h264";
 export type WebRtcIceServer = { urls: string[]; username?: string; credential?: string };
 
-export type StreamSettings =
+export type StreamSettings = (
   | { transport: "http"; codec?: HttpStreamCodec }
-  | { transport: "webrtc"; codec: WebRtcStreamCodec; iceServers?: WebRtcIceServer[] };
+  | { transport: "webrtc"; codec: WebRtcStreamCodec; iceServers?: WebRtcIceServer[] }
+) & Partial<StreamEncoderSettings>;
 
 export interface StreamPlaybackSettings {
   transport: "http" | "webrtc";
@@ -17,7 +18,9 @@ export interface StreamEncoderSettings {
   mjpegFps: number;
   mjpegQuality: number;
   maxDimension: number;
+  /** Shared target bitrate for H.264/AVCC and WebRTC video. */
   h264Bitrate: number;
+  /** Shared target frame rate for H.264/AVCC and WebRTC video. */
   h264Fps: number;
 }
 
@@ -162,16 +165,27 @@ export function streamEncoderSettingsFrom(
 export function streamControlSettingsFrom(
   settings: StreamSettings | undefined,
 ): StreamControlSettings {
+  const encoderSettings = settings
+    ? {
+        mjpegFps: settings.mjpegFps,
+        mjpegQuality: settings.mjpegQuality,
+        maxDimension: settings.maxDimension,
+        h264Bitrate: settings.h264Bitrate,
+        h264Fps: settings.h264Fps,
+      }
+    : {};
   if (settings?.transport === "webrtc") {
     return normalizeStreamControlSettings({
       transport: "webrtc",
       webRtcCodec: settings.codec,
       iceServers: settings.iceServers,
+      ...encoderSettings,
     });
   }
   return normalizeStreamControlSettings({
     transport: "http",
     httpCodec: settings?.codec ?? "auto",
+    ...encoderSettings,
   });
 }
 

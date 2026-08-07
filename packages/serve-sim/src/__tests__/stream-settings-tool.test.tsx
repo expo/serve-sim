@@ -44,6 +44,23 @@ describe("StreamSettingsTool", () => {
 
     expect(html).not.toMatch(/aria-label="Transport"[^>]*disabled=""/);
     expect(html).toMatch(/aria-label="HTTP codec"[^>]*disabled=""/);
-    expect(html).toMatch(/aria-label="H\.264 FPS"[^>]*disabled=""/);
+    expect(html).toMatch(/aria-label="Video FPS"[^>]*disabled=""/);
+  });
+
+  test("keeps shared video controls enabled for VP8 on hosts without H.264", () => {
+    const html = renderToStaticMarkup(
+      <StreamSettingsTool
+        settings={{ ...settings, transport: "webrtc", webRtcCodec: "vp8" }}
+        onPlaybackSettingsChange={() => {}}
+        onEncoderSettingsChange={() => {}}
+        activeCodec="webrtc/vp8"
+        avccSupported={false}
+      />,
+    );
+
+    expect(html).not.toMatch(/aria-label="Max size"[^>]*disabled=""/);
+    expect(html).not.toMatch(/aria-label="Video FPS"[^>]*disabled=""/);
+    expect(html).not.toMatch(/aria-label="Video bitrate"[^>]*disabled=""/);
+    expect(html).toMatch(/aria-label="MJPEG FPS"[^>]*disabled=""/);
   });
 });

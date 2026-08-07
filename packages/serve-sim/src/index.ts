@@ -1625,6 +1625,7 @@ async function serve(
   host: string,
   options: {
     stream?: StreamRuntimeOptions;
+    metricsCorsOrigins?: string[];
   } = {},
 ) {
   // Boot the target simulators; the preview server streams them in-process
@@ -1644,6 +1645,7 @@ async function serve(
     device: targetDevice,
     streamSettings: options.stream,
     proxyHelpers: true,
+    metricsCorsOrigins: options.metricsCorsOrigins ?? [],
   });
 
   // Try requested port; if busy and the user didn't pin it, scan forward.
@@ -1713,6 +1715,21 @@ function bindPreviewServer(port: number, middleware: ReturnType<typeof import(".
 
 // ─── Main ───
 
+function parseNumberInRange(
+  value: string,
+  option: string,
+  min: number,
+  max: number,
+  integer = false,
+): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || (integer && !Number.isInteger(parsed)) || parsed < min || parsed > max) {
+    const kind = integer ? "integer" : "number";
+    throw new InvalidArgumentError(`${option} must be a ${kind} from ${min} to ${max}.`);
+  }
+  return parsed;
+}
+
 const program = new Command();
 
 program
@@ -1774,6 +1791,38 @@ program
   })
   .option("--turn-username <username>", "TURN username")
   .option("--turn-credential <credential>", "TURN credential")
+  .option(
+    "--mjpeg-fps <fps>",
+    "MJPEG frame rate (1-120)",
+    (value) => parseNumberInRange(value, "--mjpeg-fps", 1, 120, true),
+  )
+  .option(
+    "--mjpeg-quality <quality>",
+    "MJPEG quality (0.05-1)",
+    (value) => parseNumberInRange(value, "--mjpeg-quality", 0.05, 1),
+  )
+  .option(
+    "--max-dimension <pixels>",
+    "Maximum captured width or height; 0 keeps native resolution (0-4096)",
+    (value) => parseNumberInRange(value, "--max-dimension", 0, 4096, true),
+  )
+  .option(
+    "--video-bitrate <bits-per-second>",
+    "H.264/WebRTC target bitrate (100000-50000000)",
+    (value) => parseNumberInRange(value, "--video-bitrate", 100_000, 50_000_000, true),
+  )
+  .option(
+    "--video-fps <fps>",
+    "H.264/WebRTC frame rate (1-120)",
+    (value) => parseNumberInRange(value, "--video-fps", 1, 120, true),
+  )
+  .option(
+    "--metrics-cors-origin <origin>",
+    "Allow this origin to read the /metrics stream cross-origin (repeatable). " +
+      "Loopback origins are always allowed.",
+    (value: string, prev: string[]) => [...prev, value],
+    [] as string[],
+  )
   .option("-l, --list [device]", "List running streams")
   .option("-k, --kill [device]", "Kill running stream(s)")
   .addHelpText(
@@ -1837,18 +1886,37 @@ Examples:
         credential: opts.turnCredential,
       });
     }
+    const encoderOptionNames = [
+      "mjpegFps",
+      "mjpegQuality",
+      "maxDimension",
+      "videoBitrate",
+      "videoFps",
+    ];
+    const encoderOptions = {
+      ...(wasProvided("mjpegFps") ? { mjpegFps: opts.mjpegFps } : {}),
+      ...(wasProvided("mjpegQuality") ? { mjpegQuality: opts.mjpegQuality } : {}),
+      ...(wasProvided("maxDimension") ? { maxDimension: opts.maxDimension } : {}),
+      ...(wasProvided("videoBitrate") ? { h264Bitrate: opts.videoBitrate } : {}),
+      ...(wasProvided("videoFps") ? { h264Fps: opts.videoFps } : {}),
+    };
     const stream: StreamRuntimeOptions = opts.transport === "webrtc"
       ? {
           transport: "webrtc",
           codec: opts.webrtcCodec,
           ...(webrtcIceServers.length ? { iceServers: webrtcIceServers } : {}),
+          ...encoderOptions,
         }
       : {
           transport: "http",
           codec: opts.codec,
+          ...encoderOptions,
         };
     const startPort: number | undefined = opts.port;
-    const streamOptionsProvided = wasProvided("transport") || wasProvided("codec") || webRtcOptionProvided;
+    const streamOptionsProvided = wasProvided("transport")
+      || wasProvided("codec")
+      || webRtcOptionProvided
+      || encoderOptionNames.some(wasProvided);
     if (opts.detach) {
       const states = await detach(devices, startPort ?? 3100, stream, streamOptionsProvided);
       printStatesJSON(states);
@@ -1857,6 +1925,7 @@ Examples:
     } else {
       await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, {
         stream,
+        metricsCorsOrigins: opts.metricsCorsOrigin,
       });
     }
   });

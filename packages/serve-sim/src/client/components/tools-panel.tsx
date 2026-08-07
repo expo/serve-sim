@@ -6,6 +6,7 @@ import { AppPermissionsTool } from "./app-permissions-tool";
 import { AxTreeTool } from "./ax-tree-tool";
 import { CameraTool } from "./camera-tool";
 import { EventLogTool } from "./event-log-tool";
+import { MetricsTool } from "./metrics-tool";
 import { PANEL_BACKGROUND } from "./panel-colors";
 import { SimulatorSettingsTool } from "./simulator-settings-tool";
 import { StreamSettingsTool } from "./stream-settings-tool";
@@ -15,6 +16,7 @@ import type {
   StreamPlaybackSettings,
 } from "../../stream-settings";
 
+/** The preview's collapsible tools panel: app detection, metrics, camera, permissions, and settings. */
 export function ToolsPanel({
   open,
   onClose,
@@ -22,6 +24,7 @@ export function ToolsPanel({
   deviceRuntime,
   currentApp,
   eventLogEventsEndpoint,
+  metricsEndpoint,
   axOverlayEnabled,
   onToggleAxOverlay,
   streamSettings,
@@ -38,6 +41,7 @@ export function ToolsPanel({
   deviceRuntime: string | null;
   currentApp: { bundleId: string; isReactNative: boolean; pid?: number } | null;
   eventLogEventsEndpoint?: string;
+  metricsEndpoint?: string;
   axOverlayEnabled: boolean;
   onToggleAxOverlay: () => void;
   streamSettings: StreamControlSettings;
@@ -58,6 +62,11 @@ export function ToolsPanel({
       {open && (
         <div className="p-3.5 overflow-y-auto flex-1 flex flex-col gap-3">
           <AppDetectionTool udid={udid} currentApp={currentApp} />
+          <MetricsTool
+            udid={udid}
+            currentAppBundleId={currentApp?.bundleId ?? null}
+            metricsEndpoint={metricsEndpoint}
+          />
           <EventLogTool udid={udid} eventsEndpoint={eventLogEventsEndpoint} />
           <SimulatorSettingsTool udid={udid} runtime={deviceRuntime} />
           <AxTreeTool

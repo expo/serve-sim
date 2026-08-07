@@ -13,7 +13,7 @@ import type { Socket } from "net";
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
-import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./cpu-mem-sampler";
+import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./metrics-sampler";
 import { foregroundTracker, type ForegroundApp, type ForegroundTrackerCache } from "./foreground-tracker";
 import { corsAllowOriginHeaders } from "./middleware-utils";
 import { closeDeviceSession, getDeviceSession, sendCorsPreflight, type HidSocket } from "./device-session";

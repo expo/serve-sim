@@ -1856,7 +1856,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           execFile(
             "xcrun",
             ["simctl", "io", udid, "screenshot", file],
-            { timeout: 30_000 },
+            { timeout: 5_000 },
             (err, _stdout, stderr) => {
               if (err) reject(Object.assign(err, { stderr: stderr?.toString() }));
               else resolve();

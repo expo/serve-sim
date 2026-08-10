@@ -60,6 +60,11 @@ actor HIDInjector {
     private typealias IndigoKeyboardFunc = @convention(c) (UInt32, UInt32) -> UnsafeMutableRawPointer?
     private var keyboardFunc: IndigoKeyboardFunc?
 
+    // IndigoHIDGetKeyboardType() -> the host keyboard type expected by
+    // SimDeviceIO's hardware-keyboard connection API.
+    private typealias IndigoKeyboardTypeFunc = @convention(c) () -> UInt32
+    private var keyboardTypeFunc: IndigoKeyboardTypeFunc?
+
     // IndigoHIDMessageForDigitalCrownEvent(double rotationalDelta) -> IndigoMessage*
     private typealias IndigoDigitalCrownFunc = @convention(c) (Double) -> UnsafeMutableRawPointer?
     private var digitalCrownFunc: IndigoDigitalCrownFunc?
@@ -102,6 +107,12 @@ actor HIDInjector {
             hidLog("[hid] IndigoHIDMessageForKeyboardArbitrary loaded")
         } else {
             print("[hid] Warning: IndigoHIDMessageForKeyboardArbitrary not found")
+        }
+
+        if let keyboardTypePtr = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "IndigoHIDGetKeyboardType") {
+            self.keyboardTypeFunc = unsafeBitCast(keyboardTypePtr, to: IndigoKeyboardTypeFunc.self)
+        } else {
+            print("[hid] Warning: IndigoHIDGetKeyboardType not found")
         }
 
         if let crownPtr = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "IndigoHIDMessageForDigitalCrownEvent") {
@@ -501,6 +512,52 @@ actor HIDInjector {
         }
         sendHIDButton(eventSource: Self.buttonSourceSoftwareKeyboard, direction: Self.buttonDown)
         sendHIDButton(eventSource: Self.buttonSourceSoftwareKeyboard, direction: Self.buttonUp)
+    }
+
+    /// Connect or disconnect the Mac's hardware keyboard from the guest,
+    /// exactly like Simulator.app's I/O → Keyboard → Connect Hardware Keyboard.
+    /// Browser-injected HID key events use our separate legacy HID client and
+    /// continue to reach the guest while this connection is disabled, allowing
+    /// the on-screen keyboard to remain visible during physical typing.
+    func setHardwareKeyboardEnabled(_ enabled: Bool, deviceUDID: String) -> Bool {
+        SimFrameworks.load()
+        let device = simDevice ?? FrameCapture.findSimDevice(udid: deviceUDID)
+        guard let device else {
+            fputs("[hid] Hardware keyboard: simulator \(deviceUDID) not found\n", stderr)
+            return false
+        }
+        simDevice = device
+
+        let sel = NSSelectorFromString("setHardwareKeyboardEnabled:keyboardType:error:")
+        guard device.responds(to: sel) else {
+            fputs("[hid] Hardware keyboard: selector unavailable\n", stderr)
+            return false
+        }
+
+        if keyboardTypeFunc == nil,
+           let ptr = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "IndigoHIDGetKeyboardType") {
+            keyboardTypeFunc = unsafeBitCast(ptr, to: IndigoKeyboardTypeFunc.self)
+        }
+        guard let keyboardTypeFunc else {
+            fputs("[hid] Hardware keyboard: keyboard type unavailable\n", stderr)
+            return false
+        }
+
+        typealias SetHardwareKeyboardFunc = @convention(c) (
+            AnyObject,
+            Selector,
+            ObjCBool,
+            UInt32,
+            AutoreleasingUnsafeMutablePointer<NSError?>
+        ) -> ObjCBool
+        let fn = unsafeBitCast(device.method(for: sel), to: SetHardwareKeyboardFunc.self)
+        var error: NSError?
+        let result = fn(device, sel, ObjCBool(enabled), keyboardTypeFunc(), &error)
+        if let error {
+            fputs("[hid] Hardware keyboard update failed: \(error.localizedDescription)\n", stderr)
+        }
+        hidLog("[hid] Hardware keyboard enabled=\(enabled) → \(result.boolValue)")
+        return result.boolValue
     }
 
     /// Ask CoreSimulator to broadcast a memory warning to the simulated OS.

@@ -71,6 +71,8 @@ const AVCC_SEED_TAG = 0x04;
 
 // WS server→client screen-config push (ClientManager.wsMsgConfig).
 const WS_MSG_CONFIG = 0x82;
+// Result of a stateful hardware-keyboard connection request.
+const WS_MSG_HARDWARE_KEYBOARD = 0x83;
 
 const MJPEG_TRAILER = Buffer.from("\r\n", "ascii");
 const TOUCH_TAP_MAX_DISTANCE = 0.004;
@@ -622,12 +624,16 @@ export class DeviceSession {
     this.hidSockets.add(ws);
     const cfg = this.configFrame();
     if (cfg) ws.send(cfg); // seed dimensions/orientation, replacing the old poll
-    ws.on("message", (data: Buffer) => this.handleHidMessage(Buffer.isBuffer(data) ? data : Buffer.from(data)));
+    ws.on("message", (data: Buffer) => {
+      void this.handleHidMessage(Buffer.isBuffer(data) ? data : Buffer.from(data), ws).catch(
+        () => {},
+      );
+    });
     ws.on("close", () => this.hidSockets.delete(ws));
     ws.on("error", () => this.hidSockets.delete(ws));
   }
 
-  private async handleHidMessage(data: Buffer): Promise<void> {
+  private async handleHidMessage(data: Buffer, source: HidSocket): Promise<void> {
     if (data.length < 1) return;
     const tag = data[0];
     const body = data.length > 1 ? data.subarray(1) : null;
@@ -724,6 +730,19 @@ export class DeviceSession {
         this.recordHidEvent(tag, {});
         this.hid.softwareKeyboard();
         break;
+      case 0x0d: {
+        const m = json<{ enabled: boolean }>();
+        if (typeof m?.enabled !== "boolean") break;
+        const ok = await this.hid.hardwareKeyboard(m.enabled);
+        const reply = Buffer.concat([
+          Buffer.from([WS_MSG_HARDWARE_KEYBOARD]),
+          Buffer.from(JSON.stringify({ enabled: m.enabled, ok })),
+        ]);
+        try {
+          source.send(reply);
+        } catch {}
+        break;
+      }
     }
   }
 

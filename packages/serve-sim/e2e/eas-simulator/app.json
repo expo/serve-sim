@@ -1,0 +1,10 @@
+{
+  "expo": {
+    "name": "serve-sim system tests",
+    "slug": "serve-sim-system-tests",
+    "owner": "expo-services",
+    "ios": {
+      "bundleIdentifier": "services.expo.serve-sim-system-tests"
+    }
+  }
+}

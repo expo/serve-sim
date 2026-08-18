@@ -1752,7 +1752,7 @@ program
   .option("--detach", "Spawn helper and exit (daemon mode)")
   .option("-q, --quiet", "Suppress human-readable output, JSON only")
   .option("--no-preview", "Skip the web preview server; stream in foreground only")
-  .option("--no-interactive", "Start the preview in view-only mode (video only)")
+  .option("--view-only", "Start the preview in view-only mode (video only)")
   .option("--transport <http|webrtc>", "Stream transport", "http")
   .option(
     "--codec <codec>",
@@ -1836,7 +1836,7 @@ Examples:
   serve-sim -p 8080                      Preview on a custom port
   serve-sim --transport webrtc           Stream over WebRTC
   serve-sim --codec mjpeg                Force MJPEG (e.g. on VMs without H.264 encode)
-  serve-sim --no-interactive             Start in view-only mode (video only)
+  serve-sim --view-only                  Start in view-only mode (video only)
   serve-sim --no-preview                 Auto-detect booted sim, stream in foreground
   serve-sim --no-preview "iPhone 16 Pro" Stream a specific device (no preview)
   serve-sim --detach                     Start streaming in background (daemon)
@@ -1930,7 +1930,7 @@ Examples:
       await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, {
         stream,
         metricsCorsOrigins: opts.metricsCorsOrigin,
-        interactive: opts.interactive !== false,
+        interactive: !opts.viewOnly,
       });
     }
   });

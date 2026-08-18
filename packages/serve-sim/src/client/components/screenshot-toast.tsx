@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type DragEvent } from "react";
 import { ChevronRight } from "lucide-react";
 import type { ScreenshotToast as ScreenshotToastState } from "../hooks/use-screenshot-toast";
 import { DROP_HOST_PATH_TYPE } from "../utils/drop";
+import { setBrowserScreenshotDragData } from "../utils/screenshot-drag";
 
 interface ScreenshotToastProps {
   toast: ScreenshotToastState;
@@ -31,7 +32,9 @@ export function ScreenshotToast({
   onResume,
 }: ScreenshotToastProps) {
   const isBrowserDownload = Boolean(toast.downloadUrl && toast.downloadName);
+  const isBrowserDrag = Boolean(toast.downloadUrl && toast.downloadFile);
   const isHostFile = Boolean(toast.path);
+  const isDraggable = isHostFile || isBrowserDrag;
   const [dragging, setDragging] = useState(false);
   const dragImageRef = useRef<HTMLImageElement | null>(null);
   const dragFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -44,7 +47,7 @@ export function ScreenshotToast({
   useEffect(() => () => clearDragFallback(), []);
 
   const handleDragStart = (e: DragEvent<HTMLButtonElement>) => {
-    if (!toast.path) {
+    if (!isDraggable) {
       e.preventDefault();
       return;
     }
@@ -55,13 +58,20 @@ export function ScreenshotToast({
       setDragging(false);
       onResume();
     }, DRAG_FALLBACK_RESUME_MS);
-    // Hand over the file URL as plain text only. Offering `text/uri-list` (or
-    // `DownloadURL`) makes rich-text targets build a hyperlink, and Chrome
-    // blocks `file://` hrefs — the drop then lands as "[…](about:blank#blocked)".
-    // Plain text inserts the literal URL into any text field.
-    e.dataTransfer.setData("text/plain", fileUrlFor(toast.path));
-    // Dropping onto the simulator adds the screenshot to Photos in place.
-    e.dataTransfer.setData(DROP_HOST_PATH_TYPE, toast.path);
+    if (toast.path) {
+      // Hand over the file URL as plain text only. Offering `text/uri-list` (or
+      // `DownloadURL`) makes rich-text targets build a hyperlink, and Chrome
+      // blocks `file://` hrefs — the drop then lands as
+      // "[…](about:blank#blocked)". Plain text inserts the literal URL.
+      e.dataTransfer.setData("text/plain", fileUrlFor(toast.path));
+      // Dropping onto the simulator adds the screenshot to Photos in place.
+      e.dataTransfer.setData(DROP_HOST_PATH_TYPE, toast.path);
+    } else if (toast.downloadUrl && toast.downloadFile) {
+      setBrowserScreenshotDragData(e.dataTransfer, {
+        file: toast.downloadFile,
+        url: toast.downloadUrl,
+      });
+    }
     e.dataTransfer.effectAllowed = "copy";
     // Drag the thumbnail, not a snapshot of the pill — the snapshot clips the
     // pill's box-shadow at its rounded corners.
@@ -123,11 +133,17 @@ export function ScreenshotToast({
           type="button"
           onClick={onReveal}
           disabled={toast.status !== "saved"}
-          draggable={toast.status === "saved" && isHostFile}
+          draggable={toast.status === "saved" && isDraggable}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
-          aria-label={isBrowserDownload ? "Download screenshot again" : "Open screenshot in Finder"}
-          title={isBrowserDownload ? "Download screenshot again" : "Click to reveal in Finder · drag to copy the file"}
+          aria-label={
+            isBrowserDownload ? "Download or drag screenshot" : "Open screenshot in Finder"
+          }
+          title={
+            isBrowserDownload
+              ? "Drag to save · click to download"
+              : "Click to reveal in Finder · drag to copy the file"
+          }
           className={`group flex w-full items-center gap-3 pl-2 pr-3.5 py-2 bg-panel border border-white/12 rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.45)] text-left cursor-pointer enabled:hover:bg-[#2a2a2c] disabled:cursor-default [transition:background_0.15s_ease] ${dragging ? "invisible" : ""}`}
         >
           <div className="size-9 rounded-md overflow-hidden bg-white/10 shrink-0 flex items-center justify-center ring-1 ring-white/10 pointer-events-none">
@@ -143,7 +159,9 @@ export function ScreenshotToast({
             </span>
             {toast.status === "saved" && (
               <span className="text-[11px] text-white/60">
-                {isBrowserDownload ? "Download again" : "Open in Finder"}
+                {isBrowserDownload
+                  ? "Drag to save · click to download"
+                  : "Open in Finder"}
               </span>
             )}
           </div>

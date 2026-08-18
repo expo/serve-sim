@@ -19,9 +19,12 @@ export type ScreenshotToast = {
   path?: string;
   // Tunneled/LAN previews download into the browser instead of exposing a path
   // on the remote simulator host. Kept alive while the toast is mounted so the
-  // thumbnail and "Download again" action can reuse it.
+  // thumbnail, repeat download, and drag-out actions can reuse it.
   downloadUrl?: string;
   downloadName?: string;
+  // The captured bytes are retained as a File so dragstart can synchronously
+  // offer them to browser drop targets without another network request.
+  downloadFile?: File;
   // data: URL of a downscaled preview, filled in best-effort after the save.
   thumb?: string;
   message?: string;
@@ -33,6 +36,9 @@ export type ScreenshotToast = {
 const SAVED_DISMISS_MS = 3500;
 const ERROR_DISMISS_MS = 4000;
 const CAPTURE_TIMEOUT_MS = 10_000;
+// Chromium may resolve a DownloadURL after dragend. Keep its backing blob URL
+// alive briefly after the toast disappears instead of revoking it immediately.
+const DOWNLOAD_URL_REVOKE_DELAY_MS = 60_000;
 
 function timestampSlug(): string {
   // 2026-06-11T14-12-44-123 — filesystem-safe, sorts chronologically. Keep the
@@ -61,7 +67,9 @@ export function useScreenshotToast(deviceUdid?: string | null) {
     sonnerToast.dismiss(targetId);
     if (targetId === undefined || toastIdRef.current === String(targetId)) {
       const downloadUrl = toastRef.current?.downloadUrl;
-      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+      if (downloadUrl) {
+        setTimeout(() => URL.revokeObjectURL(downloadUrl), DOWNLOAD_URL_REVOKE_DELAY_MS);
+      }
       toastRef.current = null;
       toastIdRef.current = null;
     }
@@ -135,7 +143,11 @@ export function useScreenshotToast(deviceUdid?: string | null) {
         const png = await fetchScreenshotPng(deviceUdid, {
           signal: captureController.signal,
         });
-        const downloadUrl = URL.createObjectURL(png);
+        const downloadFile = new File([png], fileName, {
+          type: "image/png",
+          lastModified: Date.now(),
+        });
+        const downloadUrl = URL.createObjectURL(downloadFile);
         triggerBrowserDownload(downloadUrl, fileName);
         render({
           id,
@@ -143,6 +155,7 @@ export function useScreenshotToast(deviceUdid?: string | null) {
           phase: "in",
           downloadUrl,
           downloadName: fileName,
+          downloadFile,
           thumb: downloadUrl,
         }, SAVED_DISMISS_MS);
         return;

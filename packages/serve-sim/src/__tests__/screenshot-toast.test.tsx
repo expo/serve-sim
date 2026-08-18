@@ -54,20 +54,23 @@ describe("ScreenshotToast drag image", () => {
     expect(html).not.toContain('data-testid="drag-image"');
   });
 
-  test("remote screenshot offers another browser download instead of Finder", () => {
+  test("remote screenshot can be downloaded or dragged instead of opened in Finder", () => {
     const html = render({
       id: "1",
       status: "saved",
       phase: "in",
       downloadUrl: "blob:https://preview.example/shot",
       downloadName: "serve-sim-screenshot.png",
+      downloadFile: new File(["png"], "serve-sim-screenshot.png", {
+        type: "image/png",
+      }),
       thumb: "blob:https://preview.example/shot",
     });
 
-    expect(html).toContain('aria-label="Download screenshot again"');
-    expect(html).toContain("Download again");
+    expect(html).toContain('aria-label="Download or drag screenshot"');
+    expect(html).toContain("Drag to save");
     expect(html).not.toContain("Open in Finder");
-    expect(html).not.toContain("draggable=\"true\"");
+    expect(html).toContain('draggable="true"');
   });
 
   test("local screenshot retains Finder and drag behavior", () => {

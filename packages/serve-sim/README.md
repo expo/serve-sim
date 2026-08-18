@@ -40,6 +40,7 @@ The bundled native addon, simulator tools, and host helpers are arm64-only.
 
 ```
 serve-sim [device...]                 Start preview server (default: localhost:3200)
+serve-sim --no-interactive [device...] Start preview in view-only mode
 serve-sim --no-preview [device...]    Stream in foreground without a preview server
 serve-sim gesture '<json>' [-d udid]  Send a touch gesture
 serve-sim button [name] [-d udid]     Send a button press (default: home)
@@ -70,6 +71,9 @@ Options:
       --detach        Spawn server and exit (daemon mode)
   -q, --quiet         JSON-only output
       --no-preview    Skip the web UI; stream in foreground only
+      --no-interactive
+                      Start the preview in view-only mode; video keeps streaming
+                      while touch, keyboard, scroll, and device controls are ignored
       --codec <codec> HTTP stream codec: 'auto', 'h264', or 'mjpeg'
       --transport <http|webrtc>
                       Stream transport (default: http)
@@ -246,6 +250,9 @@ server.onUpgrade((request, socket) => {
   if (!middleware.handleWebSocket?.(request, socket)) socket.close();
 });
 ```
+
+Pass `interactive: false` to make an embedded preview start in view-only mode.
+Viewers can still re-enable interaction from the Tools panel.
 
 The middleware reads the helper's state from `$TMPDIR/serve-sim/` and points the browser at the helper's stream, interaction WebSocket, and WebKit DevTools endpoints. By default those URLs target the helper's own port directly (CORS is wide-open on the helper), so a plain `app.use(...)` mount works without touching your server's WebSocket handling.
 

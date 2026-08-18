@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { InteractionSettingsTool } from "../client/components/interaction-settings-tool";
 import { ToolsPanel } from "../client/components/tools-panel";
 
 const noop = () => {};
@@ -30,10 +31,26 @@ describe("ToolsPanel", () => {
         activeCodec="h264"
         avccSupported
         streamSettingsPending={false}
+        interactive={false}
+        onInteractiveChange={noop}
         width={320}
       />,
     );
 
     expect(html).toContain("background-color:var(--serve-sim-panel-bg)");
+  });
+
+  test("shows when simulator interaction is disabled", () => {
+    const html = renderToStaticMarkup(
+      <InteractionSettingsTool
+        interactive={false}
+        onInteractiveChange={noop}
+      />,
+    );
+
+    expect(html).toContain("Interaction");
+    expect(html).toContain('aria-label="Interactive"');
+    expect(html).toContain('aria-checked="false"');
+    expect(html).toContain("View-only");
   });
 });

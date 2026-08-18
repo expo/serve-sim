@@ -59,3 +59,15 @@ export function sendOrQueueWsMessage(
   }
   return enqueueWsMessage(fresh, { tag, payload, createdAt: now });
 }
+
+export function sendOrQueueSimulatorInput(
+  interactive: boolean,
+  ws: WsSendTarget | null | undefined,
+  queue: QueuedWsMessage[],
+  tag: number,
+  payload: object,
+  now = Date.now(),
+): QueuedWsMessage[] {
+  if (!interactive) return [];
+  return sendOrQueueWsMessage(ws, queue, tag, payload, now);
+}

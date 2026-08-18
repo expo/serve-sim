@@ -76,6 +76,7 @@ import {
 } from "./utils/simulator-resize";
 import {
   flushWsMessageQueue,
+  sendOrQueueSimulatorInput,
   sendOrQueueWsMessage,
   type QueuedWsMessage,
 } from "./utils/ws-send-queue";
@@ -99,6 +100,9 @@ function App() {
     proxyPreviewConfigForBrowser(streamConfigFrom(window.__SIM_PREVIEW__), window.location)
   );
   const [streaming, setStreaming] = useState(false);
+  const [interactive, setInteractive] = useState(
+    () => window.__SIM_PREVIEW__?.interactive !== false,
+  );
   // The device the user wants to view. Selecting a row in the sidebar updates
   // this and re-subscribes the SSE below — the main view swaps streams instantly
   // (or shows a Start placeholder) without a full page reload.
@@ -259,8 +263,12 @@ function App() {
         } else if (window.__SIM_PREVIEW__) {
           // Keep the minimal injection: the empty state still routes through
           // simEndpoint (basePath) and authenticates /exec (execToken).
-          const { basePath, execToken } = window.__SIM_PREVIEW__;
-          window.__SIM_PREVIEW__ = { basePath, execToken } as Window["__SIM_PREVIEW__"];
+          const { basePath, execToken, interactive: defaultInteractive } = window.__SIM_PREVIEW__;
+          window.__SIM_PREVIEW__ = {
+            basePath,
+            execToken,
+            interactive: defaultInteractive,
+          } as Window["__SIM_PREVIEW__"];
         }
         return next;
       });
@@ -372,6 +380,8 @@ function App() {
         setSelectedDevtoolsTargetId={setSelectedDevtoolsTargetId}
         streaming={streaming}
         setStreaming={setStreaming}
+        interactive={interactive}
+        setInteractive={setInteractive}
       />
     );
   } else {
@@ -456,6 +466,8 @@ interface AppWithConfigProps {
   setSelectedDevtoolsTargetId: React.Dispatch<React.SetStateAction<string | null>>;
   streaming: boolean;
   setStreaming: (v: boolean) => void;
+  interactive: boolean;
+  setInteractive: (next: boolean) => void;
 }
 
 function AppWithConfig({
@@ -474,6 +486,8 @@ function AppWithConfig({
   setSelectedDevtoolsTargetId,
   streaming,
   setStreaming,
+  interactive,
+  setInteractive,
 }: AppWithConfigProps) {
   useEffect(() => {
     document.title = deviceName ? `Simulator - ${deviceName}` : "Simulator Preview";
@@ -620,6 +634,8 @@ function AppWithConfig({
   // Touch/button relay via direct WebSocket
   const wsRef = useRef<WebSocket | null>(null);
   const pendingWsMessagesRef = useRef<QueuedWsMessage[]>([]);
+  const interactiveRef = useRef(interactive);
+  interactiveRef.current = interactive;
   useEffect(() => {
     let stopped = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -640,10 +656,9 @@ function AppWithConfig({
       currentWs = ws;
       wsRef.current = ws;
       ws.onopen = () => {
-        pendingWsMessagesRef.current = flushWsMessageQueue(
-          ws,
-          pendingWsMessagesRef.current,
-        );
+        pendingWsMessagesRef.current = interactiveRef.current
+          ? flushWsMessageQueue(ws, pendingWsMessagesRef.current)
+          : [];
       };
       ws.onmessage = (ev) => {
         // Server -> client screen-config push (tag 0x82): [tag][JSON].
@@ -683,13 +698,14 @@ function AppWithConfig({
   }, [config.wsUrl]);
 
   const sendWs = useCallback((tag: number, payload: object) => {
-    pendingWsMessagesRef.current = sendOrQueueWsMessage(
+    pendingWsMessagesRef.current = sendOrQueueSimulatorInput(
+      interactive,
       wsRef.current,
       pendingWsMessagesRef.current,
       tag,
       payload,
     );
-  }, []);
+  }, [interactive]);
 
   const onStreamTouch = useCallback((data: any) => sendWs(0x03, data), [sendWs]);
   const onStreamMultiTouch = useCallback((data: any) => sendWs(0x05, data), [sendWs]);
@@ -840,6 +856,26 @@ function AppWithConfig({
   const pressedKeysRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
+    if (interactive) return;
+    const held = pressedKeysRef.current;
+    pendingWsMessagesRef.current = [];
+    for (const usage of held) {
+      pendingWsMessagesRef.current = sendOrQueueWsMessage(
+        wsRef.current,
+        pendingWsMessagesRef.current,
+        0x06,
+        { type: "up", usage },
+      );
+    }
+    held.clear();
+    // A disconnected socket cannot have held keys in the simulator, and its
+    // queued input must never replay if the socket reconnects while view-only.
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      pendingWsMessagesRef.current = [];
+    }
+  }, [interactive]);
+
+  useEffect(() => {
     const onPointerDown = (e: PointerEvent) => {
       const inside = !!simContainerRef.current?.contains(e.target as Node);
       setSimFocused(inside);
@@ -858,7 +894,7 @@ function AppWithConfig({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent, type: "down" | "up") => {
-      if (!simFocusedRef.current) return;
+      if (!interactiveRef.current || !simFocusedRef.current) return;
       if (e.code === "KeyH" && e.metaKey && e.shiftKey) {
         e.preventDefault();
         if (type === "down" && !e.repeat) sendWs(0x04, { button: "home" });
@@ -908,7 +944,7 @@ function AppWithConfig({
   const mediaDrop = useMediaDrop({
     exec: execOnHost,
     udid: config.device,
-    enabled: streaming,
+    enabled: streaming && interactive,
     onUploadStart: uploads.add,
     onUploadProgress: uploads.setProgress,
     onUploadEnd: (id, ok, message) =>
@@ -1055,6 +1091,7 @@ function AppWithConfig({
                     : { boxShadow: "inset 0 0 0 1px rgba(255, 255, 255, 0.2)" }),
                 } as CSSProperties}
                 hideControls
+                interactive={interactive}
                 onStreamingChange={setStreaming}
                 onStreamTouch={onStreamTouch}
                 onStreamMultiTouch={onStreamMultiTouch}
@@ -1089,7 +1126,7 @@ function AppWithConfig({
             return (
               <DeviceKitChrome
                 chrome={chrome!}
-                interactive
+                interactive={interactive}
                 onButton={handleChromeButton}
                 onCrownWheel={(deltaY, deltaMode) => {
                   const delta = digitalCrownDeltaFromWheel(
@@ -1159,17 +1196,18 @@ function AppWithConfig({
                 <SimulatorToolbar.Button
                   aria-label="Reload React Native bundle"
                   title="Reload (R)"
+                  forceDisabled={!interactive}
                   onClick={() => void sendReactNativeReload()}
                 >
                   <ReloadIcon />
                 </SimulatorToolbar.Button>
               )}
-              <SimulatorToolbar.HomeButton title="Home" />
+              <SimulatorToolbar.HomeButton title="Home" forceDisabled={!interactive} />
               <SimulatorToolbar.ScreenshotButton
                 title="Screenshot"
                 onClick={(e) => { e.preventDefault(); void screenshot.capture(); }}
               />
-              <SimulatorToolbar.RotateButton title="Rotate device" />
+              <SimulatorToolbar.RotateButton title="Rotate device" forceDisabled={!interactive} />
             </SimulatorToolbar.Actions>
           </SimulatorToolbar>
           <SimulatorToolbar
@@ -1249,6 +1287,8 @@ function AppWithConfig({
         streamSettingsPending={
           streamSettingsState.pending || !streamSettingsState.encoderSettingsAvailable
         }
+        interactive={interactive}
+        onInteractiveChange={setInteractive}
         width={toolsPanelWidth}
       />
       <ResizeHandle

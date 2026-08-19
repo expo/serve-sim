@@ -71,7 +71,7 @@ describe("GridPanel", () => {
     expect(html).toContain("pt-1 pb-1 text-[11px]");
   });
 
-  test("renders serve-sim branding linked to the OSS repo", () => {
+  test("renders EAS Simulator branding linked to the OSS repo", () => {
     const html = renderToStaticMarkup(
       <GridPanel
         open
@@ -87,12 +87,12 @@ describe("GridPanel", () => {
       />,
     );
 
-    expect(html).toContain("serve-sim");
+    expect(html).toContain("EAS Simulator");
     expect(html).toContain("text-white/65");
     expect(html).toContain(`href="${SERVE_SIM_REPO_URL}"`);
     expect(html).toContain('target="_blank"');
-    expect(html).toContain('title="Open serve-sim"');
-    expect(html).toContain('aria-label="Open serve-sim"');
+    expect(html).toContain('title="Open EAS Simulator"');
+    expect(html).toContain('aria-label="Open EAS Simulator"');
   });
 
   test("uses the shared panel background variable", () => {

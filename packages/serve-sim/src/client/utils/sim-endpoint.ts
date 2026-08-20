@@ -38,6 +38,8 @@ declare global {
        * already carries the helper's direct URLs and is used as-is.
        */
       proxyHelpers?: boolean;
+      /** Hosted EAS Simulator session details page for this preview. */
+      sessionDetailsUrl?: string;
     };
   }
 }

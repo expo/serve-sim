@@ -115,6 +115,20 @@ describe("previewConfigForState", () => {
       previewConfigForState(states[0]!, "", "/bin/serve-sim", "token-xyz").cameraStatusEndpoint,
     ).toBe("/helper/DEVICE-A/camera/status");
   });
+
+  test("includes the hosted session details URL when provided", () => {
+    expect(
+      previewConfigForState(
+        states[0]!,
+        "/preview",
+        "/bin/serve-sim",
+        "token-xyz",
+        undefined,
+        false,
+        "https://expo.dev/accounts/acme/projects/app/simulator-sessions/session-123",
+      ).sessionDetailsUrl,
+    ).toBe("https://expo.dev/accounts/acme/projects/app/simulator-sessions/session-123");
+  });
 });
 
 describe("rewriteStateForRequestHost", () => {

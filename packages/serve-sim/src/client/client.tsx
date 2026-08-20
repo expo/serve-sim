@@ -99,6 +99,7 @@ function App() {
     proxyPreviewConfigForBrowser(streamConfigFrom(window.__SIM_PREVIEW__), window.location)
   );
   const [streaming, setStreaming] = useState(false);
+  const sessionDetailsUrl = window.__SIM_PREVIEW__?.sessionDetailsUrl;
   // The device the user wants to view. Selecting a row in the sidebar updates
   // this and re-subscribes the SSE below — the main view swaps streams instantly
   // (or shows a Start placeholder) without a full page reload.
@@ -427,6 +428,7 @@ function App() {
         starting={starting}
         shuttingDown={shuttingDown}
         onShutdown={shutdownDevice}
+        sessionDetailsUrl={sessionDetailsUrl}
       />
       <ResizeHandle
         panelWidth={gridPanelWidth}
@@ -435,7 +437,11 @@ function App() {
         ariaLabel="Resize simulators sidebar"
         side="left"
       />
-      <DeviceSidebarToggle open={gridOpen} onClick={() => setGridOpen(true)} />
+      <DeviceSidebarToggle
+        open={gridOpen}
+        onClick={() => setGridOpen(true)}
+        sessionDetailsUrl={sessionDetailsUrl}
+      />
     </>
   );
 }

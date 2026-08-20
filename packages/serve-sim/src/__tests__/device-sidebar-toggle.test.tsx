@@ -18,4 +18,21 @@ describe("DeviceSidebarToggle", () => {
     expect(html).toContain(`href="${EAS_SIMULATOR_URL}"`);
     expect(html).not.toContain("max-[900px]:hidden");
   });
+
+  test("links back to the hosted session in the same tab", () => {
+    const sessionDetailsUrl =
+      "https://expo.dev/accounts/acme/projects/app/simulator-sessions/session-123";
+    const html = renderToStaticMarkup(
+      <DeviceSidebarToggle
+        open={false}
+        onClick={noop}
+        sessionDetailsUrl={sessionDetailsUrl}
+      />,
+    );
+
+    expect(html).toContain("Session details");
+    expect(html).toContain(`href="${sessionDetailsUrl}"`);
+    expect(html).toContain("Back to simulator session details");
+    expect(html).not.toContain('target="_blank"');
+  });
 });

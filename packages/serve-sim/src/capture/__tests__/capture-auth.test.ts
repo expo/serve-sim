@@ -73,3 +73,19 @@ describe("network-capture auth", () => {
     });
   });
 });
+
+describe("method mismatches", () => {
+  test("does not report a wrong-method control request as a missing capture row", async () => {
+    // GET on a POST-only route fell through to the body handler, which answered
+    // "No captured body for that request" for a request id of "reboot".
+    const handler = simMiddleware({ basePath: "/", execToken: TOKEN, networkCapture: true });
+    const origin = "http://127.0.0.1:34567";
+    const response = await handler(
+      new Request(`${origin}/network-capture/reboot`, {
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: origin },
+      }),
+    );
+
+    expect(await response!.text()).not.toContain("No captured body");
+  });
+});

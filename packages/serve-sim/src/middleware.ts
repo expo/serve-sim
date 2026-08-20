@@ -4,7 +4,7 @@ import { execSync, spawn, exec, execFile, type ChildProcess, type ExecException 
 import { tmpdir } from "os";
 import { join } from "path";
 import { createServer as createNetServer } from "net";
-import { createHash, randomBytes, timingSafeEqual } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import type { IncomingMessage, ServerResponse } from "http";
 import type { Socket } from "net";
 // `ws` (kept external in the build) supplies a WebSocket *client* for the
@@ -24,6 +24,7 @@ import {
   sendCorsPreflight,
   type HidSocket,
 } from "./device-session";
+import { assertSessionAccess, execAuthError } from "./session-auth";
 import {
   eventLogEventForCommand,
   readEventLog,
@@ -1451,6 +1452,7 @@ export interface SimMiddlewareOptions {
    * cross-origin pages cannot read it.
    */
   execToken?: string;
+
   /** Stream transport and codec settings for the preview. */
   streamSettings?: StreamSettings;
   /**
@@ -1481,20 +1483,6 @@ function httpStreamSettingsFromLegacyCodec(codec: string | undefined): StreamSet
     return { transport: "http", codec };
   }
   return undefined;
-}
-
-function safeEqualString(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
-}
-
-function isJsonContentType(value: string | undefined): boolean {
-  if (!value) return false;
-  // `application/json; charset=utf-8` etc. — only the media type matters.
-  const mediaType = value.split(";", 1)[0]!.trim().toLowerCase();
-  return mediaType === "application/json";
 }
 
 /**
@@ -2385,39 +2373,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // page POSTing `text/plain` JSON to a dev server bound to a public iface)
     // and LAN attackers who can reach the port but can't read the token.
     if ((url === base + "/exec" || url === base + "/exec/") && req.method === "POST") {
-      // 1. Reject anything that isn't a JSON request, killing the
-      //    `enctype="text/plain"` CORS-simple form-POST path.
-      if (!isJsonContentType(req.headers["content-type"])) {
-        res.writeHead(415, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ stdout: "", stderr: "Unsupported Media Type", exitCode: 1 }));
-        return;
-      }
-      // 2. If the browser supplied an Origin, require it match this server.
-      //    Same-origin XHR from the preview page sets Origin to our own URL;
-      //    a cross-origin page's Origin won't match.
-      const origin = req.headers.origin;
-      if (origin) {
-        try {
-          const originHost = new URL(origin).host;
-          if (originHost !== req.headers.host) {
-            res.writeHead(403, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ stdout: "", stderr: "Cross-origin request blocked", exitCode: 1 }));
-            return;
-          }
-        } catch {
-          res.writeHead(403, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ stdout: "", stderr: "Invalid Origin", exitCode: 1 }));
-          return;
-        }
-      }
-      // 3. Require the per-session bearer token. Cross-origin pages cannot
-      //    read it from window.__SIM_PREVIEW__; non-browser callers must
-      //    have copied it from the CLI output.
-      const authHeader = req.headers.authorization ?? "";
-      const match = /^Bearer\s+(.+)$/i.exec(authHeader);
-      if (!match || !safeEqualString(match[1]!.trim(), execToken)) {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ stdout: "", stderr: "Unauthorized", exitCode: 1 }));
+      if (!assertSessionAccess(req, res, execToken, { requireJson: true, errorBody: execAuthError })) {
         return;
       }
       let body = "";

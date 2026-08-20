@@ -74,7 +74,6 @@ export async function shutdownDevice(udid: string): Promise<void> {
   );
 }
 
-/** Boot and wait until launchd is ready (`bootstatus -b`). */
 export async function bootDevice(udid: string): Promise<void> {
   await execFileAsync("xcrun", ["simctl", "boot", udid], { timeout: BOOT_TIMEOUT_MS });
   await execFileAsync("xcrun", ["simctl", "bootstatus", udid, "-b"], {

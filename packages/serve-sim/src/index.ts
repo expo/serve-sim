@@ -37,6 +37,9 @@ import {
   stopLaunchSession,
   waitForLaunchUpdates,
 } from "./launch-manager";
+import { bootInjectedLibraries } from "./capture";
+import { parseCaptureFields } from "./capture/fields";
+import { isLoopbackHost } from "./middleware-utils";
 import { killOwnListeners } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
@@ -1095,11 +1098,13 @@ async function serve(
   host: string,
   options: {
     stream?: StreamRuntimeOptions;
+    networkCaptureFields?: string[];
     metricsCorsOrigins?: string[];
     frameAncestors?: string[];
     debugStreamPath?: string;
     requireToken?: boolean;
     quiet?: boolean;
+    networkCapture?: boolean;
   } = {},
 ) {
   const quiet = !!options.quiet;
@@ -1123,6 +1128,32 @@ async function serve(
   }
   const targetDevice = targetDevices[0];
 
+  // Capture is applied to the device, not to a viewer, so it belongs here: after the device is up and
+  // before anything can launch an app on it.
+  const capture = options.networkCapture ? await import("./capture") : null;
+  if (capture) {
+    // Set once, so the panel's reboot and a sidebar boot capture the same fields as the CLI asked for.
+    capture.captureRuntime.setFields(capture.resolveCaptureFields(options.networkCaptureFields));
+    for (const udid of targetDevices) {
+      try {
+        const meta = await capture.captureRuntime.enableForDevice(udid);
+        console.log(
+          `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from third-party apps on ` +
+            "this device is recorded for the whole boot session (Apple system apps like Safari are left unproxied); " +
+            "HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
+        );
+      } catch (error) {
+        const reason =
+          error instanceof capture.CaptureEnableError
+            ? error.meta.attachError
+            : error instanceof Error
+              ? error.message
+              : String(error);
+        console.error(`Network capture could not start for ${udid}. ${reason ?? ""}`);
+      }
+    }
+  }
+
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
   // it can route helper/DevTools sockets through the single preview port.
@@ -1136,6 +1167,7 @@ async function serve(
     proxyHelpers: true,
     metricsCorsOrigins: options.metricsCorsOrigins ?? [],
     frameAncestors: options.frameAncestors ?? [],
+    networkCapture: !!options.networkCapture,
     execToken: previewToken,
     requirePreviewToken,
   });
@@ -1213,9 +1245,9 @@ async function serve(
       console.log(
         requirePreviewToken
           ? "  This server is listening on the network. The links above carry a token because anyone who " +
-            "has it can run commands on this machine."
+            "has it can read captured traffic and run commands on this machine."
           : "  This server is listening on the network with no token required. Anyone who can reach it can " +
-            "run commands on this machine. Pass --require-token to gate it.",
+            "read captured traffic and run commands on this machine. Pass --require-token to gate it.",
       );
     } else if (networkIP) {
       console.log(`  - Network: \x1b[2muse --host 0.0.0.0 to expose on http://${networkIP}:${boundPort}\x1b[0m`);
@@ -1225,8 +1257,16 @@ async function serve(
     console.log("");
   }
 
+  // Capture is stopped before the devices are disarmed, so a device is never left pointing new launches
+  // at a proxy that is already gone. Bounded, because a hung simctl must not block exit.
   const shutdown = async () => {
     sessionStopping = true;
+    if (capture) {
+      await Promise.race([
+        capture.captureRuntime.disableAll().catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ]);
+    }
     await disarmDevicesArmedHereAsync();
     clearAll();
     process.exit(0);
@@ -1284,6 +1324,29 @@ program
   .option("--detach", "Spawn helper and exit (daemon mode)")
   .option("-q, --quiet", "Suppress human-readable output, JSON only")
   .option("--no-preview", "Skip the web preview server; stream in foreground only")
+  .option(
+    "--network-capture-field <field>",
+    "What network capture may keep, beyond method/URL/status/timing/size: header, query, request-body, " +
+      "response-body. Repeatable or comma-separated. Default: none of them, because each can carry " +
+      "credentials and only header names are redacted.",
+    (value: string, prev: string[]) => {
+      // Rejected here, like --codec, so a typo fails at the flag instead of silently capturing less.
+      try {
+        parseCaptureFields([value]);
+      } catch (error) {
+        throw new InvalidArgumentError(error instanceof Error ? error.message : String(error));
+      }
+      return [...prev, value];
+    },
+    [] as string[],
+  )
+  .option(
+    "--network-capture",
+    "Record HTTP(S) traffic for devices this process starts or boots (CLI args and the device sidebar). " +
+      "Covers third-party apps and their startup requests; Apple system apps (e.g. Safari) are left unproxied. " +
+      "HTTPS is decrypted for the whole boot session and certificate-pinned apps will refuse to connect. " +
+      "Requires mitmproxy. Relaunch apps after enabling so they pick up the proxy.",
+  )
   .option("--transport <http|webrtc>", "Stream transport", "http")
   .option(
     "--launch-app-identifier <id>",
@@ -1427,6 +1490,13 @@ Examples:
     }
     if (opts.transport !== "http" && opts.transport !== "webrtc") {
       console.error("--transport must be one of: http, webrtc.");
+      process.exit(1);
+    }
+    if (opts.networkCaptureField?.length && !opts.networkCapture) {
+      console.error(
+        "--network-capture-field only applies with --network-capture, which is off, so nothing would " +
+          "be captured. Add --network-capture, or drop the field flag.",
+      );
       process.exit(1);
     }
     const wasProvided = (name: string) => program.getOptionValueSource(name) === "cli";
@@ -1615,6 +1685,8 @@ Examples:
         debugStreamPath,
         requireToken: !!opts.requireToken,
         quiet: !!opts.quiet,
+        networkCapture: !!opts.networkCapture,
+        networkCaptureFields: opts.networkCaptureField,
       });
     }
   });

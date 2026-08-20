@@ -189,11 +189,7 @@ async function freePort(): Promise<number> {
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
       if (address == null || typeof address === "string") {
-        server.close(() => reject(new Error(
-              "Could not reserve a local port for the capture proxy. The loopback interface refused a " +
-                "port, which usually means the process has hit its file-descriptor limit. Retry, or " +
-                "raise the limit with `ulimit -n`.",
-            )));
+        server.close(() => reject(new Error("Could not reserve a local port for the capture proxy.")));
         return;
       }
       const { port } = address;
@@ -303,13 +299,7 @@ export interface MitmProxyDeps {
 
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
-/**
- * One set of process listeners for all proxies, not one set each.
- *
- * `serve --network-capture` runs a proxy per device. Registering per proxy trips Node's MaxListeners
- * warning past ten, and made the signal path re-raise once per proxy, since each handler removed only
- * its own listeners before re-raising into the ones still installed.
- */
+/** One set of process listeners for all proxies: a proxy per device would otherwise trip MaxListeners. */
 const reapers = new Set<() => void>();
 let listening = false;
 

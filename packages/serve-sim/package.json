@@ -32,6 +32,7 @@
   ],
   "files": [
     "LICENSE",
+    "NOTICE",
     "dist/serve-sim.js",
     "dist/middleware.js",
     "dist/middleware.cjs",

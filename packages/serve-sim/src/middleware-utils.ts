@@ -190,7 +190,13 @@ export function corsAllowOriginHeaders(
     }
   });
   if (isLoopback || allowed) {
-    return { "Access-Control-Allow-Origin": origin, Vary: "Origin" };
+    return {
+      "Access-Control-Allow-Origin": origin,
+      // A dashboard reading /metrics on a network-bound server has to send the token, and the browser
+      // will not let it unless the preflight names the header.
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      Vary: "Origin",
+    };
   }
   return {};
 }

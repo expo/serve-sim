@@ -1720,8 +1720,8 @@ async function serve(
     console.log(`  - Network: http://${networkIP}:${boundPort}${tokenQuery}`);
     console.log("");
     console.log(
-      "  \x1b[2mThis server is reachable from the network, so the preview and /api need the token in " +
-        "the links above. Anyone with it can run commands on this machine.\x1b[0m",
+      "  This server is listening on the network. The links above carry a token because anyone who " +
+        "has it can run commands on this machine.",
     );
   } else if (networkIP) {
     console.log(`  - Network: \x1b[2muse --host 0.0.0.0 to expose on http://${networkIP}:${boundPort}\x1b[0m`);

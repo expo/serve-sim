@@ -1696,6 +1696,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     // Memory capacity estimate: how much room is left to boot more sims.
     if (url === base + "/grid/api/memory") {
+      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
+        return;
+      }
       res.writeHead(200, {
         "Content-Type": "application/json",
         "Cache-Control": "no-store",
@@ -1705,11 +1708,17 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
 
     if (url === base + "/grid/api/devicekit-chrome") {
+      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
+        return;
+      }
       serveDeviceKitChromeAsset(new URL(rawUrl || "/", "http://serve-sim.local"), res);
       return;
     }
 
     if (url === base + "/grid/api/device-placeholder-asset") {
+      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
+        return;
+      }
       serveDevicePlaceholderAsset(new URL(rawUrl || "/", "http://serve-sim.local"), res);
       return;
     }
@@ -1850,6 +1859,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     // Grid JSON: every supported simulator, annotated with running helper info if any.
     if (url === base + "/grid/api") {
+      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
+        return;
+      }
       const { simulators, helperByUdid } = await readGridSnapshot(selectedDevice);
       const total = simulators.length;
       const { limit, offset } = parseGridPaging(rawUrl);
@@ -1880,6 +1892,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // by readServeSimStates() on the next status sample (it kills helpers
     // whose backing simulator is no longer in the booted set).
     if (url === base + "/grid/api/shutdown" && req.method === "POST") {
+      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
+        return;
+      }
       let body = "";
       req.on("data", (chunk: Buffer | string) => {
         body += typeof chunk === "string" ? chunk : chunk.toString();
@@ -1918,6 +1933,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // Start streaming a device in-process (auto-boots if needed). The preview
     // server serves its /helper routes directly — no spawned helper.
     if (url === base + "/grid/api/start" && req.method === "POST") {
+      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
+        return;
+      }
       let body = "";
       req.on("data", (chunk: Buffer | string) => {
         body += typeof chunk === "string" ? chunk : chunk.toString();
@@ -2401,6 +2419,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // SSE of the user app's live CPU/memory: an `event: meta` frame (schema,
     // udid, hostCores, cadence), then one `data:` line per sample.
     if (url === base + "/metrics") {
+      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
+        return;
+      }
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       handleMetricsRequest(req, res, state, metricsSamplerCache, metricsCorsOrigins);

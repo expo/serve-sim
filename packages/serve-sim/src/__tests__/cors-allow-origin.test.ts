@@ -6,6 +6,7 @@ describe("corsAllowOriginHeaders", () => {
   test("echoes an allowlisted origin, with Vary", () => {
     expect(corsAllowOriginHeaders("https://expo.dev", ["https://expo.dev"])).toEqual({
       "Access-Control-Allow-Origin": "https://expo.dev",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
       Vary: "Origin",
     });
   });
@@ -14,7 +15,8 @@ describe("corsAllowOriginHeaders", () => {
     for (const configured of ["HTTPS://Expo.Dev", "https://expo.dev:443", "https://expo.dev/"]) {
       expect(corsAllowOriginHeaders("https://expo.dev", [configured])).toEqual({
         "Access-Control-Allow-Origin": "https://expo.dev",
-        Vary: "Origin",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      Vary: "Origin",
       });
     }
   });
@@ -22,6 +24,7 @@ describe("corsAllowOriginHeaders", () => {
   test("skips a malformed configured origin instead of throwing", () => {
     expect(corsAllowOriginHeaders("https://expo.dev", ["not a url", "https://expo.dev"])).toEqual({
       "Access-Control-Allow-Origin": "https://expo.dev",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
       Vary: "Origin",
     });
     expect(corsAllowOriginHeaders("https://expo.dev", ["not a url"])).toEqual({});
@@ -31,7 +34,8 @@ describe("corsAllowOriginHeaders", () => {
     for (const origin of ["http://localhost:3000", "http://127.0.0.1:8081", "http://[::1]:9000"]) {
       expect(corsAllowOriginHeaders(origin, [])).toEqual({
         "Access-Control-Allow-Origin": origin,
-        Vary: "Origin",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      Vary: "Origin",
       });
     }
   });

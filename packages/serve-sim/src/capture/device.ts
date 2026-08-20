@@ -27,12 +27,17 @@ export async function trustCaInSimulator(udid: string, caPem: string): Promise<v
   }
 }
 
-function locateProxyDylib(): string | null {
-  const candidates = [
-    join(__dirname, "..", "dist", "simnet", DYLIB_NAME),
+/** Bundled next to the CLI, or under `dist/` when running from a checkout. */
+export function proxyDylibCandidates(): string[] {
+  return [
     join(__dirname, "simnet", DYLIB_NAME),
+    join(__dirname, "..", "dist", "simnet", DYLIB_NAME),
+    join(__dirname, "..", "..", "dist", "simnet", DYLIB_NAME),
   ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function locateProxyDylib(): string | null {
+  return proxyDylibCandidates().find((candidate) => existsSync(candidate)) ?? null;
 }
 
 export interface InjectionDeps {
@@ -69,7 +74,6 @@ export function bootInjectedLibraries(udid: string): string | null {
     { encoding: "utf8", timeout: SIMCTL_TIMEOUT_MS },
   );
   if (result.status !== 0 || typeof result.stdout !== "string") return null;
-  // Filter dylib log lines that leak onto stdout.
   const value = result.stdout
     .split("\n")
     .map((line) => line.trim())
@@ -97,13 +101,7 @@ async function readInjectedVar(udid: string, name: string, read: ReadEnv): Promi
     .filter((line) => line.length > 0 && !line.includes("[simnetproxy]"));
 }
 
-/**
- * A device that is gone cannot still be injected, so its failure is the one safe failure to ignore.
- *
- * Anchored to simctl's own wording. A loose match here is worse than no check at all: `Booted` also
- * appears in "rebooted" and in a live device's state, and `not found` in `launchctl: command not found`,
- * so both would swallow the failures this exists to surface.
- */
+/** A device that is gone cannot still be injected, so its failure is the one safe failure to ignore. */
 function isDeviceUnavailable(error: unknown): boolean {
   const text = error instanceof Error ? error.message : String(error);
   return /Unable to lookup device|Invalid device|current state: Shutdown|device is not booted/i.test(

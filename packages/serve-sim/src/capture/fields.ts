@@ -5,14 +5,7 @@ export const CAPTURE_FIELDS = ["header", "query", "request-body", "response-body
 
 export type CaptureField = (typeof CAPTURE_FIELDS)[number];
 
-/**
- * Default: metadata only — method, URL path, status, timing, MIME type and sizes.
- *
- * Everything else is asked for explicitly, because everything else can carry a credential. Query values
- * hold OAuth codes and signed-URL keys, headers hold tokens and cookies, and bodies hold passwords with
- * no reliable way to find them inside arbitrary JSON or protobuf. Header redaction is best-effort and
- * body capture has no redaction at all, so neither is something to turn on for someone.
- */
+/** Everything beyond metadata is opt-in: it can carry a credential, and body capture has no redaction. */
 export const DEFAULT_CAPTURE_FIELDS: readonly CaptureField[] = [];
 
 const CAPTURE_FIELD_SET = new Set<string>(CAPTURE_FIELDS);

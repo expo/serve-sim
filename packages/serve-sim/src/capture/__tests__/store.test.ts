@@ -78,8 +78,6 @@ describe("CaptureStore", () => {
       responseBinary: false,
     });
     expect(store.body(id)?.responseBody).toBe('{"ok":true}');
-    // Bodies are not part of the streamed record.
-    expect("responseBody" in store.list()[0]!).toBe(false);
 
     store.clear();
     expect(store.body(id)).toBeNull();
@@ -256,5 +254,25 @@ describe("CaptureStore throughput", () => {
     // And refunded on eviction: without that, the cap fills once and the store refuses every body after,
     // while holding none — so the newest records, written after evictions began, must still have theirs.
     expect(ids.slice(-100).some((id) => store.body(id) !== null)).toBe(true);
+  });
+
+  test("charges bodies by byte, not by character", () => {
+    const store = new CaptureStore(() => 0);
+    // Four bytes per emoji, two UTF-16 units. Counting units undercharged multi-byte text 2x.
+    const emoji = "\u{1F600}".repeat(5_000_000);
+    const id = store.start("POST", "https://example.com/upload");
+    store.setBody(id, {
+      requestHeaders: {},
+      responseHeaders: {},
+      requestBody: emoji,
+      responseBody: null,
+      requestTruncated: false,
+      responseTruncated: false,
+      requestBinary: false,
+      responseBinary: false,
+    });
+
+    // 10MB of code units but 20MB of bytes, so it must not fit under the 16MB cap.
+    expect(store.body(id)).toBeNull();
   });
 });

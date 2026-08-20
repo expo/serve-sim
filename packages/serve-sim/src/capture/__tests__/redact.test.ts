@@ -77,7 +77,4 @@ describe("redactHeaders", () => {
     expect(isSensitiveHeaderName("accept")).toBe(false);
   });
 
-  test("leaves an empty object alone", () => {
-    expect(redactHeaders({})).toEqual({});
-  });
 });

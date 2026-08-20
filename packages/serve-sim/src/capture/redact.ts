@@ -1,25 +1,18 @@
 /** Best-effort header redaction. Not a secret scanner; bodies are untouched. */
 const REDACTED = "[REDACTED]";
 
-/** Known credential headers whose names carry no word the pattern below would catch. */
+/** Credential headers the pattern misses: `auth` here is followed by a letter, not a delimiter. */
 const SENSITIVE_HEADER_NAMES = new Set([
   "authorization",
   "proxy-authorization",
-  "cookie",
-  "set-cookie",
-  "x-api-key",
-  "x-auth-token",
   "x-firebase-appcheck",
-  "x-goog-iam-authorization-token",
   "x-amz-content-sha256",
 ]);
 
 /**
  * Names that read as credential-bearing.
  *
- * The list above cannot keep up with vendor headers — `x-goog-api-key`, `x-firebase-appcheck`,
- * `x-amz-security-token`, whatever an app invents next. Matching the shape of the name instead means an
- * unknown header is redacted rather than recorded, which is the direction to fail in.
+ * Matching the shape of the name means an unknown vendor header is redacted rather than recorded.
  */
 const SENSITIVE_HEADER_PATTERN = /(^|[-_])(auth|authz|token|secret|password|passwd|credential|session|cookie|apikey|api[-_]?key|access[-_]?key|private[-_]?key|signature|bearer)([-_]|$)/i;
 

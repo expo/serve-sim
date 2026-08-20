@@ -1,6 +1,8 @@
+import { resolve } from "node:path";
+
 import { describe, expect, test } from "bun:test";
 
-import { bootInjectionCleared, clearBootInjection } from "../device";
+import { bootInjectionCleared, clearBootInjection, proxyDylibCandidates } from "../device";
 
 const UDID = "ABCD1234-0000-0000-0000-0000000000EF";
 
@@ -91,5 +93,14 @@ describe("bootInjectionCleared", () => {
         },
       }),
     ).toBe(true);
+  });
+});
+
+describe("proxyDylibCandidates", () => {
+  test("includes the path a checkout actually builds to", () => {
+    // Both original candidates resolved under src/, so running from source never found the dylib.
+    const fromSource = resolve(import.meta.dir, "../../../dist/simnet/libSimNetProxy.dylib");
+
+    expect(proxyDylibCandidates()).toContain(fromSource);
   });
 });

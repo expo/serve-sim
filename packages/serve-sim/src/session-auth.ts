@@ -94,3 +94,69 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0];
   return value;
 }
+
+/** Cookie the preview sets once the operator has proved they hold the token. */
+export const ACCESS_COOKIE = "serve_sim_access";
+
+function cookieValue(header: string | undefined, name: string): string | null {
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return decodeURIComponent(rest.join("="));
+  }
+  return null;
+}
+
+function bearerToken(header: string | undefined): string | null {
+  const match = /^Bearer\s+(.+)$/i.exec(header ?? "");
+  return match ? match[1]!.trim() : null;
+}
+
+/**
+ * Gate the preview HTML and `/api`, which carry the session token in their body.
+ *
+ * A token that anyone who can reach the port may fetch is CSRF protection, not authentication, so on a
+ * non-loopback bind the caller must already hold it. Loopback is ungated: reaching it means being on the
+ * machine already, and a token prompt there buys nothing.
+ *
+ * Accepts a bearer header for programmatic callers, or `?token=` once from a browser — which is then
+ * traded for a cookie and redirected away, so the secret does not stay in the address bar or in history.
+ *
+ * Returns false when the request has been answered and must stop.
+ */
+export function assertPreviewAccess(
+  req: SessionAuthReq & { url?: string },
+  res: SessionAuthRes,
+  sessionToken: string,
+  opts: { required: boolean; basePath: string },
+): boolean {
+  if (!opts.required) return true;
+
+  const header = headerValue(req.headers.authorization);
+  const fromBearer = bearerToken(header);
+  if (fromBearer && safeEqualString(fromBearer, sessionToken)) return true;
+
+  const cookie = cookieValue(headerValue(req.headers.cookie), ACCESS_COOKIE);
+  if (cookie && safeEqualString(cookie, sessionToken)) return true;
+
+  const url = new URL(req.url ?? "/", "http://127.0.0.1");
+  const fromQuery = url.searchParams.get("token");
+  if (fromQuery && safeEqualString(fromQuery, sessionToken)) {
+    url.searchParams.delete("token");
+    res.writeHead(302, {
+      Location: `${url.pathname}${url.search}`,
+      "Set-Cookie": `${ACCESS_COOKIE}=${encodeURIComponent(sessionToken)}; HttpOnly; SameSite=Strict; Path=${opts.basePath}`,
+      "Cache-Control": "no-store, private",
+    });
+    res.end();
+    return false;
+  }
+
+  res.writeHead(401, { "Content-Type": "text/plain", "Cache-Control": "no-store, private" });
+  res.end(
+    "Unauthorized. This serve-sim is bound to a non-loopback address, so the preview needs the access " +
+      "token it printed at startup. Open the URL it logged, which carries `?token=`, or send the token " +
+      "as `Authorization: Bearer <token>`.\n",
+  );
+  return false;
+}

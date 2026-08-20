@@ -53,3 +53,26 @@ describe("preview access on a non-loopback bind", () => {
     expect((await gated(false)("/api")).status).toBe(200);
   });
 });
+
+describe("the rest of the surface on a non-loopback bind", () => {
+  test("refuses to boot or shut down a simulator without the token", async () => {
+    const request = gated(true);
+
+    expect((await request("/grid/api/start", { method: "POST" })).status).toBe(401);
+    expect((await request("/grid/api/shutdown", { method: "POST" })).status).toBe(401);
+  });
+
+  test("refuses to stream device metrics without the token", async () => {
+    expect((await gated(true)("/metrics")).status).toBe(401);
+  });
+
+  test("accepts the cookie the browser already carries, so the UI keeps working", async () => {
+    const cookie = { cookie: `${ACCESS_COOKIE}=${encodeURIComponent(TOKEN)}` };
+
+    expect((await gated(true)("/grid/api", { headers: cookie })).status).toBe(200);
+  });
+
+  test("leaves all of it open on loopback", async () => {
+    expect((await gated(false)("/grid/api")).status).toBe(200);
+  });
+});

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { DeviceSidebarToggle } from "../client/components/device-sidebar-toggle";
-import { SERVE_SIM_REPO_URL } from "../client/components/serve-sim-brand-link";
+import { EAS_SIMULATOR_URL } from "../client/components/serve-sim-brand-link";
 
 const noop = () => {};
 
@@ -15,7 +15,7 @@ describe("DeviceSidebarToggle", () => {
     expect(html).toContain("flex items-center");
     expect(html).toContain("EAS Simulator");
     expect(html).toContain("text-white/65");
-    expect(html).toContain(`href="${SERVE_SIM_REPO_URL}"`);
+    expect(html).toContain(`href="${EAS_SIMULATOR_URL}"`);
     expect(html).not.toContain("max-[900px]:hidden");
   });
 });

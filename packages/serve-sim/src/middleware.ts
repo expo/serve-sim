@@ -15,6 +15,7 @@ import type { Socket } from "net";
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
+import { CaptureEnableError, captureRuntime, rebootWithCapture, type CaptureRuntime } from "./capture";
 import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./metrics-sampler";
 import { foregroundTracker, type ForegroundApp, type ForegroundTrackerCache } from "./foreground-tracker";
 import { corsAllowOriginHeaders, frameAncestorsPolicy } from "./middleware-utils";
@@ -57,6 +58,9 @@ import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
 import { type WebMiddleware } from "./runtime-utils";
 import { connectToFetch, type ConnectMiddleware } from "./connect-to-fetch";
+
+/** Captured traffic is decrypted credentials; `no-cache` would still let a cache keep a copy. */
+const NO_STORE = { "Cache-Control": "no-store, private", Pragma: "no-cache" } as const;
 
 type SimReq = IncomingMessage;
 type SimRes = ServerResponse;
@@ -135,8 +139,14 @@ export type ServeSimState = ServeSimDeviceState;
 const axStreamerCache = createAxStreamerCache();
 // One shared cpu/mem sampler per udid; every /metrics viewer subscribes. Stamp the device name
 // (from the last booted-device snapshot) into the sampler's meta frame when we know it.
+// Host network counters look idle under capture (loopback); proxy totals win via networkRateOverride.
 const metricsSamplerCache = createMetricsSamplerCache(
-  (udid) => new MetricsSampler({ udid, deviceName: bootedDeviceName(udid) }),
+  (udid) =>
+    new MetricsSampler({
+      udid,
+      deviceName: bootedDeviceName(udid),
+      networkRateOverride: () => captureRuntime.throughputFor(udid),
+    }),
 );
 
 let inspectWebKitBridge: Promise<WebKitBridge> | null = null;
@@ -924,6 +934,61 @@ export async function startDeviceInProcess(
   return null;
 }
 
+/** Enable capture for a freshly booted/started device when the server was launched with `--network-capture`. */
+export async function enableNetworkCaptureForStartedDevice(
+  udid: string,
+  enabled: boolean,
+  deps: {
+    enable?: (udid: string) => Promise<{ proxyAddress: string | null }>;
+    log?: (message: string) => void;
+    error?: (message: string) => void;
+  } = {},
+): Promise<void> {
+  if (!enabled) return;
+  const enable =
+    deps.enable ??
+    (async (id) => captureRuntime.enableForDevice(id));
+  const log = deps.log ?? ((message) => console.log(message));
+  const error = deps.error ?? ((message) => console.error(message));
+  try {
+    const meta = await enable(udid);
+    log(
+      `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from this device is ` +
+        "recorded for its whole boot session; HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
+    );
+  } catch (err) {
+    const reason =
+      err instanceof CaptureEnableError
+        ? err.meta.attachError
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    error(`Network capture could not start for ${udid}. ${reason ?? ""}`);
+  }
+}
+
+/** Tear down capture when a device is shut down from the grid. */
+export async function disableNetworkCaptureForStoppedDevice(
+  udid: string,
+  enabled: boolean,
+  deps: { disable?: (udid: string) => Promise<void> } = {},
+): Promise<void> {
+  if (!enabled) return;
+  const disable =
+    deps.disable ??
+    (async (id) => {
+      await captureRuntime.disableForDevice(id);
+    });
+  try {
+    await disable(udid);
+  } catch (err) {
+    console.warn(
+      `Network capture: disable for ${udid} failed:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
 /**
  * Adapt a raw upgraded socket into the minimal HidSocket the DeviceSession
  * needs. We do the WebSocket framing by hand (same helpers as the DevTools
@@ -1010,6 +1075,28 @@ function attachHidInProcess(
   return true;
 }
 
+/**
+ * SSE routes the exec WebSocket may proxy.
+ *
+ * The bridge refuses anything not listed here, and refuses it by ending the subscription — which the
+ * client can only report as a dropped stream. A route added to the middleware but forgotten here
+ * therefore works over plain HTTP and fails only in the browser, with no usable diagnosis. Exported so a
+ * test can hold this list against the endpoints the preview config advertises.
+ */
+export function sseStreamPaths(base: string): string[] {
+  return [
+    `${base}/api/events`,
+    `${base}/api/event-log/events`,
+    `${base}/grid/api/status/events`,
+    `${base}/appstate`,
+    `${base}/logs`,
+    `${base}/crashes`,
+    `${base}/metrics`,
+    `${base}/network-capture`,
+    `${base}/ax`,
+  ];
+}
+
 export function previewConfigForState(
   state: ServeSimState,
   base: string,
@@ -1026,6 +1113,7 @@ export function previewConfigForState(
   eventLogEndpoint: string;
   eventLogEventsEndpoint: string;
   metricsEndpoint: string;
+  captureEndpoint: string;
   axEndpoint: string;
   cameraStatusEndpoint: string;
   devtoolsEndpoint: string;
@@ -1065,6 +1153,7 @@ export function previewConfigForState(
     eventLogEndpoint: endpoint(base, "/api/event-log", state.device),
     eventLogEventsEndpoint: endpoint(base, "/api/event-log/events", state.device),
     metricsEndpoint: endpoint(base, "/metrics", state.device),
+    captureEndpoint: endpoint(base, "/network-capture", state.device),
     axEndpoint: endpoint(base, "/ax", state.device),
     cameraStatusEndpoint: `${base === "/" ? "" : base}/helper/${encodeURIComponent(state.device)}/camera/status`,
     devtoolsEndpoint: endpoint(base, "/devtools", state.device),
@@ -1551,6 +1640,12 @@ export interface SimMiddlewareOptions {
   frameAncestors?: string[];
   /** Public page the Share button copies instead of this preview's address. */
   shareUrl?: string;
+  /**
+   * When true (standalone `serve-sim --network-capture`), every device this
+   * middleware boots or starts also gets capture enabled — not only the ones
+   * passed on the CLI at process start.
+   */
+  networkCapture?: boolean;
   /** @deprecated Use `streamSettings: { transport: "http", codec }`. */
   codec?: string;
   /**
@@ -1688,7 +1783,7 @@ export function handleMetricsRequest(
   }
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
+    ...NO_STORE,
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
@@ -1711,6 +1806,66 @@ export function handleMetricsRequest(
   });
 }
 
+/** SSE of captured HTTPS traffic (read-only; does not start/stop capture). */
+export function handleNetworkCaptureRequest(
+  req: SimReq,
+  res: SimRes,
+  state: ServeSimState | null,
+  runtime: CaptureRuntime = captureRuntime,
+): void {
+  if (!state) {
+    res.writeHead(404);
+    res.end("No serve-sim device");
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    ...NO_STORE,
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write(":\n\n");
+
+  const { meta, unsubscribe } = runtime.subscribe(state.device, (event) => {
+    if (!res.writableEnded) res.write("data: " + JSON.stringify(event) + "\n\n");
+  });
+
+  res.write("event: meta\ndata: " + JSON.stringify(meta) + "\n\n");
+  for (const request of runtime.storeFor(state.device)?.list() ?? []) {
+    if (res.writableEnded) break;
+    // In-flight rows (null status) replay as started.
+    const type = request.status == null && request.failure == null ? "started" : "finished";
+    res.write("data: " + JSON.stringify({ type, request }) + "\n\n");
+  }
+
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded) res.write(":\n\n");
+  }, 15000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+}
+
+/** Headers/bodies for one captured request (on demand; kept off the live stream). */
+export function handleCaptureBodyRequest(
+  req: SimReq,
+  res: SimRes,
+  state: ServeSimState | null,
+  id: string,
+  runtime: CaptureRuntime = captureRuntime,
+): void {
+  const store = state ? runtime.storeFor(state.device) : null;
+  const body = store?.body(id) ?? null;
+  if (!body) {
+    res.writeHead(404, { "Content-Type": "application/json", ...NO_STORE });
+    res.end(JSON.stringify({ error: "No captured body for that request" }));
+    return;
+  }
+  res.writeHead(200, { "Content-Type": "application/json", ...NO_STORE });
+  res.end(JSON.stringify(body));
+}
+
 export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const streamSettings = options?.streamSettings ?? httpStreamSettingsFromLegacyCodec(options?.codec);
   const base = (options?.basePath ?? "/.sim").replace(/\/+$/, "");
@@ -1730,6 +1885,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const framePolicyHeaders: Record<string, string> = requirePreviewToken
     ? { "Content-Security-Policy": frameAncestorsPolicy(frameAncestors) }
     : {};
+  const networkCapture = options?.networkCapture ?? false;
 
   crashRuntime.arm();
 
@@ -2112,6 +2268,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         // isn't streamed here). This frees the native session immediately
         // rather than waiting for the next poll's reaper to notice.
         closeDeviceSession(udid);
+        void disableNetworkCaptureForStoppedDevice(udid, networkCapture);
         // Drop the snapshot so the next status sample re-queries simctl
         // and prunes any helper bound to this now-shutdown device.
         bootedSnapshot = { at: 0, booted: null, names: new Map(), deviceTypes: new Map() };
@@ -2153,7 +2310,10 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           base,
           streamSettings,
           requirePreviewToken ? execToken : undefined,
-        ).then((error) => {
+        ).then(async (error) => {
+          if (!error) {
+            await enableNetworkCaptureForStartedDevice(udid, networkCapture);
+          }
           if (res.writableEnded) return;
           if (error) {
             res.writeHead(500, { "Content-Type": "application/json" });
@@ -2632,6 +2792,83 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       return;
     }
 
+    if (url === base + "/network-capture") {
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      handleNetworkCaptureRequest(req, res, state, captureRuntime);
+      return;
+    }
+
+    if (
+      new URL(url, "http://127.0.0.1").pathname === base + "/network-capture/reboot" &&
+      req.method === "POST"
+    ) {
+      if (!networkCapture) {
+        // Rebooting into capture installs a CA root that simctl cannot remove short of erasing the
+        // device, so it stays behind the same opt-in as every other way to turn capture on.
+        res.writeHead(404, { "Content-Type": "application/json", ...NO_STORE });
+        res.end(
+          JSON.stringify({
+            error:
+              "Network capture is off for this server. Restart serve-sim with --network-capture to " +
+              "enable it.",
+          }),
+        );
+        return;
+      }
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      if (!state) {
+        res.writeHead(404, { "Content-Type": "application/json", ...NO_STORE });
+        res.end(JSON.stringify({ error: "No serve-sim device" }));
+        return;
+      }
+      const enabled = new URL(rawUrl, "http://127.0.0.1").searchParams.get("enabled") !== "0";
+      // The stream and HID sockets are bound to a device that is about to go down under them, so this
+      // drops them first, the same order /grid/api/stop uses.
+      closeDeviceSession(state.device);
+      try {
+        const meta = await rebootWithCapture(state.device, enabled);
+        res.writeHead(200, { "Content-Type": "application/json", ...NO_STORE });
+        res.end(JSON.stringify(meta));
+      } catch (error) {
+        res.writeHead(500, { "Content-Type": "application/json", ...NO_STORE });
+        res.end(
+          JSON.stringify({
+            error:
+              `Could not reboot the device: ${
+                error instanceof Error ? error.message : String(error)
+              }. The device may now be shut down — boot it from the sidebar, then try again.`,
+          }),
+        );
+      }
+      return;
+    }
+
+    if (
+      new URL(url, "http://127.0.0.1").pathname === base + "/network-capture/clear" &&
+      req.method === "POST"
+    ) {
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      if (!state || !captureRuntime.clearForDevice(state.device)) {
+        res.writeHead(404, { "Content-Type": "application/json", ...NO_STORE });
+        res.end(JSON.stringify({ error: "No capture session" }));
+        return;
+      }
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (url.startsWith(base + "/network-capture/")) {
+      const id = url.slice((base + "/network-capture/").length);
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      handleCaptureBodyRequest(req, res, state, decodeURIComponent(id), captureRuntime);
+      return;
+    }
+
     // SSE: foreground-app change stream. Emits `{bundleId, pid}` events
     // parsed from SpringBoard's "Setting process visibility to: Foreground"
     // log line. Filtering is done here (not in the browser) so the SSE stream
@@ -2739,20 +2976,13 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     path: `${base}/exec-ws`,
     execToken,
     corsOrigins,
-    ssePrefixes: [
-      `${base}/api/events`,
-      `${base}/api/event-log/events`,
-      `${base}/grid/api/status/events`,
-      `${base}/appstate`,
-      `${base}/logs`,
-      `${base}/crashes`,
-      `${base}/metrics`,
-      `${base}/ax`,
-    ],
+    ssePrefixes: sseStreamPaths(base),
     onUiRequest: handleUiRequest,
     serveSimBinPath: serveSimBinPath(),
     onActionResult: (action, params, result) => recordActionEvent(action, params, result),
     onSseRequest(path, websocketRequest) {
+      // WS channel is already token-gated; forward the bearer so capture SSE
+      // (and other gated streams) accept this internal hop.
       const url = new URL(path, websocketRequest.url);
       // The exec channel already authenticated, so its fan-out carries the token past the gate.
       return fetchMiddleware(new Request(url, {

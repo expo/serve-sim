@@ -136,7 +136,7 @@ export class CaptureStore {
     const slices = Math.ceil(Math.max(TRAFFIC_BUCKET_MS, durationMs) / TRAFFIC_BUCKET_MS);
     const share = { in: inBytes / slices, out: outBytes / slices };
 
-    const earliest = Math.max(current - slices + 1, current - TRAFFIC_WINDOW_BUCKETS);
+    const earliest = Math.max(current - slices + 1, current - TRAFFIC_WINDOW_BUCKETS + 1);
     for (let bucket = earliest; bucket <= current; bucket++) {
       const entry = this.traffic.get(bucket) ?? { in: 0, out: 0 };
       entry.in += share.in;
@@ -197,11 +197,17 @@ export class CaptureStore {
  * the same memory as the bodies this cap exists to bound.
  */
 function chargedBytes(body: CapturedBody): number {
-  let total = (body.requestBody?.length ?? 0) + (body.responseBody?.length ?? 0);
+  let total = byteLength(body.requestBody) + byteLength(body.responseBody);
   for (const headers of [body.requestHeaders, body.responseHeaders]) {
-    for (const [name, value] of Object.entries(headers)) total += name.length + value.length;
+    for (const [name, value] of Object.entries(headers)) {
+      total += byteLength(name) + byteLength(value);
+    }
   }
   return total;
+}
+
+function byteLength(text: string | null): number {
+  return text == null ? 0 : Buffer.byteLength(text);
 }
 
 export function clampBody(buffers: Buffer[]): { text: string | null; truncated: boolean } {

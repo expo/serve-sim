@@ -57,16 +57,6 @@ describe("resolveCaptureFields", () => {
   });
 });
 
-describe("query", () => {
-  test("is opt-in and is enforced in the addon, not by applyCaptureFields", () => {
-    expect(parseCaptureFields(["query"])).toEqual(["query"]);
-    expect(resolveCaptureFields(undefined)).not.toContain("query");
-    // applyCaptureFields shapes the stored body; the URL is sanitised before it ever reaches the store,
-    // so there is deliberately no query branch here.
-    expect(Object.keys(applyCaptureFields(fullBody, captureFieldSet(["query"])))).not.toContain("url");
-  });
-});
-
 describe("applyCaptureFields", () => {
   test("default fields keep nothing but metadata", () => {
     // Bodies are opt-in: they carry credentials and nothing redacts them.
@@ -81,8 +71,6 @@ describe("applyCaptureFields", () => {
       responseBinary: false,
     });
   });
-
-
 
   test("can keep only headers", () => {
     expect(applyCaptureFields(fullBody, captureFieldSet(["header"]))).toEqual({

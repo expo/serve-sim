@@ -96,6 +96,30 @@ describe("GridPanel", () => {
     expect(html).toContain('aria-label="Open EAS Simulator"');
   });
 
+  test("links back to the hosted session from the open sidebar", () => {
+    const sessionDetailsUrl =
+      "https://expo.dev/accounts/acme/projects/app/simulator-sessions/session-123";
+    const html = renderToStaticMarkup(
+      <GridPanel
+        open
+        onClose={noop}
+        width={320}
+        side="left"
+        devices={devices}
+        selectedUdid="one"
+        onSelect={noop}
+        starting={{}}
+        shuttingDown={{}}
+        onShutdown={noop}
+        sessionDetailsUrl={sessionDetailsUrl}
+      />,
+    );
+
+    expect(html).toContain("Session details");
+    expect(html).toContain(`href="${sessionDetailsUrl}"`);
+    expect(html).not.toContain('target="_blank"');
+  });
+
   test("uses the shared panel background variable", () => {
     const html = renderToStaticMarkup(
       <GridPanel

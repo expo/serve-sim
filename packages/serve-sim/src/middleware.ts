@@ -926,6 +926,7 @@ export function previewConfigForState(
   execToken: string,
   streamSettingsOrCodec?: StreamSettings | string,
   proxyHelpers = false,
+  sessionDetailsUrl?: string,
 ): ServeSimState & {
   basePath: string;
   logsEndpoint: string;
@@ -948,6 +949,7 @@ export function previewConfigForState(
   codec?: string;
   streamSettings?: StreamSettings;
   proxyHelpers?: boolean;
+  sessionDetailsUrl?: string;
 } {
   const gridApiBase = (base === "" ? "" : base) + "/grid/api";
   const legacyCodec = typeof streamSettingsOrCodec === "string" ? streamSettingsOrCodec : undefined;
@@ -976,6 +978,7 @@ export function previewConfigForState(
     ...(legacyCodec ? { codec: legacyCodec } : {}),
     ...(streamSettings ? { streamSettings } : {}),
     ...(proxyHelpers ? { proxyHelpers: true } : {}),
+    ...(sessionDetailsUrl ? { sessionDetailsUrl } : {}),
   };
 }
 
@@ -1315,6 +1318,8 @@ export interface SimMiddlewareOptions {
    * same-origin + token-gated regardless. Loopback is always allowed.
    */
   metricsCorsOrigins?: string[];
+  /** Optional hosted session page linked from the preview chrome. */
+  sessionDetailsUrl?: string;
   /** @deprecated Use `streamSettings: { transport: "http", codec }`. */
   codec?: string;
   /**
@@ -1413,6 +1418,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   // can't read this value (it's only injected into the preview page's config).
   const execToken = options?.execToken ?? randomBytes(32).toString("base64url");
   const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
+  const sessionDetailsUrl = options?.sessionDetailsUrl;
 
   // Simulator-settings requests run in-process (just the underlying simctl /
   // ax-tool spawn) instead of round-tripping a full `node <cli>` exec per
@@ -1506,7 +1512,11 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         // Empty-state UI still polls /exec (boot/list helpers), so the page
         // needs the bearer token even before a helper attaches. Inject a
         // minimal config with just the basePath + token.
-        const minimal = JSON.stringify({ basePath: base, execToken });
+        const minimal = JSON.stringify({
+          basePath: base,
+          execToken,
+          ...(sessionDetailsUrl ? { sessionDetailsUrl } : {}),
+        });
         html = html.replace(
           "<!--__SIM_PREVIEW_CONFIG__-->",
           `<script>window.__SIM_PREVIEW__=${minimal}</script>`,
@@ -1515,7 +1525,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
       if (state) {
         const remoteState = rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers);
-        const config = JSON.stringify(previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers));
+        const config = JSON.stringify(previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers, sessionDetailsUrl));
         const configScript = `<script>window.__SIM_PREVIEW__=${config}</script>`;
         html = html.replace("<!--__SIM_PREVIEW_CONFIG__-->", configScript);
       }
@@ -1863,7 +1873,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         "Cache-Control": "no-store",
       });
       const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
-      res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers) : null));
+      res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers, sessionDetailsUrl) : null));
       return;
     }
 
@@ -1999,7 +2009,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         const state = selectServeSimState(states, selectedDevice);
         const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
         return JSON.stringify(
-          remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers) : null,
+          remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers, sessionDetailsUrl) : null,
         );
       };
 

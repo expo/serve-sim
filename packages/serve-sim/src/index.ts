@@ -1626,6 +1626,7 @@ async function serve(
   options: {
     stream?: StreamRuntimeOptions;
     metricsCorsOrigins?: string[];
+    sessionDetailsUrl?: string;
   } = {},
 ) {
   // Boot the target simulators; the preview server streams them in-process
@@ -1646,6 +1647,7 @@ async function serve(
     streamSettings: options.stream,
     proxyHelpers: true,
     metricsCorsOrigins: options.metricsCorsOrigins ?? [],
+    sessionDetailsUrl: options.sessionDetailsUrl,
   });
 
   // Try requested port; if busy and the user didn't pin it, scan forward.
@@ -1823,6 +1825,19 @@ program
     (value: string, prev: string[]) => [...prev, value],
     [] as string[],
   )
+  .option(
+    "--session-details-url <url>",
+    "Show a link back to the hosted simulator session details page",
+    (value) => {
+      try {
+        const url = new URL(value);
+        if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error();
+        return url.toString();
+      } catch {
+        throw new InvalidArgumentError("--session-details-url must be an HTTP(S) URL.");
+      }
+    },
+  )
   .option("-l, --list [device]", "List running streams")
   .option("-k, --kill [device]", "Kill running stream(s)")
   .addHelpText(
@@ -1926,6 +1941,7 @@ Examples:
       await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, {
         stream,
         metricsCorsOrigins: opts.metricsCorsOrigin,
+        sessionDetailsUrl: opts.sessionDetailsUrl,
       });
     }
   });

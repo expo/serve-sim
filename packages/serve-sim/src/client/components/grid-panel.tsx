@@ -31,6 +31,7 @@ export function GridPanel({
   starting,
   shuttingDown,
   onShutdown,
+  sessionDetailsUrl,
 }: {
   open: boolean;
   onClose: () => void;
@@ -52,6 +53,7 @@ export function GridPanel({
   starting: Record<string, boolean>;
   shuttingDown: Record<string, boolean>;
   onShutdown: (udid: string) => void;
+  sessionDetailsUrl?: string;
 }) {
   const config = typeof window === "undefined" ? undefined : window.__SIM_PREVIEW__;
   const memoryEndpoint =
@@ -108,7 +110,7 @@ export function GridPanel({
         >
           <PanelLeft size={18} strokeWidth={1.75} />
         </button>
-        <ServeSimBrandLink />
+        <ServeSimBrandLink sessionDetailsUrl={sessionDetailsUrl} />
       </PanelHeader>
 
       <div className="px-4 pb-2 pt-0.5 shrink-0">

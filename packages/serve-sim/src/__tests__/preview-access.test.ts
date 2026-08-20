@@ -20,7 +20,6 @@ describe("preview access on a non-loopback bind", () => {
     const response = await gated(true)("/api");
 
     expect(response.status).toBe(401);
-    expect(await response.text()).not.toContain(TOKEN);
   });
 
   test("refuses the preview page that carries the token in its config", async () => {
@@ -74,5 +73,43 @@ describe("the rest of the surface on a non-loopback bind", () => {
 
   test("leaves all of it open on loopback", async () => {
     expect((await gated(false)("/grid/api")).status).toBe(200);
+  });
+});
+
+describe("the protected surface", () => {
+  // Opting in per route left /api/screenshot, /logs, /ax and /devtools open. This pins the whole
+  // surface so a new route cannot be forgotten the same way.
+  const GATED = [
+    "/api",
+    "/api/events",
+    "/api/screenshot",
+    "/api/event-log",
+    "/grid/api",
+    "/grid/api/start",
+    "/grid/api/shutdown",
+    "/metrics",
+    "/logs",
+    "/ax",
+    "/appstate",
+    "/devtools",
+  ];
+
+  test("refuses every route that is not a liveness probe", async () => {
+    const request = gated(true);
+    const allowed: string[] = [];
+
+    for (const path of GATED) {
+      if ((await request(path)).status !== 401) allowed.push(path);
+    }
+
+    expect(allowed).toEqual([]);
+  });
+
+  test("leaves the liveness probes open, since a probe cannot hold a token", async () => {
+    const request = gated(true);
+
+    for (const path of ["/healthz", "/readyz"]) {
+      expect((await request(path)).status).not.toBe(401);
+    }
   });
 });

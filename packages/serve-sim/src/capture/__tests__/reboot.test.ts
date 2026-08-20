@@ -22,6 +22,7 @@ function harness() {
     trustCa: async () => void calls.push("trusted"),
     inject: async () => void calls.push("injected"),
     clearInjection: async () => void calls.push("injection-cleared"),
+    injectionCleared: async () => true,
   });
   const deps = {
     runtime,

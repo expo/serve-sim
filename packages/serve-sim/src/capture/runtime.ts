@@ -57,7 +57,7 @@ function notEnabledMeta(udid: string): CaptureMeta {
 export type CaptureRuntime = ReturnType<typeof createCaptureRuntime>;
 
 export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
-  // One policy per server, set at startup, so every enable path captures what the operator asked for.
+  // Read at enable time, so changing it does not affect proxies already running.
   let policy: readonly CaptureField[] = options.fields ?? DEFAULT_CAPTURE_FIELDS;
   const startProxy =
     options.startProxy ?? ((store: CaptureStore, deps: MitmProxyDeps) => startMitmProxy(store, deps));
@@ -72,9 +72,7 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
     const session = byUdid.get(udid);
     if (!session) return;
     byUdid.delete(udid);
-    // Clear injection before closing the proxy so launches aren't aimed at a dead port. Teardown must not
-    // throw — it runs on shutdown — but a device left injected is the one outcome worth shouting about,
-    // so it is verified and reported at error level rather than logged as a passing note.
+    // Clear injection before closing the proxy so launches aren't aimed at a dead port.
     try {
       await clearInjection(udid);
       if (!(await stillCleared(udid))) {
@@ -99,7 +97,6 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   };
 
   return {
-    /** Set what every device this server enables is allowed to keep. */
     setFields(next: readonly CaptureField[]): void {
       policy = next;
     },

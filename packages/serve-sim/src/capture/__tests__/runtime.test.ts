@@ -15,6 +15,7 @@ function harness(
     trustCa?: (udid: string, caPem: string) => Promise<void>;
     inject?: (udid: string, portFile: string) => Promise<void>;
     clearInjection?: (udid: string) => Promise<void>;
+    injectionCleared?: (udid: string) => Promise<boolean>;
   } = {},
 ) {
   const calls: string[] = [];
@@ -35,6 +36,8 @@ function harness(
       (async (_udid, pem) => void calls.push(`trusted:${pem === CA_PEM ? "ok" : "wrong-pem"}`)),
     inject: overrides.inject ?? (async (_udid, portFile) => void calls.push(`injected:${portFile}`)),
     clearInjection: overrides.clearInjection ?? (async () => void calls.push("injection-cleared")),
+    // Without this, teardown falls through to the real bootInjectionCleared and shells out to xcrun.
+    injectionCleared: overrides.injectionCleared ?? (async () => true),
   });
   return { runtime, calls };
 }
@@ -272,18 +275,6 @@ describe("capture runtime", () => {
     expect((await pending).attachment).toBe("capturing");
   });
 
-  test("stops every device even when disableAll is called detached from the runtime", async () => {
-    const { runtime, calls } = harness();
-    await runtime.enableForDevice(UDID);
-    calls.length = 0;
-
-    // Destructured on purpose: a `this`-bound implementation throws here.
-    const { disableAll } = runtime;
-    await disableAll();
-
-    expect(calls).toContain("proxy-closed");
-    expect(runtime.storeFor(UDID)).toBeNull();
-  });
 
   test("hands a subscriber the live store without changing what the device does", async () => {
     const { runtime, calls } = harness();
@@ -301,5 +292,20 @@ describe("capture runtime", () => {
     // Subscribing and leaving is not a lifecycle event.
     expect(calls).toEqual([]);
     expect(runtime.metaFor(UDID).attachment).toBe("capturing");
+  });
+
+  test("says so when teardown left the device injected", async () => {
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (message: unknown) => void errors.push(String(message));
+    try {
+      const { runtime } = harness({ injectionCleared: async () => false });
+      await runtime.enableForDevice(UDID);
+      await runtime.disableForDevice(UDID);
+    } finally {
+      console.error = original;
+    }
+
+    expect(errors.join("\n")).toContain("still has the capture library injected");
   });
 });

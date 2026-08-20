@@ -51,6 +51,11 @@ export function execAuthError(message: string): {
  * Writes 415/403/401 and returns false when the request must stop; true to proceed.
  * Call explicitly at each protected route — there is no prefix auto-match.
  */
+function bearerToken(header: string | undefined): string | null {
+  const match = /^Bearer\s+(.+)$/i.exec(header ?? "");
+  return match ? match[1]!.trim() : null;
+}
+
 export function assertSessionAccess(
   req: SessionAuthReq,
   res: SessionAuthRes,
@@ -81,9 +86,8 @@ export function assertSessionAccess(
       return false;
     }
   }
-  const authHeader = headerValue(req.headers.authorization) ?? "";
-  const match = /^Bearer\s+(.+)$/i.exec(authHeader);
-  if (!match || !safeEqualString(match[1]!.trim(), sessionToken)) {
+  const bearer = bearerToken(headerValue(req.headers.authorization));
+  if (!bearer || !safeEqualString(bearer, sessionToken)) {
     writeErr(401, "Unauthorized");
     return false;
   }
@@ -107,22 +111,11 @@ function cookieValue(header: string | undefined, name: string): string | null {
   return null;
 }
 
-function bearerToken(header: string | undefined): string | null {
-  const match = /^Bearer\s+(.+)$/i.exec(header ?? "");
-  return match ? match[1]!.trim() : null;
-}
-
 /**
- * Gate the preview HTML and `/api`, which carry the session token in their body.
+ * Require the session token before serving anything that carries it.
  *
- * A token that anyone who can reach the port may fetch is CSRF protection, not authentication, so on a
- * non-loopback bind the caller must already hold it. Loopback is ungated: reaching it means being on the
- * machine already, and a token prompt there buys nothing.
- *
- * Accepts a bearer header for programmatic callers, or `?token=` once from a browser — which is then
- * traded for a cookie and redirected away, so the secret does not stay in the address bar or in history.
- *
- * Returns false when the request has been answered and must stop.
+ * Loopback is ungated: reaching it means being on the machine already. Returns false when the request
+ * has been answered and must stop.
  */
 export function assertPreviewAccess(
   req: SessionAuthReq & { url?: string },

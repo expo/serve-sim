@@ -1583,6 +1583,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
     return { ok: true };
   };
+/** Reachable without the session token: liveness probes cannot carry one. */
+  const UNGATED_PATHS = ["/healthz", "/readyz"];
 
   const connectMiddleware = (async (req: SimReq, res: SimRes, next?: SimNext) => {
     const rawUrl: string = req.url ?? "";
@@ -1591,6 +1593,15 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     const requestedDevice = queryDevice(rawUrl);
     const selectedDevice = requestedDevice ?? options?.device ?? null;
     const devtoolsFrontendBase = base === "/" ? "/devtools-frontend" : `${base}/devtools-frontend`;
+
+    // Gated as a whole rather than per route, so a new route is protected by default. Health checks stay
+    // open because a probe cannot hold a token, and the helper paths carry their own device session.
+    if (
+      !UNGATED_PATHS.some((path) => url === base + path)
+      && !assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })
+    ) {
+      return;
+    }
 
     const helperTarget = helperProxyTarget(rawUrl, helperPrefix);
     if (helperTarget) {
@@ -1637,9 +1648,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     // Serve the preview page
     if (url === base || url === base + "/") {
-      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
-        return;
-      }
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       let html = loadHtml();
@@ -1672,9 +1680,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     // Memory capacity estimate: how much room is left to boot more sims.
     if (url === base + "/grid/api/memory") {
-      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
-        return;
-      }
       res.writeHead(200, {
         "Content-Type": "application/json",
         "Cache-Control": "no-store",
@@ -1684,17 +1689,11 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
 
     if (url === base + "/grid/api/devicekit-chrome") {
-      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
-        return;
-      }
       serveDeviceKitChromeAsset(new URL(rawUrl || "/", "http://serve-sim.local"), res);
       return;
     }
 
     if (url === base + "/grid/api/device-placeholder-asset") {
-      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
-        return;
-      }
       serveDevicePlaceholderAsset(new URL(rawUrl || "/", "http://serve-sim.local"), res);
       return;
     }
@@ -1835,9 +1834,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     // Grid JSON: every supported simulator, annotated with running helper info if any.
     if (url === base + "/grid/api") {
-      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
-        return;
-      }
       const { simulators, helperByUdid } = await readGridSnapshot(selectedDevice);
       const total = simulators.length;
       const { limit, offset } = parseGridPaging(rawUrl);
@@ -1868,9 +1864,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // by readServeSimStates() on the next status sample (it kills helpers
     // whose backing simulator is no longer in the booted set).
     if (url === base + "/grid/api/shutdown" && req.method === "POST") {
-      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
-        return;
-      }
       let body = "";
       req.on("data", (chunk: Buffer | string) => {
         body += typeof chunk === "string" ? chunk : chunk.toString();
@@ -1909,9 +1902,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // Start streaming a device in-process (auto-boots if needed). The preview
     // server serves its /helper routes directly — no spawned helper.
     if (url === base + "/grid/api/start" && req.method === "POST") {
-      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
-        return;
-      }
       let body = "";
       req.on("data", (chunk: Buffer | string) => {
         body += typeof chunk === "string" ? chunk : chunk.toString();
@@ -2082,9 +2072,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     // JSON API: serve-sim state
     if (url === base + "/api") {
-      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
-        return;
-      }
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       // The web UI polls /api every ~2s, so logging every hit floods the
@@ -2238,9 +2225,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // or the device selection changes, so we watch the state dir and emit only
     // on change instead of re-sending identical JSON on a fixed interval.
     if (url === base + "/api/events") {
-      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
-        return;
-      }
       const computeConfig = async (): Promise<string> => {
         const states = await readServeSimStates();
         const state = selectServeSimState(states, selectedDevice);
@@ -2395,9 +2379,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // SSE of the user app's live CPU/memory: an `event: meta` frame (schema,
     // udid, hostCores, cadence), then one `data:` line per sample.
     if (url === base + "/metrics") {
-      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
-        return;
-      }
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       handleMetricsRequest(req, res, state, metricsSamplerCache, metricsCorsOrigins);

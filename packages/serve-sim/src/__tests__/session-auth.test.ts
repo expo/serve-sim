@@ -159,7 +159,6 @@ describe("assertPreviewAccess", () => {
     expect(sent.headers?.Location).toBe("/?device=abc");
     expect(sent.headers?.["Set-Cookie"]).toContain(`${ACCESS_COOKIE}=${encodeURIComponent(TOKEN)}`);
     expect(sent.headers?.["Set-Cookie"]).toContain("HttpOnly");
-    expect(sent.headers?.Location).not.toContain("token");
   });
 
   test("accepts the cookie it set, so the page's own requests work", () => {

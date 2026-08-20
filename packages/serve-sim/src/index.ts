@@ -17,6 +17,8 @@ import {
 } from "./state";
 import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from "./text-to-keys";
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
+import { bootInjectedLibraries } from "./capture";
+import { parseCaptureFields } from "./capture/fields";
 import { isLoopbackHost } from "./middleware-utils";
 import { killPortHolder } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
@@ -1557,9 +1559,12 @@ Examples:
     execSync(`xcrun simctl terminate "${udid}" "${bundleId}"`, { stdio: "ignore" });
   } catch {}
 
+  // Merged, not replaced: on a device booted with network capture the simulator's launchd already inserts
+  // the capture library, and setting this variable for the launch would drop it for this app alone.
+  const captureLibrary = bootInjectedLibraries(udid);
   const env = {
     ...process.env,
-    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: dylib,
+    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: captureLibrary ? `${captureLibrary}:${dylib}` : dylib,
     SIMCTL_CHILD_SIMCAM_SHM_NAME: shmName,
     ...(mirror !== "auto" ? { SIMCTL_CHILD_SIMCAM_MIRROR_MODE: mirror } : {}),
   };
@@ -1628,9 +1633,11 @@ async function serve(
   host: string,
   options: {
     stream?: StreamRuntimeOptions;
+    networkCaptureFields?: string[];
     metricsCorsOrigins?: string[];
     debugStreamPath?: string;
     requireToken?: boolean;
+    networkCapture?: boolean;
   } = {},
 ) {
   // Boot the target simulators; the preview server streams them in-process
@@ -1641,6 +1648,32 @@ async function serve(
   }
   for (const udid of targetDevices) await ensureBooted(udid);
   const targetDevice = targetDevices[0];
+
+  // Capture is applied to the device, not to a viewer, so it belongs here: after the device is up and
+  // before anything can launch an app on it.
+  const capture = options.networkCapture ? await import("./capture") : null;
+  if (capture) {
+    // Set once, so the panel's reboot and a sidebar boot capture the same fields as the CLI asked for.
+    capture.captureRuntime.setFields(capture.resolveCaptureFields(options.networkCaptureFields));
+    for (const udid of targetDevices) {
+      try {
+        const meta = await capture.captureRuntime.enableForDevice(udid);
+        console.log(
+          `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from third-party apps on ` +
+            "this device is recorded for the whole boot session (Apple system apps like Safari are left unproxied); " +
+            "HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
+        );
+      } catch (error) {
+        const reason =
+          error instanceof capture.CaptureEnableError
+            ? error.meta.attachError
+            : error instanceof Error
+              ? error.message
+              : String(error);
+        console.error(`Network capture could not start for ${udid}. ${reason ?? ""}`);
+      }
+    }
+  }
 
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
@@ -1654,6 +1687,7 @@ async function serve(
     streamSettings: options.stream,
     proxyHelpers: true,
     metricsCorsOrigins: options.metricsCorsOrigins ?? [],
+    networkCapture: !!options.networkCapture,
     execToken: previewToken,
     requirePreviewToken,
   });
@@ -1721,9 +1755,9 @@ async function serve(
     console.log(
       requirePreviewToken
         ? "  This server is listening on the network. The links above carry a token because anyone who " +
-          "has it can run commands on this machine."
+          "has it can read captured traffic and run commands on this machine."
         : "  This server is listening on the network with no token required. Anyone who can reach it can " +
-          "run commands on this machine. Pass --require-token to gate it.",
+          "read captured traffic and run commands on this machine. Pass --require-token to gate it.",
     );
   } else if (networkIP) {
     console.log(`  - Network: \x1b[2muse --host 0.0.0.0 to expose on http://${networkIP}:${boundPort}\x1b[0m`);
@@ -1732,9 +1766,19 @@ async function serve(
   }
   console.log("");
 
-  // Exit cleanly on Ctrl+C
-  process.on("SIGINT", () => process.exit(0));
-  process.on("SIGTERM", () => process.exit(0));
+  // Exit cleanly on Ctrl+C. Capture is stopped first so the device is not left pointing new launches at a
+  // proxy that is about to die — bounded, because a hung simctl must not stop us from exiting.
+  const shutdown = async () => {
+    if (capture) {
+      await Promise.race([
+        capture.captureRuntime.disableAll().catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ]);
+    }
+    process.exit(0);
+  };
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
   await new Promise(() => {});
 }
 
@@ -1785,6 +1829,29 @@ program
   .option("--detach", "Spawn helper and exit (daemon mode)")
   .option("-q, --quiet", "Suppress human-readable output, JSON only")
   .option("--no-preview", "Skip the web preview server; stream in foreground only")
+  .option(
+    "--network-capture-field <field>",
+    "What network capture may keep, beyond method/URL/status/timing/size: header, query, request-body, " +
+      "response-body. Repeatable or comma-separated. Default: none of them, because each can carry " +
+      "credentials and only header names are redacted.",
+    (value: string, prev: string[]) => {
+      // Rejected here, like --codec, so a typo fails at the flag instead of silently capturing less.
+      try {
+        parseCaptureFields([value]);
+      } catch (error) {
+        throw new InvalidArgumentError(error instanceof Error ? error.message : String(error));
+      }
+      return [...prev, value];
+    },
+    [] as string[],
+  )
+  .option(
+    "--network-capture",
+    "Record HTTP(S) traffic for devices this process starts or boots (CLI args and the device sidebar). " +
+      "Covers third-party apps and their startup requests; Apple system apps (e.g. Safari) are left unproxied. " +
+      "HTTPS is decrypted for the whole boot session and certificate-pinned apps will refuse to connect. " +
+      "Requires mitmproxy. Relaunch apps after enabling so they pick up the proxy.",
+  )
   .option("--transport <http|webrtc>", "Stream transport", "http")
   .option(
     "--codec <codec>",
@@ -1892,6 +1959,13 @@ Examples:
       console.error("--transport must be one of: http, webrtc.");
       process.exit(1);
     }
+    if (opts.networkCaptureField?.length && !opts.networkCapture) {
+      console.error(
+        "--network-capture-field only applies with --network-capture, which is off, so nothing would " +
+          "be captured. Add --network-capture, or drop the field flag.",
+      );
+      process.exit(1);
+    }
     const wasProvided = (name: string) => program.getOptionValueSource(name) === "cli";
     const webRtcOptionProvided = [
       "webrtcCodec",
@@ -1984,6 +2058,8 @@ Examples:
         metricsCorsOrigins: opts.metricsCorsOrigin,
         debugStreamPath,
         requireToken: !!opts.requireToken,
+        networkCapture: !!opts.networkCapture,
+        networkCaptureFields: opts.networkCaptureField,
       });
     }
   });

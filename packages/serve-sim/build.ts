@@ -17,7 +17,7 @@
  * via the __PREVIEW_HTML_B64__ build-time define.
  */
 import { resolve } from "path";
-import { mkdirSync, writeFileSync, rmSync, readFileSync } from "fs";
+import { mkdirSync, writeFileSync, rmSync, readFileSync, cpSync } from "fs";
 import { spawnSync } from "child_process";
 import tailwindPlugin from "bun-plugin-tailwind";
 
@@ -272,5 +272,34 @@ if (nativeBuild.status !== 0) {
   process.exit(nativeBuild.status ?? 1);
 }
 console.log("dist/native/serve-sim-native.node");
+
+
+// ─── 8. SimNetProxy dylib (per-app capture proxy) ─────────────────────────
+// Injected into the app under capture with DYLD_INSERT_LIBRARIES so the proxy
+// applies to that process alone; capture-injection locates it via dist/simnet.
+
+const netBuild = spawnSync(
+  "bash",
+  [resolve(root, "Sources/SimNetProxy/build.sh"), resolve(distDir, "simnet")],
+  { stdio: "inherit" },
+);
+if (netBuild.status !== 0) {
+  console.error("SimNetProxy dylib build failed.");
+  process.exit(netBuild.status ?? 1);
+}
+console.log("dist/simnet/libSimNetProxy.dylib");
+
+// ─── 9. mitmproxy capture addon ──────────────────────────────────────────
+// Copied rather than bundled: mitmproxy reads it as a Python file from disk in
+// its own process. mitmproxy itself is not shipped and not downloaded — the
+// developer installs it, and mitm-engine locates it.
+
+cpSync(resolve(root, "src/capture/mitm-addon"), resolve(distDir, "capture/mitm-addon"), {
+  recursive: true,
+  // Python leaves bytecode beside the source once the addon has been imported; it is per-interpreter and
+  // must not ship.
+  filter: (source) => !source.includes("__pycache__"),
+});
+console.log("dist/capture/mitm-addon/");
 
 console.log("Done.");

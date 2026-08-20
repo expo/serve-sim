@@ -131,7 +131,7 @@ def _mime_of(message):
 
 
 def _safe_url(raw):
-    # Query values carry OAuth codes and signed-URL keys; the names alone still identify a request.
+    # Names alone still identify a request; the values are what carry credentials.
     text = str(raw or "")
     if WANT_QUERY or "?" not in text:
         return _clip(text, MAX_URL_CHARS)

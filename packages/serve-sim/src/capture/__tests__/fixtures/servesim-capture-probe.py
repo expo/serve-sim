@@ -159,21 +159,21 @@ time.sleep(0.3)
 results["queuedBytesAfterDrain"] = addon._queued_bytes
 
 # Over the limit, a record is dropped rather than queued without bound.
+_saved_limit = addon.QUEUE_BYTE_LIMIT
 addon.QUEUE_BYTE_LIMIT = 16
 addon._post("/response", {"id": "big", "res": {"body": "x" * 64}})
 time.sleep(0.3)
+results["oversizedRecordDropped"] = len(received) == 0
+results["queuedBytesAfterDrop"] = addon._queued_bytes
+
 # A bodyless record with a large URL: under body-only accounting its size was 0 and it was never
 # dropped, so this is what the accounting change is for.
-_saved_limit = addon.QUEUE_BYTE_LIMIT
+received.clear()
 addon.QUEUE_BYTE_LIMIT = 500
 addon._post("/request", {"id": "hdr", "method": "GET", "url": "https://a.test/" + "p" * 3000})
 time.sleep(0.3)
 results["bodylessRecordCounted"] = len(received) == 0
 addon.QUEUE_BYTE_LIMIT = _saved_limit
-received.clear()
-
-results["oversizedRecordDropped"] = len(received) == 0
-results["queuedBytesAfterDrop"] = addon._queued_bytes
 
 results["urlQueryRedacted"] = addon._safe_url("https://a.test/cb?code=SECRET&state=xyz")
 results["urlWithoutQueryUntouched"] = addon._safe_url("https://a.test/thing")

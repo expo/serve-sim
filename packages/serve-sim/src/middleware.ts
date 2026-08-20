@@ -24,7 +24,7 @@ import {
   sendCorsPreflight,
   type HidSocket,
 } from "./device-session";
-import { assertSessionAccess, execAuthError } from "./session-auth";
+import { assertPreviewAccess, assertSessionAccess, execAuthError } from "./session-auth";
 import {
   eventLogEventForCommand,
   readEventLog,
@@ -1452,7 +1452,13 @@ export interface SimMiddlewareOptions {
    * cross-origin pages cannot read it.
    */
   execToken?: string;
-
+  /**
+   * Require the token before serving the preview HTML or `/api`, both of which carry it.
+   *
+   * Set when the server is bound to a non-loopback address. Off by default, because a loopback-only
+   * server is already reachable to whoever is on the machine.
+   */
+  requirePreviewToken?: boolean;
   /** Stream transport and codec settings for the preview. */
   streamSettings?: StreamSettings;
   /**
@@ -1544,6 +1550,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   // can call /exec; cross-origin pages and LAN clients cannot, because they
   // can't read this value (it's only injected into the preview page's config).
   const execToken = options?.execToken ?? randomBytes(32).toString("base64url");
+  const requirePreviewToken = options?.requirePreviewToken ?? false;
   const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
 
   // Simulator-settings requests run in-process (just the underlying simctl /
@@ -1630,6 +1637,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     // Serve the preview page
     if (url === base || url === base + "/") {
+      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
+        return;
+      }
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       let html = loadHtml();
@@ -2054,6 +2064,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     // JSON API: serve-sim state
     if (url === base + "/api") {
+      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
+        return;
+      }
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       // The web UI polls /api every ~2s, so logging every hit floods the
@@ -2207,6 +2220,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // or the device selection changes, so we watch the state dir and emit only
     // on change instead of re-sending identical JSON on a fixed interval.
     if (url === base + "/api/events") {
+      if (!assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })) {
+        return;
+      }
       const computeConfig = async (): Promise<string> => {
         const states = await readServeSimStates();
         const state = selectServeSimState(states, selectedDevice);

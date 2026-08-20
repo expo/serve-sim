@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  ACCESS_COOKIE,
+  assertPreviewAccess,
   assertSessionAccess,
   captureAuthError,
   execAuthError,
@@ -102,5 +104,97 @@ describe("assertSessionAccess", () => {
     );
     expect(ok).toBe(true);
     expect(out.status).toBeUndefined();
+  });
+});
+
+describe("assertPreviewAccess", () => {
+  const TOKEN = "s3cret-token";
+
+  function res() {
+    const sent: { status?: number; headers?: Record<string, string>; body?: string } = {};
+    return {
+      sent,
+      res: {
+        writeHead: (status: number, headers?: Record<string, string>) => {
+          sent.status = status;
+          sent.headers = headers;
+        },
+        end: (body?: string) => {
+          sent.body = body;
+        },
+      },
+    };
+  }
+
+  const req = (headers: Record<string, string> = {}, url = "/") => ({ headers, url });
+
+  test("does not gate a loopback server, where the port already implies machine access", () => {
+    const { sent, res: r } = res();
+    expect(
+      assertPreviewAccess(req(), r, TOKEN, { required: false, basePath: "/" }),
+    ).toBe(true);
+    expect(sent.status).toBeUndefined();
+  });
+
+  test("accepts the token as a bearer header, for callers that are not browsers", () => {
+    const { res: r } = res();
+    expect(
+      assertPreviewAccess(req({ authorization: `Bearer ${TOKEN}` }), r, TOKEN, {
+        required: true,
+        basePath: "/",
+      }),
+    ).toBe(true);
+  });
+
+  test("trades a one-time query token for a cookie and redirects it out of the address bar", () => {
+    const { sent, res: r } = res();
+    expect(
+      assertPreviewAccess(req({}, `/?token=${TOKEN}&device=abc`), r, TOKEN, {
+        required: true,
+        basePath: "/",
+      }),
+    ).toBe(false);
+
+    expect(sent.status).toBe(302);
+    expect(sent.headers?.Location).toBe("/?device=abc");
+    expect(sent.headers?.["Set-Cookie"]).toContain(`${ACCESS_COOKIE}=${encodeURIComponent(TOKEN)}`);
+    expect(sent.headers?.["Set-Cookie"]).toContain("HttpOnly");
+    expect(sent.headers?.Location).not.toContain("token");
+  });
+
+  test("accepts the cookie it set, so the page's own requests work", () => {
+    const { res: r } = res();
+    expect(
+      assertPreviewAccess(req({ cookie: `${ACCESS_COOKIE}=${encodeURIComponent(TOKEN)}` }), r, TOKEN, {
+        required: true,
+        basePath: "/",
+      }),
+    ).toBe(true);
+  });
+
+  test("refuses a caller with no token, and says how to get one", () => {
+    const { sent, res: r } = res();
+    expect(assertPreviewAccess(req(), r, TOKEN, { required: true, basePath: "/" })).toBe(false);
+    expect(sent.status).toBe(401);
+    expect(sent.body).toContain("token");
+  });
+
+  test("refuses a wrong token in every position it accepts a right one", () => {
+    const wrong: Record<string, string>[] = [
+      { authorization: "Bearer wrong" },
+      { cookie: `${ACCESS_COOKIE}=wrong` },
+    ];
+    for (const headers of wrong) {
+      const { sent, res: r } = res();
+      expect(assertPreviewAccess(req(headers), r, TOKEN, { required: true, basePath: "/" })).toBe(
+        false,
+      );
+      expect(sent.status).toBe(401);
+    }
+    const { sent, res: r } = res();
+    expect(
+      assertPreviewAccess(req({}, "/?token=wrong"), r, TOKEN, { required: true, basePath: "/" }),
+    ).toBe(false);
+    expect(sent.status).toBe(401);
   });
 });

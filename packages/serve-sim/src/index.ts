@@ -2,7 +2,7 @@
 import { Command, InvalidArgumentError } from "commander";
 import { execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
 import { existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unlinkSync, writeFileSync } from "fs";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { networkInterfaces } from "os";
 import { join, resolve } from "path";
 import {
@@ -17,6 +17,7 @@ import {
 } from "./state";
 import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from "./text-to-keys";
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
+import { isLoopbackHost } from "./middleware-utils";
 import { killPortHolder } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
@@ -1643,12 +1644,18 @@ async function serve(
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
   // it can route helper/DevTools sockets through the single preview port.
+  // Off loopback the preview needs the token before it will hand the token out, so it is minted here
+  // rather than inside the middleware: the operator has to be told what it is.
+  const requirePreviewToken = !isLoopbackHost(host);
+  const previewToken = randomBytes(32).toString("base64url");
   const middleware = simMiddleware({
     basePath: "/",
     device: targetDevice,
     streamSettings: options.stream,
     proxyHelpers: true,
     metricsCorsOrigins: options.metricsCorsOrigins ?? [],
+    execToken: previewToken,
+    requirePreviewToken,
   });
 
   // Try requested port; if busy and the user didn't pin it, scan forward.
@@ -1703,12 +1710,18 @@ async function serve(
       console.log(`  - Stream debug: recording to ${options.debugStreamPath}`);
   }
 
-  const exposedToLan = host !== "127.0.0.1" && host !== "localhost" && host !== "::1";
+  const exposedToLan = !isLoopbackHost(host);
   const networkIP = getLocalNetworkIP();
+  const tokenQuery = requirePreviewToken ? `/?token=${previewToken}` : "";
   console.log("");
-  console.log(`  - Local:   http://localhost:${boundPort}`);
+  console.log(`  - Local:   http://localhost:${boundPort}${tokenQuery}`);
   if (exposedToLan && networkIP) {
-    console.log(`  - Network: http://${networkIP}:${boundPort}`);
+    console.log(`  - Network: http://${networkIP}:${boundPort}${tokenQuery}`);
+    console.log("");
+    console.log(
+      "  \x1b[2mThis server is reachable from the network, so the preview and /api need the token in " +
+        "the links above. Anyone with it can run commands on this machine.\x1b[0m",
+    );
   } else if (networkIP) {
     console.log(`  - Network: \x1b[2muse --host 0.0.0.0 to expose on http://${networkIP}:${boundPort}\x1b[0m`);
   } else {

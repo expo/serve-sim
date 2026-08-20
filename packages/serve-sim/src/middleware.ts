@@ -52,6 +52,8 @@ import { type WebMiddleware } from "./runtime-utils";
 import { connectToFetch, type ConnectMiddleware } from "./connect-to-fetch";
 
 /** Captured traffic is decrypted credentials; `no-cache` would still let a cache keep a copy. */
+const CAPTURE_CONTROL_PATHS = ["reboot", "clear"];
+
 const NO_STORE = { "Cache-Control": "no-store, private", Pragma: "no-cache" } as const;
 
 type SimReq = IncomingMessage;
@@ -2598,7 +2600,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       }
       const enabled = new URL(rawUrl, "http://127.0.0.1").searchParams.get("enabled") !== "0";
       // The stream and HID sockets are bound to a device that is about to go down under them, so this
-      // drops them first, the same order /grid/api/stop uses.
+      // drops them first, the same order /grid/api/shutdown uses.
       closeDeviceSession(state.device);
       try {
         const meta = await rebootWithCapture(state.device, enabled);
@@ -2652,6 +2654,13 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         return;
       }
       const id = url.slice((base + "/network-capture/").length);
+      // The control routes above are POST-only. Without this, a GET on one of them is read as a request
+      // id and answered "No captured body", which points at the wrong problem.
+      if (CAPTURE_CONTROL_PATHS.includes(id)) {
+        res.writeHead(405, { "Content-Type": "application/json", Allow: "POST", ...NO_STORE });
+        res.end(JSON.stringify(captureAuthError(`${id} accepts POST only.`)));
+        return;
+      }
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       handleCaptureBodyRequest(req, res, state, decodeURIComponent(id), captureRuntime);

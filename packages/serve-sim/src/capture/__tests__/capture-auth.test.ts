@@ -70,4 +70,11 @@ describe("network-capture auth", () => {
       expect(r.status).toBe(401);
     });
   });
+
+  test("rejects unauthenticated HAR GET", async () => {
+    await withMiddleware(async (_origin, request) => {
+      const r = await request("/network-capture.har");
+      expect(r.status).toBe(401);
+    });
+  });
 });

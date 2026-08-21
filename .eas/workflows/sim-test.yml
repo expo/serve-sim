@@ -58,7 +58,7 @@ jobs:
       - name: Run serve-sim tests
         run: |
           run_tests() {
-            bun test --max-concurrency=1 packages/serve-sim/src/__tests__/
+            bun test --max-concurrency=1 packages/serve-sim/src/
           }
 
           if run_tests; then

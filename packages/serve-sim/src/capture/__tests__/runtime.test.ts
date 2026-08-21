@@ -16,6 +16,8 @@ function harness(
     inject?: (udid: string, portFile: string) => Promise<void>;
     clearInjection?: (udid: string) => Promise<void>;
     injectionCleared?: (udid: string) => Promise<boolean>;
+    isInjected?: (udid: string, portFile: string) => Promise<boolean>;
+    checkIntervalMs?: number;
   } = {},
 ) {
   const calls: string[] = [];
@@ -38,6 +40,8 @@ function harness(
     clearInjection: overrides.clearInjection ?? (async () => void calls.push("injection-cleared")),
     // Without this, teardown falls through to the real bootInjectionCleared and shells out to xcrun.
     injectionCleared: overrides.injectionCleared ?? (async () => true),
+    isInjected: overrides.isInjected ?? (async () => true),
+    checkIntervalMs: overrides.checkIntervalMs ?? 0,
   });
   return { runtime, calls };
 }
@@ -276,6 +280,105 @@ describe("capture runtime", () => {
   });
 
 
+  test("reports a device that quietly stopped capturing after consecutive misses", async () => {
+    const { runtime } = harness({ isInjected: async () => false, checkIntervalMs: 0 });
+    const frames: string[] = [];
+    await runtime.enableForDevice(UDID);
+    runtime.subscribe(UDID, (event) => frames.push(event.type));
+
+    // One miss is treated as a transient probe failure.
+    expect((await runtime.refreshForDevice(UDID)).attachment).toBe("capturing");
+    const meta = await runtime.refreshForDevice(UDID);
+
+    expect(meta.attachment).toBe("failed");
+    expect(meta.attachError).toContain("restarted");
+    expect(frames).toContain("meta");
+  });
+
+  test("asks the device once when several viewers check at the same moment", async () => {
+    let asks = 0;
+    const { runtime } = harness({
+      isInjected: async () => {
+        asks++;
+        return true;
+      },
+    });
+    await runtime.enableForDevice(UDID);
+
+    await Promise.all([
+      runtime.refreshForDevice(UDID),
+      runtime.refreshForDevice(UDID),
+      runtime.refreshForDevice(UDID),
+    ]);
+
+    expect(asks).toBe(1);
+  });
+
+  test("does not ask again straight away, however often it is called", async () => {
+    let asks = 0;
+    const { runtime } = harness({
+      checkIntervalMs: 60_000,
+      isInjected: async () => {
+        asks++;
+        return true;
+      },
+    });
+    await runtime.enableForDevice(UDID);
+
+    await runtime.refreshForDevice(UDID);
+    await runtime.refreshForDevice(UDID);
+
+    expect(asks).toBe(1);
+  });
+
+  test("leaves a healthy device alone and tells nobody", async () => {
+    const { runtime } = harness();
+    const frames: string[] = [];
+    await runtime.enableForDevice(UDID);
+    runtime.subscribe(UDID, (event) => frames.push(event.type));
+
+    expect((await runtime.refreshForDevice(UDID)).attachment).toBe("capturing");
+    expect(frames).toEqual([]);
+  });
+
+  test("keeps an existing failure reason rather than replacing it with a vaguer one", async () => {
+    const { runtime } = harness({
+      trustCa: async () => {
+        throw new Error("simctl refused");
+      },
+      isInjected: async () => false,
+    });
+    await expect(runtime.enableForDevice(UDID)).rejects.toBeInstanceOf(CaptureEnableError);
+
+    expect((await runtime.refreshForDevice(UDID)).attachError).toContain("simctl refused");
+  });
+
+  test("reports a device it never enabled as not enabled, without asking the device", async () => {
+    let asked = false;
+    const { runtime } = harness({
+      isInjected: async () => {
+        asked = true;
+        return true;
+      },
+    });
+
+    expect((await runtime.refreshForDevice(UDID)).attachment).toBe("not-enabled");
+    expect(asked).toBe(false);
+  });
+
+  test("does not treat a probe error as an injection miss", async () => {
+    const { runtime } = harness({
+      checkIntervalMs: 0,
+      isInjected: async () => {
+        throw new Error("device not found");
+      },
+    });
+    await runtime.enableForDevice(UDID);
+
+    expect((await runtime.refreshForDevice(UDID)).attachment).toBe("capturing");
+    expect((await runtime.refreshForDevice(UDID)).attachment).toBe("capturing");
+  });
+
   test("hands a subscriber the live store without changing what the device does", async () => {
     const { runtime, calls } = harness();
     await runtime.enableForDevice(UDID);
@@ -307,5 +410,33 @@ describe("capture runtime", () => {
     }
 
     expect(errors.join("\n")).toContain("still has the capture library injected");
+  });
+
+  test("uses one policy for every device, however capture was started", async () => {
+    // The policy used to be a per-call argument and two of three enable paths forgot it, so a panel
+    // reboot silently narrowed capture to metadata with nothing said.
+    const seen: (readonly string[])[] = [];
+    const runtime = createCaptureRuntime({
+      startProxy: async (_store, deps) => {
+        seen.push([...(deps.fields ?? [])]);
+        return {
+          address: "127.0.0.1:9123",
+          portFile: PORT_FILE,
+          caPem: async () => CA_PEM,
+          close: async () => {},
+        };
+      },
+      trustCa: async () => {},
+      inject: async () => {},
+      clearInjection: async () => {},
+      injectionCleared: async () => true,
+    });
+    runtime.setFields(["header"]);
+
+    await runtime.enableForDevice(UDID);
+    await runtime.disableForDevice(UDID);
+    await runtime.enableForDevice(UDID);
+
+    expect(seen).toEqual([["header"], ["header"]]);
   });
 });

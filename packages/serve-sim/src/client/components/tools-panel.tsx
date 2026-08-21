@@ -7,6 +7,7 @@ import { AxTreeTool } from "./ax-tree-tool";
 import { CameraTool } from "./camera-tool";
 import { EventLogTool } from "./event-log-tool";
 import { MetricsTool } from "./metrics-tool";
+import { NetworkCaptureTool } from "./network-capture-tool";
 import { PANEL_BACKGROUND } from "./panel-colors";
 import { SimulatorSettingsTool } from "./simulator-settings-tool";
 import { StreamSettingsTool } from "./stream-settings-tool";
@@ -28,6 +29,7 @@ export function ToolsPanel({
   currentApp,
   eventLogEventsEndpoint,
   metricsEndpoint,
+  captureEndpoint,
   axOverlayEnabled,
   onToggleAxOverlay,
   streamSettings,
@@ -49,6 +51,7 @@ export function ToolsPanel({
   currentApp: { bundleId: string; isReactNative: boolean; pid?: number } | null;
   eventLogEventsEndpoint?: string;
   metricsEndpoint?: string;
+  captureEndpoint?: string;
   axOverlayEnabled: boolean;
   onToggleAxOverlay: () => void;
   streamSettings: StreamControlSettings;
@@ -75,6 +78,7 @@ export function ToolsPanel({
             currentAppBundleId={currentApp?.bundleId ?? null}
             metricsEndpoint={metricsEndpoint}
           />
+          <NetworkCaptureTool udid={udid} captureEndpoint={captureEndpoint} />
           <EventLogTool udid={udid} eventsEndpoint={eventLogEventsEndpoint} />
           <SimulatorSettingsTool udid={udid} runtime={deviceRuntime} />
           <AxTreeTool

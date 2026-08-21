@@ -1958,6 +1958,7 @@ function AppWithConfig({
         eventLogEventsEndpoint={config.eventLogEventsEndpoint}
         metricsEndpoint={config.metricsEndpoint}
         crashesEndpoint={config.crashesEndpoint}
+        captureEndpoint={config.captureEndpoint}
         axOverlayEnabled={axOverlayEnabled}
         onToggleAxOverlay={() => setAxOverlayEnabled((enabled) => !enabled)}
         streamSettings={streamSettings}

@@ -28,6 +28,7 @@ export { startCaptureForDevice, type StartCaptureDeps } from "./start";
 export {
   CAPTURE_SCHEMA_VERSION,
   CaptureStore,
+  MAX_REQUESTS,
   clampBody,
   isCapturing,
   type CapturedBody,

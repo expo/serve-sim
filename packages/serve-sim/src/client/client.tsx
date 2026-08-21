@@ -1625,6 +1625,7 @@ function AppWithConfig({
         currentApp={currentApp}
         eventLogEventsEndpoint={config.eventLogEventsEndpoint}
         metricsEndpoint={config.metricsEndpoint}
+        captureEndpoint={config.captureEndpoint}
         axOverlayEnabled={axOverlayEnabled}
         onToggleAxOverlay={() => setAxOverlayEnabled((enabled) => !enabled)}
         streamSettings={streamSettings}

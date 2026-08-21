@@ -103,6 +103,15 @@ async function readInjectedVar(udid: string, name: string, read: ReadEnv): Promi
   return injectedLines(await read(launchctl(udid, "getenv", name)));
 }
 
+export async function isDeviceInjected(
+  udid: string,
+  portFile: string,
+  deps: { read?: ReadEnv } = {},
+): Promise<boolean> {
+  const lines = await readInjectedVar(udid, PORT_FILE_VAR, deps.read ?? simctl);
+  return lines.includes(portFile);
+}
+
 function isDeviceUnavailable(error: unknown): boolean {
   const text = error instanceof Error ? error.message : String(error);
   return /Unable to lookup device|Invalid device|current state: Shutdown|device is not booted/i.test(

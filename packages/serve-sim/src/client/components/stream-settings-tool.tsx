@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { SlidersHorizontal, Video } from "lucide-react";
 import { CollapsibleSection } from "./collapsible-section";
+import { StreamStatsSection } from "./stream-stats-tool";
 import { SettingRow, SettingSelect } from "./simulator-settings-tool";
 import type {
   HttpStreamCodec,
@@ -69,6 +70,9 @@ export function StreamSettingsTool({
   onEncoderSettingsChange,
   activeCodec,
   avccSupported,
+  peerConnection,
+  requestedFps,
+  requestedMaxDimension,
   encoderSettingsDisabled = false,
 }: {
   settings: StreamControlSettings;
@@ -77,6 +81,9 @@ export function StreamSettingsTool({
   activeCodec: string;
   avccSupported: boolean;
   encoderSettingsDisabled?: boolean;
+  peerConnection: RTCPeerConnection | null;
+  requestedFps?: number;
+  requestedMaxDimension?: number;
 }) {
   const [open, setOpen] = useState(false);
   const httpActive = settings.transport === "http";
@@ -100,6 +107,12 @@ export function StreamSettingsTool({
       }
     >
       <div className="flex flex-col gap-1.5 pb-1.5">
+        <StreamStatsSection
+          peerConnection={peerConnection}
+          enabled={open}
+          requestedFps={requestedFps}
+          requestedMaxDimension={requestedMaxDimension}
+        />
         <SettingRow icon={<Video className={iconClass} />} label="Transport">
           <SettingSelect
             label="Transport"

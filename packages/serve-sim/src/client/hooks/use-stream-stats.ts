@@ -8,6 +8,8 @@ import {
 } from "../utils/webrtc-stats";
 
 const POLL_MS = 1000;
+/** ~10 minutes at one sample a second. Lag is intermittent, so a live readout alone misses it. */
+const HISTORY_LIMIT = 600;
 
 /**
  * Poll a peer connection for the stats that explain a laggy stream.
@@ -17,8 +19,9 @@ const POLL_MS = 1000;
 export function useStreamStats(
   peerConnection: RTCPeerConnection | null,
   enabled: boolean,
-): StreamStats | null {
+): { stats: StreamStats | null; history: StreamStats[] } {
   const [stats, setStats] = useState<StreamStats | null>(null);
+  const [history, setHistory] = useState<StreamStats[]>([]);
   const previousRef = useRef<StreamStatsSample | null>(null);
 
   useEffect(() => {
@@ -27,6 +30,7 @@ export function useStreamStats(
       setStats(null);
       return;
     }
+    setHistory([]);
 
     let stopped = false;
     const sample = async () => {
@@ -39,7 +43,9 @@ export function useStreamStats(
       }
       if (stopped) return;
       const next = readStreamStats(report, Date.now());
-      setStats(describeStreamStats(previousRef.current, next));
+      const described = describeStreamStats(previousRef.current, next);
+      setStats(described);
+      setHistory((entries) => [...entries, described].slice(-HISTORY_LIMIT));
       previousRef.current = next;
     };
 
@@ -51,5 +57,5 @@ export function useStreamStats(
     };
   }, [peerConnection, enabled]);
 
-  return stats;
+  return { stats, history };
 }

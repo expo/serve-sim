@@ -11,6 +11,7 @@
  * /exec route runs shell commands. Keep the run short. Once serve-sim#49 lands, add --require-token.
  */
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 
 const TURN_API = "https://rtc.live.cloudflare.com/v1/turn/keys";
 const TTL_SECONDS = 3 * 60 * 60;
@@ -20,9 +21,26 @@ const STREAM_ARGS = [
   "--transport", "webrtc",
   "--webrtc-codec", "vp8",
   "--max-dimension", "1280",
-  "--video-fps", "60",
+  "--mjpeg-quality", "0.55",
   "--video-bitrate", "3000000",
+  "--video-fps", "60",
 ];
+
+/** Let the OS pick, like build-tools does, so a leftover process cannot block the run. */
+async function findFreePort(): Promise<number> {
+  const server = createServer();
+  server.unref();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  await new Promise<void>((resolve, reject) => {
+    server.close((err) => (err ? reject(err) : resolve()));
+  });
+  if (address === null || typeof address === "string") throw new Error("Could not allocate a port.");
+  return address.port;
+}
 
 interface IceServer {
   urls: string[] | string;
@@ -89,7 +107,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const port = process.env.PORT ?? "3200";
+  const port = process.env.PORT ?? String(await findFreePort());
   const turnArgs = iceServersToArgs(await mintIceServers(keyId, apiToken));
   if (!turnArgs.includes("--turn-url")) {
     console.error("Cloudflare returned STUN but no TURN entry, so a relayed path cannot be tested.");
@@ -97,9 +115,11 @@ async function main(): Promise<void> {
   }
 
   // Loopback bind plus a tunnel, same as production.
+  // dist, not src: the preview HTML is stamped in at build time, so an unbuilt run serves no page.
+  // Run `bun run build.ts` first. This is also what build-tools runs, via the published package.
   const serveSim = spawn(
-    "bun",
-    ["run", "src/index.ts", "serve", "--port", port, "--host", "127.0.0.1", ...STREAM_ARGS, ...turnArgs],
+    "node",
+    ["dist/serve-sim.js", "--port", port, "--host", "127.0.0.1", ...STREAM_ARGS, ...turnArgs],
     { stdio: "inherit", cwd: new URL("..", import.meta.url).pathname },
   );
 

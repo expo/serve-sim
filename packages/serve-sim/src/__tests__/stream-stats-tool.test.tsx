@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { StreamStatsBody, isScaledDown } from "../client/components/stream-stats-tool";
+import { StreamStatsBody, isScaledDown, statsToJson } from "../client/components/stream-stats-tool";
 import type { StreamStats } from "../client/utils/webrtc-stats";
 
 function stats(overrides: Partial<StreamStats> = {}): StreamStats {
@@ -70,10 +70,19 @@ describe("StreamStatsBody", () => {
     expect(html).toContain("scaled down");
   });
 
-  test("flags fps well under the requested rate", () => {
-    const html = renderToStaticMarkup(<StreamStatsBody stats={stats({ fps: 20 })} requestedFps={60} />);
+  test("shows fps against the requested rate without calling a quiet screen a fault", () => {
+    // Capture is event-driven with an idle floor, so low fps on a static screen is correct behaviour.
+    const html = renderToStaticMarkup(<StreamStatsBody stats={stats({ fps: 5 })} requestedFps={60} />);
 
-    expect(html).toContain("20 / 60");
+    expect(html).toContain("5 / 60");
+    expect(html).not.toContain("text-warning");
+  });
+
+  test("still flags the unambiguous faults", () => {
+    const html = renderToStaticMarkup(
+      <StreamStatsBody stats={stats({ droppedInWindow: 4, freezesInWindow: 1, lossRatio: 0.05 })} />,
+    );
+
     expect(html).toContain("text-warning");
   });
 
@@ -84,5 +93,21 @@ describe("StreamStatsBody", () => {
 
     // One dash per unavailable rate. A count of 0 for dropped frames is a real reading, not a gap.
     expect(html.split("—").length - 1).toBe(4);
+  });
+});
+
+describe("statsToJson", () => {
+  test("serializes the recorded window so a session can be handed over", () => {
+    const parsed = JSON.parse(statsToJson([stats({ fps: 12 }), stats({ fps: 55 })])) as {
+      recordedAt: string;
+      samples: { fps: number }[];
+    };
+
+    expect(parsed.samples.map((s) => s.fps)).toEqual([12, 55]);
+    expect(Number.isNaN(Date.parse(parsed.recordedAt))).toBe(false);
+  });
+
+  test("writes an empty sample list rather than failing when nothing was recorded", () => {
+    expect(JSON.parse(statsToJson([])).samples).toEqual([]);
   });
 });

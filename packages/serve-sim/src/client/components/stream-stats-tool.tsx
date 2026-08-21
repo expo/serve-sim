@@ -1,47 +1,11 @@
-import { useState } from "react";
-
 import { useStreamStats } from "../hooks/use-stream-stats";
 import type { StreamStats } from "../utils/webrtc-stats";
-import { CollapsibleSection } from "./collapsible-section";
 
 /**
  * What the receiver can see about stream health. The sender's own reason for degrading
  * (`qualityLimitationReason`) is not in a receive-only browser's stats, so a resolution below the
  * requested one is the closest signal we have that libwebrtc is scaling the picture down.
  */
-export function StreamStatsTool({
-  peerConnection,
-  requestedFps,
-  requestedMaxDimension,
-}: {
-  peerConnection: RTCPeerConnection | null;
-  requestedFps?: number;
-  requestedMaxDimension?: number;
-}) {
-  const [open, setOpen] = useState(false);
-  const stats = useStreamStats(peerConnection, open);
-
-  return (
-    <CollapsibleSection
-      open={open}
-      onOpenChange={setOpen}
-      summary={
-        <span className="text-[11px] font-semibold text-white/50 uppercase tracking-[0.08em] leading-none">
-          Stream
-        </span>
-      }
-    >
-      {stats === null
-        ? <span className="text-[11px] text-white/40">Waiting for the first sample…</span>
-        : <StreamStatsBody
-            stats={stats}
-            requestedFps={requestedFps}
-            requestedMaxDimension={requestedMaxDimension}
-          />}
-    </CollapsibleSection>
-  );
-}
-
 export function StreamStatsBody({
   stats,
   requestedFps,
@@ -52,11 +16,10 @@ export function StreamStatsBody({
   requestedMaxDimension?: number;
 }) {
   const scaledDown = isScaledDown(stats, requestedMaxDimension);
-  const belowFps = requestedFps !== undefined && stats.fps !== null && stats.fps < requestedFps * 0.8;
 
   return (
     <div className="flex flex-col gap-1 font-mono text-[11px] text-white/70">
-      <Row label="fps" value={format(stats.fps, 0)} warn={belowFps} suffix={requestedFps ? ` / ${requestedFps}` : ""} />
+      <Row label="fps" value={format(stats.fps, 0)} suffix={requestedFps ? ` / ${requestedFps}` : ""} />
       <Row label="bitrate" value={format(stats.kbps, 0)} suffix=" kbps" />
       <Row
         label="size"
@@ -117,4 +80,53 @@ function Row({
       </span>
     </div>
   );
+}
+
+/** Live readout plus a download of the recorded window, for the stutters nobody is watching for. */
+export function StreamStatsSection({
+  peerConnection,
+  enabled,
+  requestedFps,
+  requestedMaxDimension,
+}: {
+  peerConnection: RTCPeerConnection | null;
+  enabled: boolean;
+  requestedFps?: number;
+  requestedMaxDimension?: number;
+}) {
+  const { stats, history } = useStreamStats(peerConnection, enabled);
+
+  if (stats === null) {
+    return <span className="text-[11px] text-white/40">Waiting for the first sample…</span>;
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      <StreamStatsBody
+        stats={stats}
+        requestedFps={requestedFps}
+        requestedMaxDimension={requestedMaxDimension}
+      />
+      <button
+        type="button"
+        onClick={() => downloadStats(history)}
+        className="self-start rounded px-1.5 py-0.5 text-[11px] text-white/50 hover:bg-white/10 hover:text-white/80"
+      >
+        Save {history.length} samples
+      </button>
+    </div>
+  );
+}
+
+/** Serialize the recorded window so a session can be handed to someone else to read. */
+export function statsToJson(history: StreamStats[]): string {
+  return JSON.stringify({ recordedAt: new Date().toISOString(), samples: history }, null, 2);
+}
+
+function downloadStats(history: StreamStats[]): void {
+  const url = URL.createObjectURL(new Blob([statsToJson(history)], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `stream-stats-${Date.now()}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
 }

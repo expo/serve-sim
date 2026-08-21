@@ -51,6 +51,7 @@ export function useWebRtcStream({
   const [failure, setFailure] = useState<WebRtcStreamFailure | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
+  const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null);
   const firstFrameTimeoutRef = useRef<number | undefined>(undefined);
   const firstFrameDecodedRef = useRef(false);
   const transportRetryAttemptRef = useRef(0);
@@ -181,6 +182,8 @@ export function useWebRtcStream({
           iceTransportPolicy: WEBRTC_ICE_TRANSPORT_POLICY,
         });
 
+        setPeerConnection(pc);
+
         const videoTransceiver = pc.addTransceiver("video", { direction: "recvonly" });
         const videoCapabilities = RTCRtpReceiver.getCapabilities("video");
         const preferredMimeType = codec === "h264"
@@ -287,9 +290,10 @@ export function useWebRtcStream({
       }
       void closeRemoteSession(true);
       setStream(null);
+      setPeerConnection(null);
       pc?.close();
     };
   }, [enabled, offerUrl, closeUrl, codec, iceServers, retryGeneration]);
 
-  return { stream, failure, error, markFrameDecoded };
+  return { stream, failure, error, markFrameDecoded, peerConnection };
 }

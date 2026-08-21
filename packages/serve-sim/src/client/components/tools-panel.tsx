@@ -7,6 +7,7 @@ import { AxTreeTool } from "./ax-tree-tool";
 import { CameraTool } from "./camera-tool";
 import { EventLogTool } from "./event-log-tool";
 import { MetricsTool } from "./metrics-tool";
+import { StreamStatsTool } from "./stream-stats-tool";
 import { PANEL_BACKGROUND } from "./panel-colors";
 import { SimulatorSettingsTool } from "./simulator-settings-tool";
 import { StreamSettingsTool } from "./stream-settings-tool";
@@ -20,6 +21,9 @@ import type {
 export function ToolsPanel({
   open,
   onClose,
+  peerConnection,
+  requestedFps,
+  requestedMaxDimension,
   udid,
   deviceRuntime,
   currentApp,
@@ -37,6 +41,9 @@ export function ToolsPanel({
 }: {
   open: boolean;
   onClose: () => void;
+  peerConnection: RTCPeerConnection | null;
+  requestedFps?: number;
+  requestedMaxDimension?: number;
   udid: string;
   deviceRuntime: string | null;
   currentApp: { bundleId: string; isReactNative: boolean; pid?: number } | null;
@@ -66,6 +73,11 @@ export function ToolsPanel({
             udid={udid}
             currentAppBundleId={currentApp?.bundleId ?? null}
             metricsEndpoint={metricsEndpoint}
+          />
+          <StreamStatsTool
+            peerConnection={peerConnection}
+            requestedFps={requestedFps}
+            requestedMaxDimension={requestedMaxDimension}
           />
           <EventLogTool udid={udid} eventsEndpoint={eventLogEventsEndpoint} />
           <SimulatorSettingsTool udid={udid} runtime={deviceRuntime} />

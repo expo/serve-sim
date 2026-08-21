@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_STREAM_CONTROL_SETTINGS,
+  effectiveWebRtcFrameRate,
+  effectiveWebRtcMaxDimension,
   mergeStreamControlSettings,
   mergeStreamEncoderSettings,
   normalizeStreamControlSettings,
@@ -10,6 +12,20 @@ import {
 } from "../stream-settings";
 
 describe("stream settings", () => {
+  test("keeps WebRTC in its interactive 30-60 fps envelope", () => {
+    expect(effectiveWebRtcFrameRate(1)).toBe(30);
+    expect(effectiveWebRtcFrameRate(30)).toBe(30);
+    expect(effectiveWebRtcFrameRate(48)).toBe(48);
+    expect(effectiveWebRtcFrameRate(60)).toBe(60);
+    expect(effectiveWebRtcFrameRate(120)).toBe(60);
+  });
+
+  test("uses a 1280px WebRTC performance ceiling unless one is configured", () => {
+    expect(effectiveWebRtcMaxDimension(0)).toBe(1280);
+    expect(effectiveWebRtcMaxDimension(960)).toBe(960);
+    expect(effectiveWebRtcMaxDimension(1920)).toBe(1920);
+  });
+
   test("uses native resolution and clamps untrusted numeric values", () => {
     expect(DEFAULT_STREAM_CONTROL_SETTINGS.maxDimension).toBe(0);
     expect(normalizeStreamControlSettings({

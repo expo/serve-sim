@@ -15,7 +15,7 @@ https://github.com/user-attachments/assets/fbf890f4-c8c7-4684-82be-d677b8a188f8
 
 ## Features 
 
-- Up to 60 FPS over HTTP, or low-latency 30 FPS over WebRTC.
+- Up to 60 FPS over HTTP, or adaptive low-latency 30-60 FPS over WebRTC.
 - Swipe from the bottom to go home.
 - gestures like pinch to zoom by holding the option key.
 - Simulator logs are forwarded to the browser for browser-use MCP tools to read from.
@@ -88,11 +88,12 @@ Options:
       --mjpeg-quality <quality>
                       MJPEG quality (0.05-1)
       --max-dimension <pixels>
-                      Maximum captured width or height; 0 keeps native resolution
+                      Maximum captured width or height; 0 keeps native HTTP
+                      resolution and uses an automatic 1280px WebRTC ceiling
       --video-bitrate <bits-per-second>
                       H.264/WebRTC target bitrate
       --video-fps <fps>
-                      H.264/WebRTC frame rate (1-120)
+                      H.264 frame rate (1-120); WebRTC operates at 30-60 FPS
       --list [device] List running streams
       --kill [device] Kill running stream(s)
 

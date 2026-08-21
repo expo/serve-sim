@@ -81,7 +81,7 @@ WebRTCPublisher (LiveKit WebRTC framework)
   +-- ICE gathering
   +-- codec preference and H.264 capability probe
   +-- pixel-buffer conversion
-  +-- latest-frame pacing at up to 30 fps
+  +-- latest-frame pacing in the interactive 30-60 fps range
 ```
 
 The browser has three rendering paths:
@@ -100,10 +100,14 @@ fixed 5 fps idle floor. Every frame has a host monotonic capture timestamp.
 
 `CaptureEngine` fans frames out synchronously to consumers. Each encoder keeps a
 single newest pending frame, so a slow consumer cannot create latency by
-building a backlog. `WebRTCPublisher` adds one 30 fps latest-frame pump and only
-accepts frames while at least one peer is connected. Its shared video source
-fans each accepted frame out to every peer connection; libwebrtc maintains an
-independent sender, encoder, bitrate estimate, and packet stream per viewer.
+building a backlog. `WebRTCPublisher` adds one 30-60 fps latest-frame pump and
+only accepts frames while at least one peer is connected. It marks the source
+as interactive motion rather than a screen share, uses a 1280px automatic
+ceiling when no explicit maximum is configured, and tells libwebrtc to preserve
+frame rate by reducing resolution under CPU or bandwidth pressure. Its shared
+video source fans each accepted frame out to every peer connection; libwebrtc
+maintains an independent sender, encoder, bitrate estimate, and packet stream
+per viewer.
 
 The WebRTC publisher is created lazily on the first offer. Its frame consumer
 currently remains attached until the device capture session stops, but sending
@@ -180,8 +184,9 @@ the simulator's single synthetic touch surface.
 - No automatic fallback from unreachable WebRTC media to HTTP video.
 - Codec configuration describes a preference, not the negotiated sender codec.
 - Signaling URLs are derived from the MJPEG URL rather than advertised directly.
-- The native publisher uses fixed native resolution, 30 fps, and a 6 Mbps target
-  with a 1.5 Mbps minimum.
+- The native publisher operates from 30 to 60 fps, uses an automatic 1280px
+  ceiling unless one is configured, and ramps from a conservative starting
+  estimate to the configured bitrate ceiling.
 - There is no process-wide resource budget across several software-encoded
   simulators.
 - External `simctl shutdown` is detected by state/grid polling rather than a

@@ -78,6 +78,18 @@ private struct PendingWebRTCOffer {
 final class WebRTCPublisher: @unchecked Sendable {
     private static let signalingTimeoutMs = 10_000
     private static let connectionTimeoutMs = 10_000
+    // A remotely controlled simulator is interactive motion content. Keep its
+    // sender inside a 30-60 fps operating range and shed resolution before
+    // cadence when CPU or bandwidth is constrained.
+    private static let minimumInteractiveFps = 30
+    private static let maximumInteractiveFps = 60
+    // Native Retina simulator surfaces can exceed 3 MP. That is too expensive
+    // for stable software VP8/VP9 at 60 fps, especially before a tunneled path's
+    // bandwidth estimate converges. An explicit --max-dimension still wins.
+    private static let automaticMaxDimension = 1_280
+    private static let minimumCongestionBitrate = 100_000
+    private static let maximumCongestionMinimumBitrate = 300_000
+    private static let maximumStartingBitrate = 1_500_000
 
     private let queue = DispatchQueue(label: "webrtc-publisher")
     private let factory: LKRTCPeerConnectionFactory
@@ -108,7 +120,7 @@ final class WebRTCPublisher: @unchecked Sendable {
     private var frameIntervalNs: UInt64
 
     init(maxFps: Int, targetBitrate: Int, maxDimension: Int) {
-        let normalizedMaxFps = max(1, min(120, maxFps))
+        let normalizedMaxFps = Self.interactiveFps(maxFps)
         self.maxFps = normalizedMaxFps
         self.targetBitrate = max(100_000, targetBitrate)
         self.maxDimension = max(0, maxDimension)
@@ -120,12 +132,15 @@ final class WebRTCPublisher: @unchecked Sendable {
             encoderFactory: defaultEncoderFactory,
             decoderFactory: decoderFactory
         )
-        videoSource = factory.videoSource(forScreenCast: true)
+        // A screen-cast source favors static detail and may collapse cadence
+        // aggressively. For simulator control, a temporarily softer current
+        // frame is far better than a sharp stale one.
+        videoSource = factory.videoSource(forScreenCast: false)
         videoTrack = factory.videoTrack(with: videoSource, trackId: "simulator-video")
         videoTrack.isEnabled = true
         capturer = LKRTCVideoCapturer(delegate: videoSource)
         streamLog(
-            "[webrtc] Publisher ready (default codec factory + screen-cast video source) " +
+            "[webrtc] Publisher ready (default codec factory + interactive video source) " +
             "h264=\(h264SupportDescription()) h264FrameMode=\(h264FrameModeDescription()) " +
             "senderCodecs=\(senderCodecSummary())"
         )
@@ -134,7 +149,7 @@ final class WebRTCPublisher: @unchecked Sendable {
     func updateSettings(maxFps: Int, targetBitrate: Int, maxDimension: Int) async {
         await withCheckedContinuation { continuation in
             queue.async {
-                let normalizedMaxFps = max(1, min(120, maxFps))
+                let normalizedMaxFps = Self.interactiveFps(maxFps)
                 self.frameLock.lock()
                 self.maxFps = normalizedMaxFps
                 self.frameIntervalNs = UInt64(1_000_000_000 / normalizedMaxFps)
@@ -441,6 +456,9 @@ final class WebRTCPublisher: @unchecked Sendable {
         config.continualGatheringPolicy = .gatherOnce
         config.iceServers = iceServers(from: request.iceServers)
         config.iceTransportPolicy = .all
+        // Mark interactive video packets as high priority where the host and
+        // tunnel preserve DSCP. Networks that strip DSCP keep normal behavior.
+        config.enableDscp = true
         streamLog("[webrtc] ICE transport policy: all (TURN as fallback)")
         streamLog("[webrtc] ICE servers: \(iceServerSummary(request.iceServers))")
 
@@ -861,31 +879,58 @@ final class WebRTCPublisher: @unchecked Sendable {
         let encodings = parameters.encodings.isEmpty
             ? [LKRTCRtpEncodingParameters()]
             : parameters.encodings
-        let maxBitrate = NSNumber(value: targetBitrate)
-        let minBitrate = NSNumber(value: max(100_000, targetBitrate / 5))
+        let maximumBitrateValue = targetBitrate
+        // Starting the congestion controller at the 6 Mbps ceiling while also
+        // enforcing a 1.2 Mbps floor overloads constrained TURN/tunnel paths
+        // before BWE can react. Start conservatively, keep a low escape hatch,
+        // and still allow ramp-up to the configured quality ceiling.
+        let minimumBitrateValue = min(
+            maximumBitrateValue,
+            max(
+                Self.minimumCongestionBitrate,
+                min(Self.maximumCongestionMinimumBitrate, maximumBitrateValue / 20)
+            )
+        )
+        let startingBitrateValue = min(
+            maximumBitrateValue,
+            max(minimumBitrateValue, Self.maximumStartingBitrate)
+        )
+        let maxBitrate = NSNumber(value: maximumBitrateValue)
+        let minBitrate = NSNumber(value: minimumBitrateValue)
+        let startingBitrate = NSNumber(value: startingBitrateValue)
         let fps = NSNumber(value: maxFps)
         let sourceMaxDimension = max(lastOutputWidth, lastOutputHeight)
-        let scaleResolutionDownBy = maxDimension > 0 && sourceMaxDimension > maxDimension
-            ? Double(sourceMaxDimension) / Double(maxDimension)
+        let effectiveMaxDimension = maxDimension > 0
+            ? maxDimension
+            : Self.automaticMaxDimension
+        let scaleResolutionDownBy = sourceMaxDimension > effectiveMaxDimension
+            ? Double(sourceMaxDimension) / Double(effectiveMaxDimension)
             : 1.0
+        parameters.degradationPreference = NSNumber(
+            value: LKRTCDegradationPreference.maintainFramerate.rawValue
+        )
         for encoding in encodings {
             encoding.isActive = true
             encoding.maxBitrateBps = maxBitrate
             encoding.minBitrateBps = minBitrate
             encoding.maxFramerate = fps
             encoding.scaleResolutionDownBy = NSNumber(value: scaleResolutionDownBy)
+            encoding.bitratePriority = 2.0
+            encoding.networkPriority = .high
         }
         parameters.encodings = encodings
         sender.parameters = parameters
         let bweUpdated = session.peerConnection.setBweMinBitrateBps(
             minBitrate,
-            currentBitrateBps: maxBitrate,
+            currentBitrateBps: startingBitrate,
             maxBitrateBps: maxBitrate
         )
         streamLog(
             "[webrtc] Sender parameters fps=\(maxFps) minBitrate=\(minBitrate) " +
-            "maxBitrate=\(maxBitrate) maxDimension=\(maxDimension) " +
-            "scaleDown=\(String(format: "%.3f", scaleResolutionDownBy)) bweUpdated=\(bweUpdated)"
+            "startBitrate=\(startingBitrate) maxBitrate=\(maxBitrate) " +
+            "configuredMaxDimension=\(maxDimension) effectiveMaxDimension=\(effectiveMaxDimension) " +
+            "scaleDown=\(String(format: "%.3f", scaleResolutionDownBy)) " +
+            "degradation=maintain-framerate bweUpdated=\(bweUpdated)"
         )
     }
 
@@ -932,6 +977,10 @@ final class WebRTCPublisher: @unchecked Sendable {
         default:
             return "H264"
         }
+    }
+
+    private static func interactiveFps(_ requestedFps: Int) -> Int {
+        max(minimumInteractiveFps, min(maximumInteractiveFps, requestedFps))
     }
 
     private static func codecCapability(_ capability: LKRTCRtpCodecCapability, matches name: String) -> Bool {

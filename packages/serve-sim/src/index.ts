@@ -1803,7 +1803,7 @@ program
   )
   .option(
     "--max-dimension <pixels>",
-    "Maximum captured width or height; 0 keeps native resolution (0-4096)",
+    "Maximum captured width or height; 0 keeps native HTTP resolution and uses automatic WebRTC sizing (0-4096)",
     (value) => parseNumberInRange(value, "--max-dimension", 0, 4096, true),
   )
   .option(
@@ -1813,7 +1813,7 @@ program
   )
   .option(
     "--video-fps <fps>",
-    "H.264/WebRTC frame rate (1-120)",
+    "H.264 frame rate (1-120); WebRTC operates at 30-60 FPS",
     (value) => parseNumberInRange(value, "--video-fps", 1, 120, true),
   )
   .option(

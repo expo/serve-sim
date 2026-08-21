@@ -2,6 +2,10 @@ export type HttpStreamCodec = "auto" | "mjpeg" | "h264";
 export type WebRtcStreamCodec = "vp8" | "vp9" | "h264";
 export type WebRtcIceServer = { urls: string[]; username?: string; credential?: string };
 
+export const WEBRTC_MIN_FRAME_RATE = 30;
+export const WEBRTC_MAX_FRAME_RATE = 60;
+export const WEBRTC_AUTOMATIC_MAX_DIMENSION = 1280;
+
 export type StreamSettings = (
   | { transport: "http"; codec?: HttpStreamCodec }
   | { transport: "webrtc"; codec: WebRtcStreamCodec; iceServers?: WebRtcIceServer[] }
@@ -40,6 +44,18 @@ export const DEFAULT_STREAM_CONTROL_SETTINGS: StreamControlSettings = {
   webRtcCodec: "h264",
   ...DEFAULT_STREAM_ENCODER_SETTINGS,
 };
+
+/** The native publisher prioritizes fresh interactive frames over resolution. */
+export function effectiveWebRtcFrameRate(requestedFrameRate: number): number {
+  return Math.min(WEBRTC_MAX_FRAME_RATE, Math.max(WEBRTC_MIN_FRAME_RATE, requestedFrameRate));
+}
+
+/** Zero means automatic for WebRTC; HTTP continues to treat zero as native size. */
+export function effectiveWebRtcMaxDimension(configuredMaxDimension: number): number {
+  return configuredMaxDimension > 0
+    ? configuredMaxDimension
+    : WEBRTC_AUTOMATIC_MAX_DIMENSION;
+}
 
 function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;

@@ -63,4 +63,26 @@ describe("StreamSettingsTool", () => {
     expect(html).not.toMatch(/aria-label="Video bitrate"[^>]*disabled=""/);
     expect(html).toMatch(/aria-label="MJPEG FPS"[^>]*disabled=""/);
   });
+
+  test("shows the effective automatic size and frame-rate floor for WebRTC", () => {
+    const html = renderToStaticMarkup(
+      <StreamSettingsTool
+        settings={{
+          ...settings,
+          transport: "webrtc",
+          webRtcCodec: "vp8",
+          maxDimension: 0,
+          h264Fps: 20,
+        }}
+        onPlaybackSettingsChange={() => {}}
+        onEncoderSettingsChange={() => {}}
+        activeCodec="webrtc/vp8"
+        avccSupported
+      />,
+    );
+
+    expect(html).toContain('<span class="block truncate">Auto (1280)</span>');
+    expect(html).toContain('aria-label="Video FPS"');
+    expect(html).toContain('<span class="block truncate">30</span>');
+  });
 });

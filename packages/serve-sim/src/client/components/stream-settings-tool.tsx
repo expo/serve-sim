@@ -2,6 +2,10 @@ import { useState } from "react";
 import { SlidersHorizontal, Video } from "lucide-react";
 import { CollapsibleSection } from "./collapsible-section";
 import { SettingRow, SettingSelect } from "./simulator-settings-tool";
+import {
+  effectiveWebRtcFrameRate,
+  effectiveWebRtcMaxDimension,
+} from "../../stream-settings";
 import type {
   HttpStreamCodec,
   StreamControlSettings,
@@ -81,6 +85,21 @@ export function StreamSettingsTool({
   const [open, setOpen] = useState(false);
   const httpActive = settings.transport === "http";
   const webrtcActive = settings.transport === "webrtc";
+  const maxDimensionOptions = webrtcActive
+    ? [
+        {
+          value: "0",
+          label: "Auto (" + effectiveWebRtcMaxDimension(0) + ")",
+        },
+        ...MAX_DIMENSION_OPTIONS.slice(1),
+      ]
+    : MAX_DIMENSION_OPTIONS;
+  const videoFps = webrtcActive
+    ? effectiveWebRtcFrameRate(settings.h264Fps)
+    : settings.h264Fps;
+  const videoFpsOptions = webrtcActive
+    ? FPS_OPTIONS.filter((option) => Number(option.value) >= 30)
+    : FPS_OPTIONS;
 
   return (
     <CollapsibleSection
@@ -133,7 +152,7 @@ export function StreamSettingsTool({
             value={String(settings.maxDimension)}
             options={optionsWithCurrentValue(
               settings.maxDimension,
-              MAX_DIMENSION_OPTIONS,
+              maxDimensionOptions,
               String,
             )}
             disabled={encoderSettingsDisabled}
@@ -165,8 +184,8 @@ export function StreamSettingsTool({
         <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="Video FPS">
           <SettingSelect
             label="Video FPS"
-            value={String(settings.h264Fps)}
-            options={optionsWithCurrentValue(settings.h264Fps, FPS_OPTIONS, String)}
+            value={String(videoFps)}
+            options={optionsWithCurrentValue(videoFps, videoFpsOptions, String)}
             disabled={
               encoderSettingsDisabled
               || (httpActive && (!avccSupported || settings.httpCodec === "mjpeg"))

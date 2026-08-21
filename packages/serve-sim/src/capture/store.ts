@@ -41,6 +41,11 @@ export interface CaptureMeta {
   attachment: CaptureAttachment;
   attachError: string | null;
   droppedOversizedBodies: number;
+  /**
+   * Allowlisted capture fields for this session (`header`, `request-body`,
+   * `response-body`). Default is headers + request bodies.
+   */
+  fields: string[];
 }
 
 export function isCapturing(meta: CaptureMeta): boolean {

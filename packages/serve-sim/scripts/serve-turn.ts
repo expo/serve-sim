@@ -30,16 +30,29 @@ interface IceServer {
   credential?: string;
 }
 
+/** Describe a credential without printing it, so a bad value can be diagnosed from a shared terminal. */
+export function describeSecret(value: string): string {
+  const trimmed = value.trim();
+  const shape = /^[0-9a-f]+$/i.test(trimmed) ? "hex" : /^[\w.~-]+$/.test(trimmed) ? "token-safe" : "has unusual characters";
+  const whitespace = value === trimmed ? "" : ", had surrounding whitespace";
+  return `${trimmed.length} chars, ${shape}${whitespace}`;
+}
+
 async function mintIceServers(keyId: string, apiToken: string): Promise<IceServer[]> {
-  const response = await fetch(`${TURN_API}/${keyId}/credentials/generate-ice-servers`, {
+  const response = await fetch(`${TURN_API}/${encodeURIComponent(keyId)}/credentials/generate-ice-servers`, {
     method: "POST",
     headers: { authorization: `Bearer ${apiToken}`, "content-type": "application/json" },
     body: JSON.stringify({ ttl: TTL_SECONDS }),
   });
   if (!response.ok) {
+    const body = await response.text();
+    const hint = response.status === 404
+      ? "\nA 404 means Cloudflare has no such key. The id and token must come from the same Realtime " +
+        "TURN key, and a key deleted or rotated in the dashboard reads as missing here."
+      : "";
     throw new Error(
-      `Cloudflare refused to mint TURN credentials (HTTP ${response.status}). Check that the key id ` +
-        `and token belong to the same Realtime TURN key.\n${await response.text()}`,
+      `Cloudflare refused to mint TURN credentials (HTTP ${response.status}).\n${body}${hint}\n` +
+        `key id: ${describeSecret(keyId)}\ntoken:  ${describeSecret(apiToken)}`,
     );
   }
   const body = (await response.json()) as { iceServers?: IceServer | IceServer[] };
@@ -66,8 +79,8 @@ export function iceServersToArgs(iceServers: IceServer[]): string[] {
 }
 
 async function main(): Promise<void> {
-  const keyId = process.env.CLOUDFLARE_TURN_KEY_ID;
-  const apiToken = process.env.CLOUDFLARE_TURN_API_TOKEN;
+  const keyId = process.env.CLOUDFLARE_TURN_KEY_ID?.trim();
+  const apiToken = process.env.CLOUDFLARE_TURN_API_TOKEN?.trim();
   if (!keyId || !apiToken) {
     console.error(
       "Set CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN. Create a Realtime TURN key in the\n" +

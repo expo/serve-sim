@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { iceServersToArgs } from "../../scripts/serve-turn";
+import { describeSecret, iceServersToArgs } from "../../scripts/serve-turn";
 
 describe("iceServersToArgs", () => {
   test("splits Cloudflare's reply into stun urls and one turn entry", () => {
@@ -35,5 +35,23 @@ describe("iceServersToArgs", () => {
 
   test("returns nothing for an empty list rather than half a flag", () => {
     expect(iceServersToArgs([])).toEqual([]);
+  });
+});
+
+describe("describeSecret", () => {
+  test("reports shape without ever including the value", () => {
+    const description = describeSecret("deadbeef0123");
+
+    expect(description).toBe("12 chars, hex");
+    expect(description).not.toContain("deadbeef");
+  });
+
+  test("calls out surrounding whitespace, the thing that breaks the URL", () => {
+    expect(describeSecret("abc123\n")).toContain("had surrounding whitespace");
+  });
+
+  test("distinguishes a token from a hex id", () => {
+    expect(describeSecret("v1.0-abc_DEF")).toContain("token-safe");
+    expect(describeSecret("has spaces here")).toContain("unusual characters");
   });
 });

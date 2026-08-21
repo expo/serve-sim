@@ -4,8 +4,12 @@ import type { IncomingMessage, ServerResponse } from "http";
 
 import { createCaptureRuntime } from "../runtime";
 import { type CaptureProxy } from "../mitm-engine";
-import { handleCaptureBodyRequest, handleNetworkCaptureRequest } from "../../middleware";
 import { type CaptureMeta } from "../store";
+import {
+  handleCaptureBodyRequest,
+  handleCaptureHarRequest,
+  handleNetworkCaptureRequest,
+} from "../../middleware";
 import { inProcessServeSimState } from "../../state";
 
 /**
@@ -57,6 +61,7 @@ function stubRuntime() {
     trustCa: async () => {},
     inject: async () => {},
     clearInjection: async () => {},
+    writeDiskArtifacts: false,
     // Without these the injection probe shells out to a simulator that does not exist, so the suite
     // spawns simctl and prints its failures while claiming to touch no device.
     isInjected: async () => true,
@@ -128,7 +133,8 @@ describe("handleNetworkCaptureRequest", () => {
 
     handleNetworkCaptureRequest(req, res, state, runtime);
 
-    const store = runtime.storeFor("UDID-1")!;
+    const store = runtime.storeFor("UDID-1");
+    if (!store) throw new Error("expected capture store");
     const id = store.start("GET", "https://example.com/a");
     store.update(id, { status: 200, durationMs: 5 }, /* settled */ true);
 
@@ -146,7 +152,9 @@ describe("handleNetworkCaptureRequest", () => {
     const state = inProcessServeSimState("UDID-1", 4000);
 
     // Recorded with nobody watching at all — the case boot-time capture exists for.
-    runtime.storeFor("UDID-1")!.start("GET", "https://example.com/startup");
+    const store = runtime.storeFor("UDID-1");
+    if (!store) throw new Error("expected capture store");
+    store.start("GET", "https://example.com/startup");
 
     const viewer = createFakeReq();
     const viewerRes = createFakeRes();
@@ -211,7 +219,8 @@ describe("handleCaptureBodyRequest", () => {
     await runtime.enableForDevice("UDID-1");
     const state = inProcessServeSimState("UDID-1", 4000);
 
-    const store = runtime.storeFor("UDID-1")!;
+    const store = runtime.storeFor("UDID-1");
+    if (!store) throw new Error("expected capture store");
     const id = store.start("POST", "https://example.com/upload");
     store.setBody(id, {
       requestHeaders: { "content-type": "application/json" },
@@ -251,5 +260,64 @@ describe("handleCaptureBodyRequest", () => {
     const unknown = createFakeRes();
     handleCaptureBodyRequest(createFakeReq().req, unknown.res, state, "r404", runtime);
     expect(unknown.status()).toBe(404);
+  });
+});
+
+describe("handleCaptureHarRequest", () => {
+  test("returns the session capture.har from disk", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-har-route-"));
+    const closed: string[] = [];
+    const runtime = createCaptureRuntime({
+      writeDiskArtifacts: true,
+      captureDirFor: () => dir,
+      flushIntervalMs: 60_000,
+      startProxy: async () =>
+        ({
+          address: "127.0.0.1:9999",
+          portFile: "/tmp/fake-confdir/proxy-port",
+          caPem: async () => "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n",
+          close: async () => void closed.push("x"),
+        }) as CaptureProxy,
+      trustCa: async () => {},
+      inject: async () => {},
+      clearInjection: async () => {},
+    });
+
+    try {
+      await runtime.enableForDevice("UDID-1");
+      const state = inProcessServeSimState("UDID-1", 4000);
+      const store = runtime.storeFor("UDID-1");
+      if (!store) throw new Error("expected capture store");
+      const id = store.start("GET", "https://example.com/har");
+      store.update(id, { status: 200, durationMs: 4 }, true);
+
+      const { req } = createFakeReq();
+      const { res, writes, status } = createFakeRes();
+      await handleCaptureHarRequest(req, res, state, runtime);
+
+      expect(status()).toBe(200);
+      const har = JSON.parse(writes.join(""));
+      expect(har.log.version).toBe("1.2");
+      expect(har.log.entries).toHaveLength(1);
+      expect(har.log.entries[0].request.url).toBe("https://example.com/har");
+    } finally {
+      await runtime.disableForDevice("UDID-1");
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("404s when nothing is capturing", async () => {
+    const { runtime } = stubRuntime();
+    const { res, status } = createFakeRes();
+    await handleCaptureHarRequest(
+      createFakeReq().req,
+      res,
+      inProcessServeSimState("UDID-1", 4000),
+      runtime,
+    );
+    expect(status()).toBe(404);
   });
 });

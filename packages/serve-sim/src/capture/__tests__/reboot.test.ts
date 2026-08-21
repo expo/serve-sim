@@ -23,6 +23,7 @@ function harness() {
     inject: async () => void calls.push("injected"),
     clearInjection: async () => void calls.push("injection-cleared"),
     injectionCleared: async () => true,
+    writeDiskArtifacts: false,
   });
   const deps = {
     runtime,
@@ -136,6 +137,7 @@ describe("rebootWithCapture", () => {
       trustCa: async () => {},
       inject: async () => {},
       clearInjection: async () => {},
+      writeDiskArtifacts: false,
     });
 
     const meta = await rebootWithCapture(UDID, /* enabled */ true, {

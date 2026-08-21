@@ -39,7 +39,7 @@ export function useCaptureStream(
 
   const clear = useCallback(() => {
     setRequests([]);
-    const base = path.split("?")[0]!;
+    const base = path.split("?")[0] ?? path;
     const device = new URL(path, "http://local").searchParams.get("device");
     const clearUrl = `${base}/clear${device ? `?device=${encodeURIComponent(device)}` : ""}`;
     void fetch(clearUrl, {

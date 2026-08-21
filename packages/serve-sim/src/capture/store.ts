@@ -42,6 +42,11 @@ export interface CaptureMeta {
   attachError: string | null;
   /** Control POSTs dropped for exceeding SERVE_SIM_CAPTURE_MAX_CONTROL_BODY_BYTES. */
   droppedOversizedBodies: number;
+  /**
+   * Allowlisted capture fields for this session (`header`, `request-body`,
+   * `response-body`). Default is headers + request bodies.
+   */
+  fields: string[];
 }
 
 export function isCapturing(meta: CaptureMeta): boolean {

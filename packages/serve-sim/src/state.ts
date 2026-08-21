@@ -30,6 +30,8 @@ export interface ServeSimDeviceState {
   streamUrl: string;
   wsUrl: string;
   streamSettings?: StreamSettings;
+  /** Bearer token for /exec and network-capture HTTP routes (same as preview HTML). */
+  execToken?: string;
 }
 
 /**
@@ -44,6 +46,7 @@ export function inProcessServeSimState(
   base = "/",
   host = "127.0.0.1",
   streamSettings?: StreamSettings,
+  execToken?: string,
 ): ServeSimDeviceState {
   const h = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   // Normalize to a leading-slash, no-trailing-slash prefix so a base without a
@@ -58,6 +61,7 @@ export function inProcessServeSimState(
     streamUrl: `http://${h}:${port}${prefix}/helper/${udid}/stream.mjpeg`,
     wsUrl: `ws://${h}:${port}${prefix}/helper/${udid}/ws`,
     ...(streamSettings ? { streamSettings } : {}),
+    ...(execToken ? { execToken } : {}),
   };
 }
 

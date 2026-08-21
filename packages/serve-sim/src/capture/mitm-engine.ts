@@ -16,9 +16,14 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
 import { clampBody, type CaptureStore } from "./store";
+import {
+  DEFAULT_CAPTURE_FIELDS,
+  applyCaptureFields,
+  captureFieldSet,
+  type CaptureField,
+} from "./fields";
 import { redactHeaders } from "./redact";
 import { dirnameOf } from "../runtime";
-import { applyCaptureFields, captureFieldSet, DEFAULT_CAPTURE_FIELDS, type CaptureField } from "./fields";
 
 // Bun inlines bare `__dirname` as the build machine's path; resolve from import.meta instead.
 const __dirname = dirnameOf(import.meta.url);

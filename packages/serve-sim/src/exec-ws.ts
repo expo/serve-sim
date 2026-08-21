@@ -92,8 +92,8 @@ function wireExecSocket(
   const subscribe = (sub: number, path: string) => {
     if (subscriptions.has(sub)) return;
     // Only same-origin SSE routes owned by this middleware are reachable, and
-    // only for authed sockets — strictly less exposure than the routes' own
-    // direct (tokenless same-origin) GET surface.
+    // only for authed sockets. Capture SSE also requires Bearer on the HTTP
+    // hop; the caller forwards the session token after WS auth succeeds.
     const pathOnly = path.split("?")[0]!;
     if (!path.startsWith("/") || !ssePrefixes.some((p) => pathOnly === p)) {
       send({ sub, end: true, error: "path not allowed" });

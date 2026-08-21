@@ -64,7 +64,22 @@ describe("previewConfigForState", () => {
       gridMemoryEndpoint: "/preview/grid/api/memory",
       previewEndpoint: "/preview",
       execToken: "token-xyz",
+      interactive: true,
     });
+  });
+
+  test("can default the preview to view-only mode", () => {
+    expect(
+      previewConfigForState(
+        states[0]!,
+        "/preview",
+        "/bin/serve-sim",
+        "token-xyz",
+        undefined,
+        false,
+        false,
+      ).interactive,
+    ).toBe(false);
   });
 
   test("omits stream settings when none are pinned", () => {

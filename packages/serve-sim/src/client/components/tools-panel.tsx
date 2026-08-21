@@ -6,6 +6,7 @@ import { AppPermissionsTool } from "./app-permissions-tool";
 import { AxTreeTool } from "./ax-tree-tool";
 import { CameraTool } from "./camera-tool";
 import { EventLogTool } from "./event-log-tool";
+import { InteractionSettingsTool } from "./interaction-settings-tool";
 import { MetricsTool } from "./metrics-tool";
 import { PANEL_BACKGROUND } from "./panel-colors";
 import { SimulatorSettingsTool } from "./simulator-settings-tool";
@@ -33,6 +34,8 @@ export function ToolsPanel({
   activeCodec,
   avccSupported,
   streamSettingsPending,
+  interactive,
+  onInteractiveChange,
   width,
 }: {
   open: boolean;
@@ -50,6 +53,8 @@ export function ToolsPanel({
   activeCodec: string;
   avccSupported: boolean;
   streamSettingsPending: boolean;
+  interactive: boolean;
+  onInteractiveChange: (next: boolean) => void;
   width: number;
 }) {
   return (
@@ -61,6 +66,10 @@ export function ToolsPanel({
 
       {open && (
         <div className="p-3.5 overflow-y-auto flex-1 flex flex-col gap-3">
+          <InteractionSettingsTool
+            interactive={interactive}
+            onInteractiveChange={onInteractiveChange}
+          />
           <AppDetectionTool udid={udid} currentApp={currentApp} />
           <MetricsTool
             udid={udid}

@@ -76,6 +76,8 @@ export interface SimulatorViewProps {
   onScreenConfigChange?: (config: StreamConfig) => void;
   /** Hide the bottom controls bar (Home button + FPS). */
   hideControls?: boolean;
+  /** Whether pointer, wheel, and device-button input is accepted. */
+  interactive?: boolean;
   /** Called when streaming state changes (true = frames are flowing). */
   onStreamingChange?: (streaming: boolean) => void;
   /** Connection quality indicator: green (good), yellow (degraded), red (poor). */
@@ -125,6 +127,7 @@ export function SimulatorView({
   streamConfig,
   onScreenConfigChange,
   hideControls,
+  interactive = true,
   onStreamingChange,
   connectionQuality,
   streamMode = "avcc",
@@ -418,6 +421,7 @@ export function SimulatorView({
       y: number;
       edge?: number;
     }) => {
+      if (!interactive) return;
       const orientation = streamDisplayGeometry(screenSizeRef.current).inputOrientation;
       const point = rawPointForDisplayPoint(orientation, touch.x, touch.y);
       const edge =
@@ -439,10 +443,11 @@ export function SimulatorView({
       msg.set(json, 1);
       ws.send(msg);
     },
-    [externalInput, onStreamTouch],
+    [interactive, externalInput, onStreamTouch],
   );
 
   const sendButton = useCallback((button: string) => {
+    if (!interactive) return;
     if (externalInput) {
       onStreamButton?.(button);
       return;
@@ -454,9 +459,10 @@ export function SimulatorView({
     msg[0] = WS_MSG_BUTTON;
     msg.set(json, 1);
     ws.send(msg);
-  }, [externalInput, onStreamButton]);
+  }, [interactive, externalInput, onStreamButton]);
 
   const sendDigitalCrown = useCallback((delta: number) => {
+    if (!interactive) return;
     if (!Number.isFinite(delta) || delta === 0) return;
     if (externalInput) {
       onStreamDigitalCrown?.(delta);
@@ -469,10 +475,11 @@ export function SimulatorView({
     msg[0] = WS_MSG_DIGITAL_CROWN;
     msg.set(json, 1);
     ws.send(msg);
-  }, [externalInput, onStreamDigitalCrown]);
+  }, [interactive, externalInput, onStreamDigitalCrown]);
 
   const sendScroll = useCallback(
     (dx: number, dy: number, anchorX: number, anchorY: number) => {
+      if (!interactive) return;
       if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) return;
       // Rotate both the delta and the cursor anchor into raw device orientation so
       // scrolling tracks the visible content on landscape / upside-down devices.
@@ -492,7 +499,7 @@ export function SimulatorView({
       msg.set(json, 1);
       ws.send(msg);
     },
-    [externalInput, onStreamScroll],
+    [interactive, externalInput, onStreamScroll],
   );
 
   const sendMultiTouch = useCallback(
@@ -503,6 +510,7 @@ export function SimulatorView({
       x2: number;
       y2: number;
     }) => {
+      if (!interactive) return;
       const orientation = streamDisplayGeometry(screenSizeRef.current).inputOrientation;
       const p1 = rawPointForDisplayPoint(orientation, touch.x1, touch.y1);
       const p2 = rawPointForDisplayPoint(orientation, touch.x2, touch.y2);
@@ -526,7 +534,7 @@ export function SimulatorView({
       msg.set(json, 1);
       ws.send(msg);
     },
-    [externalInput, onStreamMultiTouch],
+    [interactive, externalInput, onStreamMultiTouch],
   );
 
   useEffect(() => {
@@ -730,6 +738,11 @@ export function SimulatorView({
 
   // Track Alt key globally to show preview before click
   useEffect(() => {
+    if (!interactive) {
+      setAltHeld(false);
+      setFingerIndicators(null);
+      return;
+    }
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Alt") setAltHeld(true);
     };
@@ -747,7 +760,7 @@ export function SimulatorView({
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, []);
+  }, [interactive]);
 
   // Show preview indicators when Alt is held but no gesture is active
   useEffect(() => {
@@ -831,7 +844,7 @@ export function SimulatorView({
 
   useEffect(() => {
     const el = inputLayerRef.current;
-    if (!el) return;
+    if (!el || !interactive) return;
 
     const onWheel = (event: globalThis.WheelEvent) => {
       const handled = enableDigitalCrown
@@ -844,12 +857,13 @@ export function SimulatorView({
 
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [enableDigitalCrown, handleDigitalCrownWheelDelta, handleScrollWheel]);
+  }, [enableDigitalCrown, handleDigitalCrownWheelDelta, handleScrollWheel, interactive]);
 
   const lastHomeClickRef = useRef(0);
   const homeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleHomeClick = useCallback(() => {
+    if (!interactive) return;
     const now = Date.now();
     const timeSinceLast = now - lastHomeClickRef.current;
     lastHomeClickRef.current = now;
@@ -868,7 +882,7 @@ export function SimulatorView({
         homeTimerRef.current = null;
       }, 300);
     }
-  }, [sendButton, onHomePress]);
+  }, [interactive, sendButton, onHomePress]);
 
   // Compute the exact box that fits the stream's aspect ratio inside the
   // viewport, so the <img> matches the video 1:1 (no letterbox, no clipping).
@@ -899,11 +913,11 @@ export function SimulatorView({
       rotationDegrees === 0 ? "" : ` rotate(${rotationDegrees}deg)`
     }`,
     transformOrigin: "center center",
-    cursor: FINGER_CURSOR,
+    cursor: interactive ? FINGER_CURSOR : "default",
     display: "block",
     userSelect: "none",
     WebkitUserSelect: "none",
-    touchAction: "none",
+    touchAction: interactive ? "none" : "auto",
     ...imageStyle,
     ...(rotationDegrees === 0
       ? {}
@@ -951,6 +965,7 @@ export function SimulatorView({
       >
         <div
           ref={surfaceRef}
+          data-interactive={interactive}
           style={{
             position: "relative",
             width: fittedBox ? `${fittedBox.width}px` : "100%",
@@ -1003,8 +1018,9 @@ export function SimulatorView({
           style={{
             position: "absolute",
             inset: 0,
-            cursor: FINGER_CURSOR,
-            touchAction: "none",
+            cursor: interactive ? FINGER_CURSOR : "default",
+            touchAction: interactive ? "none" : "auto",
+            pointerEvents: interactive ? "auto" : "none",
           }}
           onMouseDown={(e) => {
             e.preventDefault();
@@ -1328,6 +1344,7 @@ export function SimulatorView({
         >
           <button
             onClick={handleHomeClick}
+            disabled={!interactive}
             style={{
               background: "none",
               border: "1px solid rgba(255,255,255,0.2)",

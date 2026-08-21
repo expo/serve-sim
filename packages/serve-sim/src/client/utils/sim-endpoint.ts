@@ -31,6 +31,8 @@ declare global {
       /** Bearer token required by the /exec shell-exec route. */
       execToken?: string;
       streamSettings?: StreamSettings;
+      /** Initial simulator control state. False starts the UI in view-only mode. */
+      interactive?: boolean;
       /**
        * Set when the server routes helper stream/control + DevTools sockets
        * through its same-origin `/helper` and `/devtools` proxies. The browser

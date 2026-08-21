@@ -3,6 +3,7 @@ import {
   encodeWsMessage,
   enqueueWsMessage,
   flushWsMessageQueue,
+  sendOrQueueSimulatorInput,
   sendOrQueueWsMessage,
   WS_OPEN_READY_STATE,
   type WsSendTarget,
@@ -79,5 +80,20 @@ describe("ws send queue", () => {
     );
 
     expect(queue.map((message) => message.payload)).toEqual([{ i: 2 }, { i: 3 }]);
+  });
+
+  test("drops simulator input and clears pending input in view-only mode", () => {
+    const { ws, sent } = openWs();
+    const queue = sendOrQueueSimulatorInput(
+      false,
+      ws,
+      [{ tag: 0x03, payload: { type: "begin" }, createdAt: 1_000 }],
+      0x03,
+      { type: "end" },
+      1_100,
+    );
+
+    expect(queue).toEqual([]);
+    expect(sent).toEqual([]);
   });
 });

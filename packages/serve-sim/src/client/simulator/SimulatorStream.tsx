@@ -22,6 +22,8 @@ export interface SimulatorStreamProps {
   onScreenConfigChange?: (config: StreamConfig) => void;
   /** Enables mouse-wheel/trackpad forwarding as Apple Watch Digital Crown rotation. */
   enableDigitalCrown?: boolean;
+  /** Disable simulator control input while continuing to stream video. */
+  interactive?: boolean;
   /** Video render mode: "avcc" (default, H.264 via WebCodecs) or "mjpeg" to force JPEG. */
   streamMode?: "mjpeg" | "avcc";
   /** Called when an error occurs. When provided in headerless mode, the error is not rendered inline. */
@@ -35,7 +37,7 @@ export interface SimulatorStreamProps {
  * Uses the gateway exec to invoke the `serve-sim` CLI on the host,
  * then connects directly to the serve-sim server for video + touch.
  */
-export function SimulatorStream({ exec, device, style, imageStyle, className, stream, headerless, onStreamingChange, onScreenConfigChange, onError, onActiveDeviceChange, enableDigitalCrown, streamMode }: SimulatorStreamProps) {
+export function SimulatorStream({ exec, device, style, imageStyle, className, stream, headerless, onStreamingChange, onScreenConfigChange, onError, onActiveDeviceChange, enableDigitalCrown, interactive = true, streamMode }: SimulatorStreamProps) {
   const { info, loading, error, connect, disconnect, sendButton } = useSimStream({ exec, device });
   const [fullscreen, setFullscreen] = useState(false);
   const relayMode = !!stream;
@@ -149,6 +151,7 @@ export function SimulatorStream({ exec, device, style, imageStyle, className, st
             streamConfig: stream.config,
           } : {})}
           enableDigitalCrown={canSendDigitalCrown}
+          interactive={interactive}
         />
       ) : (
         <div

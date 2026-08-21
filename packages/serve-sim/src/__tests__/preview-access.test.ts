@@ -15,7 +15,7 @@ function gated(requirePreviewToken: boolean) {
   };
 }
 
-describe("preview access on a non-loopback bind", () => {
+describe("preview access with --require-token", () => {
   test("refuses /api, so the token cannot be fetched by whoever asks first", async () => {
     const response = await gated(true)("/api");
 
@@ -48,12 +48,12 @@ describe("preview access on a non-loopback bind", () => {
     expect(response.status).toBe(200);
   });
 
-  test("leaves a loopback server open, where a prompt would buy nothing", async () => {
+  test("leaves everything open when the flag is off", async () => {
     expect((await gated(false)("/api")).status).toBe(200);
   });
 });
 
-describe("the rest of the surface on a non-loopback bind", () => {
+describe("the rest of the surface with --require-token", () => {
   test("refuses to boot or shut down a simulator without the token", async () => {
     const request = gated(true);
 
@@ -71,7 +71,7 @@ describe("the rest of the surface on a non-loopback bind", () => {
     expect((await gated(true)("/grid/api", { headers: cookie })).status).toBe(200);
   });
 
-  test("leaves all of it open on loopback", async () => {
+  test("leaves all of it open when the flag is off", async () => {
     expect((await gated(false)("/grid/api")).status).toBe(200);
   });
 });
@@ -105,7 +105,7 @@ describe("the protected surface", () => {
     expect(allowed).toEqual([]);
   });
 
-  test("leaves the liveness probes open, since a probe cannot hold a token", async () => {
+  test("leaves the liveness probes open even with the flag on, since a probe cannot hold a token", async () => {
     const request = gated(true);
 
     for (const path of ["/healthz", "/readyz"]) {

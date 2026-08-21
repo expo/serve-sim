@@ -1630,6 +1630,7 @@ async function serve(
     stream?: StreamRuntimeOptions;
     metricsCorsOrigins?: string[];
     debugStreamPath?: string;
+    requireToken?: boolean;
   } = {},
 ) {
   // Boot the target simulators; the preview server streams them in-process
@@ -1644,9 +1645,8 @@ async function serve(
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
   // it can route helper/DevTools sockets through the single preview port.
-  // Off loopback the preview needs the token before it will hand the token out, so it is minted here
-  // rather than inside the middleware: the operator has to be told what it is.
-  const requirePreviewToken = !isLoopbackHost(host);
+  // Minted here rather than inside the middleware, because the operator has to be told what it is.
+  const requirePreviewToken = !!options.requireToken;
   const previewToken = randomBytes(32).toString("base64url");
   const middleware = simMiddleware({
     basePath: "/",
@@ -1719,8 +1719,11 @@ async function serve(
     console.log(`  - Network: http://${networkIP}:${boundPort}${tokenQuery}`);
     console.log("");
     console.log(
-      "  This server is listening on the network. The links above carry a token because anyone who " +
-        "has it can run commands on this machine.",
+      requirePreviewToken
+        ? "  This server is listening on the network. The links above carry a token because anyone who " +
+          "has it can run commands on this machine."
+        : "  This server is listening on the network with no token required. Anyone who can reach it can " +
+          "run commands on this machine. Pass --require-token to gate it.",
     );
   } else if (networkIP) {
     console.log(`  - Network: \x1b[2muse --host 0.0.0.0 to expose on http://${networkIP}:${boundPort}\x1b[0m`);
@@ -1772,6 +1775,12 @@ program
       "LAN — only on trusted networks: the preview exposes a token-gated " +
       "shell-exec route.",
     "127.0.0.1",
+  )
+  .option(
+    "--require-token",
+    "Require the session token to open the preview or call /api, and print it in the startup link. Use " +
+      "it whenever the server is reachable from the network: the same token gates the route that runs " +
+      "shell commands.",
   )
   .option("--detach", "Spawn helper and exit (daemon mode)")
   .option("-q, --quiet", "Suppress human-readable output, JSON only")
@@ -1974,6 +1983,7 @@ Examples:
         stream,
         metricsCorsOrigins: opts.metricsCorsOrigin,
         debugStreamPath,
+        requireToken: !!opts.requireToken,
       });
     }
   });

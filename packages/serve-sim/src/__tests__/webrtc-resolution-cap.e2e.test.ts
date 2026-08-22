@@ -6,6 +6,8 @@ import net from "net";
 import { join } from "path";
 import { RTCPeerConnection, RTCRtpCodecParameters } from "werift";
 
+// The assertion is the cap, not an exact size: libwebrtc lowers resolution further under CPU or
+// bandwidth pressure, so two sessions on a loaded machine legitimately differ.
 // Reads the resolution the encoder actually negotiated, off the wire, by acting
 // as a real receiving peer. `--max-dimension` is enforced on the WebRTC path
 // only through the sender's `scaleResolutionDownBy`, which is not signalled in
@@ -171,6 +173,5 @@ describeIfSim("WebRTC resolution cap", () => {
 
     const second = await negotiateAndMeasure(offerUrl);
     expect(Math.max(second.width, second.height)).toBeLessThanOrEqual(MAX_DIMENSION);
-    expect(second).toEqual(first);
   }, 90_000);
 });

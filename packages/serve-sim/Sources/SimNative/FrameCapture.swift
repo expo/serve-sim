@@ -31,6 +31,9 @@ actor FrameCapture {
     private var photocopier = Photocopier()
     private var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
     private var frameCount: UInt64 = 0
+    /// Counted by which path produced the frame, callback or idle deadline.
+    private var screenFrameCount: UInt64 = 0
+    private var idleFrameCount: UInt64 = 0
     private(set) var capturedWidth: Int = 0
     private(set) var capturedHeight: Int = 0
     private var surfacePollTask: Task<Void, Never>?
@@ -261,6 +264,10 @@ actor FrameCapture {
         framebufferSurfaces[key] = surface
     }
 
+    func frameCounts() -> (screen: UInt64, idle: UInt64) {
+        (screen: screenFrameCount, idle: idleFrameCount)
+    }
+
     private func captureFrame(force: Bool = false) {
         guard let (key, surface) = pickBestSurface() else { return }
 
@@ -294,6 +301,7 @@ actor FrameCapture {
 
         lastCaptureTime = .now
         frameCount += 1
+        if force { idleFrameCount += 1 } else { screenFrameCount += 1 }
         // WebRTC consumes this timestamp as the capture presentation time. A
         // frame counter makes sparse/idle frames look 1/60s apart even when
         // they were captured hundreds of milliseconds apart, which confuses

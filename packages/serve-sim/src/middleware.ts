@@ -17,7 +17,13 @@ import { readCameraStatus } from "./camera-helper";
 import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./metrics-sampler";
 import { foregroundTracker, type ForegroundApp, type ForegroundTrackerCache } from "./foreground-tracker";
 import { corsAllowOriginHeaders } from "./middleware-utils";
-import { closeDeviceSession, getDeviceSession, sendCorsPreflight, type HidSocket } from "./device-session";
+import {
+  closeDeviceSession,
+  getDeviceSession,
+  peekDeviceSession,
+  sendCorsPreflight,
+  type HidSocket,
+} from "./device-session";
 import {
   eventLogEventForCommand,
   readEventLog,
@@ -779,10 +785,19 @@ function serveHelperInProcess(
     return true;
   }
   if (
-    (endpoint === "/webrtc/offer" || endpoint === "/webrtc/close" || endpoint === "/stream-settings")
+    (endpoint === "/webrtc/offer" || endpoint === "/webrtc/close" || endpoint === "/webrtc/stats"
+      || endpoint === "/stream-settings")
     && req.method === "OPTIONS"
   ) {
     sendCorsPreflight(res);
+    return true;
+  }
+  // Polled once a second by the panel and the recorder, so creating a session here would start a
+  // capture nothing asked for, and re-create one every tick after the simulator is shut down.
+  if (endpoint === "/webrtc/stats") {
+    const live = peekDeviceSession(device);
+    if (!live) return false;
+    void live.handleWebRTCStats(req, res);
     return true;
   }
   let session;

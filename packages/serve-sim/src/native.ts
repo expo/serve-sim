@@ -15,6 +15,7 @@ import {
   DEFAULT_STREAM_ENCODER_SETTINGS,
   type StreamEncoderSettings,
 } from "./stream-settings";
+import { readSenderStats, type SenderStats } from "./webrtc-sender-stats";
 
 const require = createRequire(import.meta.url);
 
@@ -47,6 +48,7 @@ interface SimCaptureHandle {
   ): Promise<void>;
   handleWebRTCOffer(offerJson: string): Promise<string>;
   closeWebRTCSession(sessionId: string): Promise<void>;
+  webRTCSenderStats(): Promise<string>;
   screenSize(): Promise<{ width: number; height: number }>;
   stop(): Promise<void>;
   subscribe(codec: number, onFrame: RawFrameCallback): Promise<NativeUnsubscribe>;
@@ -267,6 +269,14 @@ export class NativeCapture {
 
   closeWebRTCSession(sessionId: string): Promise<void> {
     return this.handle.closeWebRTCSession(sessionId);
+  }
+
+  /**
+   * Sender-side statistics for every live WebRTC session. `qualityLimitationReason` lives here
+   * only: a receive-only browser cannot tell a CPU-bound encoder from a starved network.
+   */
+  async webRTCSenderStats(): Promise<SenderStats> {
+    return readSenderStats(JSON.parse(await this.handle.webRTCSenderStats()));
   }
 
   screenSize(): Promise<{ width: number; height: number }> {

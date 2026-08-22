@@ -1,4 +1,8 @@
+import type { ReactNode } from "react";
+import { Download } from "lucide-react";
+
 import { triggerBrowserDownload } from "../utils/screenshot-capture";
+import type { CaptureCounts, SenderStreamStats } from "../../webrtc-sender-stats";
 import type { StreamStats } from "../utils/webrtc-stats";
 import { Sparkline } from "./sparkline";
 
@@ -6,16 +10,23 @@ export function StreamStatsBody({
   stats,
   history,
   faults,
+  sender,
+  capture,
   requestedFps,
+  stale,
+  action,
 }: {
   stats: StreamStats;
   history: StreamStats[];
   faults: string[];
+  sender?: SenderStreamStats | null;
+  capture?: CaptureCounts | null;
   requestedFps?: number;
+  stale?: boolean;
+  action?: ReactNode;
 }) {
-
   return (
-    <div className="flex flex-col gap-2">
+    <div className={`flex flex-col gap-2 border-b border-white/10 pb-2 ${stale ? "opacity-50" : ""}`}>
       <Graph
         label="Frame rate"
         value={fps(stats.fps)}
@@ -31,24 +42,29 @@ export function StreamStatsBody({
         className="text-sky-400"
       />
 
-      {faults.length > 0 ? (
-        <div className="flex flex-col gap-0.5">
-          {faults.map((fault) => (
-            <div key={fault} className="text-[11px] text-warning" data-stream-fault={fault}>
-              {fault}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="text-[11px] text-white/30">
-          {measurable(stats) ? "No drops, freezes or loss in this window" : "Measuring…"}
-        </div>
-      )}
+      <div className="flex items-start justify-between gap-2">
+        {stale ? (
+          <div className="text-[11px] text-warning">No samples in the last few seconds</div>
+        ) : faults.length > 0 ? (
+          <div className="flex flex-col gap-0.5">
+            {faults.map((fault) => (
+              <div key={fault} className="text-[11px] text-warning" data-stream-fault={fault}>
+                {fault}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-[11px] text-white/30">
+            {measurable(stats) ? "No drops, freezes or loss in this window" : "Measuring…"}
+          </div>
+        )}
+        {action}
+      </div>
 
       <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 border-t border-white/10 pt-1.5">
-        <Cell label="Round trip" value={ms(stats.roundTripMs, 0)} />
+        <Cell label="RTT" value={ms(stats.roundTripMs, 0)} />
         <Cell label="Jitter" value={ms(stats.jitterMs, 1)} />
-        <Cell label="Buffer" value={ms(stats.jitterBufferMs, 0)} />
+        <Cell label="Jitter buffer" value={ms(stats.jitterBufferMs, 0)} />
         <Cell
           label="Resolution"
           value={stats.width === null || stats.height === null
@@ -56,11 +72,58 @@ export function StreamStatsBody({
             : `${stats.width}x${stats.height}`}
         />
         {stats.path !== "unknown" && (
-          <Cell label="Route" value={stats.path === "relay" ? "Via relay" : "Direct"} />
+          <Cell label="ICE route" value={stats.path === "relay" ? "Via relay" : "Direct"} />
         )}
+      </div>
+
+      {sender && <SenderRows sender={sender} />}
+      {capture && <CaptureRows capture={capture} />}
+    </div>
+  );
+}
+
+/** The encoder's own view. None of this is visible to a receive-only browser. */
+function SenderRows({ sender }: { sender: SenderStreamStats }) {
+  return (
+    <div className="flex flex-col gap-0.5 border-t border-white/10 pt-1.5">
+      <div className="pb-0.5 text-[10px] uppercase tracking-[0.08em] text-white/30">Encoder</div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+        <Cell label="Encode FPS" value={fps(sender.reportedFps)} />
+        <Cell label="Target" value={bitrate(sender.targetKbps)} />
+        <Cell label="Source FPS" value={fps(sender.sourceFps)} />
+        <Cell label="Encode" value={ms(sender.encodeMsPerFrame, 1)} hint="/frame" />
+        <Cell label="Frames sent" value={compact(sender.framesSent)} />
+        <Cell label="Loss" value={percent(sender.lossRatio)} hint="total" />
       </div>
     </div>
   );
+}
+
+function CaptureRows({ capture }: { capture: CaptureCounts }) {
+  return (
+    <div className="flex flex-col gap-0.5 border-t border-white/10 pt-1.5">
+      <div className="pb-0.5 text-[10px] uppercase tracking-[0.08em] text-white/30">Capture</div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+        <Cell label="Screen frames" value={compact(capture.screenFrames)} />
+        <Cell label="Idle frames" value={compact(capture.idleFrames)} />
+        <Cell label="Offered" value={compact(capture.offeredFrames)} />
+        <Cell label="Forwarded" value={compact(capture.forwardedFrames)} />
+      </div>
+    </div>
+  );
+}
+
+/** These are lifetime counters and reach millions, so a fixed-width cell needs them short. */
+function compact(value: number | null): string {
+  if (value === null) return DASH;
+  const magnitude = Math.abs(value);
+  if (magnitude < 1_000) return String(value);
+  if (magnitude < 999_950) return `${(value / 1_000).toFixed(1)}k`;
+  return `${(value / 1_000_000).toFixed(2)}M`;
+}
+
+function percent(ratio: number | null): string {
+  return ratio === null ? DASH : `${(ratio * 100).toFixed(1)}%`;
 }
 
 const DASH = "—";
@@ -87,7 +150,10 @@ export function summariseStream(stats: StreamStats): string | null {
 }
 
 /** Only faults, so a healthy stream stays quiet. */
-export function describeFaults(stats: StreamStats): string[] {
+export function describeFaults(
+  stats: StreamStats,
+  sender?: SenderStreamStats | null,
+): string[] {
   const faults: string[] = [];
   if (stats.freezesInWindow) {
     const seconds = stats.freezeMsInWindow ? ` (${(stats.freezeMsInWindow / 1000).toFixed(1)}s)` : "";
@@ -97,7 +163,25 @@ export function describeFaults(stats: StreamStats): string[] {
   if (stats.lossRatio !== null && stats.lossRatio > 0.02) {
     faults.push(`${(stats.lossRatio * 100).toFixed(1)}% packet loss`);
   }
+  const limited = limitation(sender?.qualityLimitationReason);
+  if (limited !== null) faults.push(limited);
   return faults;
+}
+
+/** libwebrtc's reason codes read as jargon, and "limited by bandwidth" blames the wrong side. */
+function limitation(reason: string | null | undefined): string | null {
+  switch (reason) {
+    case "cpu":
+      return "Encoder cannot keep up (CPU)";
+    case "bandwidth":
+      return "Bitrate reduced by the network";
+    case undefined:
+    case null:
+    case "none":
+      return null;
+    default:
+      return "Encoder holding back (reason unknown)";
+  }
 }
 
 /** One decimal under 10, so a stream limping at 0.4 fps does not read as 0. */
@@ -145,11 +229,14 @@ function Graph({
   );
 }
 
-function Cell({ label, value }: { label: string; value: string }) {
+function Cell({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="flex items-baseline justify-between gap-2" data-stream-stat={label}>
-      <span className="text-[11px] text-white/50">{label}</span>
-      <span className="tabular-nums text-[11px] text-white/90">{value}</span>
+      <span className="whitespace-nowrap text-[11px] text-white/50">{label}</span>
+      <span className="tabular-nums whitespace-nowrap text-[11px] text-white/90">
+        {value}
+        {hint && <span className="ml-1.5 text-[11px] text-white/30">{hint}</span>}
+      </span>
     </div>
   );
 }
@@ -158,41 +245,62 @@ export function StreamStatsSection({
   stats,
   history,
   faults,
+  sender,
+  capture,
   requestedFps,
-  transport,
+  stale,
+  action,
 }: {
   stats: StreamStats | null;
   history: StreamStats[];
   faults: string[];
+  sender?: SenderStreamStats | null;
+  capture?: CaptureCounts | null;
   requestedFps?: number;
-  transport?: string;
+  stale?: boolean;
+  action?: ReactNode;
 }) {
   if (stats === null) return null;
   return (
-    <div className="flex flex-col gap-2">
-      <StreamStatsBody
-        stats={stats}
-        history={history}
-        faults={faults}
-        requestedFps={requestedFps}
-      />
-      <button
-        type="button"
-        disabled={history.length < 2}
-        aria-label="Download stream statistics as JSON"
-        onClick={() => downloadStats(history, { transport, codec: stats.codec })}
-        className="min-h-[24px] cursor-pointer self-start rounded px-1.5 py-0.5 text-[11px] text-white/50 hover:bg-white/10 hover:text-white/80 disabled:cursor-default disabled:opacity-40"
-      >
-        Download JSON
-        <span className="ml-1.5 text-white/30">{history.length}</span>
-      </button>
-    </div>
+    <StreamStatsBody
+      stats={stats}
+      history={history}
+      faults={faults}
+      sender={sender}
+      capture={capture}
+      requestedFps={requestedFps}
+      stale={stale}
+      action={action}
+    />
+  );
+}
+
+export function StreamStatsDownload({
+  history,
+  context,
+}: {
+  history: StreamStats[];
+  context: StatsContext;
+}) {
+  if (history.length < 2) return null;
+  return (
+    <button
+      type="button"
+      title={`Download ${history.length} recorded samples as JSON`}
+      aria-label={`Download ${history.length} recorded samples as JSON`}
+      onClick={() => downloadStats(history, context)}
+      className="-mt-0.5 inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-white/30 hover:bg-white/[0.06] hover:text-white/80"
+    >
+      <Download aria-hidden="true" className="h-3 w-3" />
+    </button>
   );
 }
 
 export interface StatsContext {
   transport?: string;
   codec?: string | null;
+  sender?: SenderStreamStats | null;
+  capture?: CaptureCounts | null;
 }
 
 /** Serialize the recorded window so a session can be handed to someone else to read. */

@@ -44,6 +44,15 @@ function row(markup: string, label: string): string | null {
   return text.startsWith(label) ? text.slice(label.length).trim() : text;
 }
 
+const sender = {
+  sessionId: "s", codec: "VP8", connected: true,
+  qualityLimitationReason: "none", qualityLimitationMs: {},
+  framesEncoded: 100, framesSent: 100, reportedFps: 30, targetKbps: 3000,
+  totalEncodeMs: 240, encodeMsPerFrame: 2.4, width: 589, height: 1280,
+  packetsSent: 900, packetsLost: 0, lossRatio: 0, roundTripMs: 20,
+  path: "direct" as const, sourceFrames: 120, sourceFps: 30, sourceFramesDropped: 0,
+};
+
 describe("describeFaults", () => {
   test("says nothing about a healthy window", () => {
     expect(describeFaults(stats())).toEqual([]);
@@ -82,6 +91,33 @@ describe("describeFaults", () => {
       droppedInWindow: null,
       lossRatio: null,
     }))).toEqual([]);
+  });
+
+  test("says a CPU-bound encoder cannot keep up, rather than printing the reason code", () => {
+    expect(describeFaults(stats(), { ...sender, qualityLimitationReason: "cpu" }))
+      .toEqual(["Encoder cannot keep up (CPU)"]);
+  });
+
+  test("blames the network, not the encoder, when bandwidth is the limit", () => {
+    expect(describeFaults(stats(), { ...sender, qualityLimitationReason: "bandwidth" }))
+      .toEqual(["Bitrate reduced by the network"]);
+  });
+
+  test("keeps an unfamiliar reason code out of the UI", () => {
+    expect(describeFaults(stats(), { ...sender, qualityLimitationReason: "other" }))
+      .toEqual(["Encoder holding back (reason unknown)"]);
+  });
+
+  test("says nothing when the encoder is not holding back", () => {
+    expect(describeFaults(stats(), sender)).toEqual([]);
+  });
+
+  test("keeps the source's lifetime drop count out of a per-window list", () => {
+    expect(describeFaults(stats(), { ...sender, sourceFramesDropped: 7 })).toEqual([]);
+  });
+
+  test("works without the sender half", () => {
+    expect(describeFaults(stats(), null)).toEqual([]);
   });
 
   test("lists every fault at once", () => {
@@ -144,8 +180,8 @@ describe("StreamStatsBody", () => {
     );
     expect(row(markup, "Frame rate")).toBe("—");
     expect(row(markup, "Bitrate")).toBe("—");
-    expect(row(markup, "Round trip")).toBe("—");
-    expect(row(markup, "Buffer")).toBe("—");
+    expect(row(markup, "RTT")).toBe("—");
+    expect(row(markup, "Jitter buffer")).toBe("—");
     expect(markup).not.toContain("— ms");
   });
 
@@ -167,14 +203,28 @@ describe("StreamStatsBody", () => {
     const markup = renderToStaticMarkup(
       <StreamStatsBody stats={stats({ path: "relay" })} history={[stats()]} faults={describeFaults(stats({ path: "relay" }))} />,
     );
-    expect(row(markup, "Route")).toBe("Via relay");
+    expect(row(markup, "ICE route")).toBe("Via relay");
   });
 
   test("hides the route when it cannot be determined", () => {
     const markup = renderToStaticMarkup(
       <StreamStatsBody stats={stats({ path: "unknown" })} history={[stats()]} faults={describeFaults(stats({ path: "unknown" }))} />,
     );
-    expect(row(markup, "Route")).toBeNull();
+    expect(row(markup, "ICE route")).toBeNull();
+  });
+
+  test("shows the sender's encode cost with the other secondary values", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} sender={sender} />,
+    );
+    expect(row(markup, "Encode")).toBe("2.4 ms /frame");
+  });
+
+  test("omits the encode cost without the sender half", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} />,
+    );
+    expect(row(markup, "Encode")).toBeNull();
   });
 
   test("draws a sparkline from the recorded values, not an empty box", () => {
@@ -189,9 +239,97 @@ describe("StreamStatsBody", () => {
   });
 });
 
+const capture = {
+  screenFrames: 900, idleFrames: 12, offeredFrames: 880, forwardedFrames: 830,
+};
+
+describe("stale samples", () => {
+  test("says samples stopped instead of showing the last one as live", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} stale />,
+    );
+    expect(markup).toContain("No samples in the last few seconds");
+    expect(markup).not.toContain("No drops, freezes or loss");
+  });
+
+  test("keeps the sender half visible when only the receiver went quiet", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        sender={sender}
+        capture={capture}
+        stale
+      />,
+    );
+    expect(row(markup, "Encode")).toBe("2.4 ms /frame");
+    expect(row(markup, "Screen frames")).toBe("900");
+    expect(markup).toContain("opacity-50");
+  });
+
+  test("dims the readout it can no longer vouch for", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        sender={sender}
+        capture={capture}
+        stale
+      />,
+    );
+    expect(markup).toContain("opacity-50");
+  });
+});
+
+describe("capture rows", () => {
+  test("shows all four counts, so a stalled capture is distinguishable from a static screen", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} capture={capture} />,
+    );
+    expect(row(markup, "Screen frames")).toBe("900");
+    expect(row(markup, "Idle frames")).toBe("12");
+    expect(row(markup, "Offered")).toBe("880");
+    expect(row(markup, "Forwarded")).toBe("830");
+  });
+
+  test("shows a fractional encoder rate, so a limping encoder is not a dead one", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        sender={{ ...sender, reportedFps: 0.4, sourceFps: 0.4 }}
+      />,
+    );
+    expect(row(markup, "Encode FPS")).toBe("0.4 fps");
+    expect(row(markup, "Source FPS")).toBe("0.4 fps");
+  });
+
+  test("shortens a lifetime counter so it fits its cell", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        capture={{ screenFrames: 1_621_585, idleFrames: 0, offeredFrames: 105_469, forwardedFrames: 4_414 }}
+      />,
+    );
+    expect(row(markup, "Screen frames")).toBe("1.62M");
+    expect(row(markup, "Offered")).toBe("105.5k");
+    expect(row(markup, "Forwarded")).toBe("4.4k");
+    expect(row(markup, "Idle frames")).toBe("0");
+  });
+});
+
 describe("statsToJson", () => {
   test("records the session context, so the file explains itself", () => {
-    const parsed = JSON.parse(statsToJson([stats()], { transport: "webrtc", codec: "video/VP8" }));
+    const parsed = JSON.parse(
+      statsToJson([stats()], { transport: "webrtc", codec: "video/VP8", sender, capture }),
+    );
+    expect(parsed.sender.encodeMsPerFrame).toBe(2.4);
+    expect(parsed.capture.forwardedFrames).toBe(830);
     expect(parsed.transport).toBe("webrtc");
     expect(parsed.codec).toBe("video/VP8");
     expect(parsed.samples).toHaveLength(1);

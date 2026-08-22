@@ -43,6 +43,45 @@ struct WebRTCAnswerPayload: Codable {
     let sdp: String
 }
 
+/// Seconds and bits/second, as libwebrtc reports them.
+struct WebRTCSenderStatsPayload: Codable {
+    let sessionId: String
+    let codec: String
+    let connected: Bool
+    let qualityLimitationReason: String?
+    let qualityLimitationDurations: [String: Double]?
+    let framesEncoded: Int?
+    let framesSent: Int?
+    let framesPerSecond: Double?
+    let targetBitrate: Double?
+    let totalEncodeTime: Double?
+    let frameWidth: Int?
+    let frameHeight: Int?
+    let packetsSent: Int?
+    let packetsLost: Int?
+    let roundTripTime: Double?
+    let localCandidateType: String?
+    let remoteCandidateType: String?
+    /// The encoder reports no limitation while its adapter drops frames, so this is where they go.
+    let sourceFrames: Int?
+    let sourceFramesPerSecond: Double?
+    let sourceFramesDropped: Int?
+}
+
+struct WebRTCCaptureCounts: Codable {
+    let screenFrames: UInt64
+    let idleFrames: UInt64
+    /// `sendFrame` coalesces per frame interval, so an offered-to-forwarded gap is expected; a
+    /// forwarded-to-encoded gap is not.
+    let offeredFrames: UInt64?
+    let forwardedFrames: UInt64?
+}
+
+struct WebRTCSenderStatsReport: Codable {
+    let sessions: [WebRTCSenderStatsPayload]
+    let capture: WebRTCCaptureCounts?
+}
+
 private final class WebRTCSignalingCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private var completed = false
@@ -93,6 +132,9 @@ final class WebRTCPublisher: @unchecked Sendable {
     private var pendingFrame: PendingWebRTCFrame?
     private var framePumpScheduled = false
     private var lastSentFrameAtNs: UInt64 = 0
+    /// Both guarded by `frameLock`.
+    private var offeredFrameCount: UInt64 = 0
+    private var forwardedFrameCount: UInt64 = 0
     private var lastOutputWidth = 0
     private var lastOutputHeight = 0
     private var sentFrameCount: Int64 = 0
@@ -211,12 +253,142 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
     }
 
+    private static let statisticsTimeout: TimeInterval = 2
+
+    func senderStatistics() async -> [WebRTCSenderStatsPayload] {
+        // Snapshot on the publisher queue: codec and connected are mutated there.
+        let liveSessions: [WebRTCSessionSnapshot] = await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: self.sessions.values
+                    .sorted { $0.id < $1.id }
+                    .map(WebRTCSessionSnapshot.init))
+            }
+        }
+        var payloads: [WebRTCSenderStatsPayload] = []
+        for session in liveSessions {
+            guard let report = await Self.gatherStatistics(session.peerConnection) else { continue }
+            payloads.append(Self.reduceSenderStatistics(report, session: session))
+        }
+        return payloads
+    }
+
+    /// libwebrtc may never call back for a torn-down connection, and the request would hang.
+    private static func gatherStatistics(
+        _ peerConnection: LKRTCPeerConnection
+    ) async -> LKRTCStatisticsReport? {
+        await withCheckedContinuation { continuation in
+            let resumed = NSLock()
+            var done = false
+            let finish: (LKRTCStatisticsReport?) -> Void = { report in
+                resumed.lock()
+                let alreadyDone = done
+                done = true
+                resumed.unlock()
+                if !alreadyDone { continuation.resume(returning: report) }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + statisticsTimeout) {
+                finish(nil)
+            }
+            peerConnection.statistics { report in finish(report) }
+        }
+    }
+
+    private static func reduceSenderStatistics(
+        _ report: LKRTCStatisticsReport,
+        session: WebRTCSessionSnapshot
+    ) -> WebRTCSenderStatsPayload {
+        let byId = report.statistics
+        let outbound = firstStatistic(byId, type: "outbound-rtp", kind: "video")
+        let remoteInbound = firstStatistic(byId, type: "remote-inbound-rtp", kind: "video")
+        let mediaSource = firstStatistic(byId, type: "media-source", kind: "video")
+        let candidatePair = selectedCandidatePair(byId)
+        let localCandidate = statsString(candidatePair, "localCandidateId").flatMap { byId[$0] }
+        let remoteCandidate = statsString(candidatePair, "remoteCandidateId").flatMap { byId[$0] }
+        return WebRTCSenderStatsPayload(
+            sessionId: session.id,
+            codec: session.codecName,
+            connected: session.isConnected,
+            qualityLimitationReason: statsString(outbound, "qualityLimitationReason"),
+            qualityLimitationDurations: statsDurations(outbound, "qualityLimitationDurations"),
+            framesEncoded: statsInt(outbound, "framesEncoded"),
+            framesSent: statsInt(outbound, "framesSent"),
+            framesPerSecond: statsDouble(outbound, "framesPerSecond"),
+            targetBitrate: statsDouble(outbound, "targetBitrate"),
+            totalEncodeTime: statsDouble(outbound, "totalEncodeTime"),
+            frameWidth: statsInt(outbound, "frameWidth"),
+            frameHeight: statsInt(outbound, "frameHeight"),
+            packetsSent: statsInt(outbound, "packetsSent"),
+            packetsLost: statsInt(remoteInbound, "packetsLost"),
+            roundTripTime: statsDouble(remoteInbound, "roundTripTime")
+                ?? statsDouble(candidatePair, "currentRoundTripTime"),
+            localCandidateType: statsString(localCandidate, "candidateType"),
+            remoteCandidateType: statsString(remoteCandidate, "candidateType"),
+            sourceFrames: statsInt(mediaSource, "frames"),
+            sourceFramesPerSecond: statsDouble(mediaSource, "framesPerSecond"),
+            sourceFramesDropped: statsInt(mediaSource, "framesDropped")
+        )
+    }
+
+    private static func firstStatistic(
+        _ byId: [String: LKRTCStatistics],
+        type: String,
+        kind: String
+    ) -> LKRTCStatistics? {
+        let ofType = byId.values.filter { $0.type == type }
+        return ofType.first { statsString($0, "kind") == kind } ?? ofType.first
+    }
+
+    private static func selectedCandidatePair(
+        _ byId: [String: LKRTCStatistics]
+    ) -> LKRTCStatistics? {
+        let selectedId = byId.values
+            .filter { $0.type == "transport" }
+            .compactMap { statsString($0, "selectedCandidatePairId") }
+            .first
+        if let selectedId, let pair = byId[selectedId] {
+            return pair
+        }
+        // libwebrtc's report has no `selected` flag; that is a browser extension.
+        let pairs = byId.values.filter { $0.type == "candidate-pair" && statsString($0, "state") == "succeeded" }
+        return pairs.first { statsBool($0, "nominated") == true } ?? pairs.first
+    }
+
+    /// Drops a non-finite value: `JSONEncoder` throws on one, which would fail the whole report.
+    private static func statsDouble(_ statistics: LKRTCStatistics?, _ key: String) -> Double? {
+        guard let value = (statistics?.values[key] as? NSNumber)?.doubleValue else { return nil }
+        return value.isFinite ? value : nil
+    }
+
+    private static func statsInt(_ statistics: LKRTCStatistics?, _ key: String) -> Int? {
+        (statistics?.values[key] as? NSNumber)?.intValue
+    }
+
+    private static func statsBool(_ statistics: LKRTCStatistics?, _ key: String) -> Bool? {
+        (statistics?.values[key] as? NSNumber)?.boolValue
+    }
+
+    private static func statsString(_ statistics: LKRTCStatistics?, _ key: String) -> String? {
+        statistics?.values[key] as? String
+    }
+
+    private static func statsDurations(_ statistics: LKRTCStatistics?, _ key: String) -> [String: Double]? {
+        guard let durations = statistics?.values[key] as? [String: NSNumber] else { return nil }
+        return durations.mapValues(\.doubleValue)
+    }
+
+    func frameFlowCounts() -> (offered: UInt64, forwarded: UInt64) {
+        frameLock.lock()
+        defer { frameLock.unlock() }
+        return (offered: offeredFrameCount, forwarded: forwardedFrameCount)
+    }
+
     func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
         let frame = PendingWebRTCFrame(pixelBuffer: pixelBuffer, timestamp: timestamp)
         var scheduleDelayNs: UInt64?
         let nowNs = DispatchTime.now().uptimeNanoseconds
         let schedulingToleranceNs: UInt64 = 1_000_000
         frameLock.lock()
+        offeredFrameCount &+= 1
         let frameIntervalNs = self.frameIntervalNs
         guard acceptsFrames else {
             frameLock.unlock()
@@ -259,6 +431,11 @@ final class WebRTCPublisher: @unchecked Sendable {
             )
             return
         }
+        // Counted after the scale succeeds: a frame we failed to scale is never handed on, and
+        // counting it would hide the drop behind a healthy forwarded total.
+        frameLock.lock()
+        forwardedFrameCount &+= 1
+        frameLock.unlock()
         let width = CVPixelBufferGetWidth(scaledPixelBuffer)
         let height = CVPixelBufferGetHeight(scaledPixelBuffer)
         if width != lastOutputWidth || height != lastOutputHeight {
@@ -891,6 +1068,8 @@ final class WebRTCPublisher: @unchecked Sendable {
         parameters.degradationPreference =
             NSNumber(value: LKRTCDegradationPreference.maintainFramerate.rawValue)
         sender.parameters = parameters
+        // Read back: assigning `scaleResolutionDownBy` is not proof libwebrtc kept it.
+        let appliedScale = sender.parameters.encodings.first?.scaleResolutionDownBy?.doubleValue
         let bweUpdated = session.peerConnection.setBweMinBitrateBps(
             minBitrate,
             currentBitrateBps: maxBitrate,
@@ -899,7 +1078,10 @@ final class WebRTCPublisher: @unchecked Sendable {
         streamLog(
             "[webrtc] Sender parameters fps=\(maxFps) minBitrate=\(minBitrate) " +
             "maxBitrate=\(maxBitrate) maxDimension=\(maxDimension) " +
-            "scaleDown=\(String(format: "%.3f", scaleResolutionDownBy)) bweUpdated=\(bweUpdated)"
+            "scaleDown=\(String(format: "%.3f", scaleResolutionDownBy)) " +
+            "applied=\(appliedScale.map { String(format: "%.3f", $0) } ?? "nil") " +
+            "encodings=\(encodings.count) " +
+            "bweUpdated=\(bweUpdated)"
         )
     }
 
@@ -1405,6 +1587,20 @@ private func pixelFormatDescription(_ pixelFormat: OSType) -> String {
         return String(bytes: bytes, encoding: .ascii) ?? "\(pixelFormat)"
     }
     return "\(text)(\(pixelFormat))"
+}
+
+private struct WebRTCSessionSnapshot {
+    let id: String
+    let codecName: String
+    let isConnected: Bool
+    let peerConnection: LKRTCPeerConnection
+
+    init(_ session: WebRTCSession) {
+        id = session.id
+        codecName = session.codecName
+        isConnected = session.isConnected
+        peerConnection = session.peerConnection
+    }
 }
 
 private final class WebRTCSession {

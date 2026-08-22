@@ -121,7 +121,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             encoderFactory: defaultEncoderFactory,
             decoderFactory: decoderFactory
         )
-        videoSource = factory.videoSource(forScreenCast: true)
+        videoSource = factory.videoSource(forScreenCast: false)
         videoTrack = factory.videoTrack(with: videoSource, trackId: "simulator-video")
         videoTrack.isEnabled = true
         capturer = LKRTCVideoCapturer(delegate: videoSource)
@@ -888,6 +888,8 @@ final class WebRTCPublisher: @unchecked Sendable {
             encoding.scaleResolutionDownBy = NSNumber(value: scaleResolutionDownBy)
         }
         parameters.encodings = encodings
+        parameters.degradationPreference =
+            NSNumber(value: LKRTCDegradationPreference.maintainFramerate.rawValue)
         sender.parameters = parameters
         let bweUpdated = session.peerConnection.setBweMinBitrateBps(
             minBitrate,

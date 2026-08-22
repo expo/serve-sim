@@ -73,7 +73,8 @@
   },
   "scripts": {
     "build": "bun run build.ts",
-    "dev": "bun run dev.ts"
+    "dev": "bun run dev.ts",
+    "serve:turn": "bun run scripts/serve-turn.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

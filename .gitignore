@@ -9,3 +9,8 @@ dist/
 *.tsbuildinfo
 /packages/serve-sim/.xcode-build
 *.bun-build
+
+# Local secrets (TURN keys for the stream repro script)
+.env
+.env.*
+!.env.example

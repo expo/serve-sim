@@ -21,7 +21,8 @@
         "src/client/global.css",
         "build.ts",
         "dev.ts",
-        "scripts/build-trails.ts"
+        "scripts/build-trails.ts",
+        "scripts/serve-turn.ts"
       ]
     }
   }

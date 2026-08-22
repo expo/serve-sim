@@ -288,6 +288,26 @@ packages/serve-sim/Sources/SimNative/build.sh           # native addon only
 bun run --filter serve-sim dev                          # watch mode
 ```
 
+### Testing the stream over TURN
+
+Stream problems that only appear on EAS Simulator usually need a relayed path to reproduce: the browser and the simulator sit on different networks, so media crosses a TURN server instead of connecting directly. `serve:turn` reproduces that locally. It mints short-lived Cloudflare TURN credentials, starts serve-sim with the same stream flags eas-cli passes, and publishes the preview through a `cloudflared` tunnel.
+
+You need your own Cloudflare Realtime TURN key (Cloudflare dashboard → Realtime → TURN) and `cloudflared` on your PATH:
+
+```sh
+brew install cloudflared
+bun run packages/serve-sim/build.ts    # serves from dist, so build first
+
+CLOUDFLARE_TURN_KEY_ID=… CLOUDFLARE_TURN_API_TOKEN=… \
+  bun run --filter @expo/serve-sim serve:turn
+```
+
+It prints a public `https://….trycloudflare.com` URL. Open that one rather than `localhost`, or the media never leaves your machine and nothing has been tested. Check the `ICE route` row in the STREAM section to see which path ICE actually chose. On one machine it can still pick a direct candidate, so a relayed run is not guaranteed yet. Set `PORT` to pin the local port; otherwise the OS assigns one.
+
+The same run records sender-side statistics once a second to an NDJSON file in a fresh temp directory, whose path serve-sim prints on startup. That file is what to read for a stall that happened while you were busy using the app, since a live panel cannot catch it. Any serve-sim run can record this with `--debug-stream <path>`.
+
+> The tunnel URL is public and unauthenticated, and it reaches a server whose `/exec` route runs shell commands. Keep the run short, and use a key you can rotate.
+
 ## Origin and attribution
 
 `serve-sim` was created and open-sourced by [Evan Bacon](https://github.com/EvanBacon) in the [original serve-sim project](https://github.com/EvanBacon/serve-sim). This repository is an Expo-maintained fork. We are grateful to Evan for creating the project and making it available to the community.

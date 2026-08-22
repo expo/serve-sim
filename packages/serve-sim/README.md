@@ -112,6 +112,11 @@ WebRTC uses HTTP for SDP signaling and RTP for video. Simulator input and screen
 metadata continue over the existing helper WebSocket. ICE prefers a direct UDP
 path when one is reachable, even if the page was loaded through a tunnel URL;
 TURN is used as a fallback when direct/STUN candidates fail.
+Software VP8 treats the simulator as interactive realtime video: it preserves
+the configured frame rate under CPU or bandwidth pressure and automatically
+steps its maximum dimension from 1280 to 1024 or 854 when the encoder cannot
+keep up. Static simulators remain on the 5 FPS idle floor without triggering a
+quality reduction.
 Multiple WebRTC viewers can use the same simulator simultaneously. They share
 one SimulatorKit capture source, while each viewer has an independent peer
 connection, encoder, congestion controller, and helper WebSocket. HTTP streams

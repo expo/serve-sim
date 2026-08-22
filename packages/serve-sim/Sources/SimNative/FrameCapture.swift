@@ -4,6 +4,7 @@ import CoreMedia
 import CoreGraphics
 import IOSurface
 import ObjectiveC
+import StreamingPolicy
 
 typealias ScreenFrameCallback = @convention(block) () -> Void
 typealias ScreenSurfacesChangedCallback = @convention(block) (IOSurface?, IOSurface?) -> Void
@@ -23,13 +24,19 @@ private struct ScreenCallbackBlocks {
 /// surface changes without duplicating unchanged frames. Maintains a 5fps idle
 /// floor for late-joining clients.
 ///
-/// Pipeline: IOSurface (shared memory) → CVPixelBuffer (zero-copy) → H.264 encode
+/// Pipeline: IOSurface (shared memory) → demand gate → private scaled buffer
 actor FrameCapture {
     private let queue = DispatchSerialQueue(label: "frame-capture", qos: .userInteractive)
     nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
 
     private var photocopier = Photocopier()
-    private var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
+    private let pixelBufferScaler = PixelBufferScaler()
+    private let demandController: CaptureDemandController
+    private var frameRateGate = FrameRateGate(fps: 1)
+    private var demandFramesPerSecond = 0
+    private var lastDemandRevision: UInt64?
+    private var onDimensions: ((Dimensions) -> Void)?
+    private var onFrame: ((CVPixelBuffer, CMTime, Dimensions) -> Void)?
     private var frameCount: UInt64 = 0
     /// Counted by which path produced the frame, callback or idle deadline.
     private var screenFrameCount: UInt64 = 0
@@ -61,7 +68,16 @@ actor FrameCapture {
     private var framebufferSurfaces: [ObjectIdentifier: IOSurface] = [:]
     private var ioClient: NSObject?
 
-    func start(deviceUDID: String, onFrame: @escaping @Sendable (CVPixelBuffer, CMTime) -> Void) throws {
+    init(demandController: CaptureDemandController) {
+        self.demandController = demandController
+    }
+
+    func start(
+        deviceUDID: String,
+        onDimensions: @escaping @Sendable (Dimensions) -> Void,
+        onFrame: @escaping @Sendable (CVPixelBuffer, CMTime, Dimensions) -> Void
+    ) throws {
+        self.onDimensions = onDimensions
         self.onFrame = onFrame
 
         SimFrameworks.load()
@@ -121,6 +137,7 @@ actor FrameCapture {
         if let (_, surface) = pickBestSurface() {
             capturedWidth = IOSurfaceGetWidth(surface)
             capturedHeight = IOSurfaceGetHeight(surface)
+            onDimensions?(Dimensions(width: capturedWidth, height: capturedHeight))
             print("[capture] Framebuffer: \(capturedWidth)x\(capturedHeight) (direct IOSurface, zero-copy)")
         }
 
@@ -242,7 +259,9 @@ actor FrameCapture {
         // Self-heal: if we've never captured a frame, the cached descriptor
         // is likely stale. Re-wire the pipeline periodically
         // until frames start flowing.
-        if self.frameCount == 0, (now - self.lastRewireAttempt) >= Self.rewireInterval {
+        if self.frameCount == 0,
+           demandController.snapshot() != nil,
+           (now - self.lastRewireAttempt) >= Self.rewireInterval {
             self.lastRewireAttempt = now
             do {
                 try self.wireUpFramebuffer()
@@ -271,16 +290,6 @@ actor FrameCapture {
     private func captureFrame(force: Bool = false) {
         guard let (key, surface) = pickBestSurface() else { return }
 
-        // Seed-skip: when the simulator's framebuffer content hasn't changed,
-        // don't spend cycles re-encoding the same pixels back-to-back from the
-        // frame-callback path. BUT: we must still re-emit at the idle floor
-        // (~5 fps) so that downstream consumers keep seeing a live stream —
-        // see the `idleInterval` doc-comment for why that matters.
-        let seed = IOSurfaceGetSeed(surface)
-        let seedChanged = lastSeeds[key] != seed
-        if frameCount > 0, !seedChanged, !force { return }
-        lastSeeds[key] = seed
-
         let w = IOSurfaceGetWidth(surface)
         let h = IOSurfaceGetHeight(surface)
         guard w > 0, h > 0 else { return }
@@ -288,8 +297,34 @@ actor FrameCapture {
         if capturedWidth != w || capturedHeight != h {
             capturedWidth = w
             capturedHeight = h
+            onDimensions?(Dimensions(width: w, height: h))
             print("[capture] Surface size changed: \(w)x\(h)")
         }
+
+        // Do not retain or scale a recycled IOSurface unless a live transport
+        // can consume the result. This check happens before the expensive copy.
+        guard let demandSnapshot = demandController.snapshot() else {
+            lastDemandRevision = nil
+            return
+        }
+        let demandChanged = lastDemandRevision != demandSnapshot.revision
+        if demandFramesPerSecond != demandSnapshot.demand.framesPerSecond {
+            demandFramesPerSecond = demandSnapshot.demand.framesPerSecond
+            frameRateGate.update(fps: demandFramesPerSecond)
+        }
+
+        // Seed-skip: when the simulator's framebuffer content hasn't changed,
+        // don't spend cycles re-encoding the same pixels back-to-back from the
+        // frame-callback path. BUT: we must still re-emit at the idle floor
+        // (~5 fps) so that downstream consumers keep seeing a live stream —
+        // see the `idleInterval` doc-comment for why that matters.
+        let seed = IOSurfaceGetSeed(surface)
+        let seedChanged = lastSeeds[key] != seed
+        if frameCount > 0, !seedChanged, !force, !demandChanged { return }
+
+        // A rejected seed remains pending, so the first poll after the rate
+        // gate opens still publishes the simulator's final visual state.
+        guard frameRateGate.shouldEncode() else { return }
 
         var pixelBuffer: Unmanaged<CVPixelBuffer>?
         let status = CVPixelBufferCreateWithIOSurface(
@@ -299,17 +334,28 @@ actor FrameCapture {
         )
         guard status == kCVReturnSuccess, let pb = pixelBuffer?.takeRetainedValue() else { return }
 
-        lastCaptureTime = .now
-        frameCount += 1
-        if force { idleFrameCount += 1 } else { screenFrameCount += 1 }
         // WebRTC consumes this timestamp as the capture presentation time. A
         // frame counter makes sparse/idle frames look 1/60s apart even when
         // they were captured hundreds of milliseconds apart, which confuses
         // the receiver jitter buffer. Host time is monotonic and reflects the
         // actual capture cadence.
         let timestamp = CMClockGetTime(CMClockGetHostTimeClock())
-        guard let copy = photocopier.copy(pb) else { return }
-        onFrame?(copy, timestamp)
+        let maxDimension = demandSnapshot.demand.maxDimension
+        let retainedBuffer: CVPixelBuffer?
+        if maxDimension > 0, max(w, h) > maxDimension {
+            // vImage writes directly from the IOSurface-backed source into the
+            // final private pooled buffer. Avoid a full-resolution intermediate.
+            retainedBuffer = pixelBufferScaler.scale(pb, maxDimension: maxDimension)
+        } else {
+            retainedBuffer = photocopier.copy(pb)
+        }
+        guard let retainedBuffer else { return }
+        lastCaptureTime = .now
+        frameCount += 1
+        if force { idleFrameCount += 1 } else { screenFrameCount += 1 }
+        lastDemandRevision = demandSnapshot.revision
+        lastSeeds[key] = seed
+        onFrame?(retainedBuffer, timestamp, Dimensions(width: w, height: h))
     }
 
     func getScreenSize() -> (width: Int, height: Int)? {
@@ -325,6 +371,8 @@ actor FrameCapture {
         descriptors.removeAll()
         lastSeeds.removeAll()
         framebufferSurfaces.removeAll()
+        onDimensions = nil
+        onFrame = nil
         ioClient = nil
     }
 

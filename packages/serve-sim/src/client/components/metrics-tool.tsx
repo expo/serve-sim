@@ -4,9 +4,7 @@ import { useMetricsStream } from "../hooks/use-metrics-stream";
 import { formatCpu, formatMem, formatRate, sparklinePath } from "../utils/format-metrics";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
-
-const SPARK_W = 96;
-const SPARK_H = 24;
+import { SPARK_H, SPARK_W, SparkPath, Sparkline } from "./sparkline";
 
 /** Live CPU, memory, and network readout for the sim's user app, with a sparkline for each. */
 export function MetricsTool({
@@ -123,37 +121,6 @@ function MetricRow({
       </div>
       <Sparkline values={values} className={className} />
     </div>
-  );
-}
-
-/** One sparkline stroke, styled consistently across the CPU/memory and network graphs. */
-function SparkPath({ d, className }: { d: string; className?: string }) {
-  return (
-    <path
-      d={d}
-      className={className}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      vectorEffect="non-scaling-stroke"
-    />
-  );
-}
-
-/** Minimal filled-area sparkline for a series of values. */
-function Sparkline({ values, className }: { values: number[]; className: string }) {
-  const line = sparklinePath(values, SPARK_W, SPARK_H);
-  // Close the line down to the baseline and back to fill the area under it.
-  const area = line ? `${line} L${SPARK_W},${SPARK_H} L0,${SPARK_H} Z` : "";
-  return (
-    <svg
-      viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
-      preserveAspectRatio="none"
-      className={`w-full h-8 ${className}`}
-    >
-      <path d={area} fill="currentColor" opacity={0.12} stroke="none" />
-      <SparkPath d={line} />
-    </svg>
   );
 }
 

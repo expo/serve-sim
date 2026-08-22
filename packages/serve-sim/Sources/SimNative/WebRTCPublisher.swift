@@ -99,6 +99,7 @@ final class WebRTCPublisher: @unchecked Sendable {
     private var lastFrameTimestampNs: Int64 = 0
     private var lastInputPixelFormat: OSType?
     private var useNativePixelBufferFrames: Bool?
+    private let pixelBufferScaler = PixelBufferScaler()
     private let h264PixelBufferConverter = H264WebRTCPixelBufferConverter()
     private lazy var h264WebRTCSupport = Self.detectH264WebRTCSupport()
     private let h264FrameModeOverride: H264WebRTCFrameMode?
@@ -249,8 +250,17 @@ final class WebRTCPublisher: @unchecked Sendable {
     }
 
     private func sendFrameOnQueue(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let sourceWidth = CVPixelBufferGetWidth(pixelBuffer)
+        let sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
+        guard let scaledPixelBuffer = pixelBufferScaler.scale(pixelBuffer, maxDimension: maxDimension) else {
+            streamLog(
+                "[webrtc] Failed to scale input frame \(sourceWidth)x\(sourceHeight) " +
+                "maxDimension=\(maxDimension)"
+            )
+            return
+        }
+        let width = CVPixelBufferGetWidth(scaledPixelBuffer)
+        let height = CVPixelBufferGetHeight(scaledPixelBuffer)
         if width != lastOutputWidth || height != lastOutputHeight {
             lastOutputWidth = width
             lastOutputHeight = height
@@ -264,7 +274,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             }
             streamLog("[webrtc] Video source output format: \(width)x\(height) @ \(maxFps)fps")
         }
-        let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        let pixelFormat = CVPixelBufferGetPixelFormatType(scaledPixelBuffer)
         if lastInputPixelFormat != pixelFormat {
             lastInputPixelFormat = pixelFormat
             let supported = LKRTCCVPixelBuffer.supportedPixelFormats()
@@ -275,7 +285,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
         let timeNs = nextFrameTimestampNs(timestamp)
         let sourceFrame = LKRTCVideoFrame(
-            buffer: LKRTCCVPixelBuffer(pixelBuffer: pixelBuffer),
+            buffer: LKRTCCVPixelBuffer(pixelBuffer: scaledPixelBuffer),
             rotation: ._0,
             timeStampNs: timeNs
         )
@@ -311,7 +321,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                 if Self.isBiPlanar420(pixelFormat) {
                     usedNativeFrame = true
                     frameMode = "nv12-input"
-                } else if let converted = h264PixelBufferConverter.convert(pixelBuffer) {
+                } else if let converted = h264PixelBufferConverter.convert(scaledPixelBuffer) {
                     convertDurationMs = h264PixelBufferConverter.lastDurationMs
                     forwardedPixelFormat = CVPixelBufferGetPixelFormatType(converted)
                     usedFrame = LKRTCVideoFrame(
@@ -341,7 +351,8 @@ final class WebRTCPublisher: @unchecked Sendable {
         if shouldLogFrame(sentFrameCount) {
             streamLog(
                 "[webrtc] Sent video frame #\(sentFrameCount) codecs=\(codecSummary) " +
-                "size=\(width)x\(height) timestampNs=\(timeNs) frameMode=\(frameMode) " +
+                "source=\(sourceWidth)x\(sourceHeight) size=\(width)x\(height) " +
+                "timestampNs=\(timeNs) frameMode=\(frameMode) " +
                 "inputFormat=\(pixelFormatDescription(pixelFormat)) " +
                 "forwardedFormat=\(pixelFormatDescription(forwardedPixelFormat)) " +
                 "native=\(usedNativeFrame) conversionMs=\(String(format: "%.2f", convertDurationMs))"

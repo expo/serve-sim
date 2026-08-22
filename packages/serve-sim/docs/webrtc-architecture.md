@@ -70,7 +70,7 @@ DeviceSession (one per UDID)
           |
           v
 CaptureEngine
-  +-- FrameCapture (SimulatorKit callbacks -> IOSurface -> CVPixelBuffer)
+  +-- FrameCapture (callbacks + IOSurface seed poll -> CVPixelBuffer)
   +-- MJPEG consumers
   +-- AVCC consumers
   +-- WebRTCPublisher consumer
@@ -80,8 +80,8 @@ WebRTCPublisher (LiveKit WebRTC framework)
   +-- active peer registry and serialized SDP offer setup
   +-- ICE gathering
   +-- codec preference and H.264 capability probe
-  +-- pixel-buffer conversion
-  +-- latest-frame pacing at up to 30 fps
+  +-- pre-encode resolution scaling and pixel-buffer conversion
+  +-- latest-frame pacing at the configured frame rate
 ```
 
 The browser has three rendering paths:
@@ -95,12 +95,15 @@ The browser has three rendering paths:
 ### Capture and frame flow
 
 `FrameCapture` registers private SimulatorKit screen callbacks on every display
-descriptor and chooses the largest live IOSurface. It emits changed frames and a
-fixed 5 fps idle floor. Every frame has a host monotonic capture timestamp.
+descriptor and chooses the largest live IOSurface. A 60 Hz IOSurface seed poll
+catches changes when virtualized SimulatorKit callbacks arrive below the display
+cadence, while seed checks avoid duplicating unchanged frames. It also maintains
+a fixed 5 fps idle floor. Every frame has a host monotonic capture timestamp.
 
 `CaptureEngine` fans frames out synchronously to consumers. Each encoder keeps a
 single newest pending frame, so a slow consumer cannot create latency by
-building a backlog. `WebRTCPublisher` adds one 30 fps latest-frame pump and only
+building a backlog. `WebRTCPublisher` adds one configured-rate latest-frame pump,
+pre-scales accepted pixel buffers to the configured maximum dimension, and only
 accepts frames while at least one peer is connected. Its shared video source
 fans each accepted frame out to every peer connection; libwebrtc maintains an
 independent sender, encoder, bitrate estimate, and packet stream per viewer.
@@ -180,8 +183,8 @@ the simulator's single synthetic touch surface.
 - No automatic fallback from unreachable WebRTC media to HTTP video.
 - Codec configuration describes a preference, not the negotiated sender codec.
 - Signaling URLs are derived from the MJPEG URL rather than advertised directly.
-- The native publisher uses fixed native resolution, 30 fps, and a 6 Mbps target
-  with a 1.5 Mbps minimum.
+- Encoder resolution, frame rate, and target bitrate are shared across viewers;
+  one viewer changing them affects every peer attached to that simulator.
 - There is no process-wide resource budget across several software-encoded
   simulators.
 - External `simctl shutdown` is detected by state/grid polling rather than a

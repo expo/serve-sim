@@ -117,11 +117,17 @@ private struct PendingWebRTCOffer {
 final class WebRTCPublisher: @unchecked Sendable {
     private static let signalingTimeoutMs = 10_000
     private static let connectionTimeoutMs = 10_000
-    private static let configureLowLatencyPlayout: Void = {
-        LKRTCPeerConnectionFactory.configureFieldTrials(
-            "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:0/"
-        )
-    }()
+
+    private static func configureLowLatencyPlayout() {
+        struct Once {
+            static let run: Void = {
+                LKRTCPeerConnectionFactory.configureFieldTrials(
+                    "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:0/"
+                )
+            }()
+        }
+        _ = Once.run
+    }
 
     private let queue = DispatchQueue(label: "webrtc-publisher")
     private let factory: LKRTCPeerConnectionFactory
@@ -162,7 +168,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         self.maxDimension = max(0, maxDimension)
         self.frameIntervalNs = UInt64(1_000_000_000 / normalizedMaxFps)
         h264FrameModeOverride = Self.h264FrameModeOverride()
-        _ = Self.configureLowLatencyPlayout
+        Self.configureLowLatencyPlayout()
         let defaultEncoderFactory = LKRTCDefaultVideoEncoderFactory()
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()
         factory = LKRTCPeerConnectionFactory(

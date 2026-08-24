@@ -41,6 +41,13 @@ export interface SenderStats {
   sessions: SenderStreamStats[];
 }
 
+export function senderSessionForViewer(
+  sessions: readonly SenderStreamStats[],
+  sessionId: string,
+): SenderStreamStats | null {
+  return sessions.find((session) => session.sessionId === sessionId) ?? null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

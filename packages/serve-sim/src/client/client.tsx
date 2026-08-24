@@ -1246,6 +1246,7 @@ function AppWithConfig({
         onStreamEncoderSettingsChange={streamSettingsState.updateEncoder}
         activeCodec={useWebRtcVideo ? `webrtc/${effectiveWebRtcCodec}` : useAvccVideo ? "h264" : "mjpeg"}
         peerConnection={webrtc.peerConnection}
+        webrtcSessionId={webrtc.sessionId}
         webrtcStatsUrl={webrtcStatsUrlFrom(config)}
         avccSupported={avcc.supported}
         streamSettingsPending={

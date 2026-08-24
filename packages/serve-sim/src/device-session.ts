@@ -31,6 +31,7 @@ import {
   WebRtcSignalingError,
   parseWebRtcCloseRequest,
   parseWebRtcOffer,
+  parseWebRtcStatsSessionId,
 } from "./webrtc-signaling";
 import {
   normalizeStreamEncoderSettings,
@@ -595,10 +596,21 @@ export class DeviceSession {
       return;
     }
     try {
-      const stats = await this.capture.webRTCSenderStats();
+      const sessionId = parseWebRtcStatsSessionId(
+        new URL(req.url ?? "", "http://x").searchParams.get("sessionId"),
+      );
+      const stats = await this.capture.webRTCSenderStats(sessionId);
       if (res.writableEnded || res.destroyed) return;
       this.sendJson(res, 200, stats);
     } catch (err) {
+      if (err instanceof WebRtcSignalingError) {
+        if (res.writableEnded || res.destroyed) return;
+        this.sendJson(res, err.status, {
+          error: err.code,
+          message: err.message,
+        });
+        return;
+      }
       // Logged, not returned: the message can name a host path.
       console.error(
         `WebRTC stats unavailable: ${err instanceof Error ? err.message : String(err)}`,

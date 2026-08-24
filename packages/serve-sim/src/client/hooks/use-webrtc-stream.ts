@@ -52,6 +52,7 @@ export function useWebRtcStream({
   const [error, setError] = useState<string | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
   const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const firstFrameTimeoutRef = useRef<number | undefined>(undefined);
   const firstFrameDecodedRef = useRef(false);
   const transportRetryAttemptRef = useRef(0);
@@ -76,6 +77,7 @@ export function useWebRtcStream({
     setFailure(null);
     if (typeof RTCPeerConnection === "undefined" || typeof RTCRtpReceiver === "undefined") {
       setStream(null);
+      setSessionId(null);
       setError("WebRTC is not supported by this browser.");
       setFailure({ sessionId: createSessionId(), kind: "permanent" });
       return;
@@ -89,6 +91,7 @@ export function useWebRtcStream({
     const lifecycleController = new AbortController();
     const sessionId = createSessionId();
     const servers = iceServers?.length ? iceServers : DEFAULT_ICE_SERVERS;
+    setSessionId(sessionId);
     setStream(null);
     setFailure(null);
     setError(null);
@@ -294,9 +297,10 @@ export function useWebRtcStream({
       void closeRemoteSession(true);
       setStream(null);
       setPeerConnection(null);
+      setSessionId(null);
       pc?.close();
     };
   }, [enabled, offerUrl, closeUrl, codec, iceServers, retryGeneration]);
 
-  return { stream, failure, error, markFrameDecoded, peerConnection };
+  return { stream, failure, error, markFrameDecoded, peerConnection, sessionId };
 }

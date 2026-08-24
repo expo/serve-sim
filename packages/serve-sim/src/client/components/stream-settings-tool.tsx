@@ -75,6 +75,7 @@ export function StreamSettingsTool({
   avccSupported,
   peerConnection,
   webrtcStatsUrl,
+  webrtcSessionId,
   encoderSettingsDisabled = false,
 }: {
   settings: StreamControlSettings;
@@ -85,12 +86,14 @@ export function StreamSettingsTool({
   encoderSettingsDisabled?: boolean;
   peerConnection: RTCPeerConnection | null;
   webrtcStatsUrl?: string;
+  webrtcSessionId?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const { stats, history, stale } = useStreamStats(peerConnection);
   const senderView = useSenderStats(
     webrtcStatsUrl ?? "",
-    webrtcStatsUrl !== undefined && peerConnection !== null,
+    webrtcSessionId ?? null,
+    webrtcStatsUrl !== undefined && peerConnection !== null && webrtcSessionId != null,
   );
   const sender = senderView.stale ? null : senderView.session;
   const faults = stats === null || stale ? [] : describeFaults(stats, sender);

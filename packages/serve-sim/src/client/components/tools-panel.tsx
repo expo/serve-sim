@@ -22,6 +22,7 @@ export function ToolsPanel({
   onClose,
   peerConnection,
   webrtcStatsUrl,
+  webrtcSessionId,
   udid,
   deviceRuntime,
   currentApp,
@@ -41,6 +42,7 @@ export function ToolsPanel({
   onClose: () => void;
   peerConnection: RTCPeerConnection | null;
   webrtcStatsUrl?: string;
+  webrtcSessionId?: string | null;
   udid: string;
   deviceRuntime: string | null;
   currentApp: { bundleId: string; isReactNative: boolean; pid?: number } | null;
@@ -89,6 +91,7 @@ export function ToolsPanel({
             encoderSettingsDisabled={streamSettingsPending}
             peerConnection={peerConnection}
             webrtcStatsUrl={webrtcStatsUrl}
+            webrtcSessionId={webrtcSessionId}
           />
         </div>
       )}

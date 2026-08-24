@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { simMiddleware } from "../middleware";
-import { readSenderStats } from "../webrtc-sender-stats";
+import { readSenderStats, senderSessionForViewer } from "../webrtc-sender-stats";
 
 /** One session as the addon encodes it: seconds, bits per second, keys omitted when unknown. */
 const SESSION = {
@@ -128,6 +128,16 @@ describe("GET /webrtc/stats", () => {
     expect(response?.status).toBe(204);
     expect(response?.headers.get("access-control-allow-origin")).toBe("*");
   });
+
+  test("answers the same preflight when the panel scopes the request to one session", async () => {
+    const middleware = simMiddleware({ basePath: "/.sim", proxyHelpers: true });
+    const response = await middleware(new Request(
+      "http://localhost/.sim/helper/00000000-0000-4000-8000-000000000000/webrtc/stats?sessionId=07a5f32b-273e-4a30-8f62-8e741a815af1",
+      { method: "OPTIONS" },
+    ));
+
+    expect(response?.status).toBe(204);
+  });
 });
 
 describe("capture counts", () => {
@@ -180,5 +190,16 @@ describe("source frame stats", () => {
 
     expect(session!.sourceFrames).toBeNull();
     expect(session!.sourceFramesDropped).toBeNull();
+  });
+});
+
+describe("senderSessionForViewer", () => {
+  test("picks this viewer's session rather than the first connected one", () => {
+    const theirs = { ...SESSION, sessionId: "11111111-1111-4111-8111-111111111111", codec: "VP8" };
+    const ours = { ...SESSION, sessionId: "22222222-2222-4222-8222-222222222222", codec: "H264" };
+    const sessions = readSenderStats({ sessions: [theirs, ours] }).sessions;
+
+    expect(senderSessionForViewer(sessions, ours.sessionId)?.codec).toBe("H264");
+    expect(senderSessionForViewer(sessions, "33333333-3333-4333-8333-333333333333")).toBeNull();
   });
 });

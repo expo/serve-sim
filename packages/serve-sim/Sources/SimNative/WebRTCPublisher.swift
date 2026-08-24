@@ -255,11 +255,12 @@ final class WebRTCPublisher: @unchecked Sendable {
 
     private static let statisticsTimeout: TimeInterval = 2
 
-    func senderStatistics() async -> [WebRTCSenderStatsPayload] {
+    func senderStatistics(sessionId: String? = nil) async -> [WebRTCSenderStatsPayload] {
         // Snapshot on the publisher queue: codec and connected are mutated there.
         let liveSessions: [WebRTCSessionSnapshot] = await withCheckedContinuation { continuation in
             queue.async {
                 continuation.resume(returning: self.sessions.values
+                    .filter { sessionId == nil || $0.id == sessionId }
                     .sorted { $0.id < $1.id }
                     .map(WebRTCSessionSnapshot.init))
             }

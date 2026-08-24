@@ -62,6 +62,8 @@ import {
 import { fileExtension } from "./utils/drop";
 import { execOnHost, openHostEventStream } from "./utils/exec";
 import { hidUsageForCode } from "./utils/hid";
+import { copyTextToSim, simPasteHidEvents } from "./utils/sim-clipboard";
+import { useClipboardToast } from "./hooks/use-clipboard-toast";
 import {
   DEVICE_SIDEBAR_WIDTH,
   DEVTOOLS_PANEL_WIDTH,
@@ -87,6 +89,13 @@ import {
 // ─── App ───
 
 type PreviewConfig = NonNullable<Window["__SIM_PREVIEW__"]>;
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  return target.isContentEditable;
+}
 
 function previewConfigKey(config: PreviewConfig | null): string {
   return config
@@ -820,6 +829,19 @@ function AppWithConfig({
     sendKey("up", R);
   }, [sendKey]);
 
+  const clipboard = useClipboardToast(config.device);
+
+  const sendSimPaste = useCallback(async (pressed: Set<number>) => {
+    const gap = () => new Promise<void>((r) => setTimeout(r, 30));
+    for (const ev of simPasteHidEvents(pressed)) {
+      if (ev.type === "up") await gap();
+      sendKey(ev.type, ev.usage);
+      // Losing focus mid-sequence must release the Command we injected.
+      if (ev.type === "up") pressed.delete(ev.usage);
+      else pressed.add(ev.usage);
+    }
+  }, [sendKey]);
+
   const simContainerRef = useRef<HTMLDivElement | null>(null);
   const [deviceRenderedWidth, setDeviceRenderedWidth] = useState(0);
   const [deviceRenderedHeight, setDeviceRenderedHeight] = useState(0);
@@ -886,6 +908,7 @@ function AppWithConfig({
         if (type === "down" && !e.repeat) sendWs(0x0c, {});
         return;
       }
+      if (e.code === "KeyV" && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) return;
       const usage = hidUsageForCode(e.code);
       if (usage == null) return;
       e.preventDefault();
@@ -902,6 +925,27 @@ function AppWithConfig({
       window.removeEventListener("keyup", up);
     };
   }, [sendWs, config.device, rotateBy]);
+
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (!simFocusedRef.current) return;
+      if (isTypingTarget(e.target)) return;
+      const text = e.clipboardData?.getData("text/plain");
+      if (!text) return;
+      e.preventDefault();
+      void copyTextToSim(config.device, text, execOnHost)
+        .then((ok) => {
+          if (!ok) {
+            clipboard.reportPasteFailure();
+            return;
+          }
+          return sendSimPaste(pressedKeysRef.current);
+        })
+        .catch(() => clipboard.reportPasteFailure());
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [config.device, sendSimPaste, clipboard]);
 
   const uploads = useUploadToasts();
   const screenshot = useScreenshotToast(config.device);
@@ -1168,6 +1212,10 @@ function AppWithConfig({
               <SimulatorToolbar.ScreenshotButton
                 title="Screenshot"
                 onClick={(e) => { e.preventDefault(); void screenshot.capture(); }}
+              />
+              <SimulatorToolbar.CopyButton
+                title="Copy simulator clipboard"
+                onClick={(e) => { e.preventDefault(); void clipboard.copyFromSim(); }}
               />
               <SimulatorToolbar.RotateButton title="Rotate device" />
             </SimulatorToolbar.Actions>

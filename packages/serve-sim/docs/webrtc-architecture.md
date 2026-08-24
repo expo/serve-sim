@@ -111,15 +111,18 @@ private pooled buffer. A full-resolution private copy is only made when an
 active consumer explicitly requests native resolution.
 
 `WebRTCPublisher` adds one configured-rate latest-frame pump and only accepts
-frames while at least one peer is connected. Its realtime video source requests
-maintain-frame-rate degradation, which allows libwebrtc to reduce resolution
-instead of sacrificing interactive cadence. Software VP8 begins at a maximum
-dimension of 1280 and samples outbound sender statistics once per second. Three
-constrained samples step down through 1024 and 854; fifteen healthy samples step
-back up. Sparse 5 fps idle input is excluded from this decision. The shared
-video source fans each accepted frame out to every peer connection; libwebrtc
-maintains an independent sender, encoder, bitrate estimate, and packet stream
-per viewer.
+frames while at least one peer is connected. After the first captured frame,
+the pump continuously resubmits its retained private buffer at the configured
+frame rate; a new capture replaces that buffer without building a queue. Static
+and changing content therefore exercise the same realtime WebRTC path without
+forcing `FrameCapture` to copy or scale an unchanged IOSurface on every tick.
+Its realtime video source requests maintain-frame-rate degradation, which
+allows libwebrtc to reduce resolution instead of sacrificing interactive
+cadence. Software VP8 begins at a maximum dimension of 1280 and samples outbound
+sender statistics once per second. Three constrained samples step down through
+1024 and 854; fifteen healthy samples step back up. The shared video source fans
+each accepted frame out to every peer connection; libwebrtc maintains an
+independent sender, encoder, bitrate estimate, and packet stream per viewer.
 
 The WebRTC publisher is created lazily on the first offer. Its frame consumer
 remains attached until the device capture session stops, but it withdraws its

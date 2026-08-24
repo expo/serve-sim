@@ -14,7 +14,7 @@ final class VP8AdaptiveResolutionControllerTests: XCTestCase {
         XCTAssertEqual(observePressure(&controller, samples: 3), 854)
     }
 
-    func testDoesNotDownshiftAnIdleSimulator() {
+    func testDoesNotInterpretSparseInputAsEncoderPressure() {
         var controller = VP8AdaptiveResolutionController(
             configuredMaxDimension: 1280,
             targetFramesPerSecond: 30

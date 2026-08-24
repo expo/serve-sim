@@ -115,8 +115,10 @@ TURN is used as a fallback when direct/STUN candidates fail.
 Software VP8 treats the simulator as interactive realtime video: it preserves
 the configured frame rate under CPU or bandwidth pressure and automatically
 steps its maximum dimension from 1280 to 1024 or 854 when the encoder cannot
-keep up. Static simulators remain on the 5 FPS idle floor without triggering a
-quality reduction.
+keep up. While a peer is connected, WebRTC continuously resubmits the latest
+captured frame at the configured `--video-fps` cadence, so static and changing
+content keep the same realtime pipeline behavior. The capture source still
+avoids redundant IOSurface copies when the simulator is unchanged.
 Multiple WebRTC viewers can use the same simulator simultaneously. They share
 one SimulatorKit capture source, while each viewer has an independent peer
 connection, encoder, congestion controller, and helper WebSocket. HTTP streams

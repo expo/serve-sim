@@ -35,8 +35,9 @@ public struct VP8AdaptiveResolutionController: Sendable {
     ) -> Int? {
         let target = Double(targetFramesPerSecond)
 
-        // A static simulator intentionally emits only the 5fps idle floor.
-        // Never interpret that sparse input as encoder pressure.
+        // Ignore startup gaps or any other sparse input: only a near-target
+        // submitted cadence can reveal whether the encoder itself is limiting
+        // frame rate.
         guard submittedFramesPerSecond >= target * 0.85 else {
             constrainedSampleCount = 0
             healthySampleCount = 0

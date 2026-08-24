@@ -118,6 +118,7 @@ final class WebRTCPublisher: @unchecked Sendable {
     private static let signalingTimeoutMs = 10_000
     private static let connectionTimeoutMs = 10_000
 
+    
     private static func configureLowLatencyPlayout() {
         struct Once {
             static let run: Void = {

@@ -33,6 +33,23 @@ jobs:
         run: bun run build.ts
         working_directory: packages/serve-sim
 
+      # Packed before the tests run so the tarball exists even when they fail:
+      # a build is often worth trying on a device precisely because the tests
+      # did not settle the question.
+      - name: Create npm package
+        run: |
+          mkdir -p release
+          npm pack --workspace packages/serve-sim --pack-destination release --json > /tmp/npm-pack.json
+          TARBALL=$(node -p 'JSON.parse(require("fs").readFileSync(0, "utf8"))[0].filename' < /tmp/npm-pack.json)
+          mv "release/$TARBALL" release/serve-sim.tgz
+
+      - name: Upload npm package
+        uses: eas/upload_artifact
+        with:
+          type: other
+          name: serve-sim-npm-package
+          path: release/serve-sim.tgz
+
       - name: Start iOS Simulator
         uses: eas/start_ios_simulator
 

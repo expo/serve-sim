@@ -23,6 +23,17 @@ public struct VP8AdaptiveResolutionController: Sendable {
         dimensionIndex = 0
         currentMaxDimension = dimensions[0]
         self.targetFramesPerSecond = max(1, targetFramesPerSecond)
+        resetSamples()
+    }
+
+    /// Updates cadence thresholds without throwing away a resolution rung that
+    /// the encoder already proved it needs.
+    public mutating func updateTargetFramesPerSecond(_ targetFramesPerSecond: Int) {
+        self.targetFramesPerSecond = max(1, targetFramesPerSecond)
+        resetSamples()
+    }
+
+    private mutating func resetSamples() {
         constrainedSampleCount = 0
         healthySampleCount = 0
     }

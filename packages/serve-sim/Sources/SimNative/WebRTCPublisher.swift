@@ -180,7 +180,9 @@ final class WebRTCPublisher: @unchecked Sendable {
         captureDemandController: CaptureDemandController,
         captureDemandId: UUID
     ) {
-        let normalizedMaxFps = max(1, min(120, maxFps))
+        let normalizedMaxFps = WebRTCFrameRatePolicy(
+            configuredFramesPerSecond: maxFps
+        ).outputFramesPerSecond
         self.maxFps = normalizedMaxFps
         self.targetBitrate = max(100_000, targetBitrate)
         self.configuredMaxDimension = max(0, maxDimension)
@@ -216,24 +218,35 @@ final class WebRTCPublisher: @unchecked Sendable {
     func updateSettings(maxFps: Int, targetBitrate: Int, maxDimension: Int) async {
         await withCheckedContinuation { continuation in
             queue.async {
-                let normalizedMaxFps = max(1, min(120, maxFps))
+                let frameRatePolicy = WebRTCFrameRatePolicy(
+                    configuredFramesPerSecond: maxFps
+                )
+                let normalizedMaxFps = frameRatePolicy.outputFramesPerSecond
+                let normalizedMaxDimension = max(0, maxDimension)
+                let maxDimensionChanged = self.configuredMaxDimension != normalizedMaxDimension
                 self.frameLock.lock()
                 self.maxFps = normalizedMaxFps
                 self.framePacer.update(framesPerSecond: normalizedMaxFps)
                 self.frameLock.unlock()
                 self.targetBitrate = max(100_000, targetBitrate)
-                self.configuredMaxDimension = max(0, maxDimension)
-                self.adaptiveResolutionController.reset(
-                    configuredMaxDimension: maxDimension,
-                    targetFramesPerSecond: normalizedMaxFps
-                )
+                self.configuredMaxDimension = normalizedMaxDimension
+                if maxDimensionChanged {
+                    self.adaptiveResolutionController.reset(
+                        configuredMaxDimension: normalizedMaxDimension,
+                        targetFramesPerSecond: normalizedMaxFps
+                    )
+                } else {
+                    self.adaptiveResolutionController.updateTargetFramesPerSecond(
+                        normalizedMaxFps
+                    )
+                }
                 self.adaptationSnapshot = nil
                 self.updateCaptureDemand()
                 if self.lastOutputWidth > 0, self.lastOutputHeight > 0 {
                     self.videoSource.adaptOutputFormat(
                         toWidth: Int32(self.lastOutputWidth),
                         height: Int32(self.lastOutputHeight),
-                        fps: Int32(self.maxFps)
+                        fps: Int32(frameRatePolicy.sourceAdapterFramesPerSecond)
                     )
                 }
                 for session in self.sessions.values {
@@ -479,12 +492,16 @@ final class WebRTCPublisher: @unchecked Sendable {
             videoSource.adaptOutputFormat(
                 toWidth: Int32(width),
                 height: Int32(height),
-                fps: Int32(maxFps)
+                fps: Int32(WebRTCFrameRatePolicy.unthrottledSourceAdapterFramesPerSecond)
             )
             for session in sessions.values {
                 applyBitrateSettings(to: session)
             }
-            streamLog("[webrtc] Video source output format: \(width)x\(height) @ \(maxFps)fps")
+            streamLog(
+                "[webrtc] Video source output format: \(width)x\(height) " +
+                "adapterCeiling=\(WebRTCFrameRatePolicy.unthrottledSourceAdapterFramesPerSecond)fps " +
+                "pacer=\(maxFps)fps"
+            )
         }
         let pixelFormat = CVPixelBufferGetPixelFormatType(scaledPixelBuffer)
         if lastInputPixelFormat != pixelFormat {
@@ -664,7 +681,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         captureDemandController.set(
             hasConnectedSession
                 ? CaptureDemand(
-                    framesPerSecond: maxFps,
+                    framesPerSecond: WebRTCFrameRatePolicy.displayFramesPerSecond,
                     maxDimension: effectiveMaxDimension
                 )
                 : nil,
@@ -1200,7 +1217,6 @@ final class WebRTCPublisher: @unchecked Sendable {
             : parameters.encodings
         let maxBitrate = NSNumber(value: targetBitrate)
         let minBitrate = NSNumber(value: max(100_000, targetBitrate / 5))
-        let fps = NSNumber(value: maxFps)
         let maxDimension = effectiveMaxDimension
         let sourceMaxDimension = max(lastOutputWidth, lastOutputHeight)
         let scaleResolutionDownBy = maxDimension > 0 && sourceMaxDimension > maxDimension
@@ -1210,7 +1226,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             encoding.isActive = true
             encoding.maxBitrateBps = maxBitrate
             encoding.minBitrateBps = minBitrate
-            encoding.maxFramerate = fps
+            encoding.maxFramerate = nil
             encoding.scaleResolutionDownBy = NSNumber(value: scaleResolutionDownBy)
         }
         parameters.encodings = encodings
@@ -1225,7 +1241,8 @@ final class WebRTCPublisher: @unchecked Sendable {
             maxBitrateBps: maxBitrate
         )
         streamLog(
-            "[webrtc] Sender parameters fps=\(maxFps) minBitrate=\(minBitrate) " +
+            "[webrtc] Sender parameters pacerFps=\(maxFps) senderFpsCap=none " +
+            "minBitrate=\(minBitrate) " +
             "maxBitrate=\(maxBitrate) maxDimension=\(maxDimension) " +
             "scaleDown=\(String(format: "%.3f", scaleResolutionDownBy)) " +
             "applied=\(appliedScale.map { String(format: "%.3f", $0) } ?? "nil") " +

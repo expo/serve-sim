@@ -116,6 +116,11 @@ the pump continuously resubmits its retained private buffer at the configured
 frame rate; a new capture replaces that buffer without building a queue. Static
 and changing content therefore exercise the same realtime WebRTC path without
 forcing `FrameCapture` to copy or scale an unchanged IOSurface on every tick.
+Changing surfaces are sampled at the display's 60 Hz cadence. The latest-frame
+pump alone applies the configured output frame rate; the libwebrtc source
+adapter uses a high safety ceiling and the RTP sender has no additional frame
+rate cap, avoiding independently phased frame droppers. FPS and bitrate changes
+also preserve the current adaptive VP8 resolution rung.
 Its realtime video source requests maintain-frame-rate degradation, which
 allows libwebrtc to reduce resolution instead of sacrificing interactive
 cadence. Software VP8 begins at a maximum dimension of 1280 and samples outbound

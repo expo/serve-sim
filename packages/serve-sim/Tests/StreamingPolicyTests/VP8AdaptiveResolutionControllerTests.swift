@@ -60,15 +60,38 @@ final class VP8AdaptiveResolutionControllerTests: XCTestCase {
         XCTAssertEqual(controller.currentMaxDimension, 720)
     }
 
+    func testChangingFrameRatePreservesTheCurrentResolutionRung() {
+        var controller = VP8AdaptiveResolutionController(
+            configuredMaxDimension: 1280,
+            targetFramesPerSecond: 60
+        )
+        XCTAssertEqual(
+            observePressure(
+                &controller,
+                samples: 3,
+                submittedFramesPerSecond: 60,
+                encodedFramesPerSecond: 30
+            ),
+            1024
+        )
+
+        controller.updateTargetFramesPerSecond(30)
+
+        XCTAssertEqual(controller.targetFramesPerSecond, 30)
+        XCTAssertEqual(controller.currentMaxDimension, 1024)
+    }
+
     private func observePressure(
         _ controller: inout VP8AdaptiveResolutionController,
-        samples: Int
+        samples: Int,
+        submittedFramesPerSecond: Double = 30,
+        encodedFramesPerSecond: Double = 20
     ) -> Int? {
         var change: Int?
         for _ in 0..<samples {
             change = controller.observe(
-                submittedFramesPerSecond: 30,
-                encodedFramesPerSecond: 20,
+                submittedFramesPerSecond: submittedFramesPerSecond,
+                encodedFramesPerSecond: encodedFramesPerSecond,
                 qualityLimitationReason: "cpu"
             ) ?? change
         }

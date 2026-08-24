@@ -288,6 +288,12 @@ packages/serve-sim/Sources/SimNative/build.sh           # native addon only
 bun run --filter serve-sim dev                          # watch mode
 ```
 
+## Origin and attribution
+
+`serve-sim` was created and open-sourced by [Evan Bacon](https://github.com/EvanBacon) in the [original serve-sim project](https://github.com/EvanBacon/serve-sim). This repository is an Expo-maintained fork. We are grateful to Evan for creating the project and making it available to the community.
+
+See [NOTICE](NOTICE) for attribution details.
+
 ## License
 
 Apache-2.0

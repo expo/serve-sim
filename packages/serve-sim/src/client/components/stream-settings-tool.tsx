@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { SlidersHorizontal, Video } from "lucide-react";
 import { CollapsibleSection } from "./collapsible-section";
+import { TriangleAlert } from "lucide-react";
+import { useStreamStats } from "../hooks/use-stream-stats";
+import { StreamStatsSection, describeFaults, summariseStream } from "./stream-stats-tool";
 import { SettingRow, SettingSelect } from "./simulator-settings-tool";
 import type {
   HttpStreamCodec,
@@ -69,6 +72,7 @@ export function StreamSettingsTool({
   onEncoderSettingsChange,
   activeCodec,
   avccSupported,
+  peerConnection,
   encoderSettingsDisabled = false,
 }: {
   settings: StreamControlSettings;
@@ -77,8 +81,12 @@ export function StreamSettingsTool({
   activeCodec: string;
   avccSupported: boolean;
   encoderSettingsDisabled?: boolean;
+  peerConnection: RTCPeerConnection | null;
 }) {
   const [open, setOpen] = useState(false);
+  const { stats, history } = useStreamStats(peerConnection);
+  const faults = stats === null ? [] : describeFaults(stats);
+  const summary = stats === null ? null : summariseStream(stats);
   const httpActive = settings.transport === "http";
   const webrtcActive = settings.transport === "webrtc";
 
@@ -93,13 +101,37 @@ export function StreamSettingsTool({
           <span className="text-[11px] font-semibold text-white/50 uppercase tracking-[0.08em] leading-none inline-flex items-center">
             Stream
           </span>
-          <span className="text-[11px] text-white/40 justify-self-end uppercase">
-            {activeCodec}
+          <span className="justify-self-end inline-flex items-center gap-1.5">
+            {!open && summary !== null ? (
+              <span className="text-[11px] text-white/40 tabular-nums">{summary}</span>
+            ) : (
+              <span className="text-[11px] text-white/40 uppercase">{activeCodec}</span>
+            )}
+            {faults.length > 0 && (
+              <span
+                data-stream-warning
+                role="status"
+                className="group relative inline-flex items-center"
+              >
+                <TriangleAlert aria-hidden="true" className="w-3.5 h-3.5 text-warning" />
+                <span className="sr-only">{faults.join("; ")}</span>
+                <span className="pointer-events-none absolute right-0 top-full z-10 mt-1 hidden w-max max-w-[220px] rounded-md bg-black/90 px-2 py-1 text-[11px] leading-snug text-white/90 shadow-lg group-hover:block">
+                  {faults.join("; ")}
+                </span>
+              </span>
+            )}
           </span>
         </>
       }
     >
       <div className="flex flex-col gap-1.5 pb-1.5">
+        <StreamStatsSection
+          stats={stats}
+          history={history}
+          faults={faults}
+          requestedFps={settings.h264Fps}
+          transport={settings.transport}
+        />
         <SettingRow icon={<Video className={iconClass} />} label="Transport">
           <SettingSelect
             label="Transport"

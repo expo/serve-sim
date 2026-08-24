@@ -51,6 +51,7 @@ export function useWebRtcStream({
   const [failure, setFailure] = useState<WebRtcStreamFailure | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
+  const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null);
   const firstFrameTimeoutRef = useRef<number | undefined>(undefined);
   const firstFrameDecodedRef = useRef(false);
   const transportRetryAttemptRef = useRef(0);
@@ -113,6 +114,9 @@ export function useWebRtcStream({
     const closePeer = () => {
       setStream(null);
       pc?.close();
+      // Readers of `peerConnection` would otherwise keep polling a closed connection for the whole
+      // retry backoff, and report its last values as if the stream were still live.
+      setPeerConnection(null);
     };
 
     const failPermanently = (message: string) => {
@@ -180,6 +184,8 @@ export function useWebRtcStream({
           iceServers: servers,
           iceTransportPolicy: WEBRTC_ICE_TRANSPORT_POLICY,
         });
+
+        setPeerConnection(pc);
 
         const videoTransceiver = pc.addTransceiver("video", { direction: "recvonly" });
         const videoCapabilities = RTCRtpReceiver.getCapabilities("video");
@@ -287,9 +293,10 @@ export function useWebRtcStream({
       }
       void closeRemoteSession(true);
       setStream(null);
+      setPeerConnection(null);
       pc?.close();
     };
   }, [enabled, offerUrl, closeUrl, codec, iceServers, retryGeneration]);
 
-  return { stream, failure, error, markFrameDecoded };
+  return { stream, failure, error, markFrameDecoded, peerConnection };
 }

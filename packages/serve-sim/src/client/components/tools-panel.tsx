@@ -20,6 +20,7 @@ import type {
 export function ToolsPanel({
   open,
   onClose,
+  peerConnection,
   udid,
   deviceRuntime,
   currentApp,
@@ -37,6 +38,7 @@ export function ToolsPanel({
 }: {
   open: boolean;
   onClose: () => void;
+  peerConnection: RTCPeerConnection | null;
   udid: string;
   deviceRuntime: string | null;
   currentApp: { bundleId: string; isReactNative: boolean; pid?: number } | null;
@@ -83,6 +85,7 @@ export function ToolsPanel({
             activeCodec={activeCodec}
             avccSupported={avccSupported}
             encoderSettingsDisabled={streamSettingsPending}
+            peerConnection={peerConnection}
           />
         </div>
       )}

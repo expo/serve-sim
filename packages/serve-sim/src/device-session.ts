@@ -31,6 +31,7 @@ import {
   WebRtcSignalingError,
   parseWebRtcCloseRequest,
   parseWebRtcOffer,
+  parseWebRtcStatsSessionId,
 } from "./webrtc-signaling";
 import {
   normalizeStreamEncoderSettings,
@@ -589,6 +590,36 @@ export class DeviceSession {
     }
   }
 
+  async handleWebRTCStats(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== "GET") {
+      this.sendJson(res, 405, { error: "method_not_allowed" });
+      return;
+    }
+    try {
+      const sessionId = parseWebRtcStatsSessionId(
+        new URL(req.url ?? "", "http://x").searchParams.get("sessionId"),
+      );
+      const stats = await this.capture.webRTCSenderStats(sessionId);
+      if (res.writableEnded || res.destroyed) return;
+      this.sendJson(res, 200, stats);
+    } catch (err) {
+      if (err instanceof WebRtcSignalingError) {
+        if (res.writableEnded || res.destroyed) return;
+        this.sendJson(res, err.status, {
+          error: err.code,
+          message: err.message,
+        });
+        return;
+      }
+      // Logged, not returned: the message can name a host path.
+      console.error(
+        `WebRTC stats unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      if (res.writableEnded || res.destroyed) return;
+      this.sendJson(res, 503, { error: "webrtc_stats_unavailable" });
+    }
+  }
+
   handleOptions(_req: IncomingMessage, res: ServerResponse): void {
     sendCorsPreflight(res);
   }
@@ -897,6 +928,11 @@ export class DeviceSession {
 // ── Registry ─────────────────────────────────────────────────────────────
 
 const sessions = new Map<string, DeviceSession>();
+
+/** Existing session only. Reading stats must never be the thing that starts capture. */
+export function peekDeviceSession(udid: string): DeviceSession | undefined {
+  return sessions.get(udid);
+}
 
 /**
  * Get (lazily creating + starting) the in-process session for `udid`. Throws if

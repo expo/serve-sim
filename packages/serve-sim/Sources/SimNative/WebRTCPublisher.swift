@@ -599,8 +599,9 @@ final class WebRTCPublisher: @unchecked Sendable {
         frameLock.lock()
         if acceptsFrames && pendingFrame != nil {
             frameLock.unlock()
-            // Re-enter immediately so conversion time counts toward the frame
-            // interval. drainFramePump will wait only for any time remaining.
+            // Re-check the rate limit on the next queue turn. Frame conversion may
+            // have consumed part or all of the interval, so drainFramePump waits
+            // only for the remaining time.
             scheduleFramePump(afterNs: 0)
         } else {
             framePumpScheduled = false

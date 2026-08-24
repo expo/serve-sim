@@ -106,9 +106,7 @@ private final class WebRTCSignalingCompletion: @unchecked Sendable {
 }
 
 private struct PendingWebRTCFrame {
-    let id: UInt64
     let pixelBuffer: CVPixelBuffer
-    let timestamp: CMTime
 }
 
 private struct PendingWebRTCOffer {
@@ -152,9 +150,7 @@ final class WebRTCPublisher: @unchecked Sendable {
     private let frameLock = NSLock()
     private var acceptsFrames = false
     private var latestFrame: PendingWebRTCFrame?
-    private var latestFrameId: UInt64 = 0
     private var framePacer: ContinuousFramePacer
-    private var lastSubmittedSourceFrameId: UInt64?
     /// Both guarded by `frameLock`.
     private var offeredFrameCount: UInt64 = 0
     private var forwardedFrameCount: UInt64 = 0
@@ -433,7 +429,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         return (offered: offeredFrameCount, forwarded: forwardedFrameCount)
     }
 
-    func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
+    func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp _: CMTime) {
         var scheduleDelayNs: UInt64?
         let nowNs = DispatchTime.now().uptimeNanoseconds
         frameLock.lock()
@@ -442,12 +438,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             frameLock.unlock()
             return
         }
-        latestFrameId &+= 1
-        latestFrame = PendingWebRTCFrame(
-            id: latestFrameId,
-            pixelBuffer: pixelBuffer,
-            timestamp: timestamp
-        )
+        latestFrame = PendingWebRTCFrame(pixelBuffer: pixelBuffer)
         // One pump owns the cadence. New source frames only replace the
         // retained latest frame, so the queue cannot build a stale backlog.
         scheduleDelayNs = framePacer.latestFrameArrived(atNanoseconds: nowNs)
@@ -457,17 +448,14 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
     }
 
-    private func nextFrameTimestampNs(_ timestamp: CMTime) -> Int64 {
-        let captureTime = CMTimeGetSeconds(timestamp) * 1_000_000_000
-        let proposedTimestamp = captureTime.isFinite && captureTime > 0
-            ? Int64(captureTime)
-            : Int64(DispatchTime.now().uptimeNanoseconds)
+    private func nextFrameTimestampNs(_ proposedTimestamp: UInt64) -> Int64 {
+        let proposedTimestamp = Int64(clamping: proposedTimestamp)
         let timestampNs = max(proposedTimestamp, lastFrameTimestampNs + 1)
         lastFrameTimestampNs = timestampNs
         return timestampNs
     }
 
-    private func sendFrameOnQueue(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
+    private func sendFrameOnQueue(_ pixelBuffer: CVPixelBuffer, timestampNanoseconds: UInt64) {
         let sourceWidth = CVPixelBufferGetWidth(pixelBuffer)
         let sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
         let maxDimension = effectiveMaxDimension
@@ -507,7 +495,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             let frameMode = supported ? "native CVPixelBuffer" : "I420 fallback"
             streamLog("[webrtc] Input pixel format: \(pixelFormat) cvPixelBufferSupported=\(supported); forwarding as \(frameMode)")
         }
-        let timeNs = nextFrameTimestampNs(timestamp)
+        let timeNs = nextFrameTimestampNs(timestampNanoseconds)
         let sourceFrame = LKRTCVideoFrame(
             buffer: LKRTCCVPixelBuffer(pixelBuffer: scaledPixelBuffer),
             rotation: ._0,
@@ -605,7 +593,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         let nowNs = DispatchTime.now().uptimeNanoseconds
         frameLock.lock()
         let decision = framePacer.tick(atNanoseconds: nowNs)
-        guard case let .send(nextDelayNs) = decision,
+        guard case let .send(timestampNs, nextDelayNs) = decision,
               let frame = latestFrame else {
             frameLock.unlock()
             if case let .wait(delayNs) = decision {
@@ -620,11 +608,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         // every configured frame interval.
         scheduleFramePump(afterNs: nextDelayNs)
         if sessions.values.contains(where: \.isConnected) {
-            let timestamp = lastSubmittedSourceFrameId == frame.id
-                ? CMClockGetTime(CMClockGetHostTimeClock())
-                : frame.timestamp
-            sendFrameOnQueue(frame.pixelBuffer, timestamp: timestamp)
-            lastSubmittedSourceFrameId = frame.id
+            sendFrameOnQueue(frame.pixelBuffer, timestampNanoseconds: timestampNs)
         }
     }
 
@@ -644,7 +628,6 @@ final class WebRTCPublisher: @unchecked Sendable {
             acceptsFrames = active
             latestFrame = nil
             framePacer.setActive(active)
-            lastSubmittedSourceFrameId = nil
         }
         frameLock.unlock()
     }

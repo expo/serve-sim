@@ -2,7 +2,7 @@ public struct ContinuousFramePacer: Sendable {
     public enum TickDecision: Equatable, Sendable {
         case stop
         case wait(nanoseconds: UInt64)
-        case send(nextDelayNanoseconds: UInt64)
+        case send(timestampNanoseconds: UInt64, nextDelayNanoseconds: UInt64)
     }
 
     private static let schedulingToleranceNanoseconds: UInt64 = 1_000_000
@@ -74,7 +74,10 @@ public struct ContinuousFramePacer: Sendable {
         let nextSendAt = cadenceAnchor &+ (frameIntervalNanoseconds &* intervalsToAdvance)
         lastSentAtNanoseconds = now
         nextSendAtNanoseconds = nextSendAt
-        return .send(nextDelayNanoseconds: nextSendAt > now ? nextSendAt - now : 0)
+        return .send(
+            timestampNanoseconds: now,
+            nextDelayNanoseconds: nextSendAt > now ? nextSendAt - now : 0
+        )
     }
 
     private static func interval(framesPerSecond: Int) -> UInt64 {

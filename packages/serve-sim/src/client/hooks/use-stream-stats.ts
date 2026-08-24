@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { startExclusivePoll } from "../utils/exclusive-poll";
 import {
   describeStreamStats,
   readStreamStats,
@@ -47,11 +48,10 @@ export function useStreamStats(
       previousRef.current = next;
     };
 
-    void sample();
-    const timer = window.setInterval(() => void sample(), POLL_MS);
+    const stopPoll = startExclusivePoll(sample, POLL_MS);
     return () => {
       stopped = true;
-      window.clearInterval(timer);
+      stopPoll();
     };
   }, [peerConnection]);
 

@@ -117,6 +117,11 @@ private struct PendingWebRTCOffer {
 final class WebRTCPublisher: @unchecked Sendable {
     private static let signalingTimeoutMs = 10_000
     private static let connectionTimeoutMs = 10_000
+    private static let configureLowLatencyPlayout: Void = {
+        LKRTCPeerConnectionFactory.configureFieldTrials(
+            "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:0/"
+        )
+    }()
 
     private let queue = DispatchQueue(label: "webrtc-publisher")
     private let factory: LKRTCPeerConnectionFactory
@@ -157,6 +162,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         self.maxDimension = max(0, maxDimension)
         self.frameIntervalNs = UInt64(1_000_000_000 / normalizedMaxFps)
         h264FrameModeOverride = Self.h264FrameModeOverride()
+        _ = Self.configureLowLatencyPlayout
         let defaultEncoderFactory = LKRTCDefaultVideoEncoderFactory()
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()
         factory = LKRTCPeerConnectionFactory(
@@ -587,7 +593,9 @@ final class WebRTCPublisher: @unchecked Sendable {
         frameLock.lock()
         if acceptsFrames && pendingFrame != nil {
             frameLock.unlock()
-            scheduleFramePump(afterNs: frameIntervalNs)
+            // Re-enter immediately so conversion time counts toward the frame
+            // interval. drainFramePump will wait only for any time remaining.
+            scheduleFramePump(afterNs: 0)
         } else {
             framePumpScheduled = false
             frameLock.unlock()

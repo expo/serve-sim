@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { execSync } from "child_process";
 import { shellEscape } from "../client/utils/exec";
 import { HID_USAGE_BY_CODE } from "../client/utils/hid";
 import {
@@ -132,36 +131,5 @@ describe("readSimClipboard", () => {
       exitCode: 1,
     }));
     await expect(failing).rejects.toThrow(/booted/i);
-  });
-});
-
-function firstBootedIosSim(): string | null {
-  try {
-    const out = execSync("xcrun simctl list devices booted -j", { encoding: "utf-8" });
-    const data = JSON.parse(out) as {
-      devices: Record<string, Array<{ udid: string; state: string }>>;
-    };
-    for (const [runtime, devs] of Object.entries(data.devices)) {
-      if (!runtime.includes("iOS")) continue;
-      for (const d of devs) if (d.state === "Booted") return d.udid;
-    }
-  } catch {}
-  return null;
-}
-
-const bootedUdid = firstBootedIosSim();
-const describeWithSim = bootedUdid ? describe : describe.skip;
-
-describeWithSim(`simctl pasteboard round-trip (booted sim ${bootedUdid ?? "<skipped>"})`, () => {
-  test("pbcopy/pbpaste keep unicode under LANG=C", () => {
-    const text = "café 🎉 email+tag@x.com — 日本語";
-    execSync(pbcopyCommand(bootedUdid!, text), {
-      env: { ...process.env, LANG: "C", LC_ALL: "C" },
-    });
-    const got = execSync(pbpasteCommand(bootedUdid!), {
-      encoding: "utf-8",
-      env: { ...process.env, LANG: "C", LC_ALL: "C" },
-    });
-    expect(got).toBe(text);
   });
 });

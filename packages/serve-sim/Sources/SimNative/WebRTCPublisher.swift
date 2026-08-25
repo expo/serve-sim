@@ -200,6 +200,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                 self.frameLock.lock()
                 self.maxFps = normalizedMaxFps
                 self.frameIntervalNs = UInt64(1_000_000_000 / normalizedMaxFps)
+                self.stopFramePumpTimer()
                 self.frameLock.unlock()
                 self.targetBitrate = max(100_000, targetBitrate)
                 self.maxDimension = max(0, maxDimension)
@@ -406,10 +407,10 @@ final class WebRTCPublisher: @unchecked Sendable {
         let frame = PendingWebRTCFrame(pixelBuffer: pixelBuffer, timestamp: timestamp)
         var scheduleDelayNs: UInt64?
         let nowNs = DispatchTime.now().uptimeNanoseconds
-        let schedulingToleranceNs: UInt64 = 1_000_000
         frameLock.lock()
         offeredFrameCount &+= 1
         let frameIntervalNs = self.frameIntervalNs
+        let schedulingToleranceNs = frameIntervalNs / 4
         guard acceptsFrames else {
             frameLock.unlock()
             return
@@ -569,27 +570,30 @@ final class WebRTCPublisher: @unchecked Sendable {
             }
             sessions.removeAll()
             setFrameAcceptance(false)
+            stopFramePumpTimer()
         }
     }
 
-    private func drainFramePump() {
+    private func drainFramePump(pacedByTimer: Bool = false) {
         let nowNs = DispatchTime.now().uptimeNanoseconds
-        let schedulingToleranceNs: UInt64 = 1_000_000
         frameLock.lock()
         let frameIntervalNs = self.frameIntervalNs
+        let schedulingToleranceNs = frameIntervalNs / 4
         guard acceptsFrames else {
             pendingFrame = nil
             framePumpScheduled = false
+            stopFramePumpTimer()
             frameLock.unlock()
             return
         }
         guard let frame = pendingFrame else {
             framePumpScheduled = false
+            stopFramePumpTimer()
             frameLock.unlock()
             return
         }
         let earliestSendNs = lastSentFrameAtNs &+ frameIntervalNs
-        if lastSentFrameAtNs > 0, nowNs &+ schedulingToleranceNs < earliestSendNs {
+        if !pacedByTimer, lastSentFrameAtNs > 0, nowNs &+ schedulingToleranceNs < earliestSendNs {
             let delayNs = earliestSendNs - nowNs
             frameLock.unlock()
             scheduleFramePump(afterNs: delayNs)
@@ -617,10 +621,12 @@ final class WebRTCPublisher: @unchecked Sendable {
             scheduleFramePump(afterNs: 0)
         } else {
             framePumpScheduled = false
+            stopFramePumpTimer()
             frameLock.unlock()
         }
     }
 
+    private var framePumpTimer: DispatchSourceTimer?
     private var pumpCycles = 0
     private var pumpIntervalSumNs: UInt64 = 0
     private var pumpIntervalMaxNs: UInt64 = 0
@@ -649,18 +655,37 @@ final class WebRTCPublisher: @unchecked Sendable {
         )
     }
 
+    /// One repeating timer for the whole session rather than a fresh one-shot per frame. Creating,
+    /// resuming and cancelling a timer source every cycle costs more than the interval it is trying
+    /// to measure once the host is slow, which shows up as the pump waiting two intervals per frame.
+    private func startFramePumpTimer() {
+        guard framePumpTimer == nil else { return }
+        let interval = Int(frameIntervalNs)
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(
+            deadline: .now() + .nanoseconds(interval),
+            repeating: .nanoseconds(interval),
+            leeway: .nanoseconds(0)
+        )
+        timer.setEventHandler { [weak self] in self?.drainFramePump(pacedByTimer: true) }
+        framePumpTimer = timer
+        timer.resume()
+    }
+
+    private func stopFramePumpTimer() {
+        framePumpTimer?.setEventHandler {}
+        framePumpTimer?.cancel()
+        framePumpTimer = nil
+    }
+
     private func scheduleFramePump(afterNs delayNs: UInt64) {
         if delayNs == 0 {
             queue.async { self.drainFramePump() }
             return
         }
-        let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + .nanoseconds(Int(delayNs)), leeway: .nanoseconds(0))
-        timer.setEventHandler { [weak self] in
-            timer.cancel()
-            self?.drainFramePump()
-        }
-        timer.resume()
+        // The repeating timer already ticks at the frame interval; the deadline check in
+        // drainFramePump decides whether a given tick may send.
+        startFramePumpTimer()
     }
 
     private func setFrameAcceptance(_ active: Bool) {

@@ -140,7 +140,7 @@ describeIfSim("WebRTC resolution cap", () => {
         "--webrtc-codec", "vp8",
         "--max-dimension", String(MAX_DIMENSION),
         "--video-bitrate", "3000000",
-        "--video-fps", "60",
+        "--video-fps", "120",
         udid!,
       ],
       { stdio: ["ignore", "pipe", "pipe"] },

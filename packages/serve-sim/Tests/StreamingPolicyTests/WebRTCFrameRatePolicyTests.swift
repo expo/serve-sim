@@ -2,25 +2,22 @@ import XCTest
 @testable import StreamingPolicy
 
 final class WebRTCFrameRatePolicyTests: XCTestCase {
-    func testConfiguredFrameRateOnlyControlsTheOutputPacer() {
+    func testProductionSpikeHardcodesEveryWebRTCLimitTo120FPS() {
         let policy = WebRTCFrameRatePolicy(configuredFramesPerSecond: 30)
 
-        XCTAssertEqual(policy.outputFramesPerSecond, 30)
-        XCTAssertEqual(policy.captureFramesPerSecond, 60)
-        XCTAssertGreaterThan(
-            policy.sourceAdapterFramesPerSecond,
-            WebRTCFrameRatePolicy(configuredFramesPerSecond: 120).outputFramesPerSecond
-        )
+        XCTAssertEqual(policy.outputFramesPerSecond, 120)
+        XCTAssertEqual(policy.captureFramesPerSecond, 120)
+        XCTAssertEqual(policy.sourceAdapterFramesPerSecond, 120)
     }
 
-    func testClampsOutputFrameRateToTheSupportedRange() {
-        XCTAssertEqual(
-            WebRTCFrameRatePolicy(configuredFramesPerSecond: 0).outputFramesPerSecond,
-            1
-        )
-        XCTAssertEqual(
-            WebRTCFrameRatePolicy(configuredFramesPerSecond: 240).outputFramesPerSecond,
-            120
-        )
+    func testConfiguredFrameRateCannotChangeTheProductionSpike() {
+        for configuredFramesPerSecond in [0, 1, 30, 60, 120, 240] {
+            XCTAssertEqual(
+                WebRTCFrameRatePolicy(
+                    configuredFramesPerSecond: configuredFramesPerSecond
+                ).outputFramesPerSecond,
+                120
+            )
+        }
     }
 }

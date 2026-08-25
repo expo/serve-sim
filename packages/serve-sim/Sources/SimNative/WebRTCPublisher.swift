@@ -492,14 +492,14 @@ final class WebRTCPublisher: @unchecked Sendable {
             videoSource.adaptOutputFormat(
                 toWidth: Int32(width),
                 height: Int32(height),
-                fps: Int32(WebRTCFrameRatePolicy.unthrottledSourceAdapterFramesPerSecond)
+                fps: Int32(WebRTCFrameRatePolicy.experimentalFramesPerSecond)
             )
             for session in sessions.values {
                 applyBitrateSettings(to: session)
             }
             streamLog(
                 "[webrtc] Video source output format: \(width)x\(height) " +
-                "adapterCeiling=\(WebRTCFrameRatePolicy.unthrottledSourceAdapterFramesPerSecond)fps " +
+                "adapterCeiling=\(WebRTCFrameRatePolicy.experimentalFramesPerSecond)fps " +
                 "pacer=\(maxFps)fps"
             )
         }
@@ -681,7 +681,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         captureDemandController.set(
             hasConnectedSession
                 ? CaptureDemand(
-                    framesPerSecond: WebRTCFrameRatePolicy.displayFramesPerSecond,
+                    framesPerSecond: WebRTCFrameRatePolicy.experimentalFramesPerSecond,
                     maxDimension: effectiveMaxDimension
                 )
                 : nil,
@@ -1217,6 +1217,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             : parameters.encodings
         let maxBitrate = NSNumber(value: targetBitrate)
         let minBitrate = NSNumber(value: max(100_000, targetBitrate / 5))
+        let frameRateLimit = NSNumber(value: WebRTCFrameRatePolicy.experimentalFramesPerSecond)
         let maxDimension = effectiveMaxDimension
         let sourceMaxDimension = max(lastOutputWidth, lastOutputHeight)
         let scaleResolutionDownBy = maxDimension > 0 && sourceMaxDimension > maxDimension
@@ -1226,7 +1227,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             encoding.isActive = true
             encoding.maxBitrateBps = maxBitrate
             encoding.minBitrateBps = minBitrate
-            encoding.maxFramerate = nil
+            encoding.maxFramerate = frameRateLimit
             encoding.scaleResolutionDownBy = NSNumber(value: scaleResolutionDownBy)
         }
         parameters.encodings = encodings
@@ -1241,7 +1242,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             maxBitrateBps: maxBitrate
         )
         streamLog(
-            "[webrtc] Sender parameters pacerFps=\(maxFps) senderFpsCap=none " +
+            "[webrtc] Sender parameters pacerFps=\(maxFps) senderFpsCap=\(frameRateLimit) " +
             "minBitrate=\(minBitrate) " +
             "maxBitrate=\(maxBitrate) maxDimension=\(maxDimension) " +
             "scaleDown=\(String(format: "%.3f", scaleResolutionDownBy)) " +

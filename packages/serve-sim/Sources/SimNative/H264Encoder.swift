@@ -36,7 +36,7 @@ actor H264Encoder {
     private var encodeInFlight = false
     private var pendingSettings: (fps: Int32, bitrate: Int)?
 
-    init(fps: Int = 60, bitrate: Int = 6_000_000) {
+    init(fps: Int = 120, bitrate: Int = 6_000_000) {
         self.fps = Int32(max(1, fps))
         self.bitrate = max(1, bitrate)
     }

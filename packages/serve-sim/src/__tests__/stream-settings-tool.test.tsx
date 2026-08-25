@@ -49,7 +49,7 @@ describe("StreamSettingsTool", () => {
     expect(html).toMatch(/aria-label="Video FPS"[^>]*disabled=""/);
   });
 
-  test("keeps shared video controls enabled for VP8 on hosts without H.264", () => {
+  test("shows the fixed WebRTC rate while keeping size and bitrate controls enabled", () => {
     const html = renderToStaticMarkup(
       <StreamSettingsTool
         settings={{ ...settings, transport: "webrtc", webRtcCodec: "vp8" }}
@@ -62,7 +62,8 @@ describe("StreamSettingsTool", () => {
     );
 
     expect(html).not.toMatch(/aria-label="Max size"[^>]*disabled=""/);
-    expect(html).not.toMatch(/aria-label="Video FPS"[^>]*disabled=""/);
+    expect(html).toMatch(/aria-label="Video FPS"[^>]*disabled=""/);
+    expect(html).toContain('<span class="block truncate">120</span>');
     expect(html).not.toMatch(/aria-label="Video bitrate"[^>]*disabled=""/);
     expect(html).toMatch(/aria-label="MJPEG FPS"[^>]*disabled=""/);
   });

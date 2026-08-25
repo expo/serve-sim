@@ -2,6 +2,8 @@ export type HttpStreamCodec = "auto" | "mjpeg" | "h264";
 export type WebRtcStreamCodec = "vp8" | "vp9" | "h264";
 export type WebRtcIceServer = { urls: string[]; username?: string; credential?: string };
 
+export const WEBRTC_EXPERIMENTAL_FRAMES_PER_SECOND = 120;
+
 export type StreamSettings = (
   | { transport: "http"; codec?: HttpStreamCodec }
   | { transport: "webrtc"; codec: WebRtcStreamCodec; iceServers?: WebRtcIceServer[] }
@@ -31,7 +33,7 @@ export const DEFAULT_STREAM_ENCODER_SETTINGS: StreamEncoderSettings = {
   mjpegQuality: 0.7,
   maxDimension: 0,
   h264Bitrate: 6_000_000,
-  h264Fps: 60,
+  h264Fps: WEBRTC_EXPERIMENTAL_FRAMES_PER_SECOND,
 };
 
 export const DEFAULT_STREAM_CONTROL_SETTINGS: StreamControlSettings = {

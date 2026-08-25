@@ -12,6 +12,7 @@ import {
 describe("stream settings", () => {
   test("uses native resolution and clamps untrusted numeric values", () => {
     expect(DEFAULT_STREAM_CONTROL_SETTINGS.maxDimension).toBe(0);
+    expect(DEFAULT_STREAM_CONTROL_SETTINGS.h264Fps).toBe(120);
     expect(normalizeStreamControlSettings({
       mjpegFps: 0,
       mjpegQuality: 4,

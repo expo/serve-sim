@@ -1,24 +1,21 @@
 public struct WebRTCFrameRatePolicy: Equatable, Sendable {
-    /// Simulator displays render at 60 Hz. Capture changing surfaces at that
-    /// cadence and let the latest-frame pacer own the configured output rate.
-    public static let displayFramesPerSecond = 60
-
-    /// `RTCVideoSource` requires an FPS when adapting dimensions. Keep its
-    /// internal frame dropper well above every supported output setting so it
-    /// cannot become a second, independently phased rate limiter.
-    public static let unthrottledSourceAdapterFramesPerSecond = 1_000
+    /// Production experiment: run every WebRTC frame-rate control at the same
+    /// deliberately high ceiling. The configured value is ignored so we can
+    /// determine whether lower, independently phased caps are suppressing the
+    /// real encoder cadence.
+    public static let experimentalFramesPerSecond = 120
 
     public let outputFramesPerSecond: Int
 
-    public init(configuredFramesPerSecond: Int) {
-        outputFramesPerSecond = max(1, min(120, configuredFramesPerSecond))
+    public init(configuredFramesPerSecond _: Int) {
+        outputFramesPerSecond = Self.experimentalFramesPerSecond
     }
 
     public var captureFramesPerSecond: Int {
-        Self.displayFramesPerSecond
+        Self.experimentalFramesPerSecond
     }
 
     public var sourceAdapterFramesPerSecond: Int {
-        Self.unthrottledSourceAdapterFramesPerSecond
+        Self.experimentalFramesPerSecond
     }
 }

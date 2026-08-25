@@ -41,7 +41,7 @@ describe("streamRuntimeArgs", () => {
         mjpegQuality: 0.55,
         maxDimension: 1280,
         h264Bitrate: 3_000_000,
-        h264Fps: 60,
+        h264Fps: 120,
         iceServers: [
           { urls: ["stun:stun.example.com:19302"] },
           {
@@ -73,7 +73,7 @@ describe("streamRuntimeArgs", () => {
       "--video-bitrate",
       "3000000",
       "--video-fps",
-      "60",
+      "120",
     ]);
   });
 });
@@ -108,7 +108,7 @@ describe("streamSettingsEqual", () => {
         mjpegQuality: 0.7,
         maxDimension: 0,
         h264Bitrate: 6_000_000,
-        h264Fps: 60,
+        h264Fps: 120,
       },
     )).toBe(true);
     expect(streamSettingsEqual(

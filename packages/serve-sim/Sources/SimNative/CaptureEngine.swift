@@ -349,13 +349,19 @@ actor CaptureEngine {
         let sessions = await webRTCPublisher?.senderStatistics(sessionId: sessionId) ?? []
         let counts = await frameCapture.frameCounts()
         let flow = webRTCPublisher?.frameFlowCounts()
+        let pump = webRTCPublisher?.pumpTimings()
         let data = try JSONEncoder().encode(WebRTCSenderStatsReport(
             sessions: sessions,
             capture: WebRTCCaptureCounts(
                 screenFrames: counts.screen,
                 idleFrames: counts.idle,
                 offeredFrames: flow?.offered,
-                forwardedFrames: flow?.forwarded
+                forwardedFrames: flow?.forwarded,
+                pumpSends: pump?.sends,
+                pumpIntervalSumMs: pump?.intervalSumMs,
+                pumpLatenessSamples: pump?.latenessSamples,
+                pumpLatenessSumMs: pump?.latenessSumMs,
+                pumpLatenessMaxMs: pump?.latenessMaxMs
             )
         ))
         return String(decoding: data, as: UTF8.self)

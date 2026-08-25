@@ -69,6 +69,14 @@ struct WebRTCSenderStatsPayload: Codable {
     let sourceFramesDropped: Int?
 }
 
+struct WebRTCPumpTimings {
+    let sends: UInt64
+    let intervalSumMs: Double
+    let latenessSamples: UInt64
+    let latenessSumMs: Double
+    let latenessMaxMs: Double
+}
+
 struct WebRTCCaptureCounts: Codable {
     let screenFrames: UInt64
     let idleFrames: UInt64
@@ -76,6 +84,12 @@ struct WebRTCCaptureCounts: Codable {
     /// forwarded-to-encoded gap is not.
     let offeredFrames: UInt64?
     let forwardedFrames: UInt64?
+    /// Nil when nothing is publishing, matching the frame counts above.
+    let pumpSends: UInt64?
+    let pumpIntervalSumMs: Double?
+    let pumpLatenessSamples: UInt64?
+    let pumpLatenessSumMs: Double?
+    let pumpLatenessMaxMs: Double?
 }
 
 struct WebRTCSenderStatsReport: Codable {
@@ -136,7 +150,9 @@ final class WebRTCPublisher: @unchecked Sendable {
         _ = Once.run
     }
 
-    private let queue = DispatchQueue(label: "webrtc-publisher")
+    // Matches the capture queue. An unspecified-QoS queue is deprioritised and its timers are
+    // coalesced, which costs whole frame intervals when the host is contended.
+    private let queue = DispatchQueue(label: "webrtc-publisher", qos: .userInteractive)
     private let factory: LKRTCPeerConnectionFactory
     private let videoSource: LKRTCVideoSource
     private let videoTrack: LKRTCVideoTrack
@@ -151,6 +167,16 @@ final class WebRTCPublisher: @unchecked Sendable {
     private var acceptsFrames = false
     private var latestFrame: PendingWebRTCFrame?
     private var framePacer: ContinuousFramePacer
+    /// Delivered gap between sends, and how late a timer wake-up arrived. Cumulative; a reader
+    /// diffs two polls.
+    private var arrivalPumpPending = false
+    private var pumpSends: UInt64 = 0
+    private var pumpLastSentNs: UInt64 = 0
+    private var pumpIntervalSumNs: UInt64 = 0
+    private var pumpLatenessSamples: UInt64 = 0
+    private var pumpLatenessSumNs: UInt64 = 0
+    private var pumpLatenessMaxNs: UInt64 = 0
+
     /// Both guarded by `frameLock`.
     private var offeredFrameCount: UInt64 = 0
     private var forwardedFrameCount: UInt64 = 0
@@ -436,6 +462,37 @@ final class WebRTCPublisher: @unchecked Sendable {
         return durations.mapValues(\.doubleValue)
     }
 
+    private func recordPumpLateness(_ latenessNs: UInt64) {
+        frameLock.lock()
+        defer { frameLock.unlock() }
+        pumpLatenessSamples &+= 1
+        pumpLatenessSumNs &+= latenessNs
+        pumpLatenessMaxNs = max(pumpLatenessMaxNs, latenessNs)
+    }
+
+    private func recordPumpCycle(sentAtNs: UInt64) {
+        frameLock.lock()
+        defer { frameLock.unlock() }
+        if pumpLastSentNs > 0 {
+            pumpSends &+= 1
+            pumpIntervalSumNs &+= sentAtNs &- pumpLastSentNs
+        }
+        pumpLastSentNs = sentAtNs
+    }
+
+    func pumpTimings() -> WebRTCPumpTimings {
+        frameLock.lock()
+        defer { frameLock.unlock() }
+        let ms = { (v: UInt64) in Double(v) / 1_000_000 }
+        return WebRTCPumpTimings(
+            sends: pumpSends,
+            intervalSumMs: ms(pumpIntervalSumNs),
+            latenessSamples: pumpLatenessSamples,
+            latenessSumMs: ms(pumpLatenessSumNs),
+            latenessMaxMs: ms(pumpLatenessMaxNs)
+        )
+    }
+
     func frameFlowCounts() -> (offered: UInt64, forwarded: UInt64) {
         frameLock.lock()
         defer { frameLock.unlock() }
@@ -443,7 +500,6 @@ final class WebRTCPublisher: @unchecked Sendable {
     }
 
     func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp _: CMTime) {
-        var scheduleDelayNs: UInt64?
         let nowNs = DispatchTime.now().uptimeNanoseconds
         frameLock.lock()
         offeredFrameCount &+= 1
@@ -454,11 +510,20 @@ final class WebRTCPublisher: @unchecked Sendable {
         latestFrame = PendingWebRTCFrame(pixelBuffer: pixelBuffer)
         // One pump owns the cadence. New source frames only replace the
         // retained latest frame, so the queue cannot build a stale backlog.
-        scheduleDelayNs = framePacer.latestFrameArrived(atNanoseconds: nowNs)
-        frameLock.unlock()
-        if let scheduleDelayNs {
-            scheduleFramePump(afterNs: scheduleDelayNs)
+        let arrival = framePacer.latestFrameArrived(atNanoseconds: nowNs)
+        switch arrival {
+        case .ignore:
+            break
+        case .pumpNow:
+            guard !arrivalPumpPending else { break }
+            arrivalPumpPending = true
+            queue.async { self.drainFramePump(chained: false) }
+        case let .schedule(delayNs):
+            frameLock.unlock()
+            scheduleFramePump(afterNs: delayNs)
+            return
         }
+        frameLock.unlock()
     }
 
     private func nextFrameTimestampNs(_ proposedTimestamp: UInt64) -> Int64 {
@@ -606,14 +671,18 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
     }
 
-    private func drainFramePump() {
+    private func drainFramePump(dueAtNs: UInt64 = 0, chained: Bool = true) {
         let nowNs = DispatchTime.now().uptimeNanoseconds
+        // Only a timer wake-up carries a deadline. An arrival pump's delay is a queue hop, and
+        // mixing the two would make this unreadable.
+        if dueAtNs > 0, nowNs > dueAtNs { recordPumpLateness(nowNs &- dueAtNs) }
         frameLock.lock()
+        if !chained { arrivalPumpPending = false }
         let decision = framePacer.tick(atNanoseconds: nowNs)
         guard case let .send(timestampNs, nextDelayNs) = decision,
               let frame = latestFrame else {
             frameLock.unlock()
-            if case let .wait(delayNs) = decision {
+            if chained, case let .wait(delayNs) = decision {
                 scheduleFramePump(afterNs: delayNs)
             }
             return
@@ -623,19 +692,23 @@ final class WebRTCPublisher: @unchecked Sendable {
         // Schedule before conversion/encoding work. The serial publisher queue
         // coalesces an over-budget tick instead of adding that work duration to
         // every configured frame interval.
-        scheduleFramePump(afterNs: nextDelayNs)
+        if chained { scheduleFramePump(afterNs: nextDelayNs) }
         if sessions.values.contains(where: \.isConnected) {
             sendFrameOnQueue(frame.pixelBuffer, timestampNanoseconds: timestampNs)
+            recordPumpCycle(sentAtNs: nowNs)
         }
     }
 
+
     private func scheduleFramePump(afterNs delayNs: UInt64) {
         if delayNs == 0 {
-            queue.async { self.drainFramePump() }
+            let due = DispatchTime.now().uptimeNanoseconds
+            queue.async { self.drainFramePump(dueAtNs: due) }
             return
         }
+        let due = DispatchTime.now().uptimeNanoseconds &+ delayNs
         queue.asyncAfter(deadline: .now() + .nanoseconds(Int(delayNs))) {
-            self.drainFramePump()
+            self.drainFramePump(dueAtNs: due)
         }
     }
 
@@ -645,6 +718,8 @@ final class WebRTCPublisher: @unchecked Sendable {
             acceptsFrames = active
             latestFrame = nil
             framePacer.setActive(active)
+            // Without this the idle gap across a reconnect is recorded as one enormous interval.
+            pumpLastSentNs = 0
         }
         frameLock.unlock()
     }

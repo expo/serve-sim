@@ -10,6 +10,17 @@ import {
 } from "../stream-settings";
 
 describe("stream settings", () => {
+  test("keeps MJPEG at 120 fps while video accepts 140 fps", () => {
+    expect(normalizeStreamControlSettings({ mjpegFps: 120, h264Fps: 140 })).toMatchObject({
+      mjpegFps: 120,
+      h264Fps: 140,
+    });
+    expect(normalizeStreamControlSettings({ mjpegFps: 121, h264Fps: 141 })).toMatchObject({
+      mjpegFps: 120,
+      h264Fps: 140,
+    });
+  });
+
   test("uses native resolution and clamps untrusted numeric values", () => {
     expect(DEFAULT_STREAM_CONTROL_SETTINGS.maxDimension).toBe(0);
     expect(normalizeStreamControlSettings({
@@ -23,7 +34,7 @@ describe("stream settings", () => {
       mjpegQuality: 1,
       maxDimension: 0,
       h264Bitrate: 6_000_000,
-      h264Fps: 120,
+      h264Fps: 140,
     });
   });
 

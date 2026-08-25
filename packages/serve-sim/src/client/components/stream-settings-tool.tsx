@@ -6,6 +6,7 @@ import { useSenderStats } from "../hooks/use-sender-stats";
 import { useStreamStats } from "../hooks/use-stream-stats";
 import { StreamStatsDownload, StreamStatsSection, describeFaults, summariseStream } from "./stream-stats-tool";
 import { SettingRow, SettingSelect } from "./simulator-settings-tool";
+import { streamFpsOptions } from "../utils/stream-fps-options";
 import type {
   HttpStreamCodec,
   StreamControlSettings,
@@ -38,7 +39,6 @@ const MAX_DIMENSION_OPTIONS = [
   { value: "960", label: "960" },
   { value: "720", label: "720" },
 ];
-const FPS_OPTIONS = ["60", "30", "20", "15", "10", "5"].map((value) => ({ value, label: value }));
 const QUALITY_OPTIONS = [
   { value: "0.45", label: "45%" },
   { value: "0.55", label: "55%" },
@@ -201,7 +201,7 @@ export function StreamSettingsTool({
           <SettingSelect
             label="MJPEG FPS"
             value={String(settings.mjpegFps)}
-            options={optionsWithCurrentValue(settings.mjpegFps, FPS_OPTIONS, String)}
+            options={streamFpsOptions(settings.mjpegFps)}
             disabled={encoderSettingsDisabled || !httpActive}
             onChange={(v) => onEncoderSettingsChange({ mjpegFps: Number(v) })}
           />
@@ -223,7 +223,7 @@ export function StreamSettingsTool({
           <SettingSelect
             label="Video FPS"
             value={String(settings.h264Fps)}
-            options={optionsWithCurrentValue(settings.h264Fps, FPS_OPTIONS, String)}
+            options={streamFpsOptions(settings.h264Fps)}
             disabled={
               encoderSettingsDisabled
               || (httpActive && (!avccSupported || settings.httpCodec === "mjpeg"))

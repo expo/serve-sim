@@ -90,7 +90,7 @@ function SenderRows({ sender }: { sender: SenderStreamStats }) {
       <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
         <Cell label="Encode FPS" value={fps(sender.reportedFps)} />
         <Cell label="Target" value={bitrate(sender.targetKbps)} />
-        <Cell label="Source FPS" value={fps(sender.sourceFps)} />
+        <Cell label="Pacer FPS" value={fps(sender.sourceFps)} />
         <Cell label="Encode" value={ms(sender.encodeMsPerFrame, 1)} hint="/frame" />
         <Cell label="Frames sent" value={compact(sender.framesSent)} />
         <Cell label="Loss" value={percent(sender.lossRatio)} hint="total" />
@@ -106,8 +106,8 @@ function CaptureRows({ capture }: { capture: CaptureCounts }) {
       <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
         <Cell label="Screen frames" value={compact(capture.screenFrames)} />
         <Cell label="Idle frames" value={compact(capture.idleFrames)} />
-        <Cell label="Offered" value={compact(capture.offeredFrames)} />
-        <Cell label="Forwarded" value={compact(capture.forwardedFrames)} />
+        <Cell label="Capture deliveries" value={compact(capture.offeredFrames)} />
+        <Cell label="Pacer submissions" value={compact(capture.forwardedFrames)} />
       </div>
     </div>
   );

@@ -290,8 +290,8 @@ describe("capture rows", () => {
     );
     expect(row(markup, "Screen frames")).toBe("900");
     expect(row(markup, "Idle frames")).toBe("12");
-    expect(row(markup, "Offered")).toBe("880");
-    expect(row(markup, "Forwarded")).toBe("830");
+    expect(row(markup, "Capture deliveries")).toBe("880");
+    expect(row(markup, "Pacer submissions")).toBe("830");
   });
 
   test("shows a fractional encoder rate, so a limping encoder is not a dead one", () => {
@@ -304,7 +304,7 @@ describe("capture rows", () => {
       />,
     );
     expect(row(markup, "Encode FPS")).toBe("0.4 fps");
-    expect(row(markup, "Source FPS")).toBe("0.4 fps");
+    expect(row(markup, "Pacer FPS")).toBe("0.4 fps");
   });
 
   test("shortens a lifetime counter so it fits its cell", () => {
@@ -317,8 +317,8 @@ describe("capture rows", () => {
       />,
     );
     expect(row(markup, "Screen frames")).toBe("1.62M");
-    expect(row(markup, "Offered")).toBe("105.5k");
-    expect(row(markup, "Forwarded")).toBe("4.4k");
+    expect(row(markup, "Capture deliveries")).toBe("105.5k");
+    expect(row(markup, "Pacer submissions")).toBe("4.4k");
     expect(row(markup, "Idle frames")).toBe("0");
   });
 });

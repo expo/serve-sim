@@ -4,6 +4,7 @@ import CoreMedia
 import CoreGraphics
 import IOSurface
 import ObjectiveC
+import StreamingPolicy
 
 typealias ScreenFrameCallback = @convention(block) () -> Void
 typealias ScreenSurfacesChangedCallback = @convention(block) (IOSurface?, IOSurface?) -> Void
@@ -51,7 +52,9 @@ actor FrameCapture {
     ///    idle sim never gets a cached frame to show.
     /// Re-emitting at ~5 fps fixes both without meaningful CPU cost.
     private static let idleInterval: ContinuousClock.Duration = .milliseconds(200)
-    private static let surfacePollInterval: ContinuousClock.Duration = .nanoseconds(16_666_667)
+    private static let surfacePollInterval: ContinuousClock.Duration = .nanoseconds(
+        SimulatorCapturePollPolicy.intervalNanoseconds
+    )
     private static let rewireInterval: ContinuousClock.Duration = .seconds(1)
 
     private var descriptors: [NSObject] = []
@@ -81,7 +84,7 @@ actor FrameCapture {
 
         try wireUpFramebuffer()
         startSurfacePoller()
-        print("[capture] Frame callbacks registered + 60fps IOSurface poll + 5fps idle floor")
+        print("[capture] Frame callbacks registered + 60Hz IOSurface poll + 5fps idle floor")
     }
 
     /// Find all framebuffer display descriptors, register callbacks on each,

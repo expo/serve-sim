@@ -6,7 +6,6 @@ import { useSenderStats } from "../hooks/use-sender-stats";
 import { useStreamStats } from "../hooks/use-stream-stats";
 import { StreamStatsDownload, StreamStatsSection, describeFaults, summariseStream } from "./stream-stats-tool";
 import { SettingRow, SettingSelect } from "./simulator-settings-tool";
-import { WEBRTC_EXPERIMENTAL_FRAMES_PER_SECOND } from "../../stream-settings";
 import type {
   HttpStreamCodec,
   StreamControlSettings,
@@ -102,9 +101,6 @@ export function StreamSettingsTool({
   const summary = stats === null ? null : summariseStream(stats);
   const httpActive = settings.transport === "http";
   const webrtcActive = settings.transport === "webrtc";
-  const videoFramesPerSecond = webrtcActive
-    ? WEBRTC_EXPERIMENTAL_FRAMES_PER_SECOND
-    : settings.h264Fps;
 
   return (
     <CollapsibleSection
@@ -147,7 +143,7 @@ export function StreamSettingsTool({
           faults={faults}
           sender={sender}
           capture={senderView.stale ? null : senderView.capture}
-          requestedFps={videoFramesPerSecond}
+          requestedFps={settings.h264Fps}
           stale={stale}
           action={
             <StreamStatsDownload
@@ -226,11 +222,10 @@ export function StreamSettingsTool({
         <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="Video FPS">
           <SettingSelect
             label="Video FPS"
-            value={String(videoFramesPerSecond)}
-            options={optionsWithCurrentValue(videoFramesPerSecond, FPS_OPTIONS, String)}
+            value={String(settings.h264Fps)}
+            options={optionsWithCurrentValue(settings.h264Fps, FPS_OPTIONS, String)}
             disabled={
               encoderSettingsDisabled
-              || webrtcActive
               || (httpActive && (!avccSupported || settings.httpCodec === "mjpeg"))
             }
             onChange={(v) => onEncoderSettingsChange({ h264Fps: Number(v) })}

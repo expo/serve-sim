@@ -49,7 +49,7 @@ describe("StreamSettingsTool", () => {
     expect(html).toMatch(/aria-label="Video FPS"[^>]*disabled=""/);
   });
 
-  test("shows the fixed WebRTC rate while keeping size and bitrate controls enabled", () => {
+  test("keeps shared video controls enabled for VP8 on hosts without H.264", () => {
     const html = renderToStaticMarkup(
       <StreamSettingsTool
         settings={{ ...settings, transport: "webrtc", webRtcCodec: "vp8" }}
@@ -62,9 +62,24 @@ describe("StreamSettingsTool", () => {
     );
 
     expect(html).not.toMatch(/aria-label="Max size"[^>]*disabled=""/);
-    expect(html).toMatch(/aria-label="Video FPS"[^>]*disabled=""/);
-    expect(html).toContain('<span class="block truncate">120</span>');
+    expect(html).not.toMatch(/aria-label="Video FPS"[^>]*disabled=""/);
     expect(html).not.toMatch(/aria-label="Video bitrate"[^>]*disabled=""/);
     expect(html).toMatch(/aria-label="MJPEG FPS"[^>]*disabled=""/);
+  });
+
+  test("offers 120 FPS as an explicit WebRTC diagnostic override", () => {
+    const html = renderToStaticMarkup(
+      <StreamSettingsTool
+        settings={{ ...settings, transport: "webrtc", webRtcCodec: "vp8", h264Fps: 120 }}
+        onPlaybackSettingsChange={() => {}}
+        onEncoderSettingsChange={() => {}}
+        activeCodec="webrtc/vp8"
+        peerConnection={null}
+        avccSupported={false}
+      />,
+    );
+
+    expect(html).toContain('<span class="block truncate">120</span>');
+    expect(html).not.toMatch(/aria-label="Video FPS"[^>]*disabled=""/);
   });
 });

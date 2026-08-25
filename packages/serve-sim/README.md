@@ -15,7 +15,7 @@ https://github.com/user-attachments/assets/fbf890f4-c8c7-4684-82be-d677b8a188f8
 
 ## Features 
 
-- Up to 120 FPS over HTTP or low-latency WebRTC.
+- Up to 60 FPS over HTTP or low-latency WebRTC.
 - Swipe from the bottom to go home.
 - gestures like pinch to zoom by holding the option key.
 - Simulator logs are forwarded to the browser for browser-use MCP tools to read from.
@@ -92,7 +92,7 @@ Options:
       --video-bitrate <bits-per-second>
                       H.264/WebRTC target bitrate
       --video-fps <fps>
-                      H.264 frame rate (1-120); WebRTC is temporarily fixed at 120
+                      H.264/WebRTC frame rate (1-120)
       --list [device] List running streams
       --kill [device] Kill running stream(s)
 
@@ -112,17 +112,18 @@ WebRTC uses HTTP for SDP signaling and RTP for video. Simulator input and screen
 metadata continue over the existing helper WebSocket. ICE prefers a direct UDP
 path when one is reachable, even if the page was loaded through a tunnel URL;
 TURN is used as a fallback when direct/STUN candidates fail.
-Software VP8 treats the simulator as interactive realtime video: it prioritizes
-frame rate under CPU or bandwidth pressure and automatically
+Software VP8 treats the simulator as interactive realtime video: it preserves
+the configured frame rate under CPU or bandwidth pressure and automatically
 steps its maximum dimension from 1280 to 1024 or 854 when the encoder cannot
 keep up. While a peer is connected, WebRTC continuously resubmits the latest
-captured frame at an experimental fixed 120 FPS cadence, so static and changing
-content keep the same realtime pipeline behavior. For this production spike,
-the IOSurface poll, latest-frame pump, libwebrtc source adapter, and RTP sender
-all use the same 120 FPS ceiling; `--video-fps` does not change WebRTC cadence.
-The capture source still avoids redundant IOSurface copies when the simulator
-is unchanged. Changing bitrate keeps the current adaptive VP8 resolution rung
-instead of restarting at 1280.
+captured frame at the configured `--video-fps` cadence, so static and changing
+content keep the same realtime pipeline behavior. Changing simulator surfaces
+are sampled at the display's 60 Hz cadence, and the latest-frame pump is the
+only configured frame-rate limiter; the libwebrtc source adapter and RTP sender
+do not apply duplicate caps. The capture source still avoids redundant
+IOSurface copies when the simulator is unchanged. Changing FPS or bitrate keeps
+the current adaptive VP8 resolution rung instead of restarting at 1280. Video
+defaults to 60 FPS; 120 FPS remains available as an explicit diagnostic override.
 Multiple WebRTC viewers can use the same simulator simultaneously. They share
 one SimulatorKit capture source, while each viewer has an independent peer
 connection, encoder, congestion controller, and helper WebSocket. HTTP streams

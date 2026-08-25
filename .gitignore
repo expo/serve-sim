@@ -9,10 +9,3 @@ dist/
 *.tsbuildinfo
 /packages/serve-sim/.xcode-build
 *.bun-build
-
-__pycache__/
-*.pyc
-
-.env.local
-.env.*.local
-.env.turn.local

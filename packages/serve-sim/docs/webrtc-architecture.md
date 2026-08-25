@@ -82,7 +82,7 @@ WebRTCPublisher (LiveKit WebRTC framework)
   +-- codec preference and H.264 capability probe
   +-- realtime maintain-frame-rate adaptation
   +-- VP8 1280 -> 1024 -> 854 resolution ladder
-  +-- latest-frame pacing at the experimental fixed 120 FPS rate
+  +-- latest-frame pacing at the configured frame rate
 ```
 
 The browser has three rendering paths:
@@ -96,7 +96,7 @@ The browser has three rendering paths:
 ### Capture and frame flow
 
 `FrameCapture` registers private SimulatorKit screen callbacks on every display
-descriptor and chooses the largest live IOSurface. A 120 Hz IOSurface seed poll
+descriptor and chooses the largest live IOSurface. A 60 Hz IOSurface seed poll
 catches changes when virtualized SimulatorKit callbacks arrive below the display
 cadence, while seed checks avoid duplicating unchanged frames. It also maintains
 a fixed 5 fps idle floor. Every frame has a host monotonic capture timestamp.
@@ -110,17 +110,22 @@ the fastest active consumer, and scales directly from the IOSurface into a
 private pooled buffer. A full-resolution private copy is only made when an
 active consumer explicitly requests native resolution.
 
-`WebRTCPublisher` adds a fixed-rate latest-frame pump and only accepts
+`WebRTCPublisher` adds one configured-rate latest-frame pump and only accepts
 frames while at least one peer is connected. After the first captured frame,
-the pump continuously resubmits its retained private buffer at 120 FPS; a new
-capture replaces that buffer without building a queue. Static
+the pump continuously resubmits its retained private buffer at the configured
+frame rate; a new capture replaces that buffer without building a queue. Static
 and changing content therefore exercise the same realtime WebRTC path without
 forcing `FrameCapture` to copy or scale an unchanged IOSurface on every tick.
-For this production experiment, changing surfaces are polled at 120 Hz and the
-latest-frame pump, libwebrtc source adapter, and RTP sender all use the same 120
-FPS ceiling. Configured FPS changes are intentionally ignored for WebRTC so we
-can measure whether lower or differently phased limits suppress real throughput.
-Bitrate changes preserve the current adaptive VP8 resolution rung.
+Changing surfaces are sampled at the display's 60 Hz cadence. The latest-frame
+pump alone applies the configured output frame rate; the libwebrtc source
+adapter uses a high safety ceiling and the RTP sender has no additional frame
+rate cap, avoiding independently phased frame droppers. The UI defaults to 60
+fps and keeps 120 fps available as an explicit diagnostic override. FPS and
+bitrate changes also preserve the current adaptive VP8 resolution rung.
+The publisher queue uses interactive QoS. When its cadence timer wakes late, an
+already-due capture arrival pumps the frame immediately while the original timer
+continues to own the cadence. Sender telemetry records delivered pump intervals
+and timer lateness so VM scheduling stalls can be separated from encoder drops.
 Its realtime video source requests maintain-frame-rate degradation, which
 allows libwebrtc to reduce resolution instead of sacrificing interactive
 cadence. Software VP8 begins at a maximum dimension of 1280 and samples outbound

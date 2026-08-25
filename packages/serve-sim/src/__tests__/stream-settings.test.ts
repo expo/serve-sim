@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_STREAM_CONTROL_SETTINGS,
-  STREAM_FPS_PRESETS,
   mergeStreamControlSettings,
   mergeStreamEncoderSettings,
   normalizeStreamControlSettings,
@@ -11,10 +10,6 @@ import {
 } from "../stream-settings";
 
 describe("stream settings", () => {
-  test("offers experimental high frame-rate presets", () => {
-    expect(STREAM_FPS_PRESETS).toEqual([140, 120, 90, 60, 30, 20, 15, 10, 5]);
-  });
-
   test("accepts 140 fps and clamps higher frame rates", () => {
     expect(normalizeStreamControlSettings({ mjpegFps: 140, h264Fps: 140 })).toMatchObject({
       mjpegFps: 140,

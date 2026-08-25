@@ -4,9 +4,6 @@ export type WebRtcIceServer = { urls: string[]; username?: string; credential?: 
 
 export const MAX_STREAM_FPS = 140;
 
-/** Experimental high-refresh-rate choices shared by the preview controls. */
-export const STREAM_FPS_PRESETS = [MAX_STREAM_FPS, 120, 90, 60, 30, 20, 15, 10, 5] as const;
-
 export type StreamSettings = (
   | { transport: "http"; codec?: HttpStreamCodec }
   | { transport: "webrtc"; codec: WebRtcStreamCodec; iceServers?: WebRtcIceServer[] }

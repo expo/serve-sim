@@ -6,15 +6,12 @@ import net from "net";
 import { join } from "path";
 import { RTCPeerConnection, RTCRtpCodecParameters } from "werift";
 
-// The assertion is the cap, not an exact size: libwebrtc lowers resolution further under CPU or
-// bandwidth pressure, so two sessions on a loaded machine legitimately differ.
-// Reads the resolution the encoder actually negotiated, off the wire, by acting
-// as a real receiving peer. `--max-dimension` is enforced on the WebRTC path
-// only through the sender's `scaleResolutionDownBy`, which is not signalled in
-// SDP and not reported by any endpoint — so a second peer is the only way to
-// observe it. The second session is the one that matters: the publisher's
-// re-apply is gated on a source size change, so a regression there leaves the
-// first viewer capped and every later one at native resolution.
+// Reads the resolution the encoder actually sends, off the wire, by acting as
+// a real receiving peer. The cap is not signalled in SDP or reported by an
+// endpoint, so each session must be checked from a received keyframe. The
+// second session is the one that catches a regression where only the first
+// viewer is capped. WebRTC may independently downscale either session below
+// the cap for bandwidth, so their exact dimensions do not have to match.
 
 const PKG_DIR = join(import.meta.dir, "../..");
 const CLI = join(PKG_DIR, "dist/serve-sim.js");

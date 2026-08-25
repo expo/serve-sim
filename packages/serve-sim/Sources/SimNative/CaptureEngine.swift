@@ -2,6 +2,7 @@ import Foundation
 import CoreVideo
 import CoreMedia
 import os
+import StreamingPolicy
 
 // JPEG and AVCC encode only while their HTTP transports have subscribers.
 // Encoded bytes are handed to the node-swift binding, which marshals them onto
@@ -11,6 +12,7 @@ struct Frame: Identifiable {
     let id = UUID()
     let pixelBuffer: CVPixelBuffer
     let timestamp: CMTime
+    let sourceDimensions: Dimensions
 }
 
 protocol FrameEncoder {
@@ -77,11 +79,13 @@ actor CaptureEngine {
     }
 
     private let deviceUDID: String
-    private let frameCapture = FrameCapture()
+    private let captureDemandController: CaptureDemandController
+    private let frameCapture: FrameCapture
     private var phase = Phase.unstarted
 
     // MJPEG is stateless, so all subscribers share one encoder instance.
     private let mjpegEncoder: MJPEGEncoder
+    private var mjpegConsumerIds = Set<UUID>()
     private var avccEncoders = [UUID: AVCCEncoder]()
     private var options: CaptureEngineOptions
 
@@ -93,8 +97,11 @@ actor CaptureEngine {
     private var cancelledWebRTCSessionIdOrder: [String] = []
 
     init(deviceUDID: String, options: CaptureEngineOptions) {
+        let captureDemandController = CaptureDemandController()
         self.deviceUDID = deviceUDID
         self.options = options
+        self.captureDemandController = captureDemandController
+        self.frameCapture = FrameCapture(demandController: captureDemandController)
         self.mjpegEncoder = MJPEGEncoder(
             fps: options.mjpegFps,
             quality: options.mjpegQuality,
@@ -114,9 +121,19 @@ actor CaptureEngine {
         )
         self.frameContinuation = frameContinuation
         do {
-            try await frameCapture.start(deviceUDID: deviceUDID) { pixelBuffer, timestamp in
-                frameContinuation.yield(Frame(pixelBuffer: pixelBuffer, timestamp: timestamp))
-            }
+            try await frameCapture.start(
+                deviceUDID: deviceUDID,
+                onDimensions: { [weak self] dimensions in
+                    Task { await self?.updateScreenSize(dimensions) }
+                },
+                onFrame: { pixelBuffer, timestamp, sourceDimensions in
+                    frameContinuation.yield(Frame(
+                        pixelBuffer: pixelBuffer,
+                        timestamp: timestamp,
+                        sourceDimensions: sourceDimensions
+                    ))
+                }
+            )
         } catch {
             frameContinuation.finish()
             self.frameContinuation = nil
@@ -139,6 +156,7 @@ actor CaptureEngine {
 
     private func addConsumer<E: FrameEncoder>(
         id: UUID = UUID(),
+        demand: CaptureDemand,
         encoder: E,
         onFrame: sending @escaping @isolated(any) (E.Encoded) async -> Void
     ) -> (@Sendable () async -> Void) {
@@ -147,6 +165,7 @@ actor CaptureEngine {
             await onFrame(encoded)
         }
         consumers[id] = consumer
+        captureDemandController.set(demand, for: id)
         return { await self.removeConsumer(id) }
     }
 
@@ -154,23 +173,44 @@ actor CaptureEngine {
         _ id: UUID
     ) {
         consumers.removeValue(forKey: id)
+        captureDemandController.set(nil, for: id)
     }
 
     private func handleFrame(_ frame: Frame) {
         guard phase == .running else { return }
-        screenSize = frame.pixelBuffer.dimensions
+        screenSize = frame.sourceDimensions
         for consumer in consumers.values {
             consumer.handleFrame(frame)
         }
     }
 
+    private func updateScreenSize(_ dimensions: Dimensions) {
+        screenSize = dimensions
+    }
+
     func addMJPEGConsumer(
         onFrame: sending @escaping (Dimensions, Data) async -> Void
     ) -> (@Sendable () async -> Void) {
-        return addConsumer(encoder: mjpegEncoder, onFrame: { [weak self] data in
-            guard let self, let data else { return }
-            await onFrame(screenSize, data)
-        })
+        let id = UUID()
+        mjpegConsumerIds.insert(id)
+        _ = addConsumer(
+            id: id,
+            demand: CaptureDemand(
+                framesPerSecond: options.mjpegFps,
+                maxDimension: options.maxDimension
+            ),
+            encoder: mjpegEncoder,
+            onFrame: { [weak self] data in
+                guard let self, let data else { return }
+                await onFrame(screenSize, data)
+            }
+        )
+        return { await self.removeMJPEGConsumer(id) }
+    }
+
+    private func removeMJPEGConsumer(_ id: UUID) {
+        mjpegConsumerIds.remove(id)
+        removeConsumer(id)
     }
 
     func addAVCCConsumer(
@@ -184,7 +224,14 @@ actor CaptureEngine {
         )
         avccEncoders[id] = encoder
         streamDiagnosticLog("[stream:avcc] subscriber added count=\(avccEncoders.count)")
-        _ = addConsumer(id: id, encoder: encoder) { [weak self] encoded in
+        _ = addConsumer(
+            id: id,
+            demand: CaptureDemand(
+                framesPerSecond: options.h264Fps,
+                maxDimension: options.maxDimension
+            ),
+            encoder: encoder
+        ) { [weak self] encoded in
             let flagDescription: Int32 = 1 << 0
             let flagKeyframe: Int32 = 1 << 1
 
@@ -215,7 +262,7 @@ actor CaptureEngine {
     }
 
     private func removeAVCCConsumer(_ id: UUID) {
-        consumers.removeValue(forKey: id)
+        removeConsumer(id)
         avccEncoders.removeValue(forKey: id)
         streamDiagnosticLog("[stream:avcc] subscriber removed count=\(avccEncoders.count)")
     }
@@ -226,6 +273,15 @@ actor CaptureEngine {
         if previous.mjpegFps != options.mjpegFps
             || previous.mjpegQuality != options.mjpegQuality
             || previous.maxDimension != options.maxDimension {
+            for id in mjpegConsumerIds {
+                captureDemandController.set(
+                    CaptureDemand(
+                        framesPerSecond: options.mjpegFps,
+                        maxDimension: options.maxDimension
+                    ),
+                    for: id
+                )
+            }
             await mjpegEncoder.update(
                 fps: options.mjpegFps,
                 quality: options.mjpegQuality,
@@ -235,6 +291,15 @@ actor CaptureEngine {
         if previous.h264Fps != options.h264Fps
             || previous.h264Bitrate != options.h264Bitrate
             || previous.maxDimension != options.maxDimension {
+            for id in avccEncoders.keys {
+                captureDemandController.set(
+                    CaptureDemand(
+                        framesPerSecond: options.h264Fps,
+                        maxDimension: options.maxDimension
+                    ),
+                    for: id
+                )
+            }
             // Actor methods are reentrant at `await`; snapshot the encoders so
             // an unsubscribe cannot mutate the dictionary during iteration.
             for encoder in Array(avccEncoders.values) {
@@ -284,13 +349,19 @@ actor CaptureEngine {
         let sessions = await webRTCPublisher?.senderStatistics(sessionId: sessionId) ?? []
         let counts = await frameCapture.frameCounts()
         let flow = webRTCPublisher?.frameFlowCounts()
+        let pump = webRTCPublisher?.pumpTimings()
         let data = try JSONEncoder().encode(WebRTCSenderStatsReport(
             sessions: sessions,
             capture: WebRTCCaptureCounts(
                 screenFrames: counts.screen,
                 idleFrames: counts.idle,
                 offeredFrames: flow?.offered,
-                forwardedFrames: flow?.forwarded
+                forwardedFrames: flow?.forwarded,
+                pumpSends: pump?.sends,
+                pumpIntervalSumMs: pump?.intervalSumMs,
+                pumpLatenessSamples: pump?.latenessSamples,
+                pumpLatenessSumMs: pump?.latenessSumMs,
+                pumpLatenessMaxMs: pump?.latenessMaxMs
             )
         ))
         return String(decoding: data, as: UTF8.self)
@@ -307,7 +378,11 @@ actor CaptureEngine {
         frameContinuation = nil
         webRTCPublisher?.stop()
         webRTCPublisher = nil
+        for id in consumers.keys {
+            captureDemandController.set(nil, for: id)
+        }
         consumers.removeAll()
+        mjpegConsumerIds.removeAll()
         avccEncoders.removeAll()
         await frameCapture.stop()
     }
@@ -317,12 +392,15 @@ actor CaptureEngine {
             return webRTCPublisher
         }
 
+        let demandId = UUID()
         let publisher = WebRTCPublisher(
             maxFps: options.h264Fps,
             targetBitrate: options.h264Bitrate,
-            maxDimension: options.maxDimension
+            maxDimension: options.maxDimension,
+            captureDemandController: captureDemandController,
+            captureDemandId: demandId
         )
-        consumers[UUID()] = WebRTCConsumer(publisher: publisher)
+        consumers[demandId] = WebRTCConsumer(publisher: publisher)
         webRTCPublisher = publisher
         return publisher
     }

@@ -70,7 +70,7 @@ DeviceSession (one per UDID)
           |
           v
 CaptureEngine
-  +-- FrameCapture (callbacks + IOSurface seed poll -> CVPixelBuffer)
+  +-- FrameCapture (callbacks + IOSurface seed poll + shared demand gate)
   +-- MJPEG consumers
   +-- AVCC consumers
   +-- WebRTCPublisher consumer
@@ -80,7 +80,8 @@ WebRTCPublisher (LiveKit WebRTC framework)
   +-- active peer registry and serialized SDP offer setup
   +-- ICE gathering
   +-- codec preference and H.264 capability probe
-  +-- pre-encode resolution scaling and pixel-buffer conversion
+  +-- realtime maintain-frame-rate adaptation
+  +-- VP8 1280 -> 1024 -> 854 resolution ladder
   +-- latest-frame pacing at the configured frame rate
 ```
 
@@ -102,15 +103,41 @@ a fixed 5 fps idle floor. Every frame has a host monotonic capture timestamp.
 
 `CaptureEngine` fans frames out synchronously to consumers. Each encoder keeps a
 single newest pending frame, so a slow consumer cannot create latency by
-building a backlog. `WebRTCPublisher` adds one configured-rate latest-frame pump,
-pre-scales accepted pixel buffers to the configured maximum dimension, and only
-accepts frames while at least one peer is connected. Its shared video source
-fans each accepted frame out to every peer connection; libwebrtc maintains an
+building a backlog. Active consumers publish their maximum frame-rate and
+resolution demand to `FrameCapture`. The shared gate runs before any IOSurface
+copy: it skips capture work with no viewers, bounds changed-frame retention to
+the fastest active consumer, and scales directly from the IOSurface into a
+private pooled buffer. A full-resolution private copy is only made when an
+active consumer explicitly requests native resolution.
+
+`WebRTCPublisher` adds one configured-rate latest-frame pump and only accepts
+frames while at least one peer is connected. After the first captured frame,
+the pump continuously resubmits its retained private buffer at the configured
+frame rate; a new capture replaces that buffer without building a queue. Static
+and changing content therefore exercise the same realtime WebRTC path without
+forcing `FrameCapture` to copy or scale an unchanged IOSurface on every tick.
+Changing surfaces are sampled at the display's 60 Hz cadence. The latest-frame
+pump alone applies the configured output frame rate; the libwebrtc source
+adapter uses a high safety ceiling and the RTP sender has no additional frame
+rate cap, avoiding independently phased frame droppers. The UI defaults to 60
+fps and keeps 120 fps available as an explicit diagnostic override. FPS and
+bitrate changes also preserve the current adaptive VP8 resolution rung.
+The publisher queue uses interactive QoS. When its cadence timer wakes late, an
+already-due capture arrival pumps the frame immediately while the original timer
+continues to own the cadence. Sender telemetry records delivered pump intervals
+and timer lateness so VM scheduling stalls can be separated from encoder drops.
+Its realtime video source requests maintain-frame-rate degradation, which
+allows libwebrtc to reduce resolution instead of sacrificing interactive
+cadence. Software VP8 begins at a maximum dimension of 1280 and samples outbound
+sender statistics once per second. Three constrained samples step down through
+1024 and 854; fifteen healthy samples step back up. The shared video source fans
+each accepted frame out to every peer connection; libwebrtc maintains an
 independent sender, encoder, bitrate estimate, and packet stream per viewer.
 
 The WebRTC publisher is created lazily on the first offer. Its frame consumer
-currently remains attached until the device capture session stops, but sending
-a frame while no peer is active exits before conversion or encoding.
+remains attached until the device capture session stops, but it withdraws its
+capture demand when no peer is active, before copying, scaling, conversion, or
+encoding.
 
 ### Signaling lifecycle
 

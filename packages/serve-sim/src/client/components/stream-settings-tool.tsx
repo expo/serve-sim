@@ -38,7 +38,7 @@ const MAX_DIMENSION_OPTIONS = [
   { value: "960", label: "960" },
   { value: "720", label: "720" },
 ];
-const FPS_OPTIONS = ["60", "30", "20", "15", "10", "5"].map((value) => ({ value, label: value }));
+const FPS_OPTIONS = ["120", "60", "30", "20", "15", "10", "5"].map((value) => ({ value, label: value }));
 const QUALITY_OPTIONS = [
   { value: "0.45", label: "45%" },
   { value: "0.55", label: "55%" },

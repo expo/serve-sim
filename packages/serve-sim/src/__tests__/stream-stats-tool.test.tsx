@@ -241,6 +241,7 @@ describe("StreamStatsBody", () => {
 
 const capture = {
   screenFrames: 900, idleFrames: 12, offeredFrames: 880, forwardedFrames: 830,
+  pumpSends: null, pumpIntervalSumMs: null, pumpLatenessSamples: null, pumpLatenessSumMs: null, pumpLatenessMaxMs: null,
 };
 
 describe("stale samples", () => {
@@ -313,7 +314,10 @@ describe("capture rows", () => {
         stats={stats()}
         history={[stats()]}
         faults={[]}
-        capture={{ screenFrames: 1_621_585, idleFrames: 0, offeredFrames: 105_469, forwardedFrames: 4_414 }}
+        capture={{
+          screenFrames: 1_621_585, idleFrames: 0, offeredFrames: 105_469, forwardedFrames: 4_414,
+          pumpSends: null, pumpIntervalSumMs: null, pumpLatenessSamples: null, pumpLatenessSumMs: null, pumpLatenessMaxMs: null,
+        }}
       />,
     );
     expect(row(markup, "Screen frames")).toBe("1.62M");

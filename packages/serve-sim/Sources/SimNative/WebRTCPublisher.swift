@@ -1067,7 +1067,6 @@ final class WebRTCPublisher: @unchecked Sendable {
             ? [LKRTCRtpEncodingParameters()]
             : parameters.encodings
         let maxBitrate = NSNumber(value: targetBitrate)
-        let minBitrate = NSNumber(value: max(100_000, targetBitrate / 5))
         let fps = NSNumber(value: maxFps)
         let sourceMaxDimension = max(lastOutputWidth, lastOutputHeight)
         let scaleResolutionDownBy = maxDimension > 0 && sourceMaxDimension > maxDimension
@@ -1076,7 +1075,9 @@ final class WebRTCPublisher: @unchecked Sendable {
         for encoding in encodings {
             encoding.isActive = true
             encoding.maxBitrateBps = maxBitrate
-            encoding.minBitrateBps = minBitrate
+            // Keep the configured bitrate as a ceiling. Let libwebrtc choose the
+            // floor so its congestion controller can retreat on a constrained path.
+            encoding.minBitrateBps = nil
             encoding.maxFramerate = fps
             encoding.scaleResolutionDownBy = NSNumber(value: scaleResolutionDownBy)
         }
@@ -1086,18 +1087,21 @@ final class WebRTCPublisher: @unchecked Sendable {
         sender.parameters = parameters
         // Read back: assigning `scaleResolutionDownBy` is not proof libwebrtc kept it.
         let appliedScale = sender.parameters.encodings.first?.scaleResolutionDownBy?.doubleValue
-        let bweUpdated = session.peerConnection.setBweMinBitrateBps(
-            minBitrate,
-            currentBitrateBps: maxBitrate,
+        // Preserve the live bandwidth estimate and let libwebrtc choose its floor;
+        // only the configured ceiling is a client preference.
+        let bweMaxAccepted = session.peerConnection.setBweMinBitrateBps(
+            nil,
+            currentBitrateBps: nil,
             maxBitrateBps: maxBitrate
         )
         streamLog(
-            "[webrtc] Sender parameters fps=\(maxFps) minBitrate=\(minBitrate) " +
-            "maxBitrate=\(maxBitrate) maxDimension=\(maxDimension) " +
+            "[webrtc] Sender parameters fps=\(maxFps) encodingMinBitrate=none " +
+            "bweMinBitrate=default bweStartBitrate=unforced maxBitrate=\(maxBitrate) " +
+            "maxDimension=\(maxDimension) " +
             "scaleDown=\(String(format: "%.3f", scaleResolutionDownBy)) " +
             "applied=\(appliedScale.map { String(format: "%.3f", $0) } ?? "nil") " +
             "encodings=\(encodings.count) " +
-            "bweUpdated=\(bweUpdated)"
+            "bweMaxAccepted=\(bweMaxAccepted)"
         )
     }
 

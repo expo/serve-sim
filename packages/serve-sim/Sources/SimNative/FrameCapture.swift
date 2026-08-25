@@ -293,13 +293,20 @@ actor FrameCapture {
         (screen: screenFrameCount, idle: idleFrameCount)
     }
 
-    func captureTimings() -> (samples: UInt64, gapSumNs: UInt64, gapMaxNs: UInt64, copyMaxNs: UInt64, deliverMaxNs: UInt64) {
-        (
+    func captureTimings() -> (
+        samples: UInt64, gapSumNs: UInt64, gapMaxNs: UInt64, copyMaxNs: UInt64, deliverMaxNs: UInt64,
+        poolMaxNs: UInt64, lockMaxNs: UInt64, moveMaxNs: UInt64
+    ) {
+        let phases = pixelBufferScaler.phaseTimings()
+        return (
             samples: captureSamples,
             gapSumNs: captureGapSumNs,
             gapMaxNs: captureGapMaxNs,
             copyMaxNs: captureCopyMaxNs,
-            deliverMaxNs: captureDeliverMaxNs
+            deliverMaxNs: captureDeliverMaxNs,
+            poolMaxNs: phases.poolMaxNs,
+            lockMaxNs: phases.lockMaxNs,
+            moveMaxNs: phases.moveMaxNs
         )
     }
 

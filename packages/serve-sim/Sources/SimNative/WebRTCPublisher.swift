@@ -91,6 +91,10 @@ struct WebRTCCaptureCounts: Codable {
     let captureGapMaxMs: Double
     let captureCopyMaxMs: Double
     let captureDeliverMaxMs: Double
+    /// The copy, split: waiting for a pooled buffer, waiting on the source surface lock, moving pixels.
+    let capturePoolMaxMs: Double
+    let captureLockMaxMs: Double
+    let captureMoveMaxMs: Double
     /// Nil when nothing is publishing, matching the frame counts above.
     let pumpSends: UInt64?
     let pumpIntervalSumMs: Double?

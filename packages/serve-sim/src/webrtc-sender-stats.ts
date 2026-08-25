@@ -39,6 +39,9 @@ export interface CaptureCounts {
   captureGapMaxMs: number | null;
   captureCopyMaxMs: number | null;
   captureDeliverMaxMs: number | null;
+  capturePoolMaxMs: number | null;
+  captureLockMaxMs: number | null;
+  captureMoveMaxMs: number | null;
   pumpSends: number | null;
   pumpIntervalSumMs: number | null;
   pumpLatenessSamples: number | null;
@@ -153,6 +156,9 @@ function readCaptureCounts(raw: unknown): CaptureCounts | null {
     captureGapMaxMs: maybeNumber(raw.captureGapMaxMs),
     captureCopyMaxMs: maybeNumber(raw.captureCopyMaxMs),
     captureDeliverMaxMs: maybeNumber(raw.captureDeliverMaxMs),
+    capturePoolMaxMs: maybeNumber(raw.capturePoolMaxMs),
+    captureLockMaxMs: maybeNumber(raw.captureLockMaxMs),
+    captureMoveMaxMs: maybeNumber(raw.captureMoveMaxMs),
     pumpSends: maybeNumber(raw.pumpSends),
     pumpIntervalSumMs: maybeNumber(raw.pumpIntervalSumMs),
     pumpLatenessSamples: maybeNumber(raw.pumpLatenessSamples),

@@ -4,6 +4,16 @@ import Foundation
 
 /// Mutable scratch state confined to the owning MJPEGEncoder or AVCCEncoder actor.
 final class PixelBufferScaler: @unchecked Sendable {
+    /// Diagnostic: which phase of a copy blocked. Acquiring from the pool waits when the encoder
+    /// still holds buffers; locking waits on the source IOSurface.
+    private var poolMaxNs: UInt64 = 0
+    private var lockMaxNs: UInt64 = 0
+    private var moveMaxNs: UInt64 = 0
+
+    func phaseTimings() -> (poolMaxNs: UInt64, lockMaxNs: UInt64, moveMaxNs: UInt64) {
+        (poolMaxNs: poolMaxNs, lockMaxNs: lockMaxNs, moveMaxNs: moveMaxNs)
+    }
+
     private var pool: CVPixelBufferPool?
     private var poolWidth = 0
     private var poolHeight = 0
@@ -17,14 +27,19 @@ final class PixelBufferScaler: @unchecked Sendable {
         let targetWidth = evenDimension(width, scale: scale)
         let targetHeight = evenDimension(height, scale: scale)
         var output: CVPixelBuffer?
+        let poolStartNs = DispatchTime.now().uptimeNanoseconds
         guard let pool = pixelBufferPool(width: targetWidth, height: targetHeight),
               CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &output) == kCVReturnSuccess,
               let output else {
             return nil
         }
+        let lockStartNs = DispatchTime.now().uptimeNanoseconds
+        poolMaxNs = max(poolMaxNs, lockStartNs &- poolStartNs)
 
         CVPixelBufferLockBaseAddress(source, .readOnly)
         CVPixelBufferLockBaseAddress(output, [])
+        let moveStartNs = DispatchTime.now().uptimeNanoseconds
+        lockMaxNs = max(lockMaxNs, moveStartNs &- lockStartNs)
         defer {
             CVPixelBufferUnlockBaseAddress(output, [])
             CVPixelBufferUnlockBaseAddress(source, .readOnly)
@@ -46,12 +61,14 @@ final class PixelBufferScaler: @unchecked Sendable {
             width: vImagePixelCount(targetWidth),
             rowBytes: CVPixelBufferGetBytesPerRow(output)
         )
-        return vImageScale_ARGB8888(
+        let result = vImageScale_ARGB8888(
             &sourceBuffer,
             &outputBuffer,
             nil,
             vImage_Flags(kvImageNoFlags)
-        ) == kvImageNoError ? output : nil
+        )
+        moveMaxNs = max(moveMaxNs, DispatchTime.now().uptimeNanoseconds &- moveStartNs)
+        return result == kvImageNoError ? output : nil
     }
 
     private func pixelBufferPool(width: Int, height: Int) -> CVPixelBufferPool? {

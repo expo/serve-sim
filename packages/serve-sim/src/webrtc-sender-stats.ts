@@ -34,6 +34,11 @@ export interface CaptureCounts {
   idleFrames: number;
   offeredFrames: number | null;
   forwardedFrames: number | null;
+  pumpSends: number | null;
+  pumpIntervalSumMs: number | null;
+  pumpLatenessSamples: number | null;
+  pumpLatenessSumMs: number | null;
+  pumpLatenessMaxMs: number | null;
 }
 
 export interface SenderStats {
@@ -138,5 +143,10 @@ function readCaptureCounts(raw: unknown): CaptureCounts | null {
     idleFrames,
     offeredFrames: typeof raw.offeredFrames === "number" ? raw.offeredFrames : null,
     forwardedFrames: typeof raw.forwardedFrames === "number" ? raw.forwardedFrames : null,
+    pumpSends: maybeNumber(raw.pumpSends),
+    pumpIntervalSumMs: maybeNumber(raw.pumpIntervalSumMs),
+    pumpLatenessSamples: maybeNumber(raw.pumpLatenessSamples),
+    pumpLatenessSumMs: maybeNumber(raw.pumpLatenessSumMs),
+    pumpLatenessMaxMs: maybeNumber(raw.pumpLatenessMaxMs),
   };
 }

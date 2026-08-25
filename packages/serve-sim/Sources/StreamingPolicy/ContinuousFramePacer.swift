@@ -5,7 +5,12 @@ public struct ContinuousFramePacer: Sendable {
         case send(timestampNanoseconds: UInt64, nextDelayNanoseconds: UInt64)
     }
 
-    private static let schedulingToleranceNanoseconds: UInt64 = 1_000_000
+    /// A tick judged early is deferred to a timer that cannot hold a 60 Hz deadline, so this must
+    /// stay above capture's jitter. Capped because that jitter comes from the 60 Hz display and does
+    /// not grow with a lower configured rate.
+    private var schedulingToleranceNanoseconds: UInt64 {
+        min(frameIntervalNanoseconds / 4, 5_000_000)
+    }
 
     private var frameIntervalNanoseconds: UInt64
     private var active = false
@@ -36,18 +41,43 @@ public struct ContinuousFramePacer: Sendable {
         }
     }
 
-    /// Records that the retained latest frame changed. Returns the delay for a
-    /// first pump tick, or nil when an existing continuous pump already owns
-    /// the cadence. Frames received while inactive are intentionally ignored.
-    public mutating func latestFrameArrived(atNanoseconds now: UInt64) -> UInt64? {
-        guard active else { return nil }
+    public enum ArrivalDecision: Equatable, Sendable {
+        /// Nothing to do: a scheduled tick already owns the cadence.
+        case ignore
+        /// Pump now without scheduling a follow-on; a tick is already pending.
+        case pumpNow
+        /// Start the cadence with a tick after this delay.
+        case schedule(nanoseconds: UInt64)
+    }
+
+    private func earliestSend(after now: UInt64) -> UInt64? {
+        var earliest = nextSendAtNanoseconds
+        if let lastSent = lastSentAtNanoseconds {
+            let spacing = lastSent &+ frameIntervalNanoseconds &- schedulingToleranceNanoseconds
+            earliest = max(earliest ?? spacing, spacing)
+        }
+        guard let earliest, now &+ schedulingToleranceNanoseconds < earliest else { return nil }
+        return earliest
+    }
+
+    /// Records that the retained latest frame changed. Frames received while inactive are
+    /// intentionally ignored. Capture's wake-ups are more punctual than the pump's timer, so a frame
+    /// that is already due is pumped from the arrival rather than left to the scheduled tick.
+    public mutating func latestFrameArrived(atNanoseconds now: UInt64) -> ArrivalDecision {
+        guard active else { return .ignore }
         hasFrame = true
-        guard !tickScheduled else { return nil }
+        guard nextSendAtNanoseconds != nil || lastSentAtNanoseconds != nil else {
+            // No cadence yet; the first tick will pick this frame up.
+            guard !tickScheduled else { return .ignore }
+            tickScheduled = true
+            return .schedule(nanoseconds: 0)
+        }
+        guard let earliest = earliestSend(after: now) else {
+            return tickScheduled ? .pumpNow : .schedule(nanoseconds: 0)
+        }
+        guard !tickScheduled else { return .ignore }
         tickScheduled = true
-        guard let earliest = nextSendAtNanoseconds else { return 0 }
-        return now &+ Self.schedulingToleranceNanoseconds >= earliest
-            ? 0
-            : earliest - now
+        return .schedule(nanoseconds: earliest &- now)
     }
 
     /// Advances the pump. Once the first frame exists, every successful tick
@@ -58,10 +88,8 @@ public struct ContinuousFramePacer: Sendable {
             tickScheduled = false
             return .stop
         }
-        if let earliest = nextSendAtNanoseconds {
-            if now &+ Self.schedulingToleranceNanoseconds < earliest {
-                return .wait(nanoseconds: earliest - now)
-            }
+        if let earliest = earliestSend(after: now) {
+            return .wait(nanoseconds: earliest &- now)
         }
 
         // Keep an absolute cadence anchor. Scheduling the next tick relative

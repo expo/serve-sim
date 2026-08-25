@@ -149,6 +149,11 @@ describe("capture counts", () => {
       idleFrames: 40,
       offeredFrames: null,
       forwardedFrames: null,
+      pumpSends: null,
+      pumpIntervalSumMs: null,
+      pumpLatenessSamples: null,
+      pumpLatenessSumMs: null,
+      pumpLatenessMaxMs: null,
     });
   });
 
@@ -159,6 +164,26 @@ describe("capture counts", () => {
   test("rejects non-numeric counts instead of coercing them", () => {
     expect(readSenderStats({ sessions: [], capture: { screenFrames: "900", idleFrames: 40 } }).capture)
       .toBeNull();
+  });
+});
+
+describe("pump timings", () => {
+  test("keeps the pump's delivered interval and wake-up lateness", () => {
+    const stats = readSenderStats({
+      sessions: [],
+      capture: {
+        screenFrames: 900,
+        idleFrames: 0,
+        pumpSends: 600,
+        pumpIntervalSumMs: 10_000,
+        pumpLatenessSumMs: 1_200,
+        pumpLatenessMaxMs: 300,
+      },
+    });
+
+    expect(stats.capture?.pumpSends).toBe(600);
+    expect(stats.capture?.pumpIntervalSumMs).toBe(10_000);
+    expect(stats.capture?.pumpLatenessMaxMs).toBe(300);
   });
 });
 

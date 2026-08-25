@@ -2,6 +2,11 @@ export type HttpStreamCodec = "auto" | "mjpeg" | "h264";
 export type WebRtcStreamCodec = "vp8" | "vp9" | "h264";
 export type WebRtcIceServer = { urls: string[]; username?: string; credential?: string };
 
+export const MAX_STREAM_FPS = 140;
+
+/** Experimental high-refresh-rate choices shared by the preview controls. */
+export const STREAM_FPS_PRESETS = [MAX_STREAM_FPS, 120, 90, 60, 30, 20, 15, 10, 5] as const;
+
 export type StreamSettings = (
   | { transport: "http"; codec?: HttpStreamCodec }
   | { transport: "webrtc"; codec: WebRtcStreamCodec; iceServers?: WebRtcIceServer[] }
@@ -142,11 +147,11 @@ export function normalizeStreamEncoderSettings(
   fallback: StreamEncoderSettings = DEFAULT_STREAM_ENCODER_SETTINGS,
 ): StreamEncoderSettings {
   return {
-    mjpegFps: integerInRange(input.mjpegFps, fallback.mjpegFps, 1, 120),
+    mjpegFps: integerInRange(input.mjpegFps, fallback.mjpegFps, 1, MAX_STREAM_FPS),
     mjpegQuality: numberInRange(input.mjpegQuality, fallback.mjpegQuality, 0.05, 1),
     maxDimension: integerInRange(input.maxDimension, fallback.maxDimension, 0, 4096),
     h264Bitrate: integerInRange(input.h264Bitrate, fallback.h264Bitrate, 100_000, 50_000_000),
-    h264Fps: integerInRange(input.h264Fps, fallback.h264Fps, 1, 120),
+    h264Fps: integerInRange(input.h264Fps, fallback.h264Fps, 1, MAX_STREAM_FPS),
   };
 }
 

@@ -6,6 +6,7 @@ import { useSenderStats } from "../hooks/use-sender-stats";
 import { useStreamStats } from "../hooks/use-stream-stats";
 import { StreamStatsDownload, StreamStatsSection, describeFaults, summariseStream } from "./stream-stats-tool";
 import { SettingRow, SettingSelect } from "./simulator-settings-tool";
+import { STREAM_FPS_PRESETS } from "../../stream-settings";
 import type {
   HttpStreamCodec,
   StreamControlSettings,
@@ -38,7 +39,10 @@ const MAX_DIMENSION_OPTIONS = [
   { value: "960", label: "960" },
   { value: "720", label: "720" },
 ];
-const FPS_OPTIONS = ["60", "30", "20", "15", "10", "5"].map((value) => ({ value, label: value }));
+const FPS_OPTIONS = STREAM_FPS_PRESETS.map((fps) => {
+  const value = String(fps);
+  return { value, label: value };
+});
 const QUALITY_OPTIONS = [
   { value: "0.45", label: "45%" },
   { value: "0.55", label: "55%" },

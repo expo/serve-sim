@@ -30,6 +30,8 @@ private let defaultWebRTCIceServers = [
     WebRTCIceServerPayload(urls: ["stun:stun1.l.google.com:19302"], username: nil, credential: nil),
 ]
 
+private let maxExperimentalWebRTCFps = 140
+
 struct WebRTCOfferPayload: Codable {
     let type: String
     let sdp: String
@@ -162,7 +164,7 @@ final class WebRTCPublisher: @unchecked Sendable {
     private var frameIntervalNs: UInt64
 
     init(maxFps: Int, targetBitrate: Int, maxDimension: Int) {
-        let normalizedMaxFps = max(1, min(120, maxFps))
+        let normalizedMaxFps = max(1, min(maxExperimentalWebRTCFps, maxFps))
         self.maxFps = normalizedMaxFps
         self.targetBitrate = max(100_000, targetBitrate)
         self.maxDimension = max(0, maxDimension)
@@ -189,7 +191,7 @@ final class WebRTCPublisher: @unchecked Sendable {
     func updateSettings(maxFps: Int, targetBitrate: Int, maxDimension: Int) async {
         await withCheckedContinuation { continuation in
             queue.async {
-                let normalizedMaxFps = max(1, min(120, maxFps))
+                let normalizedMaxFps = max(1, min(maxExperimentalWebRTCFps, maxFps))
                 self.frameLock.lock()
                 self.maxFps = normalizedMaxFps
                 self.frameIntervalNs = UInt64(1_000_000_000 / normalizedMaxFps)

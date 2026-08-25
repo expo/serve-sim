@@ -95,6 +95,10 @@ struct WebRTCCaptureCounts: Codable {
     let capturePoolMaxMs: Double
     let captureLockMaxMs: Double
     let captureMoveMaxMs: Double
+    /// Whole invocation, and the surface pick that precedes the copy. Gap minus total is time the
+    /// capture actor was not running at all.
+    let captureTotalMaxMs: Double
+    let capturePickMaxMs: Double
     /// Nil when nothing is publishing, matching the frame counts above.
     let pumpSends: UInt64?
     let pumpIntervalSumMs: Double?

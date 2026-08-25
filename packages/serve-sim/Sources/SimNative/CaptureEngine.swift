@@ -366,6 +366,8 @@ actor CaptureEngine {
                 capturePoolMaxMs: Double(capture.poolMaxNs) / 1_000_000,
                 captureLockMaxMs: Double(capture.lockMaxNs) / 1_000_000,
                 captureMoveMaxMs: Double(capture.moveMaxNs) / 1_000_000,
+                captureTotalMaxMs: Double(capture.totalMaxNs) / 1_000_000,
+                capturePickMaxMs: Double(capture.pickMaxNs) / 1_000_000,
                 pumpSends: pump?.sends,
                 pumpIntervalSumMs: pump?.intervalSumMs,
                 pumpLatenessSamples: pump?.latenessSamples,

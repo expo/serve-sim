@@ -44,6 +44,8 @@ actor FrameCapture {
     private var captureGapMaxNs: UInt64 = 0
     private var captureCopyMaxNs: UInt64 = 0
     private var captureDeliverMaxNs: UInt64 = 0
+    private var captureTotalMaxNs: UInt64 = 0
+    private var capturePickMaxNs: UInt64 = 0
     /// Counted by which path produced the frame, callback or idle deadline.
     private var screenFrameCount: UInt64 = 0
     private var idleFrameCount: UInt64 = 0
@@ -295,7 +297,7 @@ actor FrameCapture {
 
     func captureTimings() -> (
         samples: UInt64, gapSumNs: UInt64, gapMaxNs: UInt64, copyMaxNs: UInt64, deliverMaxNs: UInt64,
-        poolMaxNs: UInt64, lockMaxNs: UInt64, moveMaxNs: UInt64
+        poolMaxNs: UInt64, lockMaxNs: UInt64, moveMaxNs: UInt64, totalMaxNs: UInt64, pickMaxNs: UInt64
     ) {
         let phases = pixelBufferScaler.phaseTimings()
         return (
@@ -306,7 +308,9 @@ actor FrameCapture {
             deliverMaxNs: captureDeliverMaxNs,
             poolMaxNs: phases.poolMaxNs,
             lockMaxNs: phases.lockMaxNs,
-            moveMaxNs: phases.moveMaxNs
+            moveMaxNs: phases.moveMaxNs,
+            totalMaxNs: captureTotalMaxNs,
+            pickMaxNs: capturePickMaxNs
         )
     }
 
@@ -319,7 +323,11 @@ actor FrameCapture {
             captureGapMaxNs = max(captureGapMaxNs, gapNs)
         }
         captureLastEntryNs = entryNs
+        defer {
+            captureTotalMaxNs = max(captureTotalMaxNs, DispatchTime.now().uptimeNanoseconds &- entryNs)
+        }
         guard let (key, surface) = pickBestSurface() else { return }
+        capturePickMaxNs = max(capturePickMaxNs, DispatchTime.now().uptimeNanoseconds &- entryNs)
 
         let w = IOSurfaceGetWidth(surface)
         let h = IOSurfaceGetHeight(surface)

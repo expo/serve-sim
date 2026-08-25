@@ -5,6 +5,8 @@ on:
     paths:
       - packages/serve-sim/**
       - .eas/workflows/sim-test.yml
+  pull_request_labeled:
+    labels: [eas-approved]
 
 # Cancel superseded runs so pushing twice to the same PR does not consume two
 # macOS workers in parallel.

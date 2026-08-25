@@ -4,6 +4,8 @@ on:
   push:
     branches: [expo]
   pull_request: {}
+  pull_request_labeled:
+    labels: [eas-approved]
 
 concurrency:
   cancel_in_progress: true

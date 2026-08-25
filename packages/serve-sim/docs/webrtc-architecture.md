@@ -102,11 +102,16 @@ a fixed 5 fps idle floor. Every frame has a host monotonic capture timestamp.
 
 `CaptureEngine` fans frames out synchronously to consumers. Each encoder keeps a
 single newest pending frame, so a slow consumer cannot create latency by
-building a backlog. `WebRTCPublisher` adds one configured-rate latest-frame pump,
-pre-scales accepted pixel buffers to the configured maximum dimension, and only
-accepts frames while at least one peer is connected. Its shared video source
-fans each accepted frame out to every peer connection; libwebrtc maintains an
-independent sender, encoder, bitrate estimate, and packet stream per viewer.
+building a backlog. `WebRTCPublisher` retains the newest captured frame and uses
+one absolute-cadence pump as the only configured FPS controller. After the first
+frame, it continuously resubmits that retained buffer with fresh presentation
+timestamps; new captures replace it without building a backlog. The libwebrtc
+source adapter uses a 1,000 FPS safety ceiling and RTP senders have no additional
+FPS cap, avoiding independently phased frame droppers. The publisher pre-scales
+accepted pixel buffers to the configured maximum dimension and only accepts
+frames while at least one peer is connected. Its shared video source fans each
+submission out to every peer connection; libwebrtc maintains an independent
+sender, encoder, bitrate estimate, and packet stream per viewer.
 
 The WebRTC publisher is created lazily on the first offer. Its frame consumer
 currently remains attached until the device capture session stops, but sending

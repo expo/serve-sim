@@ -15,7 +15,7 @@ https://github.com/user-attachments/assets/fbf890f4-c8c7-4684-82be-d677b8a188f8
 
 ## Features 
 
-- Up to 60 FPS over HTTP, or low-latency 30 FPS over WebRTC.
+- Up to 60 unique simulator FPS, with a configurable low-latency WebRTC cadence.
 - Swipe from the bottom to go home.
 - gestures like pinch to zoom by holding the option key.
 - Simulator logs are forwarded to the browser for browser-use MCP tools to read from.
@@ -92,7 +92,7 @@ Options:
       --video-bitrate <bits-per-second>
                       H.264/WebRTC target bitrate
       --video-fps <fps>
-                      H.264/WebRTC frame rate (1-120)
+                      H.264/WebRTC frame rate (1-140)
       --list [device] List running streams
       --kill [device] Kill running stream(s)
 
@@ -112,6 +112,11 @@ WebRTC uses HTTP for SDP signaling and RTP for video. Simulator input and screen
 metadata continue over the existing helper WebSocket. ICE prefers a direct UDP
 path when one is reachable, even if the page was loaded through a tunnel URL;
 TURN is used as a fallback when direct/STUN candidates fail.
+While a peer is connected, one absolute-cadence publisher continuously submits
+the latest captured frame at the configured `--video-fps`. SimulatorKit change
+callbacks are supplemented by a fixed 60 Hz IOSurface seed poll. The libwebrtc
+source adapter uses a 1,000 FPS safety ceiling and the RTP sender has no separate
+FPS cap, so neither can phase-collide with the publisher cadence.
 Multiple WebRTC viewers can use the same simulator simultaneously. They share
 one SimulatorKit capture source, while each viewer has an independent peer
 connection, encoder, congestion controller, and helper WebSocket. HTTP streams

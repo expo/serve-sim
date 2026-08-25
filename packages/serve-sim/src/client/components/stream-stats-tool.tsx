@@ -106,8 +106,8 @@ function CaptureRows({ capture }: { capture: CaptureCounts }) {
       <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
         <Cell label="Screen frames" value={compact(capture.screenFrames)} />
         <Cell label="Idle frames" value={compact(capture.idleFrames)} />
-        <Cell label="Offered" value={compact(capture.offeredFrames)} />
-        <Cell label="Forwarded" value={compact(capture.forwardedFrames)} />
+        <Cell label="Capture deliveries" value={compact(capture.offeredFrames)} />
+        <Cell label="Pacer submissions" value={compact(capture.forwardedFrames)} />
       </div>
     </div>
   );

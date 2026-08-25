@@ -163,7 +163,7 @@ describe("capture counts", () => {
 });
 
 describe("frame flow counts", () => {
-  test("keeps offered and forwarded, which localise where frames are lost", () => {
+  test("keeps capture deliveries and paced submissions as distinct stages", () => {
     const stats = readSenderStats({
       sessions: [],
       capture: { screenFrames: 900, idleFrames: 40, offeredFrames: 880, forwardedFrames: 300 },

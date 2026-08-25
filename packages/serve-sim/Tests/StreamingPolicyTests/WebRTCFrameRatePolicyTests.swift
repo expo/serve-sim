@@ -9,18 +9,14 @@ final class WebRTCFrameRatePolicyTests: XCTestCase {
             )
 
             XCTAssertEqual(policy.outputFramesPerSecond, configuredFramesPerSecond)
-            XCTAssertEqual(
-                policy.captureFramesPerSecond,
-                SimulatorCaptureFrameRatePolicy.maximumFramesPerSecond
-            )
             XCTAssertEqual(policy.sourceAdapterFramesPerSecond, 1_000)
             XCTAssertNil(policy.senderFramesPerSecond)
         }
     }
 
-    func testSimulatorCapturePollUsesTheFixedDisplayCadence() {
-        XCTAssertEqual(SimulatorCaptureFrameRatePolicy.maximumFramesPerSecond, 60)
-        XCTAssertEqual(SimulatorCaptureFrameRatePolicy.pollIntervalNanoseconds, 16_666_667)
+    func testSimulatorCapturePollRunsAtSixtyHertz() {
+        XCTAssertEqual(SimulatorCapturePollPolicy.pollsPerSecond, 60)
+        XCTAssertEqual(SimulatorCapturePollPolicy.intervalNanoseconds, 16_666_667)
     }
 
     func testClampsOnlyThePublisherCadenceToTheSupportedRange() {

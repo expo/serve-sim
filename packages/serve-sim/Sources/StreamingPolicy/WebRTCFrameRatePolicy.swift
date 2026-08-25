@@ -1,15 +1,12 @@
-/// The simulator display is a fixed-rate physical source, independent from a
-/// viewer's configured WebRTC output cadence. SimulatorKit callbacks provide
-/// prompt changes; this poll interval fills callback gaps and seed checks
-/// suppress unchanged copies.
-public enum SimulatorCaptureFrameRatePolicy {
-    public static let maximumFramesPerSecond = 60
-    public static let pollIntervalNanoseconds: Int64 = 16_666_667
+/// Cadence for supplemental IOSurface seed polling. SimulatorKit callbacks
+/// still deliver prompt changes between polls, so this is not a capture-rate
+/// ceiling.
+public enum SimulatorCapturePollPolicy {
+    public static let pollsPerSecond = 60
+    public static let intervalNanoseconds: Int64 = 16_666_667
 }
 
 public struct WebRTCFrameRatePolicy: Equatable, Sendable {
-    public static let displayFramesPerSecond =
-        SimulatorCaptureFrameRatePolicy.maximumFramesPerSecond
     public static let maximumOutputFramesPerSecond = 140
     public static let unthrottledSourceAdapterFramesPerSecond = 1_000
 
@@ -20,10 +17,6 @@ public struct WebRTCFrameRatePolicy: Equatable, Sendable {
             1,
             min(Self.maximumOutputFramesPerSecond, configuredFramesPerSecond)
         )
-    }
-
-    public var captureFramesPerSecond: Int {
-        Self.displayFramesPerSecond
     }
 
     public var sourceAdapterFramesPerSecond: Int {

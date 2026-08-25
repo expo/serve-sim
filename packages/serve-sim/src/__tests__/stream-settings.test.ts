@@ -10,13 +10,13 @@ import {
 } from "../stream-settings";
 
 describe("stream settings", () => {
-  test("accepts 140 fps and clamps higher frame rates", () => {
-    expect(normalizeStreamControlSettings({ mjpegFps: 140, h264Fps: 140 })).toMatchObject({
-      mjpegFps: 140,
+  test("keeps MJPEG at 120 fps while video accepts 140 fps", () => {
+    expect(normalizeStreamControlSettings({ mjpegFps: 120, h264Fps: 140 })).toMatchObject({
+      mjpegFps: 120,
       h264Fps: 140,
     });
-    expect(normalizeStreamControlSettings({ mjpegFps: 141, h264Fps: 141 })).toMatchObject({
-      mjpegFps: 140,
+    expect(normalizeStreamControlSettings({ mjpegFps: 121, h264Fps: 141 })).toMatchObject({
+      mjpegFps: 120,
       h264Fps: 140,
     });
   });

@@ -97,8 +97,10 @@ The browser has three rendering paths:
 `FrameCapture` registers private SimulatorKit screen callbacks on every display
 descriptor and chooses the largest live IOSurface. A 60 Hz IOSurface seed poll
 catches changes when virtualized SimulatorKit callbacks arrive below the display
-cadence, while seed checks avoid duplicating unchanged frames. It also maintains
-a fixed 5 fps idle floor. Every frame has a host monotonic capture timestamp.
+cadence, while seed checks avoid duplicating unchanged frames. The poll is not a
+capture-rate ceiling: callbacks still deliver prompt unique changes between poll
+ticks. Capture also maintains a fixed 5 fps idle floor. Every frame has a host
+monotonic capture timestamp.
 
 `CaptureEngine` fans frames out synchronously to consumers. Each encoder keeps a
 single newest pending frame, so a slow consumer cannot create latency by

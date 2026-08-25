@@ -36,7 +36,7 @@ import {
   sendCameraHelperCommand as sendHelperCommand,
 } from "./camera-helper";
 import { parseIceUrlList, streamHelperArgs, streamSettingsEqual } from "./stream-runtime-args";
-import { MAX_STREAM_FPS } from "./stream-settings";
+import { MAX_MJPEG_STREAM_FPS, MAX_VIDEO_STREAM_FPS } from "./stream-settings";
 
 // `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
 // CLI works under plain `node` too.
@@ -1806,8 +1806,8 @@ program
   .option("--turn-credential <credential>", "TURN credential")
   .option(
     "--mjpeg-fps <fps>",
-    `MJPEG frame rate (1-${MAX_STREAM_FPS})`,
-    (value) => parseNumberInRange(value, "--mjpeg-fps", 1, MAX_STREAM_FPS, true),
+    `MJPEG frame rate (1-${MAX_MJPEG_STREAM_FPS})`,
+    (value) => parseNumberInRange(value, "--mjpeg-fps", 1, MAX_MJPEG_STREAM_FPS, true),
   )
   .option(
     "--mjpeg-quality <quality>",
@@ -1826,8 +1826,8 @@ program
   )
   .option(
     "--video-fps <fps>",
-    `H.264/WebRTC frame rate (1-${MAX_STREAM_FPS})`,
-    (value) => parseNumberInRange(value, "--video-fps", 1, MAX_STREAM_FPS, true),
+    `H.264/WebRTC frame rate (1-${MAX_VIDEO_STREAM_FPS})`,
+    (value) => parseNumberInRange(value, "--video-fps", 1, MAX_VIDEO_STREAM_FPS, true),
   )
   .option(
     "--debug-stream <path>",

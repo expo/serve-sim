@@ -304,7 +304,7 @@ describe("capture rows", () => {
       />,
     );
     expect(row(markup, "Encode FPS")).toBe("0.4 fps");
-    expect(row(markup, "Source FPS")).toBe("0.4 fps");
+    expect(row(markup, "Pacer FPS")).toBe("0.4 fps");
   });
 
   test("shortens a lifetime counter so it fits its cell", () => {

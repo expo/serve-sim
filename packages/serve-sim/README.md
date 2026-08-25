@@ -15,7 +15,7 @@ https://github.com/user-attachments/assets/fbf890f4-c8c7-4684-82be-d677b8a188f8
 
 ## Features 
 
-- Up to 60 unique simulator FPS, with a configurable low-latency WebRTC cadence.
+- Low-latency SimulatorKit capture with a 60 Hz IOSurface seed poll and configurable WebRTC cadence.
 - Swipe from the bottom to go home.
 - gestures like pinch to zoom by holding the option key.
 - Simulator logs are forwarded to the browser for browser-use MCP tools to read from.
@@ -114,7 +114,8 @@ path when one is reachable, even if the page was loaded through a tunnel URL;
 TURN is used as a fallback when direct/STUN candidates fail.
 While a peer is connected, one absolute-cadence publisher continuously submits
 the latest captured frame at the configured `--video-fps`. SimulatorKit change
-callbacks are supplemented by a fixed 60 Hz IOSurface seed poll. The libwebrtc
+callbacks are supplemented by a 60 Hz IOSurface seed poll; that poll is a
+fallback cadence, not a capture FPS ceiling. The libwebrtc
 source adapter uses a 1,000 FPS safety ceiling and the RTP sender has no separate
 FPS cap, so neither can phase-collide with the publisher cadence.
 Multiple WebRTC viewers can use the same simulator simultaneously. They share

@@ -90,7 +90,7 @@ function SenderRows({ sender }: { sender: SenderStreamStats }) {
       <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
         <Cell label="Encode FPS" value={fps(sender.reportedFps)} />
         <Cell label="Target" value={bitrate(sender.targetKbps)} />
-        <Cell label="Source FPS" value={fps(sender.sourceFps)} />
+        <Cell label="Pacer FPS" value={fps(sender.sourceFps)} />
         <Cell label="Encode" value={ms(sender.encodeMsPerFrame, 1)} hint="/frame" />
         <Cell label="Frames sent" value={compact(sender.framesSent)} />
         <Cell label="Loss" value={percent(sender.lossRatio)} hint="total" />

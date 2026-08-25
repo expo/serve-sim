@@ -75,6 +75,13 @@ struct WebRTCCaptureCounts: Codable {
     /// forwarded-to-encoded gap is not.
     let offeredFrames: UInt64?
     let forwardedFrames: UInt64?
+    /// Cumulative, so a reader diffs two polls. A delivered gap far above the frame interval with
+    /// a small work total means the wake-up arrived late, not that the work was slow.
+    let pumpCycles: UInt64
+    let pumpIntervalSumMs: Double
+    let pumpWorkSumMs: Double
+    let pumpIntervalMaxMs: Double
+    let pumpWorkMaxMs: Double
 }
 
 struct WebRTCSenderStatsReport: Codable {
@@ -129,7 +136,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         _ = Once.run
     }
 
-    private let queue = DispatchQueue(label: "webrtc-publisher")
+    private let queue = DispatchQueue(label: "webrtc-publisher", qos: .userInteractive)
     private let factory: LKRTCPeerConnectionFactory
     private let videoSource: LKRTCVideoSource
     private let videoTrack: LKRTCVideoTrack
@@ -588,12 +595,17 @@ final class WebRTCPublisher: @unchecked Sendable {
             scheduleFramePump(afterNs: delayNs)
             return
         }
+        let previousSendNs = lastSentFrameAtNs
         pendingFrame = nil
         lastSentFrameAtNs = nowNs
         frameLock.unlock()
 
         if sessions.values.contains(where: \.isConnected) {
             sendFrameOnQueue(frame.pixelBuffer, timestamp: frame.timestamp)
+        }
+        if previousSendNs > 0 {
+            let workNs = DispatchTime.now().uptimeNanoseconds &- nowNs
+            recordPumpCycle(intervalNs: nowNs &- previousSendNs, workNs: workNs)
         }
 
         frameLock.lock()
@@ -609,14 +621,46 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
     }
 
+    private var pumpCycles = 0
+    private var pumpIntervalSumNs: UInt64 = 0
+    private var pumpIntervalMaxNs: UInt64 = 0
+    private var pumpWorkSumNs: UInt64 = 0
+    private var pumpWorkMaxNs: UInt64 = 0
+
+    private func recordPumpCycle(intervalNs: UInt64, workNs: UInt64) {
+        frameLock.lock()
+        pumpCycles += 1
+        pumpIntervalSumNs &+= intervalNs
+        pumpWorkSumNs &+= workNs
+        pumpIntervalMaxNs = max(pumpIntervalMaxNs, intervalNs)
+        pumpWorkMaxNs = max(pumpWorkMaxNs, workNs)
+        frameLock.unlock()
+    }
+
+    func pumpTimings() -> (cycles: UInt64, intervalSumMs: Double, workSumMs: Double, intervalMaxMs: Double, workMaxMs: Double) {
+        frameLock.lock()
+        defer { frameLock.unlock() }
+        return (
+            cycles: UInt64(pumpCycles),
+            intervalSumMs: Double(pumpIntervalSumNs) / 1_000_000,
+            workSumMs: Double(pumpWorkSumNs) / 1_000_000,
+            intervalMaxMs: Double(pumpIntervalMaxNs) / 1_000_000,
+            workMaxMs: Double(pumpWorkMaxNs) / 1_000_000
+        )
+    }
+
     private func scheduleFramePump(afterNs delayNs: UInt64) {
         if delayNs == 0 {
             queue.async { self.drainFramePump() }
             return
         }
-        queue.asyncAfter(deadline: .now() + .nanoseconds(Int(delayNs))) {
-            self.drainFramePump()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .nanoseconds(Int(delayNs)), leeway: .nanoseconds(0))
+        timer.setEventHandler { [weak self] in
+            timer.cancel()
+            self?.drainFramePump()
         }
+        timer.resume()
     }
 
     private func setFrameAcceptance(_ active: Bool) {

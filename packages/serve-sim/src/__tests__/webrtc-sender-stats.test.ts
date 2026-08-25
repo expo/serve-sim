@@ -149,6 +149,11 @@ describe("capture counts", () => {
       idleFrames: 40,
       offeredFrames: null,
       forwardedFrames: null,
+      pumpCycles: null,
+      pumpIntervalSumMs: null,
+      pumpWorkSumMs: null,
+      pumpIntervalMaxMs: null,
+      pumpWorkMaxMs: null,
     });
   });
 

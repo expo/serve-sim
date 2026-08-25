@@ -34,6 +34,13 @@ export interface CaptureCounts {
   idleFrames: number;
   offeredFrames: number | null;
   forwardedFrames: number | null;
+  /** Cumulative; diff two polls. A delivered gap well above the frame interval with a small work
+   *  total means the pump's wake-up arrived late rather than the work being slow. */
+  pumpCycles?: number | null;
+  pumpIntervalSumMs?: number | null;
+  pumpWorkSumMs?: number | null;
+  pumpIntervalMaxMs?: number | null;
+  pumpWorkMaxMs?: number | null;
 }
 
 export interface SenderStats {
@@ -138,5 +145,10 @@ function readCaptureCounts(raw: unknown): CaptureCounts | null {
     idleFrames,
     offeredFrames: typeof raw.offeredFrames === "number" ? raw.offeredFrames : null,
     forwardedFrames: typeof raw.forwardedFrames === "number" ? raw.forwardedFrames : null,
+    pumpCycles: maybeNumber(raw.pumpCycles),
+    pumpIntervalSumMs: maybeNumber(raw.pumpIntervalSumMs),
+    pumpWorkSumMs: maybeNumber(raw.pumpWorkSumMs),
+    pumpIntervalMaxMs: maybeNumber(raw.pumpIntervalMaxMs),
+    pumpWorkMaxMs: maybeNumber(raw.pumpWorkMaxMs),
   };
 }

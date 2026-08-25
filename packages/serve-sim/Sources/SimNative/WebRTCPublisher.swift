@@ -169,7 +169,11 @@ final class WebRTCPublisher: @unchecked Sendable {
     private var framePacer: ContinuousFramePacer
     /// Delivered gap between sends, and how late a timer wake-up arrived. Cumulative; a reader
     /// diffs two polls.
-    private var arrivalPumpPending = false
+    private var frameArrivalPending = false
+    /// Invalidates delayed repeat ticks across the disconnected -> connected lifecycle. Otherwise
+    /// an old timer can wake after reconnect and create a second repeat chain for the new session.
+    /// Accessed only on `queue` (including `stop()`'s synchronous queue turn).
+    private var framePumpGeneration: UInt64 = 0
     private var pumpSends: UInt64 = 0
     private var pumpLastSentNs: UInt64 = 0
     private var pumpIntervalSumNs: UInt64 = 0
@@ -500,7 +504,6 @@ final class WebRTCPublisher: @unchecked Sendable {
     }
 
     func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp _: CMTime) {
-        let nowNs = DispatchTime.now().uptimeNanoseconds
         frameLock.lock()
         offeredFrameCount &+= 1
         guard acceptsFrames else {
@@ -508,22 +511,16 @@ final class WebRTCPublisher: @unchecked Sendable {
             return
         }
         latestFrame = PendingWebRTCFrame(pixelBuffer: pixelBuffer)
-        // One pump owns the cadence. New source frames only replace the
-        // retained latest frame, so the queue cannot build a stale backlog.
-        let arrival = framePacer.latestFrameArrived(atNanoseconds: nowNs)
-        switch arrival {
-        case .ignore:
-            break
-        case .pumpNow:
-            guard !arrivalPumpPending else { break }
-            arrivalPumpPending = true
-            queue.async { self.drainFramePump(chained: false) }
-        case let .schedule(delayNs):
+        // Coalesce captures while the publisher queue is busy, but always give
+        // the newest capture its own queue turn. Fresh-frame pacing happens on
+        // that turn, independently from timer-driven static-frame repeats.
+        guard !frameArrivalPending else {
             frameLock.unlock()
-            scheduleFramePump(afterNs: delayNs)
             return
         }
+        frameArrivalPending = true
         frameLock.unlock()
+        queue.async { self.drainFrameArrival() }
     }
 
     private func nextFrameTimestampNs(_ proposedTimestamp: UInt64) -> Int64 {
@@ -671,19 +668,43 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
     }
 
-    private func drainFramePump(dueAtNs: UInt64 = 0, chained: Bool = true) {
+    private func drainFrameArrival() {
         let nowNs = DispatchTime.now().uptimeNanoseconds
-        // Only a timer wake-up carries a deadline. An arrival pump's delay is a queue hop, and
-        // mixing the two would make this unreadable.
+        frameLock.lock()
+        frameArrivalPending = false
+        let decision = framePacer.latestFrameArrived(atNanoseconds: nowNs)
+        guard case let .send(timestampNs, firstRepeatDelayNs) = decision,
+              let frame = latestFrame else {
+            frameLock.unlock()
+            return
+        }
+        frameLock.unlock()
+
+        // The first fresh frame starts the only repeat-timer chain. Later
+        // arrivals move its deadline inside the pacer without adding a chain.
+        if let firstRepeatDelayNs {
+            scheduleFramePump(
+                afterNs: firstRepeatDelayNs,
+                generation: framePumpGeneration
+            )
+        }
+        if sessions.values.contains(where: \.isConnected) {
+            sendFrameOnQueue(frame.pixelBuffer, timestampNanoseconds: timestampNs)
+            recordPumpCycle(sentAtNs: nowNs)
+        }
+    }
+
+    private func drainFramePump(dueAtNs: UInt64, generation: UInt64) {
+        guard generation == framePumpGeneration else { return }
+        let nowNs = DispatchTime.now().uptimeNanoseconds
         if dueAtNs > 0, nowNs > dueAtNs { recordPumpLateness(nowNs &- dueAtNs) }
         frameLock.lock()
-        if !chained { arrivalPumpPending = false }
         let decision = framePacer.tick(atNanoseconds: nowNs)
         guard case let .send(timestampNs, nextDelayNs) = decision,
               let frame = latestFrame else {
             frameLock.unlock()
-            if chained, case let .wait(delayNs) = decision {
-                scheduleFramePump(afterNs: delayNs)
+            if case let .wait(delayNs) = decision {
+                scheduleFramePump(afterNs: delayNs, generation: generation)
             }
             return
         }
@@ -692,23 +713,24 @@ final class WebRTCPublisher: @unchecked Sendable {
         // Schedule before conversion/encoding work. The serial publisher queue
         // coalesces an over-budget tick instead of adding that work duration to
         // every configured frame interval.
-        if chained { scheduleFramePump(afterNs: nextDelayNs) }
+        scheduleFramePump(afterNs: nextDelayNs, generation: generation)
         if sessions.values.contains(where: \.isConnected) {
             sendFrameOnQueue(frame.pixelBuffer, timestampNanoseconds: timestampNs)
             recordPumpCycle(sentAtNs: nowNs)
         }
     }
 
-
-    private func scheduleFramePump(afterNs delayNs: UInt64) {
+    private func scheduleFramePump(afterNs delayNs: UInt64, generation: UInt64) {
         if delayNs == 0 {
             let due = DispatchTime.now().uptimeNanoseconds
-            queue.async { self.drainFramePump(dueAtNs: due) }
+            queue.async {
+                self.drainFramePump(dueAtNs: due, generation: generation)
+            }
             return
         }
         let due = DispatchTime.now().uptimeNanoseconds &+ delayNs
         queue.asyncAfter(deadline: .now() + .nanoseconds(Int(delayNs))) {
-            self.drainFramePump(dueAtNs: due)
+            self.drainFramePump(dueAtNs: due, generation: generation)
         }
     }
 
@@ -716,6 +738,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         frameLock.lock()
         if acceptsFrames != active {
             acceptsFrames = active
+            framePumpGeneration &+= 1
             latestFrame = nil
             framePacer.setActive(active)
             // Without this the idle gap across a reconnect is recorded as one enormous interval.

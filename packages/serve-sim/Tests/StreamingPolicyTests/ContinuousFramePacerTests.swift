@@ -2,31 +2,54 @@ import XCTest
 @testable import StreamingPolicy
 
 final class ContinuousFramePacerTests: XCTestCase {
-    func testRepeatsTheLatestFrameAtTheConfiguredCadence() {
+    func testFreshFrameSendsImmediatelyAndStartsTheRepeatChain() {
         var pacer = ContinuousFramePacer(framesPerSecond: 60)
         pacer.setActive(true)
 
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 1_000), .schedule(nanoseconds: 0))
         XCTAssertEqual(
-            pacer.tick(atNanoseconds: 1_000),
-            .send(timestampNanoseconds: 1_000, nextDelayNanoseconds: 16_666_666)
-        )
-
-        // No new frame arrived, but an active WebRTC stream keeps the same
-        // configured cadence by repeating the retained latest frame.
-        XCTAssertEqual(
-            pacer.tick(atNanoseconds: 16_667_666),
-            .send(timestampNanoseconds: 16_667_666, nextDelayNanoseconds: 16_666_666)
+            pacer.latestFrameArrived(atNanoseconds: 1_000),
+            .send(
+                timestampNanoseconds: 1_000,
+                firstRepeatDelayNanoseconds: 20_833_332
+            )
         )
     }
 
-    func testUsesTheConfiguredFrameRateInsteadOfAHardcodedIdleRate() {
+    func testStaticContentRepeatsAtConfiguredCadenceAfterArrivalGrace() {
+        var pacer = ContinuousFramePacer(framesPerSecond: 60)
+        pacer.setActive(true)
+        _ = pacer.latestFrameArrived(atNanoseconds: 0)
+
+        XCTAssertEqual(
+            pacer.tick(atNanoseconds: 20_833_332),
+            .send(timestampNanoseconds: 20_833_332, nextDelayNanoseconds: 16_666_666)
+        )
+        XCTAssertEqual(
+            pacer.tick(atNanoseconds: 37_499_998),
+            .send(timestampNanoseconds: 37_499_998, nextDelayNanoseconds: 16_666_666)
+        )
+    }
+
+    func testRepeatTimerWaitsForFreshFrameGraceInsteadOfRacingDisplayCapture() {
+        var pacer = ContinuousFramePacer(framesPerSecond: 60)
+        pacer.setActive(true)
+        _ = pacer.latestFrameArrived(atNanoseconds: 0)
+
+        XCTAssertEqual(
+            pacer.tick(atNanoseconds: 16_666_666),
+            .wait(nanoseconds: 4_166_666)
+        )
+    }
+
+    func testUsesConfiguredFrameRateInsteadOfAHardcodedIdleRate() {
         var pacer = ContinuousFramePacer(framesPerSecond: 24)
         pacer.setActive(true)
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 0), .schedule(nanoseconds: 0))
         XCTAssertEqual(
-            pacer.tick(atNanoseconds: 0),
-            .send(timestampNanoseconds: 0, nextDelayNanoseconds: 41_666_666)
+            pacer.latestFrameArrived(atNanoseconds: 0),
+            .send(
+                timestampNanoseconds: 0,
+                firstRepeatDelayNanoseconds: 46_666_666
+            )
         )
 
         pacer.update(framesPerSecond: 60)
@@ -36,101 +59,134 @@ final class ContinuousFramePacerTests: XCTestCase {
         )
     }
 
-    func testLateTicksKeepTheOriginalCadenceInsteadOfAccumulatingTimerDrift() {
+    func testLateRepeatTicksKeepAbsoluteCadenceInsteadOfAccumulatingDrift() {
         var pacer = ContinuousFramePacer(framesPerSecond: 60)
         pacer.setActive(true)
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 0), .schedule(nanoseconds: 0))
-        XCTAssertEqual(
-            pacer.tick(atNanoseconds: 0),
-            .send(timestampNanoseconds: 0, nextDelayNanoseconds: 16_666_666)
-        )
+        _ = pacer.latestFrameArrived(atNanoseconds: 0)
 
-        // Dispatch woke about 3.3 ms late. The following delay is shortened
-        // by the same amount so that lateness does not permanently reduce a
-        // configured 60 fps cadence to roughly 50 fps.
         XCTAssertEqual(
-            pacer.tick(atNanoseconds: 20_000_000),
-            .send(timestampNanoseconds: 20_000_000, nextDelayNanoseconds: 13_333_332)
+            pacer.tick(atNanoseconds: 30_000_000),
+            .send(timestampNanoseconds: 30_000_000, nextDelayNanoseconds: 7_499_998)
         )
     }
 
-    func testEverySubmissionUsesThePacerTickAsItsMediaTimestamp() {
+    func testFreshFramesUseArrivalTimeAsTheirMediaTimestamp() {
         var pacer = ContinuousFramePacer(framesPerSecond: 60)
         pacer.setActive(true)
 
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 100_000_000), .schedule(nanoseconds: 0))
         XCTAssertEqual(
-            pacer.tick(atNanoseconds: 100_000_000),
-            .send(timestampNanoseconds: 100_000_000, nextDelayNanoseconds: 16_666_666)
+            pacer.latestFrameArrived(atNanoseconds: 100_000_000),
+            .send(
+                timestampNanoseconds: 100_000_000,
+                firstRepeatDelayNanoseconds: 20_833_332
+            )
         )
-
-        // A changed source frame may have been captured before the previous
-        // paced submission completed. Its arrival must not move the media
-        // timeline backward or collapse it to the prior timestamp + 1 ns.
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 105_000_000), .ignore)
         XCTAssertEqual(
-            pacer.tick(atNanoseconds: 116_666_666),
-            .send(timestampNanoseconds: 116_666_666, nextDelayNanoseconds: 16_666_666)
+            pacer.latestFrameArrived(atNanoseconds: 116_666_666),
+            .send(
+                timestampNanoseconds: 116_666_666,
+                firstRepeatDelayNanoseconds: nil
+            )
         )
     }
 
-    func testNewFramesReplaceTheRetainedFrameWithoutStartingAnotherPump() {
+    func testFreshFramesRespectConfiguredRateRelativeToOtherFreshFrames() {
         var pacer = ContinuousFramePacer(framesPerSecond: 30)
         pacer.setActive(true)
+        _ = pacer.latestFrameArrived(atNanoseconds: 0)
 
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 0), .schedule(nanoseconds: 0))
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 5_000_000), .ignore)
+        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 5_000_000), .hold)
+        XCTAssertEqual(
+            pacer.latestFrameArrived(atNanoseconds: 33_333_333),
+            .send(
+                timestampNanoseconds: 33_333_333,
+                firstRepeatDelayNanoseconds: nil
+            )
+        )
     }
 
-    func testALateSendDoesNotLetTheNextArrivalEmitABackToBackDuplicate() {
+    func testShared120HzCaptureStillRespectsAConfigured60FPSOutput() {
         var pacer = ContinuousFramePacer(framesPerSecond: 60)
         pacer.setActive(true)
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 0), .schedule(nanoseconds: 0))
+        _ = pacer.latestFrameArrived(atNanoseconds: 0)
+
+        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 8_333_333), .hold)
+        XCTAssertEqual(
+            pacer.latestFrameArrived(atNanoseconds: 16_666_666),
+            .send(
+                timestampNanoseconds: 16_666_666,
+                firstRepeatDelayNanoseconds: nil
+            )
+        )
+    }
+
+    func testFreshFrameAfterALateRepeatIsNotBlockedByTheRepeatTimestamp() {
+        var pacer = ContinuousFramePacer(framesPerSecond: 60)
+        pacer.setActive(true)
+        _ = pacer.latestFrameArrived(atNanoseconds: 0)
 
         XCTAssertEqual(
-            pacer.tick(atNanoseconds: 0),
-            .send(timestampNanoseconds: 0, nextDelayNanoseconds: 16_666_666)
+            pacer.tick(atNanoseconds: 30_000_000),
+            .send(timestampNanoseconds: 30_000_000, nextDelayNanoseconds: 7_499_998)
         )
-
-        // The next tick wakes 12.5 ms late, the lateness measured on a VM. It still sends.
         XCTAssertEqual(
-            pacer.tick(atNanoseconds: 29_170_000),
-            .send(timestampNanoseconds: 29_170_000, nextDelayNanoseconds: 4_163_332)
+            pacer.latestFrameArrived(atNanoseconds: 33_333_333),
+            .send(
+                timestampNanoseconds: 33_333_333,
+                firstRepeatDelayNanoseconds: nil
+            )
         )
 
-        // An arrival an instant later must not send: that frame just went out.
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 29_200_000), .ignore)
+        // The already-pending repeat tick observes the arrival's new deadline instead of
+        // duplicating the frame or starting another timer chain.
+        XCTAssertEqual(
+            pacer.tick(atNanoseconds: 37_499_998),
+            .wait(nanoseconds: 16_666_667)
+        )
     }
 
-    func testADueArrivalPumpsWithoutStartingASecondChain() {
+    func testHeldFinalFrameIsEventuallyDeliveredByRepeatTimer() {
         var pacer = ContinuousFramePacer(framesPerSecond: 60)
         pacer.setActive(true)
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 0), .schedule(nanoseconds: 0))
-        XCTAssertEqual(pacer.tick(atNanoseconds: 0), .send(timestampNanoseconds: 0, nextDelayNanoseconds: 16_666_666))
+        _ = pacer.latestFrameArrived(atNanoseconds: 0)
+        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 5_000_000), .hold)
 
-        // Inside the tolerance of the next slot: pump now, but leave scheduling to the pending tick.
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 13_000_000), .pumpNow)
+        XCTAssertEqual(
+            pacer.tick(atNanoseconds: 20_833_332),
+            .send(timestampNanoseconds: 20_833_332, nextDelayNanoseconds: 16_666_666)
+        )
     }
 
-    func testAnArrivalWellBeforeItsSlotIsLeftToTheScheduledTick() {
-        var pacer = ContinuousFramePacer(framesPerSecond: 60)
+    func testTimerDeliveryOfHeldFreshFramePreventsABackToBackFreshSend() {
+        var pacer = ContinuousFramePacer(framesPerSecond: 24)
         pacer.setActive(true)
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 0), .schedule(nanoseconds: 0))
-        XCTAssertEqual(pacer.tick(atNanoseconds: 0), .send(timestampNanoseconds: 0, nextDelayNanoseconds: 16_666_666))
+        _ = pacer.latestFrameArrived(atNanoseconds: 0)
 
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 2_000_000), .ignore)
+        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 33_333_333), .hold)
+        XCTAssertEqual(
+            pacer.tick(atNanoseconds: 46_666_666),
+            .send(timestampNanoseconds: 46_666_666, nextDelayNanoseconds: 41_666_666)
+        )
+        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 50_000_000), .hold)
     }
 
     func testStopsCadenceAndDropsFrameStateWhenInactive() {
         var pacer = ContinuousFramePacer(framesPerSecond: 30)
         pacer.setActive(true)
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 0), .schedule(nanoseconds: 0))
+        _ = pacer.latestFrameArrived(atNanoseconds: 0)
 
         pacer.setActive(false)
         XCTAssertEqual(pacer.tick(atNanoseconds: 33_333_333), .stop)
+        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 40_000_000), .ignore)
 
         pacer.setActive(true)
         XCTAssertEqual(pacer.tick(atNanoseconds: 66_666_666), .stop)
-        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 70_000_000), .schedule(nanoseconds: 0))
+        XCTAssertEqual(
+            pacer.latestFrameArrived(atNanoseconds: 70_000_000),
+            .send(
+                timestampNanoseconds: 70_000_000,
+                firstRepeatDelayNanoseconds: 38_333_333
+            )
+        )
     }
 }

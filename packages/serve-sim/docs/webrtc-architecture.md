@@ -110,22 +110,28 @@ the fastest active consumer, and scales directly from the IOSurface into a
 private pooled buffer. A full-resolution private copy is only made when an
 active consumer explicitly requests native resolution.
 
-`WebRTCPublisher` adds one configured-rate latest-frame pump and only accepts
-frames while at least one peer is connected. After the first captured frame,
-the pump continuously resubmits its retained private buffer at the configured
-frame rate; a new capture replaces that buffer without building a queue. Static
-and changing content therefore exercise the same realtime WebRTC path without
-forcing `FrameCapture` to copy or scale an unchanged IOSurface on every tick.
+`WebRTCPublisher` adds one configured-rate latest-frame pacer and only accepts
+frames while at least one peer is connected. A due fresh capture is sent on its
+own publisher-queue turn and moves the static-repeat deadline. A short
+capture-jitter grace lets the next display callback win instead of racing a
+timer-driven duplicate. Once capture stops changing, the repeat timer
+continuously resubmits the retained private buffer at the configured frame rate.
+New captures replace that buffer without building a queue. Static and changing
+content therefore exercise the same realtime WebRTC path without forcing
+`FrameCapture` to copy or scale an unchanged IOSurface on every tick.
 Changing surfaces are sampled at the display's 60 Hz cadence. The latest-frame
 pump alone applies the configured output frame rate; the libwebrtc source
 adapter uses a high safety ceiling and the RTP sender has no additional frame
 rate cap, avoiding independently phased frame droppers. The UI defaults to 60
 fps and keeps 120 fps available as an explicit diagnostic override. FPS and
 bitrate changes also preserve the current adaptive VP8 resolution rung.
-The publisher queue uses interactive QoS. When its cadence timer wakes late, an
-already-due capture arrival pumps the frame immediately while the original timer
-continues to own the cadence. Sender telemetry records delivered pump intervals
-and timer lateness so VM scheduling stalls can be separated from encoder drops.
+The publisher queue uses interactive QoS. Fresh-frame spacing is tracked
+separately from timer-driven repeats, so a late repeat cannot suppress the next
+animation frame. The original timer observes the fresh frame's moved deadline
+and remains the only repeat chain. Delayed ticks from a disconnected session are
+generation-invalidated so they cannot enter a replacement session's cadence.
+Sender telemetry records delivered pump intervals and timer lateness so VM
+scheduling stalls can be separated from encoder drops.
 Its realtime video source requests maintain-frame-rate degradation, which
 allows libwebrtc to reduce resolution instead of sacrificing interactive
 cadence. Software VP8 begins at a maximum dimension of 1280 and samples outbound

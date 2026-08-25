@@ -5,19 +5,37 @@ public struct ContinuousFramePacer: Sendable {
         case send(timestampNanoseconds: UInt64, nextDelayNanoseconds: UInt64)
     }
 
-    /// A tick judged early is deferred to a timer that cannot hold a 60 Hz deadline, so this must
-    /// stay above capture's jitter. Capped because that jitter comes from the 60 Hz display and does
-    /// not grow with a lower configured rate.
-    private var schedulingToleranceNanoseconds: UInt64 {
+    public enum ArrivalDecision: Equatable, Sendable {
+        /// Frames received while the stream is inactive are intentionally ignored.
+        case ignore
+        /// Retain the new frame, but let a later arrival or the repeat timer send it.
+        case hold
+        /// Send the fresh frame now. Only the first frame starts the repeat-timer chain.
+        case send(timestampNanoseconds: UInt64, firstRepeatDelayNanoseconds: UInt64?)
+    }
+
+    /// Capture at display cadence has a few milliseconds of normal jitter. This tolerance only
+    /// compares fresh captures with earlier fresh captures; a late duplicate must never block
+    /// motion from being delivered.
+    private var freshFrameToleranceNanoseconds: UInt64 {
         min(frameIntervalNanoseconds / 4, 5_000_000)
+    }
+
+    /// Give a normal capture callback time to arrive before repeating the retained frame. During
+    /// motion this keeps the timer out of the way; once motion stops, repeats resume at the exact
+    /// configured cadence and keep the encoder warm.
+    private var firstRepeatGraceNanoseconds: UInt64 {
+        freshFrameToleranceNanoseconds
     }
 
     private var frameIntervalNanoseconds: UInt64
     private var active = false
     private var hasFrame = false
-    private var tickScheduled = false
+    private var hasPendingFreshFrame = false
+    private var repeatTickScheduled = false
+    private var lastFreshFrameSentAtNanoseconds: UInt64?
     private var lastSentAtNanoseconds: UInt64?
-    private var nextSendAtNanoseconds: UInt64?
+    private var nextRepeatAtNanoseconds: UInt64?
 
     public init(framesPerSecond: Int) {
         frameIntervalNanoseconds = Self.interval(framesPerSecond: framesPerSecond)
@@ -26,7 +44,7 @@ public struct ContinuousFramePacer: Sendable {
     public mutating func update(framesPerSecond: Int) {
         frameIntervalNanoseconds = Self.interval(framesPerSecond: framesPerSecond)
         if let lastSentAtNanoseconds {
-            nextSendAtNanoseconds = lastSentAtNanoseconds &+ frameIntervalNanoseconds
+            nextRepeatAtNanoseconds = lastSentAtNanoseconds &+ frameIntervalNanoseconds
         }
     }
 
@@ -35,76 +53,72 @@ public struct ContinuousFramePacer: Sendable {
         self.active = active
         if !active {
             hasFrame = false
-            tickScheduled = false
+            hasPendingFreshFrame = false
+            repeatTickScheduled = false
+            lastFreshFrameSentAtNanoseconds = nil
             lastSentAtNanoseconds = nil
-            nextSendAtNanoseconds = nil
+            nextRepeatAtNanoseconds = nil
         }
     }
 
-    public enum ArrivalDecision: Equatable, Sendable {
-        /// Nothing to do: a scheduled tick already owns the cadence.
-        case ignore
-        /// Pump now without scheduling a follow-on; a tick is already pending.
-        case pumpNow
-        /// Start the cadence with a tick after this delay.
-        case schedule(nanoseconds: UInt64)
-    }
-
-    private func earliestSend(after now: UInt64) -> UInt64? {
-        var earliest = nextSendAtNanoseconds
-        if let lastSent = lastSentAtNanoseconds {
-            let spacing = lastSent &+ frameIntervalNanoseconds &- schedulingToleranceNanoseconds
-            earliest = max(earliest ?? spacing, spacing)
-        }
-        guard let earliest, now &+ schedulingToleranceNanoseconds < earliest else { return nil }
-        return earliest
-    }
-
-    /// Records that the retained latest frame changed. Frames received while inactive are
-    /// intentionally ignored. Capture's wake-ups are more punctual than the pump's timer, so a frame
-    /// that is already due is pumped from the arrival rather than left to the scheduled tick.
+    /// Offers the newest captured frame. Fresh captures are paced relative only to the previous
+    /// fresh capture—not to timer-driven repeats—so a late VM timer cannot suppress animation.
     public mutating func latestFrameArrived(atNanoseconds now: UInt64) -> ArrivalDecision {
         guard active else { return .ignore }
         hasFrame = true
-        guard nextSendAtNanoseconds != nil || lastSentAtNanoseconds != nil else {
-            // No cadence yet; the first tick will pick this frame up.
-            guard !tickScheduled else { return .ignore }
-            tickScheduled = true
-            return .schedule(nanoseconds: 0)
-        }
-        guard let earliest = earliestSend(after: now) else {
-            return tickScheduled ? .pumpNow : .schedule(nanoseconds: 0)
-        }
-        guard !tickScheduled else { return .ignore }
-        tickScheduled = true
-        return .schedule(nanoseconds: earliest &- now)
-    }
 
-    /// Advances the pump. Once the first frame exists, every successful tick
-    /// schedules another one, so static and changing content use the same
-    /// configured cadence.
-    public mutating func tick(atNanoseconds now: UInt64) -> TickDecision {
-        guard active, hasFrame else {
-            tickScheduled = false
-            return .stop
-        }
-        if let earliest = earliestSend(after: now) {
-            return .wait(nanoseconds: earliest &- now)
+        if let lastFreshFrameSentAtNanoseconds {
+            let nextFreshFrameAt = lastFreshFrameSentAtNanoseconds &+ frameIntervalNanoseconds
+            if now &+ freshFrameToleranceNanoseconds < nextFreshFrameAt {
+                hasPendingFreshFrame = true
+                return .hold
+            }
         }
 
-        // Keep an absolute cadence anchor. Scheduling the next tick relative
-        // to `now` would permanently add dispatch/encoder latency to every
-        // interval and turn a requested 60 fps into roughly 50 fps. Skip any
-        // slots missed during a longer stall instead of emitting a burst.
-        let cadenceAnchor = nextSendAtNanoseconds ?? now
-        let elapsed = now >= cadenceAnchor ? now - cadenceAnchor : 0
-        let intervalsToAdvance = elapsed / frameIntervalNanoseconds &+ 1
-        let nextSendAt = cadenceAnchor &+ (frameIntervalNanoseconds &* intervalsToAdvance)
+        hasPendingFreshFrame = false
+        lastFreshFrameSentAtNanoseconds = now
         lastSentAtNanoseconds = now
-        nextSendAtNanoseconds = nextSendAt
+        let firstRepeatDelay = frameIntervalNanoseconds &+ firstRepeatGraceNanoseconds
+        nextRepeatAtNanoseconds = now &+ firstRepeatDelay
+
+        let shouldStartRepeatTimer = !repeatTickScheduled
+        repeatTickScheduled = true
         return .send(
             timestampNanoseconds: now,
-            nextDelayNanoseconds: nextSendAt > now ? nextSendAt - now : 0
+            firstRepeatDelayNanoseconds: shouldStartRepeatTimer ? firstRepeatDelay : nil
+        )
+    }
+
+    /// Advances the static-frame repeat timer. A fresh capture can move the repeat deadline while
+    /// an older timer is pending; that timer waits for the new deadline instead of creating a
+    /// second cadence chain or emitting a duplicate beside the fresh frame.
+    public mutating func tick(atNanoseconds now: UInt64) -> TickDecision {
+        guard active, hasFrame, let nextRepeatAtNanoseconds else {
+            repeatTickScheduled = false
+            return .stop
+        }
+        if now < nextRepeatAtNanoseconds {
+            return .wait(nanoseconds: nextRepeatAtNanoseconds &- now)
+        }
+
+        // Keep an absolute repeat cadence and skip slots missed during a longer stall instead of
+        // bursting duplicates. Fresh captures reset this anchor independently.
+        let elapsed = now &- nextRepeatAtNanoseconds
+        let intervalsToAdvance = elapsed / frameIntervalNanoseconds &+ 1
+        let nextRepeatAt = nextRepeatAtNanoseconds
+            &+ (frameIntervalNanoseconds &* intervalsToAdvance)
+        self.nextRepeatAtNanoseconds = nextRepeatAt
+        if hasPendingFreshFrame {
+            // The retained buffer changed since the preceding send, so this tick delivered fresh
+            // content rather than a duplicate. Use its actual delivery time for fresh-frame
+            // spacing; this avoids a back-to-back arrival immediately after the timer wake-up.
+            hasPendingFreshFrame = false
+            lastFreshFrameSentAtNanoseconds = now
+        }
+        lastSentAtNanoseconds = now
+        return .send(
+            timestampNanoseconds: now,
+            nextDelayNanoseconds: nextRepeatAt &- now
         )
     }
 

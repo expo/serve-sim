@@ -38,6 +38,12 @@ actor FrameCapture {
     private var onDimensions: ((Dimensions) -> Void)?
     private var onFrame: ((CVPixelBuffer, CMTime, Dimensions) -> Void)?
     private var frameCount: UInt64 = 0
+    private var captureSamples: UInt64 = 0
+    private var captureLastEntryNs: UInt64 = 0
+    private var captureGapSumNs: UInt64 = 0
+    private var captureGapMaxNs: UInt64 = 0
+    private var captureCopyMaxNs: UInt64 = 0
+    private var captureDeliverMaxNs: UInt64 = 0
     /// Counted by which path produced the frame, callback or idle deadline.
     private var screenFrameCount: UInt64 = 0
     private var idleFrameCount: UInt64 = 0
@@ -287,7 +293,25 @@ actor FrameCapture {
         (screen: screenFrameCount, idle: idleFrameCount)
     }
 
+    func captureTimings() -> (samples: UInt64, gapSumNs: UInt64, gapMaxNs: UInt64, copyMaxNs: UInt64, deliverMaxNs: UInt64) {
+        (
+            samples: captureSamples,
+            gapSumNs: captureGapSumNs,
+            gapMaxNs: captureGapMaxNs,
+            copyMaxNs: captureCopyMaxNs,
+            deliverMaxNs: captureDeliverMaxNs
+        )
+    }
+
     private func captureFrame(force: Bool = false) {
+        let entryNs = DispatchTime.now().uptimeNanoseconds
+        if captureLastEntryNs > 0 {
+            let gapNs = entryNs &- captureLastEntryNs
+            captureSamples &+= 1
+            captureGapSumNs &+= gapNs
+            captureGapMaxNs = max(captureGapMaxNs, gapNs)
+        }
+        captureLastEntryNs = entryNs
         guard let (key, surface) = pickBestSurface() else { return }
 
         let w = IOSurfaceGetWidth(surface)
@@ -342,6 +366,7 @@ actor FrameCapture {
         let timestamp = CMClockGetTime(CMClockGetHostTimeClock())
         let maxDimension = demandSnapshot.demand.maxDimension
         let retainedBuffer: CVPixelBuffer?
+        let copyStartNs = DispatchTime.now().uptimeNanoseconds
         if maxDimension > 0, max(w, h) > maxDimension {
             // vImage writes directly from the IOSurface-backed source into the
             // final private pooled buffer. Avoid a full-resolution intermediate.
@@ -349,13 +374,17 @@ actor FrameCapture {
         } else {
             retainedBuffer = photocopier.copy(pb)
         }
+        captureCopyMaxNs = max(captureCopyMaxNs, DispatchTime.now().uptimeNanoseconds &- copyStartNs)
         guard let retainedBuffer else { return }
         lastCaptureTime = .now
         frameCount += 1
         if force { idleFrameCount += 1 } else { screenFrameCount += 1 }
         lastDemandRevision = demandSnapshot.revision
         lastSeeds[key] = seed
+        // onFrame reaches into the publisher and takes its lock, so a slow publisher stalls capture.
+        let deliverStartNs = DispatchTime.now().uptimeNanoseconds
         onFrame?(retainedBuffer, timestamp, Dimensions(width: w, height: h))
+        captureDeliverMaxNs = max(captureDeliverMaxNs, DispatchTime.now().uptimeNanoseconds &- deliverStartNs)
     }
 
     func getScreenSize() -> (width: Int, height: Int)? {

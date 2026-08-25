@@ -348,6 +348,7 @@ actor CaptureEngine {
     func webRTCSenderStats(sessionId: String? = nil) async throws -> String {
         let sessions = await webRTCPublisher?.senderStatistics(sessionId: sessionId) ?? []
         let counts = await frameCapture.frameCounts()
+        let capture = await frameCapture.captureTimings()
         let flow = webRTCPublisher?.frameFlowCounts()
         let pump = webRTCPublisher?.pumpTimings()
         let data = try JSONEncoder().encode(WebRTCSenderStatsReport(
@@ -357,6 +358,11 @@ actor CaptureEngine {
                 idleFrames: counts.idle,
                 offeredFrames: flow?.offered,
                 forwardedFrames: flow?.forwarded,
+                captureSamples: capture.samples,
+                captureGapSumMs: Double(capture.gapSumNs) / 1_000_000,
+                captureGapMaxMs: Double(capture.gapMaxNs) / 1_000_000,
+                captureCopyMaxMs: Double(capture.copyMaxNs) / 1_000_000,
+                captureDeliverMaxMs: Double(capture.deliverMaxNs) / 1_000_000,
                 pumpSends: pump?.sends,
                 pumpIntervalSumMs: pump?.intervalSumMs,
                 pumpLatenessSamples: pump?.latenessSamples,

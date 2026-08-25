@@ -149,7 +149,7 @@ describe("capture counts", () => {
       idleFrames: 40,
       offeredFrames: null,
       forwardedFrames: null,
-      pumpSends: null,
+      captureSamples: null, captureGapSumMs: null, captureGapMaxMs: null, captureCopyMaxMs: null, captureDeliverMaxMs: null, pumpSends: null,
       pumpIntervalSumMs: null,
       pumpLatenessSamples: null,
       pumpLatenessSumMs: null,

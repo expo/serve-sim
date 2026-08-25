@@ -84,6 +84,13 @@ struct WebRTCCaptureCounts: Codable {
     /// forwarded-to-encoded gap is not.
     let offeredFrames: UInt64?
     let forwardedFrames: UInt64?
+    /// Diagnostic: attributes a capture stall to the actor not running, a slow copy, or delivery
+    /// blocking on the publisher's lock.
+    let captureSamples: UInt64
+    let captureGapSumMs: Double
+    let captureGapMaxMs: Double
+    let captureCopyMaxMs: Double
+    let captureDeliverMaxMs: Double
     /// Nil when nothing is publishing, matching the frame counts above.
     let pumpSends: UInt64?
     let pumpIntervalSumMs: Double?

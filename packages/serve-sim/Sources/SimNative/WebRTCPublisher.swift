@@ -670,7 +670,13 @@ final class WebRTCPublisher: @unchecked Sendable {
     }
 
     private func scheduleFramePump(afterNs delayNs: UInt64, generation: UInt64) {
-        queue.async { self.armFramePump(afterNs: delayNs, generation: generation) }
+        // Anchor the deadline here, on the caller's timeline. The arming hop
+        // through `queue.async` lands after the current drain's scale and
+        // convert work, and a deadline anchored there would push every wake
+        // late by that work — the drift the pre-work scheduling exists to
+        // avoid. A deadline the hop has already passed fires immediately.
+        let deadline: DispatchTime = .now() + .nanoseconds(Int(clamping: delayNs))
+        queue.async { self.armFramePump(at: deadline, generation: generation) }
     }
 
     /// Queue-confined. `.strict` with zero leeway opts the pump out of macOS
@@ -678,14 +684,10 @@ final class WebRTCPublisher: @unchecked Sendable {
     /// wake-ups arrived late enough to collapse the send cadence. Arming
     /// always cancels the previous timer, so at most one chain tick is ever
     /// pending and a replacement chain cannot race a zombie one.
-    private func armFramePump(afterNs delayNs: UInt64, generation: UInt64) {
+    private func armFramePump(at deadline: DispatchTime, generation: UInt64) {
         pumpTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
-        timer.schedule(
-            deadline: .now() + .nanoseconds(Int(clamping: delayNs)),
-            repeating: .never,
-            leeway: .nanoseconds(0)
-        )
+        timer.schedule(deadline: deadline, repeating: .never, leeway: .nanoseconds(0))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
             self.pumpTimer = nil

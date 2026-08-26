@@ -1074,8 +1074,9 @@ final class WebRTCPublisher: @unchecked Sendable {
         let encodings = parameters.encodings.isEmpty
             ? [LKRTCRtpEncodingParameters()]
             : parameters.encodings
-        let maxBitrate = NSNumber(value: targetBitrate)
-        let minBitrate = NSNumber(value: max(100_000, targetBitrate / 5))
+        let bitratePolicy = WebRTCBitratePolicy(targetBitsPerSecond: targetBitrate)
+        let maxBitrate = NSNumber(value: bitratePolicy.maximumBitsPerSecond)
+        let minBitrate = NSNumber(value: bitratePolicy.minimumBitsPerSecond)
         let senderFramesPerSecond = frameRatePolicy.senderFramesPerSecond
         let sourceMaxDimension = max(lastOutputWidth, lastOutputHeight)
         let scaleResolutionDownBy = maxDimension > 0 && sourceMaxDimension > maxDimension

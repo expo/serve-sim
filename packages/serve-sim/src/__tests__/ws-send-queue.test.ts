@@ -3,6 +3,7 @@ import {
   encodeWsMessage,
   enqueueWsMessage,
   flushWsMessageQueue,
+  sendWsHeartbeat,
   sendOrQueueWsMessage,
   WS_OPEN_READY_STATE,
   type WsSendTarget,
@@ -32,6 +33,15 @@ describe("ws send queue", () => {
       tag: 0x03,
       payload: { type: "begin", x: 0.5 },
     });
+  });
+
+  test("sends a one-byte heartbeat only while the WebSocket is open", () => {
+    const { ws, sent } = openWs();
+
+    expect(sendWsHeartbeat(ws)).toBe(true);
+    expect(Array.from(new Uint8Array(sent[0]!))).toEqual([0x01]);
+    expect(sendWsHeartbeat(null)).toBe(false);
+    expect(sendWsHeartbeat({ ...ws, readyState: 0 })).toBe(false);
   });
 
   test("queues messages while the WebSocket is not open", () => {

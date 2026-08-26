@@ -25,6 +25,10 @@ import { resolveSimulatorStreamRouting } from "./simulator-stream-routing.js";
 import { useAvccStream } from "./use-avcc-stream.js";
 import { observeVideoDimensions } from "./video-dimensions.js";
 import { isAvccSupported } from "../avcc-codec.js";
+import {
+  sendWsHeartbeat,
+  WS_HEARTBEAT_INTERVAL_MS,
+} from "../utils/ws-send-queue.js";
 
 // Custom round cursor matching the finger dot indicator
 const FINGER_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='12' cy='12' r='9' fill='rgba(255,255,255,0.45)' stroke='rgba(0,0,0,0.55)' stroke-width='1.25' filter='drop-shadow(0 1px 2px rgba(0,0,0,0.45))'/%3E%3C/svg%3E") 12 12, pointer`;
@@ -535,6 +539,7 @@ export function SimulatorView({
     if (!openDirectControlSocket && !openDirectMjpeg && !useAvcc) return;
 
     let ws: WebSocket | null = null;
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     if (openDirectControlSocket) {
       const wsUrl = wsUrlProp ?? url.replace(/^http/, "ws") + "/ws";
       ws = new WebSocket(wsUrl);
@@ -549,8 +554,18 @@ export function SimulatorView({
           updateScreenConfig(JSON.parse(new TextDecoder().decode(bytes.subarray(1))) as StreamConfig);
         } catch {}
       };
-      ws.onopen = () => setError(null);
-      ws.onclose = () => setConnected(false);
+      ws.onopen = () => {
+        setError(null);
+        heartbeatTimer = setInterval(
+          () => sendWsHeartbeat(ws),
+          WS_HEARTBEAT_INTERVAL_MS,
+        );
+      };
+      ws.onclose = () => {
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+        setConnected(false);
+      };
       ws.onerror = () => {
         setError("WebSocket connection failed");
         setConnected(false);
@@ -617,6 +632,7 @@ export function SimulatorView({
       fpsAbort?.abort();
       if (fpsInterval) clearInterval(fpsInterval);
       if (startupWatchdog) clearTimeout(startupWatchdog);
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       ws?.close();
       if (wsRef.current === ws) wsRef.current = null;
     };

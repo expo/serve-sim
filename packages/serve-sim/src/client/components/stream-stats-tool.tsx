@@ -62,55 +62,100 @@ export function StreamStatsBody({
       </div>
 
       <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 border-t border-white/10 pt-1.5">
-        <Cell label="RTT" value={ms(stats.roundTripMs, 0)} />
-        <Cell label="Jitter" value={ms(stats.jitterMs, 1)} />
-        <Cell label="Jitter buffer" value={ms(stats.jitterBufferMs, 0)} />
+        <Cell label="Frame spacing" value={plusMinus(stats.pacingDeviationMs)} />
         <Cell
           label="Resolution"
           value={stats.width === null || stats.height === null
             ? DASH
             : `${stats.width}x${stats.height}`}
         />
+      </div>
+
+      <Diagnostics stats={stats} sender={sender} capture={capture} />
+    </div>
+  );
+}
+
+/** Everything past "is it smooth". Collapsed, because most sessions never ask. */
+function Diagnostics({
+  stats,
+  sender,
+  capture,
+}: {
+  stats: StreamStats;
+  sender?: SenderStreamStats | null;
+  capture?: CaptureCounts | null;
+}) {
+  return (
+    <details className="border-t border-white/10 pt-1.5">
+      <summary className="-my-1 flex cursor-pointer list-none items-center gap-1 py-1 text-[10px] uppercase tracking-[0.08em] text-white/30 hover:text-white/60">
+        <span className="transition-transform [details[open]_&]:rotate-90">&rsaquo;</span>
+        Diagnostics
+      </summary>
+
+      <Group label="Network">
+        <Cell label="RTT" value={ms(stats.roundTripMs, 0)} />
+        <Cell label="Jitter" value={ms(stats.jitterMs, 1)} />
+        <Cell label="Jitter buffer" value={ms(stats.jitterBufferMs, 0)} />
+        <Cell label="Decode" value={ms(stats.decodeMsPerFrame, 1)} />
         {stats.path !== "unknown" && (
           <Cell label="ICE route" value={stats.path === "relay" ? "Via relay" : "Direct"} />
         )}
-      </div>
+      </Group>
 
-      {sender && <SenderRows sender={sender} />}
-      {capture && <CaptureRows capture={capture} />}
+      {sender && (
+        <Group label="Encoder">
+          <Cell label="Encode FPS" value={fps(sender.reportedFps)} />
+          <Cell label="Target" value={bitrate(sender.targetKbps)} />
+          <Cell label="Pacer FPS" value={fps(sender.sourceFps)} />
+          <Cell label="Encode" value={ms(sender.encodeMsPerFrame, 1)} hint="/frame" />
+          <Cell label="Frames sent" value={compact(sender.framesSent)} />
+          <Cell label="Loss" value={percent(sender.lossRatio)} hint="total" />
+          <Cell label="Pump restarts" value={compact(capture?.pumpRestarts ?? null)} hint="total" />
+        </Group>
+      )}
+
+      {capture && (
+        <Group label="Capture">
+          <Cell label="Screen frames" value={compact(capture.screenFrames)} />
+          <Cell label="Idle frames" value={compact(capture.idleFrames)} />
+          <Cell label="Capture deliveries" value={compact(capture.offeredFrames)} />
+          <Cell label="Pacer submissions" value={compact(capture.forwardedFrames)} />
+          <Cell label="Stalls" value={compact(capture.stalls)} hint="total" />
+          <Cell label="Stall time" value={duration(capture.stallSumMs)} hint="total" />
+          <Cell label="Capture interval" value={ms(per(capture.gapSumMs, capture.attempts), 1)} />
+          <Cell label="CPU fallbacks" value={compact(capture.cpuFallbacks)} hint="total" />
+        </Group>
+      )}
+    </details>
+  );
+}
+
+function Group({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="pt-1.5">
+      <div className="pb-0.5 text-[10px] uppercase tracking-[0.08em] text-white/25">{label}</div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">{children}</div>
     </div>
   );
 }
 
-/** The encoder's own view. None of this is visible to a receive-only browser. */
-function SenderRows({ sender }: { sender: SenderStreamStats }) {
-  return (
-    <div className="flex flex-col gap-0.5 border-t border-white/10 pt-1.5">
-      <div className="pb-0.5 text-[10px] uppercase tracking-[0.08em] text-white/30">Encoder</div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
-        <Cell label="Encode FPS" value={fps(sender.reportedFps)} />
-        <Cell label="Target" value={bitrate(sender.targetKbps)} />
-        <Cell label="Pacer FPS" value={fps(sender.sourceFps)} />
-        <Cell label="Encode" value={ms(sender.encodeMsPerFrame, 1)} hint="/frame" />
-        <Cell label="Frames sent" value={compact(sender.framesSent)} />
-        <Cell label="Loss" value={percent(sender.lossRatio)} hint="total" />
-      </div>
-    </div>
-  );
+
+
+
+function per(total: number | null, count: number | null): number | null {
+  if (total === null || count === null || count <= 0) return null;
+  return total / count;
 }
 
-function CaptureRows({ capture }: { capture: CaptureCounts }) {
-  return (
-    <div className="flex flex-col gap-0.5 border-t border-white/10 pt-1.5">
-      <div className="pb-0.5 text-[10px] uppercase tracking-[0.08em] text-white/30">Capture</div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
-        <Cell label="Screen frames" value={compact(capture.screenFrames)} />
-        <Cell label="Idle frames" value={compact(capture.idleFrames)} />
-        <Cell label="Capture deliveries" value={compact(capture.offeredFrames)} />
-        <Cell label="Pacer submissions" value={compact(capture.forwardedFrames)} />
-      </div>
-    </div>
-  );
+/** Stall totals reach seconds, where a millisecond figure stops being readable. */
+function duration(value: number | null): string {
+  if (value === null) return DASH;
+  return value < 1000 ? ms(value, 0) : `${(value / 1000).toFixed(1)} s`;
+}
+
+function plusMinus(value: number | null): string {
+  return value === null ? DASH : `± ${ms(value, 1)}`;
 }
 
 /** These are lifetime counters and reach millions, so a fixed-width cell needs them short. */
@@ -231,11 +276,13 @@ function Graph({
 
 function Cell({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <div className="flex items-baseline justify-between gap-2" data-stream-stat={label}>
-      <span className="whitespace-nowrap text-[11px] text-white/50">{label}</span>
-      <span className="tabular-nums whitespace-nowrap text-[11px] text-white/90">
+    <div className="flex min-w-0 items-baseline justify-between gap-2" data-stream-stat={label}>
+      <span className="min-w-0 truncate text-[11px] text-white/50" title={label}>{label}</span>
+      <span className="shrink-0 tabular-nums whitespace-nowrap text-[11px] text-white/90">
         {value}
-        {hint && <span className="ml-1.5 text-[11px] text-white/30">{hint}</span>}
+        {hint && value !== DASH && (
+          <span className="ml-1.5 text-[11px] text-white/30">{hint}</span>
+        )}
       </span>
     </div>
   );

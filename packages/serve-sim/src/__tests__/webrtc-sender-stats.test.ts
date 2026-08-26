@@ -150,7 +150,11 @@ describe("capture counts", () => {
       offeredFrames: null,
       forwardedFrames: null,
       pumpRestarts: null,
-      captureCpuCopies: null,
+      cpuFallbacks: null,
+      attempts: null,
+      stalls: null,
+      gapSumMs: null,
+      stallSumMs: null,
       pollTicks: null,
       pollLateSumMs: null,
     });

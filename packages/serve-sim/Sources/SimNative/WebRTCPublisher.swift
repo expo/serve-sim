@@ -79,7 +79,11 @@ struct WebRTCCaptureCounts: Codable {
     /// Times the arrival-side watchdog replaced a frame pump that stopped
     /// ticking. Nonzero means the host starved or dropped pump timers.
     let pumpRestarts: UInt64?
-    let captureCpuCopies: UInt64
+    let cpuFallbacks: UInt64
+    let attempts: UInt64
+    let stalls: UInt64
+    let gapSumMs: Double
+    let stallSumMs: Double
     let pollTicks: UInt64
     let pollLateSumMs: Double
 }

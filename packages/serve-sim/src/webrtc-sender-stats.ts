@@ -36,7 +36,11 @@ export interface CaptureCounts {
   forwardedFrames: number | null;
   /** Frame-pump watchdog restarts; nonzero means the host starved or dropped pump timers. */
   pumpRestarts: number | null;
-  captureCpuCopies: number | null;
+  cpuFallbacks: number | null;
+  attempts: number | null;
+  stalls: number | null;
+  gapSumMs: number | null;
+  stallSumMs: number | null;
   pollTicks: number | null;
   pollLateSumMs: number | null;
 }
@@ -143,8 +147,12 @@ function readCaptureCounts(raw: unknown): CaptureCounts | null {
     idleFrames,
     offeredFrames: typeof raw.offeredFrames === "number" ? raw.offeredFrames : null,
     forwardedFrames: typeof raw.forwardedFrames === "number" ? raw.forwardedFrames : null,
-    pumpRestarts: typeof raw.pumpRestarts === "number" ? raw.pumpRestarts : null,
-    captureCpuCopies: maybeNumber(raw.captureCpuCopies),
+    pumpRestarts: maybeNumber(raw.pumpRestarts),
+    cpuFallbacks: maybeNumber(raw.cpuFallbacks),
+    attempts: maybeNumber(raw.attempts),
+    stalls: maybeNumber(raw.stalls),
+    gapSumMs: maybeNumber(raw.gapSumMs),
+    stallSumMs: maybeNumber(raw.stallSumMs),
     pollTicks: maybeNumber(raw.pollTicks),
     pollLateSumMs: maybeNumber(raw.pollLateSumMs),
   };

@@ -1761,11 +1761,13 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       let computing = false;
       let debounce: ReturnType<typeof setTimeout> | null = null;
       let watcher: FSWatcher | null = null;
+      let watcherRetry: ReturnType<typeof setTimeout> | null = null;
       let statusPoll: ReturnType<typeof setInterval> | null = null;
       let heartbeat: ReturnType<typeof setInterval> | null = null;
       req.on("close", () => {
         closed = true;
         if (debounce) clearTimeout(debounce);
+        if (watcherRetry) clearTimeout(watcherRetry);
         if (statusPoll) clearInterval(statusPoll);
         if (heartbeat) clearInterval(heartbeat);
         watcher?.close();
@@ -1796,12 +1798,30 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           void sendIfChanged();
         }, 150);
       };
-      try {
-        watcher = watch(STATE_DIR, onFsEvent);
-      } catch {}
+      const ensureWatcher = () => {
+        if (closed || res.writableEnded || watcher || watcherRetry) return;
+        watcherRetry = setTimeout(() => {
+          watcherRetry = null;
+          if (closed || res.writableEnded || watcher) return;
+          try {
+            watcher = watch(STATE_DIR, onFsEvent);
+            watcher.on("error", () => {
+              watcher?.close();
+              watcher = null;
+              ensureWatcher();
+            });
+            void sendIfChanged();
+          } catch {
+            ensureWatcher();
+          }
+        }, 250);
+      };
+      ensureWatcher();
       statusPoll = setInterval(() => void sendIfChanged(), 3_000);
       heartbeat = setInterval(() => {
-        if (!closed && !res.writableEnded) res.write(":\n\n");
+        if (closed || res.writableEnded) return;
+        res.write(":\n\n");
+        ensureWatcher();
       }, 15_000);
       return;
     }

@@ -511,6 +511,7 @@ function AppWithConfig({
   });
   const streamSettings = streamSettingsState.settings;
   const updateStreamPlayback = streamSettingsState.updatePlayback;
+  const streamTransportLocked = streamSettingsState.transportLocked;
 
   const wantsWebRtcVideo = streamSettings.transport === "webrtc";
   const handledWebRtcFailureRef = useRef<string | null>(null);
@@ -567,6 +568,7 @@ function AppWithConfig({
     );
     if (!decision) return;
     if (decision.type === "switch-to-http") {
+      if (streamTransportLocked) return;
       updateStreamPlayback({ transport: "http" });
       return;
     }
@@ -574,10 +576,15 @@ function AppWithConfig({
   }, [
     configuredWebRtcCodec,
     effectiveWebRtcCodec,
+    streamTransportLocked,
     updateStreamPlayback,
     wantsWebRtcVideo,
     webrtc.failure,
   ]);
+  const lockedWebRtcError =
+    streamTransportLocked && webrtc.failure && !webrtc.error
+      ? "WebRTC streaming failed. HTTP fallback is disabled for this session."
+      : null;
   // One-shot startup window; the JPEG seed paints immediately but only a
   // decoded H.264 frame proves AVCC is viable and cancels this fallback.
   useEffect(() => {
@@ -1067,7 +1074,7 @@ function AppWithConfig({
                 streamMode={useWebRtcVideo ? "webrtc" : useAvccVideo ? "avcc" : "mjpeg"}
                 webRtcStream={webrtc.stream}
                 onWebRtcFrame={webrtc.markFrameDecoded}
-                streamError={useWebRtcVideo ? webrtc.error : null}
+                streamError={useWebRtcVideo ? webrtc.error ?? lockedWebRtcError : null}
                 onAvccError={() => dispatchAvccFallback("error")}
                 onAvccDecodedFrame={() => dispatchAvccFallback("decoded-frame")}
                 subscribeFrame={useAvccVideo ? undefined : mjpeg.subscribeFrame}
@@ -1255,6 +1262,7 @@ function AppWithConfig({
         streamSettingsPending={
           streamSettingsState.pending || !streamSettingsState.encoderSettingsAvailable
         }
+        streamTransportLocked={streamTransportLocked}
         width={toolsPanelWidth}
       />
       <ResizeHandle

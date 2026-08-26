@@ -38,7 +38,9 @@ import {
   parseStreamEncoderSettingsPatch,
   streamControlSettingsFrom,
   streamEncoderSettingsFrom,
+  streamEncoderSettingsForTransport,
   type StreamEncoderSettings,
+  type StreamPlaybackSettings,
   type StreamSettings,
 } from "./stream-settings";
 
@@ -232,11 +234,13 @@ export class DeviceSession {
   private latestJpegLength = 0;
   private readonly hidSockets = new Set<HidSocket>();
   private touchGestureLog?: TouchGestureLog;
+  private readonly transport: StreamPlaybackSettings["transport"];
   private encoderSettings: StreamEncoderSettings;
   private streamSettingsUpdate: Promise<void> = Promise.resolve();
 
   constructor(public readonly udid: string, initialStreamSettings?: StreamSettings) {
     const streamSettings = streamControlSettingsFrom(initialStreamSettings);
+    this.transport = streamSettings.transport;
     this.encoderSettings = streamEncoderSettingsFrom(streamSettings);
     this.hid = new NativeHid(udid);
     this.capture = new NativeCapture(udid, this.encoderSettings);
@@ -312,6 +316,10 @@ export class DeviceSession {
   // ── HTTP handlers ────────────────────────────────────────────────────────
 
   handleMjpeg(req: IncomingMessage, res: ServerResponse): void {
+    if (this.transport === "webrtc") {
+      this.sendTransportLocked(res);
+      return;
+    }
     const raw = new URL(req.url ?? "", "http://x").searchParams.get("raw") === "1";
     res.writeHead(200, {
       "Content-Type": raw ? "application/octet-stream" : "multipart/x-mixed-replace; boundary=frame",
@@ -363,6 +371,10 @@ export class DeviceSession {
   }
 
   handleAvcc(req: IncomingMessage, res: ServerResponse): void {
+    if (this.transport === "webrtc") {
+      this.sendTransportLocked(res);
+      return;
+    }
     res.writeHead(200, {
       "Content-Type": "application/octet-stream",
       "Cache-Control": "no-cache, no-store",
@@ -459,7 +471,13 @@ export class DeviceSession {
   async handleStreamSettings(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method === "GET") {
       await this.streamSettingsUpdate;
-      if (!res.writableEnded && !res.destroyed) this.sendJson(res, 200, this.encoderSettings);
+      if (!res.writableEnded && !res.destroyed) {
+        this.sendJson(
+          res,
+          200,
+          streamEncoderSettingsForTransport(this.encoderSettings, this.transport),
+        );
+      }
       return;
     }
     if (req.method !== "PATCH") {
@@ -479,6 +497,7 @@ export class DeviceSession {
       );
       const patch = parseStreamEncoderSettingsPatch(
         parseJsonBody(body, "invalid_stream_settings"),
+        this.transport,
       );
       if (!patch) {
         throw new WebRtcSignalingError(
@@ -488,7 +507,13 @@ export class DeviceSession {
         );
       }
       const settings = await this.updateStreamSettings(patch);
-      if (!res.writableEnded && !res.destroyed) this.sendJson(res, 200, settings);
+      if (!res.writableEnded && !res.destroyed) {
+        this.sendJson(
+          res,
+          200,
+          streamEncoderSettingsForTransport(settings, this.transport),
+        );
+      }
     } catch (error) {
       if (res.writableEnded || res.destroyed) return;
       const status = error instanceof WebRtcSignalingError ? error.status : 500;
@@ -911,6 +936,13 @@ export class DeviceSession {
 
   private sendJson(res: ServerResponse, status: number, body: unknown): void {
     this.sendJsonString(res, status, JSON.stringify(body));
+  }
+
+  private sendTransportLocked(res: ServerResponse): void {
+    this.sendJson(res, 409, {
+      error: "stream_transport_locked",
+      transport: this.transport,
+    });
   }
 
   private sendJsonString(res: ServerResponse, status: number, json: string): void {

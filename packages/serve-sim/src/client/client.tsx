@@ -46,6 +46,7 @@ import { useMediaDrop } from "./hooks/use-media-drop";
 import { useMjpegStream } from "./hooks/use-mjpeg-stream";
 import { useAvccStream } from "./hooks/use-avcc-stream";
 import { useWebRtcStream } from "./hooks/use-webrtc-stream";
+import { HidTransportRouter } from "./webrtc-input-channel";
 import { useResizableWidth } from "./hooks/use-resizable-width";
 import { useScreenshotToast } from "./hooks/use-screenshot-toast";
 import { useSimulatorResize } from "./hooks/use-simulator-resize";
@@ -696,14 +697,23 @@ function AppWithConfig({
     };
   }, [config.wsUrl]);
 
+  // In WebRTC mode, HID prefers the "input" data channel: it rides the media
+  // path (UDP, no tunnel hops) instead of the tunneled TCP WebSocket. The
+  // router pins each gesture to one transport so the two ordered channels
+  // cannot interleave one gesture's begin/move/end; everything falls back to
+  // the WebSocket whenever the channel is not open.
+  const inputRouterRef = useRef(new HidTransportRouter());
+  const webRtcInputTarget = webrtc.inputTarget;
   const sendWs = useCallback((tag: number, payload: object) => {
+    const channelTarget = useWebRtcVideo ? webRtcInputTarget : null;
+    const route = inputRouterRef.current.route(tag, payload, channelTarget !== null);
     pendingWsMessagesRef.current = sendOrQueueWsMessage(
-      wsRef.current,
+      route === "channel" ? channelTarget : wsRef.current,
       pendingWsMessagesRef.current,
       tag,
       payload,
     );
-  }, []);
+  }, [useWebRtcVideo, webRtcInputTarget]);
 
   const onStreamTouch = useCallback((data: any) => sendWs(0x03, data), [sendWs]);
   const onStreamMultiTouch = useCallback((data: any) => sendWs(0x05, data), [sendWs]);

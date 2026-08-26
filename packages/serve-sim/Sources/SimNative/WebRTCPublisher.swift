@@ -197,6 +197,10 @@ final class WebRTCPublisher: @unchecked Sendable {
     private var frameRatePolicy: WebRTCFrameRatePolicy
     private var targetBitrate: Int
     private var maxDimension: Int
+    /// Guarded by `inputLock`: set from the engine actor, read on libwebrtc's
+    /// delegate thread when an "input" data-channel message arrives.
+    private let inputLock = NSLock()
+    private var inputHandler: (@Sendable (Data) -> Void)?
 
     init(maxFps: Int, targetBitrate: Int, maxDimension: Int) {
         let frameRatePolicy = WebRTCFrameRatePolicy(configuredFramesPerSecond: maxFps)
@@ -226,6 +230,21 @@ final class WebRTCPublisher: @unchecked Sendable {
             "h264=\(h264SupportDescription()) h264FrameMode=\(h264FrameModeDescription()) " +
             "senderCodecs=\(senderCodecSummary())"
         )
+    }
+
+    /// Receives every message a viewer sends on its "input" data channel, as the
+    /// same binary `[tag][JSON]` HID frames the `/ws` control socket carries.
+    func setInputHandler(_ handler: (@Sendable (Data) -> Void)?) {
+        inputLock.lock()
+        inputHandler = handler
+        inputLock.unlock()
+    }
+
+    private func dispatchInput(_ data: Data) {
+        inputLock.lock()
+        let handler = inputHandler
+        inputLock.unlock()
+        handler?(data)
     }
 
     func updateSettings(maxFps: Int, targetBitrate: Int, maxDimension: Int) async {
@@ -766,6 +785,9 @@ final class WebRTCPublisher: @unchecked Sendable {
             },
             onClosed: { [weak self] peerConnection in
                 self?.clearSession(peerConnection)
+            },
+            onInput: { [weak self] data in
+                self?.dispatchInput(data)
             }
         )
         guard let peerConnection = factory.peerConnection(
@@ -1776,21 +1798,32 @@ private final class WebRTCSession {
     }
 }
 
-private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate {
+private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChannelDelegate {
+    /// The label the browser gives its HID input channel; anything else is closed.
+    static let inputDataChannelLabel = "input"
+
     weak var peerConnection: LKRTCPeerConnection?
     private let onConnected: (LKRTCPeerConnection) -> Void
     private let onClosed: (LKRTCPeerConnection) -> Void
+    private let onInput: (Data) -> Void
     private let iceGatheringCompleteHandlerLock = NSLock()
     private var iceGatheringCompleteHandler: (() -> Void)?
     private let candidatesLock = NSLock()
     private var generatedCandidates: [LKRTCIceCandidate] = []
+    // RTCDataChannel.delegate is weak; retain opened channels until they close
+    // so input callbacks keep firing. `loggedFirstInputMessage` shares the lock.
+    private let retainedDataChannelsLock = NSLock()
+    private var retainedDataChannels: [ObjectIdentifier: LKRTCDataChannel] = [:]
+    private var loggedFirstInputMessage = false
 
     init(
         onConnected: @escaping (LKRTCPeerConnection) -> Void,
-        onClosed: @escaping (LKRTCPeerConnection) -> Void
+        onClosed: @escaping (LKRTCPeerConnection) -> Void,
+        onInput: @escaping (Data) -> Void
     ) {
         self.onConnected = onConnected
         self.onClosed = onClosed
+        self.onInput = onInput
     }
 
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didChange stateChanged: LKRTCSignalingState) {}
@@ -1845,8 +1878,39 @@ private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate
         streamLog("[webrtc] ICE candidate error: url=\(event.url) code=\(event.errorCode) text=\(event.errorText)")
     }
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didOpen dataChannel: LKRTCDataChannel) {
-        streamLog("[webrtc] Closing unsupported data channel: \(dataChannel.label)")
-        dataChannel.close()
+        guard dataChannel.label == Self.inputDataChannelLabel else {
+            streamLog("[webrtc] Closing unsupported data channel: \(dataChannel.label)")
+            dataChannel.close()
+            return
+        }
+        streamLog("[webrtc] Viewer opened input data channel")
+        retainedDataChannelsLock.lock()
+        retainedDataChannels[ObjectIdentifier(dataChannel)] = dataChannel
+        retainedDataChannelsLock.unlock()
+        dataChannel.delegate = self
+    }
+
+    func dataChannelDidChangeState(_ dataChannel: LKRTCDataChannel) {
+        streamLog("[webrtc] Input data channel state: \(dataChannel.readyState.rawValue)")
+        if dataChannel.readyState == .closed {
+            retainedDataChannelsLock.lock()
+            retainedDataChannels.removeValue(forKey: ObjectIdentifier(dataChannel))
+            retainedDataChannelsLock.unlock()
+        }
+    }
+
+    func dataChannel(_ dataChannel: LKRTCDataChannel, didReceiveMessageWith buffer: LKRTCDataBuffer) {
+        // Same binary [tag][JSON] HID frames as `/ws`. Copy off libwebrtc's
+        // buffer before leaving the delegate callback. Log the first delivery
+        // only: per-event logging floods stdout during a drag.
+        retainedDataChannelsLock.lock()
+        let isFirstMessage = !loggedFirstInputMessage
+        loggedFirstInputMessage = true
+        retainedDataChannelsLock.unlock()
+        if isFirstMessage {
+            streamLog("[webrtc] Input data channel delivering HID frames")
+        }
+        onInput(Data(buffer.data))
     }
 
     func generatedCandidatesSnapshot() -> [LKRTCIceCandidate] {

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WebRtcCodec, WebRtcStreamFailure } from "../webrtc-codec-fallback";
 import { webRtcFailureDisposition } from "../webrtc-failure-policy";
 import { WEBRTC_ICE_TRANSPORT_POLICY, type IceServer } from "../webrtc-ice";
+import { dataChannelSendTarget } from "../webrtc-input-channel";
 import {
   closeWebRtcSession,
   postWebRtcOffer,
@@ -53,9 +54,21 @@ export function useWebRtcStream({
   const [retryGeneration, setRetryGeneration] = useState(0);
   const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [inputChannelOpen, setInputChannelOpen] = useState(false);
+  const inputChannelRef = useRef<RTCDataChannel | null>(null);
   const firstFrameTimeoutRef = useRef<number | undefined>(undefined);
   const firstFrameDecodedRef = useRef(false);
   const transportRetryAttemptRef = useRef(0);
+
+  // HID rides this channel over the media path instead of the (possibly
+  // tunneled) control WebSocket; null until open, and whenever it is null the
+  // caller keeps using the WebSocket. See webrtc-input-channel.ts. Memoized on
+  // the open flag so pointer-event callbacks downstream keep a stable identity;
+  // the ref is already set by the time the open flag's render happens.
+  const inputTarget = useMemo(
+    () => (inputChannelOpen ? dataChannelSendTarget(inputChannelRef.current) : null),
+    [inputChannelOpen],
+  );
 
   const markFrameDecoded = useCallback(() => {
     firstFrameDecodedRef.current = true;
@@ -95,6 +108,8 @@ export function useWebRtcStream({
     setStream(null);
     setFailure(null);
     setError(null);
+    inputChannelRef.current = null;
+    setInputChannelOpen(false);
     firstFrameDecodedRef.current = false;
     if (firstFrameTimeoutRef.current !== undefined) {
       window.clearTimeout(firstFrameTimeoutRef.current);
@@ -116,6 +131,10 @@ export function useWebRtcStream({
 
     const closePeer = () => {
       setStream(null);
+      if (inputChannelRef.current) {
+        inputChannelRef.current = null;
+        setInputChannelOpen(false);
+      }
       pc?.close();
       // Readers of `peerConnection` would otherwise keep polling a closed connection for the whole
       // retry backoff, and report its last values as if the stream were still live.
@@ -189,6 +208,21 @@ export function useWebRtcStream({
         });
 
         setPeerConnection(pc);
+
+        // Created before the offer so the SCTP transport is negotiated with the
+        // video. Ordered + reliable: input frames stay in order on this channel,
+        // and the router only ever switches transports at gesture boundaries.
+        const inputChannel = pc.createDataChannel("input");
+        inputChannelRef.current = inputChannel;
+        inputChannel.onopen = () => {
+          if (!stopped && inputChannelRef.current === inputChannel) setInputChannelOpen(true);
+        };
+        inputChannel.onclose = () => {
+          if (inputChannelRef.current === inputChannel) {
+            inputChannelRef.current = null;
+            setInputChannelOpen(false);
+          }
+        };
 
         const videoTransceiver = pc.addTransceiver("video", { direction: "recvonly" });
         const videoCapabilities = RTCRtpReceiver.getCapabilities("video");
@@ -296,11 +330,13 @@ export function useWebRtcStream({
       }
       void closeRemoteSession(true);
       setStream(null);
+      inputChannelRef.current = null;
+      setInputChannelOpen(false);
       setPeerConnection(null);
       setSessionId(null);
       pc?.close();
     };
   }, [enabled, offerUrl, closeUrl, codec, iceServers, retryGeneration]);
 
-  return { stream, failure, error, markFrameDecoded, peerConnection, sessionId };
+  return { stream, failure, error, markFrameDecoded, peerConnection, sessionId, inputTarget };
 }

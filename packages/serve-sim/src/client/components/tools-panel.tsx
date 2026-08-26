@@ -36,6 +36,7 @@ export function ToolsPanel({
   activeCodec,
   avccSupported,
   streamSettingsPending,
+  streamTransportLocked = false,
   width,
 }: {
   open: boolean;
@@ -56,6 +57,7 @@ export function ToolsPanel({
   activeCodec: string;
   avccSupported: boolean;
   streamSettingsPending: boolean;
+  streamTransportLocked?: boolean;
   width: number;
 }) {
   return (
@@ -89,6 +91,7 @@ export function ToolsPanel({
             activeCodec={activeCodec}
             avccSupported={avccSupported}
             encoderSettingsDisabled={streamSettingsPending}
+            transportLocked={streamTransportLocked}
             peerConnection={peerConnection}
             webrtcStatsUrl={webrtcStatsUrl}
             webrtcSessionId={webrtcSessionId}

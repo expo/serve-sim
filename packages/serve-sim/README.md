@@ -114,6 +114,10 @@ WebRTC uses HTTP for SDP signaling and RTP for video. Simulator input and screen
 metadata continue over the existing helper WebSocket. ICE prefers a direct UDP
 path when one is reachable, even if the page was loaded through a tunnel URL;
 TURN is used as a fallback when direct/STUN candidates fail.
+Starting with `--transport webrtc` locks the preview to WebRTC for the lifetime
+of the server. The UI exposes only WebRTC codec and encoder controls, the
+settings API rejects HTTP-only controls, and the MJPEG/AVCC endpoints return
+`409 stream_transport_locked` instead of opening tunneled screen streams.
 While a peer is connected, one absolute-cadence publisher continuously submits
 the latest captured frame at the configured `--video-fps`. SimulatorKit change
 callbacks are supplemented by a 60 Hz IOSurface seed poll; that poll is a

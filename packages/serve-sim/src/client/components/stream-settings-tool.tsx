@@ -21,6 +21,7 @@ const TRANSPORT_OPTIONS = [
   { value: "http", label: "HTTP" },
   { value: "webrtc", label: "WebRTC" },
 ];
+const LOCKED_WEBRTC_TRANSPORT_OPTIONS = [{ value: "webrtc", label: "WebRTC" }];
 const HTTP_CODEC_OPTIONS = [
   { value: "auto", label: "Auto" },
   { value: "h264", label: "H.264" },
@@ -77,6 +78,7 @@ export function StreamSettingsTool({
   webrtcStatsUrl,
   webrtcSessionId,
   encoderSettingsDisabled = false,
+  transportLocked = false,
 }: {
   settings: StreamControlSettings;
   onPlaybackSettingsChange: (patch: Partial<StreamPlaybackSettings>) => void;
@@ -84,6 +86,7 @@ export function StreamSettingsTool({
   activeCodec: string;
   avccSupported: boolean;
   encoderSettingsDisabled?: boolean;
+  transportLocked?: boolean;
   peerConnection: RTCPeerConnection | null;
   webrtcStatsUrl?: string;
   webrtcSessionId?: string | null;
@@ -161,20 +164,22 @@ export function StreamSettingsTool({
           <SettingSelect
             label="Transport"
             value={settings.transport}
-            options={TRANSPORT_OPTIONS}
-            disabled={false}
+            options={transportLocked ? LOCKED_WEBRTC_TRANSPORT_OPTIONS : TRANSPORT_OPTIONS}
+            disabled={transportLocked}
             onChange={(v) => onPlaybackSettingsChange({ transport: v as StreamTransport })}
           />
         </SettingRow>
-        <SettingRow icon={<Video className={iconClass} />} label="HTTP codec">
-          <SettingSelect
-            label="HTTP codec"
-            value={avccSupported ? settings.httpCodec : "mjpeg"}
-            options={HTTP_CODEC_OPTIONS}
-            disabled={!httpActive || !avccSupported}
-            onChange={(v) => onPlaybackSettingsChange({ httpCodec: v as HttpStreamCodec })}
-          />
-        </SettingRow>
+        {!transportLocked && (
+          <SettingRow icon={<Video className={iconClass} />} label="HTTP codec">
+            <SettingSelect
+              label="HTTP codec"
+              value={avccSupported ? settings.httpCodec : "mjpeg"}
+              options={HTTP_CODEC_OPTIONS}
+              disabled={!httpActive || !avccSupported}
+              onChange={(v) => onPlaybackSettingsChange({ httpCodec: v as HttpStreamCodec })}
+            />
+          </SettingRow>
+        )}
         <SettingRow icon={<Video className={iconClass} />} label="WebRTC codec">
           <SettingSelect
             label="WebRTC codec"
@@ -197,28 +202,32 @@ export function StreamSettingsTool({
             onChange={(v) => onEncoderSettingsChange({ maxDimension: Number(v) })}
           />
         </SettingRow>
-        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="MJPEG FPS">
-          <SettingSelect
-            label="MJPEG FPS"
-            value={String(settings.mjpegFps)}
-            options={streamFpsOptions(settings.mjpegFps)}
-            disabled={encoderSettingsDisabled || !httpActive}
-            onChange={(v) => onEncoderSettingsChange({ mjpegFps: Number(v) })}
-          />
-        </SettingRow>
-        <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="MJPEG quality">
-          <SettingSelect
-            label="MJPEG quality"
-            value={String(settings.mjpegQuality)}
-            options={optionsWithCurrentValue(
-              settings.mjpegQuality,
-              QUALITY_OPTIONS,
-              (value) => `${Math.round(value * 100)}%`,
-            )}
-            disabled={encoderSettingsDisabled || !httpActive}
-            onChange={(v) => onEncoderSettingsChange({ mjpegQuality: Number(v) })}
-          />
-        </SettingRow>
+        {!transportLocked && (
+          <>
+            <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="MJPEG FPS">
+              <SettingSelect
+                label="MJPEG FPS"
+                value={String(settings.mjpegFps)}
+                options={streamFpsOptions(settings.mjpegFps)}
+                disabled={encoderSettingsDisabled || !httpActive}
+                onChange={(v) => onEncoderSettingsChange({ mjpegFps: Number(v) })}
+              />
+            </SettingRow>
+            <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="MJPEG quality">
+              <SettingSelect
+                label="MJPEG quality"
+                value={String(settings.mjpegQuality)}
+                options={optionsWithCurrentValue(
+                  settings.mjpegQuality,
+                  QUALITY_OPTIONS,
+                  (value) => `${Math.round(value * 100)}%`,
+                )}
+                disabled={encoderSettingsDisabled || !httpActive}
+                onChange={(v) => onEncoderSettingsChange({ mjpegQuality: Number(v) })}
+              />
+            </SettingRow>
+          </>
+        )}
         <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="Video FPS">
           <SettingSelect
             label="Video FPS"

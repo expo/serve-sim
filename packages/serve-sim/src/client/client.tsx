@@ -138,23 +138,27 @@ function App() {
   // main placeholder. Endpoints resolve from simEndpoint so this also works in
   // the no-helper empty state (the grid routes are always served).
   const preview = window.__SIM_PREVIEW__;
-  const gridApiEndpoint = preview?.gridApiEndpoint ?? simEndpoint("grid/api");
+  const gridCatalogEndpoint = preview?.gridCatalogEndpoint ?? simEndpoint("grid/api/catalog");
+  const gridStatusEndpoint = preview?.gridStatusEndpoint ?? simEndpoint("grid/api/status");
+  const gridStatusEventsEndpoint = preview?.gridStatusEventsEndpoint ?? simEndpoint("grid/api/status/events");
   const gridStartEndpoint = preview?.gridStartEndpoint ?? simEndpoint("grid/api/start");
   const gridShutdownEndpoint = preview?.gridShutdownEndpoint ?? simEndpoint("grid/api/shutdown");
   const [starting, setStarting] = useState<Record<string, boolean>>({});
   const [shuttingDown, setShuttingDown] = useState<Record<string, boolean>>({});
   const [actionErrors, setActionErrors] = useState<Record<string, string | null>>({});
-  const hasPending =
-    Object.values(starting).some(Boolean) || Object.values(shuttingDown).some(Boolean);
   const {
     devices: gridDevices,
     total: gridTotal,
-    refresh: refreshGrid,
     loadMore: loadMoreGrid,
     loadAll: loadAllGrid,
     resetPage: resetGridPage,
     hasMore: gridHasMore,
-  } = useGridDevices(gridApiEndpoint, true, hasPending);
+  } = useGridDevices(
+    gridCatalogEndpoint,
+    gridStatusEventsEndpoint,
+    true,
+    selectedUdid,
+  );
   // Re-subscribe the stream SSE the instant the selected device gains (or loses)
   // a helper, so its config lands as soon as it boots rather than waiting on the
   // next filesystem-watch tick — the stream appears sooner after boot.
@@ -176,15 +180,17 @@ function App() {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
         try {
-          const res = await fetch(gridApiEndpoint, { cache: "no-store" });
+          const endpoint = new URL(gridStatusEndpoint, window.location.href);
+          endpoint.searchParams.set("device", udid);
+          const res = await fetch(endpoint, { cache: "no-store" });
           const json = await res.json();
-          if ((json.devices ?? []).some((d: any) => d.device === udid && d.helper)) return true;
+          if ((json.statuses ?? []).some((d: any) => d.device === udid && d.helper)) return true;
         } catch {}
         await new Promise((r) => setTimeout(r, 400));
       }
       return false;
     },
-    [gridApiEndpoint],
+    [gridStatusEndpoint],
   );
 
   const startDevice = useCallback(
@@ -209,10 +215,9 @@ function App() {
         setActionErrors((e) => ({ ...e, [udid]: err?.message ?? "Request failed" }));
       } finally {
         setStarting((p) => ({ ...p, [udid]: false }));
-        refreshGrid();
       }
     },
-    [gridStartEndpoint, waitForHelper, refreshGrid],
+    [gridStartEndpoint, waitForHelper],
   );
 
   const shutdownDevice = useCallback(
@@ -233,10 +238,9 @@ function App() {
         setActionErrors((e) => ({ ...e, [udid]: err?.message ?? "Request failed" }));
       } finally {
         setShuttingDown((s) => ({ ...s, [udid]: false }));
-        refreshGrid();
       }
     },
-    [gridShutdownEndpoint, refreshGrid],
+    [gridShutdownEndpoint],
   );
 
   // Pick a sensible default device once the grid loads and nothing is selected:

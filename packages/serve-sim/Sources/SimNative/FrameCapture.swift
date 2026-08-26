@@ -56,12 +56,17 @@ actor FrameCapture {
         SimulatorCapturePollPolicy.intervalNanoseconds
     )
     private static let rewireInterval: ContinuousClock.Duration = .seconds(1)
+    /// The surfaces-changed callback is the primary invalidation. Some virtualized
+    /// runtimes deliver it unreliably, so re-pick on a slow timer as well.
+    private static let pickRevalidateInterval: ContinuousClock.Duration = .seconds(1)
 
     private var descriptors: [NSObject] = []
     private var callbackUUIDs: [ObjectIdentifier: UUID] = [:]
     // Keep private-API callback blocks alive until their registrations are removed.
     private var callbackBlocks: [ObjectIdentifier: ScreenCallbackBlocks] = [:]
     private var framebufferSurfaces: [ObjectIdentifier: IOSurface] = [:]
+    private var bestSurfaceKey: ObjectIdentifier?
+    private var lastPickAttempt: ContinuousClock.Instant?
     private var ioClient: NSObject?
 
     func start(deviceUDID: String, onFrame: @escaping @Sendable (CVPixelBuffer, CMTime) -> Void) throws {
@@ -107,6 +112,7 @@ actor FrameCapture {
         unregisterCallbacks()
         lastSeeds.removeAll()
         framebufferSurfaces.removeAll()
+        invalidatePick()
         descriptors = candidates
 
         // Registering screen callbacks is what causes SimulatorKit to wire the
@@ -188,6 +194,27 @@ actor FrameCapture {
         return best
     }
 
+    /// The winning descriptor for as long as it stays valid. Re-ranking every frame costs a
+    /// size query per descriptor, and after a surfaces-changed callback it also re-enters the
+    /// private surface API, which is slowest while the compositor is mid-swap.
+    private func currentSurface() -> (key: ObjectIdentifier, surface: IOSurface)? {
+        let now = ContinuousClock.now
+        if let last = lastPickAttempt, (now - last) < Self.pickRevalidateInterval,
+           let key = bestSurfaceKey, let surface = framebufferSurfaces[key] {
+            return (key, surface)
+        }
+        lastPickAttempt = now
+        let best = pickBestSurface()
+        bestSurfaceKey = best?.key
+        return best
+    }
+
+    /// Forces the next capture to re-pick rather than waiting out the interval.
+    private func invalidatePick() {
+        bestSurfaceKey = nil
+        lastPickAttempt = nil
+    }
+
     // MARK: - Frame callbacks
 
     private func registerFrameCallbacks(desc: AnyObject) throws {
@@ -259,6 +286,7 @@ actor FrameCapture {
 
     private func updateSurface(for descriptor: NSObject, unmasked: IOSurface?, masked: IOSurface?) {
         let key = ObjectIdentifier(descriptor)
+        invalidatePick()
         guard let surface = unmasked ?? masked else {
             framebufferSurfaces.removeValue(forKey: key)
             lastSeeds.removeValue(forKey: key)
@@ -272,7 +300,7 @@ actor FrameCapture {
     }
 
     private func captureFrame(force: Bool = false) {
-        guard let (key, surface) = pickBestSurface() else { return }
+        guard let (key, surface) = currentSurface() else { return }
 
         // Seed-skip: when the simulator's framebuffer content hasn't changed,
         // don't spend cycles re-encoding the same pixels back-to-back from the
@@ -328,6 +356,7 @@ actor FrameCapture {
         descriptors.removeAll()
         lastSeeds.removeAll()
         framebufferSurfaces.removeAll()
+        invalidatePick()
         ioClient = nil
     }
 

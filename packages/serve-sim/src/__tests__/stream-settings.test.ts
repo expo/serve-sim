@@ -3,9 +3,13 @@ import {
   DEFAULT_STREAM_CONTROL_SETTINGS,
   mergeStreamControlSettings,
   mergeStreamEncoderSettings,
+  mergeStreamPlaybackSettings,
   normalizeStreamControlSettings,
   parseStreamEncoderSettingsPatch,
+  isWebRtcTransportLocked,
   streamControlSettingsFrom,
+  streamEncoderSettingsFrom,
+  streamEncoderSettingsForTransport,
   type StreamControlSettings,
 } from "../stream-settings";
 
@@ -110,5 +114,62 @@ describe("stream settings", () => {
     expect(parseStreamEncoderSettingsPatch({ h264Fps: "30" })).toBeNull();
     expect(parseStreamEncoderSettingsPatch({ transport: "webrtc" })).toBeNull();
     expect(parseStreamEncoderSettingsPatch({ typo: 30 })).toBeNull();
+  });
+
+  test("locks playback to WebRTC while preserving WebRTC choices", () => {
+    const current = normalizeStreamControlSettings({
+      transport: "webrtc",
+      webRtcCodec: "h264",
+    });
+
+    expect(mergeStreamPlaybackSettings(
+      current,
+      { transport: "http", httpCodec: "mjpeg" },
+      true,
+    )).toBe(current);
+    expect(mergeStreamPlaybackSettings(
+      current,
+      { webRtcCodec: "vp8" },
+      true,
+    )).toMatchObject({ transport: "webrtc", webRtcCodec: "vp8" });
+  });
+
+  test("recognizes WebRTC launches as transport-locked", () => {
+    expect(isWebRtcTransportLocked({ transport: "webrtc", codec: "vp9" })).toBe(true);
+    expect(isWebRtcTransportLocked({ transport: "http", codec: "h264" })).toBe(false);
+    expect(isWebRtcTransportLocked(undefined)).toBe(false);
+  });
+
+  test("accepts only WebRTC encoder controls for WebRTC sessions", () => {
+    expect(parseStreamEncoderSettingsPatch({
+      maxDimension: 1280,
+      h264Bitrate: 3_000_000,
+      h264Fps: 30,
+    }, "webrtc")).toEqual({
+      maxDimension: 1280,
+      h264Bitrate: 3_000_000,
+      h264Fps: 30,
+    });
+    expect(parseStreamEncoderSettingsPatch({ mjpegFps: 30 }, "webrtc")).toBeNull();
+    expect(parseStreamEncoderSettingsPatch({ mjpegQuality: 0.5 }, "webrtc")).toBeNull();
+  });
+
+  test("exposes only settings relevant to the locked transport", () => {
+    const settings = normalizeStreamControlSettings({
+      mjpegFps: 24,
+      mjpegQuality: 0.8,
+      maxDimension: 1280,
+      h264Bitrate: 3_000_000,
+      h264Fps: 30,
+    });
+
+    expect(streamEncoderSettingsForTransport(settings, "webrtc")).toEqual({
+      maxDimension: 1280,
+      h264Bitrate: 3_000_000,
+      h264Fps: 30,
+    });
+    expect(streamEncoderSettingsForTransport(settings, "http")).toEqual(
+      streamEncoderSettingsFrom(settings),
+    );
   });
 });

@@ -18,6 +18,11 @@ function stats(overrides: Partial<StreamStats> = {}): StreamStats {
     jitterBufferSeconds: 4,
     jitterBufferEmitted: 100,
     reportedFps: 60,
+    interFrameDelaySeconds: null,
+    interFrameDelaySquaredSeconds: null,
+    decodeSeconds: null,
+    pacingDeviationMs: null,
+    decodeMsPerFrame: null,
     width: 1280,
     height: 720,
     codec: "video/VP8",
@@ -241,7 +246,8 @@ describe("StreamStatsBody", () => {
 
 const capture = {
   screenFrames: 900, idleFrames: 12, offeredFrames: 880, forwardedFrames: 830,
-  pumpRestarts: 0, captureCpuCopies: 0,
+  pumpRestarts: 0,
+  cpuFallbacks: 0, attempts: 5400, stalls: 0, gapSumMs: 90_000, stallSumMs: 0,
   pollTicks: 2400, pollLateSumMs: 600,
 };
 
@@ -282,6 +288,90 @@ describe("stale samples", () => {
       />,
     );
     expect(markup).toContain("opacity-50");
+  });
+});
+
+describe("cell layout", () => {
+  test("lets a long label give way rather than run into the next column", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} capture={capture} />,
+    );
+    // The label truncates, the value never shrinks.
+    expect(markup).toContain("min-w-0 truncate");
+    expect(markup).toContain("shrink-0 tabular-nums");
+  });
+});
+
+describe("diagnostics", () => {
+  test("keeps the detail behind a disclosure, so the default read stays short", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        sender={sender}
+        capture={capture}
+      />,
+    );
+    const [before, inside] = markup.split("Diagnostics");
+    expect(before).toContain("Frame spacing");
+    expect(before).not.toContain("Screen frames");
+    expect(inside).toContain("Screen frames");
+    expect(inside).toContain("Encode FPS");
+    expect(inside).toContain("Capture interval");
+  });
+
+  test("reports the interval per capture rather than as a raw lifetime sum", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        capture={{ ...capture, attempts: 1000, gapSumMs: 16_500 }}
+      />,
+    );
+    expect(row(markup, "Capture interval")).toBe("16.5 ms");
+  });
+
+  test("surfaces pump restarts, so a watchdog that fires is visible", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        sender={sender}
+        capture={{ ...capture, pumpRestarts: 7 }}
+      />,
+    );
+    expect(row(markup, "Pump restarts")).toBe("7 total");
+  });
+
+  test("names the receiver cadence rows, which no other row reports", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats({ pacingDeviationMs: 1.62, decodeMsPerFrame: 0.44 })}
+        history={[stats()]}
+        faults={[]}
+      />,
+    );
+    expect(row(markup, "Frame spacing")).toBe("± 1.6 ms");
+    expect(row(markup, "Decode")).toBe("0.4 ms");
+  });
+
+  test("drops a unit hint when there is no value, so a blank cell stays blank", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} capture={capture} />,
+    );
+    expect(row(markup, "Frame spacing")).toBe("—");
+    expect(markup).not.toContain("— total");
+  });
+
+  test("reads a long stall in seconds, where milliseconds stop being legible", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody stats={stats()} history={[stats()]} faults={[]}
+        capture={{ ...capture, stallSumMs: 2_936 }} />,
+    );
+    expect(row(markup, "Stall time")).toBe("2.9 s total");
   });
 });
 

@@ -242,6 +242,7 @@ describe("StreamStatsBody", () => {
 const capture = {
   screenFrames: 900, idleFrames: 12, offeredFrames: 880, forwardedFrames: 830,
   pumpRestarts: 0, captureCpuCopies: 0,
+  pollTicks: 2400, pollLateSumMs: 600,
 };
 
 describe("stale samples", () => {

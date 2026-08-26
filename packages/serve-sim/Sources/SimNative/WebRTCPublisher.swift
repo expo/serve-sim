@@ -80,6 +80,8 @@ struct WebRTCCaptureCounts: Codable {
     /// ticking. Nonzero means the host starved or dropped pump timers.
     let pumpRestarts: UInt64?
     let captureCpuCopies: UInt64
+    let pollTicks: UInt64
+    let pollLateSumMs: Double
 }
 
 struct WebRTCSenderStatsReport: Codable {

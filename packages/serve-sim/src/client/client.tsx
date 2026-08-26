@@ -69,6 +69,7 @@ import {
 } from "./utils/panel-widths";
 import { proxyPreviewConfigForBrowser } from "./utils/preview-config";
 import { mjpegStreamUrlFrom, simEndpoint, streamConfigFrom, webrtcCloseUrlFrom, webrtcOfferUrlFrom, webrtcStatsUrlFrom } from "./utils/sim-endpoint";
+import { shouldStreamSimulatorLogs } from "./utils/simulator-logs";
 import {
   SIMULATOR_RESIZE_DRAG_TRANSITION,
   SIMULATOR_RESIZE_LAYOUT_TRANSITION,
@@ -277,9 +278,11 @@ function App() {
     return () => es.close();
   }, [selectedUdid, selectedHasHelper]);
 
-  // Stream simctl logs into the browser console with colors + grouping
+  // Stream simctl logs into the browser console with colors + grouping. The
+  // full simulator log is too expensive to send through remote tunnels by
+  // default; remote previews can opt in with `?logs=1`.
   useEffect(() => {
-    if (!config?.logsEndpoint) return;
+    if (!config?.logsEndpoint || !shouldStreamSimulatorLogs(window.location)) return;
     const es = openHostEventStream(config.logsEndpoint);
 
     const procColors = new Map<string, string>();

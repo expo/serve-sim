@@ -290,7 +290,8 @@ actor CaptureEngine {
                 screenFrames: counts.screen,
                 idleFrames: counts.idle,
                 offeredFrames: flow?.offered,
-                forwardedFrames: flow?.forwarded
+                forwardedFrames: flow?.forwarded,
+                pumpRestarts: flow?.pumpRestarts
             )
         ))
         return String(decoding: data, as: UTF8.self)

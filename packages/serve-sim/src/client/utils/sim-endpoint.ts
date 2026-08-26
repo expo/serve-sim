@@ -19,6 +19,9 @@ declare global {
       eventLogEventsEndpoint?: string;
       devtoolsEndpoint?: string;
       gridApiEndpoint?: string;
+      gridCatalogEndpoint?: string;
+      gridStatusEndpoint?: string;
+      gridStatusEventsEndpoint?: string;
       gridStartEndpoint?: string;
       gridShutdownEndpoint?: string;
       gridMemoryEndpoint?: string;

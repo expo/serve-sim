@@ -150,6 +150,7 @@ describe("capture counts", () => {
       offeredFrames: null,
       forwardedFrames: null,
       pumpRestarts: null,
+      captureCpuCopies: null,
     });
   });
 

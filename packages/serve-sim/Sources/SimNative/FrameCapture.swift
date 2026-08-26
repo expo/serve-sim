@@ -30,6 +30,7 @@ actor FrameCapture {
     nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
 
     private var photocopier = Photocopier()
+    private var snapshotMaxDimension = 0
     private var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
     private var frameCount: UInt64 = 0
     /// Counted by which path produced the frame, callback or idle deadline.
@@ -339,8 +340,18 @@ actor FrameCapture {
         // the receiver jitter buffer. Host time is monotonic and reflects the
         // actual capture cadence.
         let timestamp = CMClockGetTime(CMClockGetHostTimeClock())
-        guard let copy = photocopier.copy(pb) else { return }
+        guard let copy = photocopier.copy(pb, maxDimension: snapshotMaxDimension) else { return }
         onFrame?(copy, timestamp)
+    }
+
+    /// The size frames are delivered at. Snapshotting straight to it avoids moving the whole
+    /// framebuffer through the GPU only to shrink it a step later.
+    func setSnapshotMaxDimension(_ value: Int) {
+        snapshotMaxDimension = max(0, value)
+    }
+
+    func snapshotCpuCopies() -> UInt64 {
+        photocopier.cpuFallbacks
     }
 
     func getScreenSize() -> (width: Int, height: Int)? {

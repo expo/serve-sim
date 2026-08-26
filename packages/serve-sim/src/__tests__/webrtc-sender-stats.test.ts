@@ -149,6 +149,7 @@ describe("capture counts", () => {
       idleFrames: 40,
       offeredFrames: null,
       forwardedFrames: null,
+      pumpRestarts: null,
     });
   });
 

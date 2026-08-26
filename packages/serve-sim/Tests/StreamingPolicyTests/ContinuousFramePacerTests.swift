@@ -70,6 +70,8 @@ final class ContinuousFramePacerTests: XCTestCase {
                 submittedFrameIndexes.append(latestFrameIndex)
             case .ignore:
                 XCTFail("Capture frame \(frameIndex) was skipped")
+            case .restart:
+                XCTFail("A live chain must not be reclaimed")
             }
         }
 
@@ -119,10 +121,117 @@ final class ContinuousFramePacerTests: XCTestCase {
         )
 
         // Tolerance is applied once. A late send must not make the next slot
-        // eligible only half an interval later.
+        // eligible only half an interval later: the next send is due one full
+        // interval after the late one.
         XCTAssertEqual(
             pacer.tick(atNanoseconds: 37_503_334),
-            .wait(nanoseconds: 12_496_664)
+            .wait(nanoseconds: 8_333_332)
+        )
+    }
+
+    func testTicksArrivingConsistentlyLateHoldTheConfiguredRate() {
+        var pacer = ContinuousFramePacer(framesPerSecond: 60)
+        pacer.setActive(true)
+        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 0), .schedule(nanoseconds: 0))
+
+        // Every wake-up lands 14 ms late — routine for coalesced timers on a
+        // virtualized host. The old catch-up skipped every other cadence slot
+        // and halved the rate to ~30 fps; the grid must instead keep sending
+        // once per interval at a constant phase offset.
+        let latenessNanoseconds: UInt64 = 14_000_000
+        var wake: UInt64 = 0
+        var sends = 0
+        var lastTimestamp: UInt64 = 0
+        for _ in 0 ..< 61 {
+            switch pacer.tick(atNanoseconds: wake) {
+            case let .send(timestampNanoseconds, nextDelayNanoseconds):
+                sends += 1
+                lastTimestamp = timestampNanoseconds
+                wake = wake + nextDelayNanoseconds + latenessNanoseconds
+            case let .wait(delayNanoseconds):
+                wake = wake + delayNanoseconds + latenessNanoseconds
+            case .stop:
+                return XCTFail("The pump must stay active")
+            }
+        }
+        XCTAssertGreaterThanOrEqual(sends, 59)
+        // 59+ sends inside roughly one second proves the rate held.
+        XCTAssertLessThanOrEqual(lastTimestamp, 1_050_000_000)
+    }
+
+    func testAStallLongerThanAnIntervalReanchorsWithoutASendBurst() {
+        var pacer = ContinuousFramePacer(framesPerSecond: 60)
+        pacer.setActive(true)
+        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 0), .schedule(nanoseconds: 0))
+        XCTAssertEqual(
+            pacer.tick(atNanoseconds: 0),
+            .send(timestampNanoseconds: 0, nextDelayNanoseconds: 16_666_666)
+        )
+
+        // An ~83 ms stall: one catch-up send fires immediately, re-anchored to
+        // now, and the slot after it waits a full interval — a stall must not
+        // drain a burst of queued slots into the encoder.
+        XCTAssertEqual(
+            pacer.tick(atNanoseconds: 100_000_000),
+            .send(timestampNanoseconds: 100_000_000, nextDelayNanoseconds: 0)
+        )
+        XCTAssertEqual(
+            pacer.tick(atNanoseconds: 100_000_100),
+            .wait(nanoseconds: 16_666_566)
+        )
+    }
+
+    func testALostPumpIsReclaimedByALaterArrival() {
+        var pacer = ContinuousFramePacer(framesPerSecond: 60)
+        pacer.setActive(true)
+        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 0), .schedule(nanoseconds: 0))
+        XCTAssertEqual(
+            pacer.tick(atNanoseconds: 0),
+            .send(timestampNanoseconds: 0, nextDelayNanoseconds: 16_666_666)
+        )
+
+        // The scheduled pump never fires again (a dropped or starved timer).
+        // Due arrivals keep draining as unchained pumps, which must not count
+        // as chain liveness — production showed exactly this state: arrivals
+        // flowing, repeats absent.
+        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 20_000_000), .pumpNow)
+        XCTAssertEqual(
+            pacer.tick(atNanoseconds: 20_000_000, chained: false),
+            .send(timestampNanoseconds: 20_000_000, nextDelayNanoseconds: 13_333_332)
+        )
+        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 40_000_000), .pumpNow)
+
+        // Past the grace window the next arrival reclaims the lost pump so the
+        // owner can start a replacement chain under a fresh generation.
+        XCTAssertEqual(
+            pacer.latestFrameArrived(atNanoseconds: 70_000_000),
+            .restart(nanoseconds: 0)
+        )
+        // The replacement chain re-anchors like a stall: one immediate send,
+        // then normal spacing.
+        XCTAssertEqual(
+            pacer.tick(atNanoseconds: 70_000_100),
+            .send(timestampNanoseconds: 70_000_100, nextDelayNanoseconds: 0)
+        )
+        XCTAssertEqual(
+            pacer.tick(atNanoseconds: 70_000_200),
+            .wait(nanoseconds: 16_666_566)
+        )
+    }
+
+    func testAHealthyChainIsNotReclaimed() {
+        var pacer = ContinuousFramePacer(framesPerSecond: 60)
+        pacer.setActive(true)
+        XCTAssertEqual(pacer.latestFrameArrived(atNanoseconds: 0), .schedule(nanoseconds: 0))
+        _ = pacer.tick(atNanoseconds: 0)
+
+        // Chained ticks keep proving liveness, so a late-but-alive chain is
+        // never restarted from the arrival side.
+        _ = pacer.tick(atNanoseconds: 33_400_000)
+        _ = pacer.tick(atNanoseconds: 66_800_000)
+        XCTAssertEqual(
+            pacer.latestFrameArrived(atNanoseconds: 100_000_000),
+            .pumpNow
         )
     }
 

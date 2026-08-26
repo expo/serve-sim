@@ -115,6 +115,29 @@ frames while at least one peer is connected. Its shared video source fans each
 submission out to every peer connection; libwebrtc maintains an independent
 sender, encoder, bitrate estimate, and packet stream per viewer.
 
+The pump is hardened against hostile host timing, because a production trace
+showed it silently degrading to send-on-arrival on a virtualized macOS VM
+(forwarded ≈ offered instead of ~60/s):
+
+- Each chain tick is armed as a strict, zero-leeway `DispatchSourceTimer`, which
+  opts out of the timer coalescing that stretched `asyncAfter` wake-ups. At most
+  one timer is pending at a time, so a replacement chain cannot race a zombie.
+- A late tick advances to the next cadence slot but never skips slots; a stall
+  longer than an interval re-anchors to the present instead of draining a
+  catch-up burst. Consistently late timers therefore cost phase, not rate.
+- Arrivals watch chain liveness. If a scheduled pump has not ticked for four
+  intervals, the next capture arrival restarts the chain under a fresh
+  generation. Restarts are counted and exposed as `pumpRestarts` in
+  `/webrtc/stats`; a nonzero value means the host starved or dropped timers.
+- The publisher holds a `latencyCritical` `ProcessInfo` activity while it
+  exists, so macOS does not apply App Nap-style throttling to the detached
+  daemon.
+
+The sender stamps the playout-delay extension as min 0 / max 150 ms (was 0/0).
+The receiver still renders immediately on a clean link, but can absorb arrival
+jitter — encode-time spikes, transatlantic wobble — instead of rendering it as
+stutter. `SERVE_SIM_WEBRTC_PLAYOUT_MAX_MS` overrides the cap for experiments.
+
 The WebRTC publisher is created lazily on the first offer. Its frame consumer
 currently remains attached until the device capture session stops, but sending
 a frame while no peer is active exits before conversion or encoding.

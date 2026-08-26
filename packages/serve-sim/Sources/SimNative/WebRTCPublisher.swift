@@ -76,6 +76,9 @@ struct WebRTCCaptureCounts: Codable {
     /// are paced source submissions and may be higher when the retained latest frame is repeated.
     let offeredFrames: UInt64?
     let forwardedFrames: UInt64?
+    /// Times the arrival-side watchdog replaced a frame pump that stopped
+    /// ticking. Nonzero means the host starved or dropped pump timers.
+    let pumpRestarts: UInt64?
 }
 
 struct WebRTCSenderStatsReport: Codable {
@@ -118,11 +121,22 @@ final class WebRTCPublisher: @unchecked Sendable {
     private static let signalingTimeoutMs = 10_000
     private static let connectionTimeoutMs = 10_000
 
+    /// The playout-delay extension the sender stamps on every packet. min 0
+    /// keeps the receiver free to render immediately on a clean link; the max
+    /// gives it room to absorb arrival jitter instead of rendering it as
+    /// stutter. The old 0/0 pinned the jitter buffer at zero, and every
+    /// encode-time or network wobble on the ~150 ms transatlantic path showed
+    /// up as a hitch. Bounded so worst-case added latency stays capped.
+    private static let defaultPlayoutDelayMaxMs = 150
+
     private static func configureLowLatencyPlayout() {
         struct Once {
             static let run: Void = {
+                let environment = ProcessInfo.processInfo.environment["SERVE_SIM_WEBRTC_PLAYOUT_MAX_MS"]
+                let maxMs = environment.flatMap(Int.init).map { max(0, min(1_000, $0)) }
+                    ?? WebRTCPublisher.defaultPlayoutDelayMaxMs
                 LKRTCPeerConnectionFactory.configureFieldTrials(
-                    "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:0/"
+                    "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:\(maxMs)/"
                 )
             }()
         }
@@ -144,9 +158,17 @@ final class WebRTCPublisher: @unchecked Sendable {
     private var framePacer: ContinuousFramePacer
     private var arrivalPumpPending = false
     private var framePumpGeneration: UInt64 = 0
-    /// Both guarded by `frameLock`.
+    /// The single pending chain tick; confined to `queue` (armed, fired, and
+    /// cancelled there only).
+    private var pumpTimer: DispatchSourceTimer?
+    /// Keeps macOS from applying App Nap / timer throttling to the process
+    /// while a publisher exists — the EAS deployment runs serve-sim as a
+    /// detached background daemon. Confined to `queue` after init.
+    private var activityToken: NSObjectProtocol?
+    /// All guarded by `frameLock`.
     private var offeredFrameCount: UInt64 = 0
     private var forwardedFrameCount: UInt64 = 0
+    private var framePumpRestartCount: UInt64 = 0
     private var lastOutputWidth = 0
     private var lastOutputHeight = 0
     private var sentFrameCount: Int64 = 0
@@ -170,6 +192,10 @@ final class WebRTCPublisher: @unchecked Sendable {
         self.framePacer = ContinuousFramePacer(framesPerSecond: normalizedMaxFps)
         h264FrameModeOverride = Self.h264FrameModeOverride()
         Self.configureLowLatencyPlayout()
+        activityToken = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .latencyCritical],
+            reason: "serve-sim WebRTC streaming"
+        )
         let defaultEncoderFactory = LKRTCDefaultVideoEncoderFactory()
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()
         factory = LKRTCPeerConnectionFactory(
@@ -411,10 +437,14 @@ final class WebRTCPublisher: @unchecked Sendable {
         return durations.mapValues(\.doubleValue)
     }
 
-    func frameFlowCounts() -> (offered: UInt64, forwarded: UInt64) {
+    func frameFlowCounts() -> (offered: UInt64, forwarded: UInt64, pumpRestarts: UInt64) {
         frameLock.lock()
         defer { frameLock.unlock() }
-        return (offered: offeredFrameCount, forwarded: forwardedFrameCount)
+        return (
+            offered: offeredFrameCount,
+            forwarded: forwardedFrameCount,
+            pumpRestarts: framePumpRestartCount
+        )
     }
 
     func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp _: CMTime) {
@@ -439,6 +469,16 @@ final class WebRTCPublisher: @unchecked Sendable {
         case let .schedule(delayNs):
             frameLock.unlock()
             scheduleFramePump(afterNs: delayNs, generation: generation)
+            return
+        case let .restart(delayNs):
+            // The chain stopped ticking (a lost or starved timer). Invalidate
+            // any zombie pump and start a replacement under a fresh generation.
+            framePumpGeneration &+= 1
+            framePumpRestartCount &+= 1
+            arrivalPumpPending = false
+            let restartGeneration = framePumpGeneration
+            frameLock.unlock()
+            scheduleFramePump(afterNs: delayNs, generation: restartGeneration)
             return
         }
         frameLock.unlock()
@@ -583,6 +623,12 @@ final class WebRTCPublisher: @unchecked Sendable {
             }
             sessions.removeAll()
             setFrameAcceptance(false)
+            pumpTimer?.cancel()
+            pumpTimer = nil
+            if let activityToken {
+                ProcessInfo.processInfo.endActivity(activityToken)
+                self.activityToken = nil
+            }
         }
     }
 
@@ -594,19 +640,27 @@ final class WebRTCPublisher: @unchecked Sendable {
             return
         }
         if !chained { arrivalPumpPending = false }
-        let decision = framePacer.tick(atNanoseconds: nowNs)
-        guard case let .send(timestampNs, nextDelayNs) = decision,
-              let frame = latestFrame else {
+        let decision = framePacer.tick(atNanoseconds: nowNs, chained: chained)
+        guard case let .send(timestampNs, nextDelayNs) = decision else {
             frameLock.unlock()
             if chained, case let .wait(delayNs) = decision {
                 scheduleFramePump(afterNs: delayNs, generation: generation)
             }
             return
         }
+        guard let frame = latestFrame else {
+            frameLock.unlock()
+            // The pacer consumed a slot with nothing retained (acceptance was
+            // toggling); keep the chain alive for the next retained frame.
+            if chained {
+                scheduleFramePump(afterNs: nextDelayNs, generation: generation)
+            }
+            return
+        }
         frameLock.unlock()
 
-        // Preserve the absolute cadence by scheduling the next tick before
-        // scaling or conversion work consumes part of the frame interval.
+        // Preserve the cadence by scheduling the next tick before scaling or
+        // conversion work consumes part of the frame interval.
         if chained {
             scheduleFramePump(afterNs: nextDelayNs, generation: generation)
         }
@@ -616,13 +670,29 @@ final class WebRTCPublisher: @unchecked Sendable {
     }
 
     private func scheduleFramePump(afterNs delayNs: UInt64, generation: UInt64) {
-        if delayNs == 0 {
-            queue.async { self.drainFramePump(generation: generation) }
-            return
-        }
-        queue.asyncAfter(deadline: .now() + .nanoseconds(Int(delayNs))) {
+        queue.async { self.armFramePump(afterNs: delayNs, generation: generation) }
+    }
+
+    /// Queue-confined. `.strict` with zero leeway opts the pump out of macOS
+    /// timer coalescing — on virtualized hosts, coalesced `asyncAfter`
+    /// wake-ups arrived late enough to collapse the send cadence. Arming
+    /// always cancels the previous timer, so at most one chain tick is ever
+    /// pending and a replacement chain cannot race a zombie one.
+    private func armFramePump(afterNs delayNs: UInt64, generation: UInt64) {
+        pumpTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
+        timer.schedule(
+            deadline: .now() + .nanoseconds(Int(clamping: delayNs)),
+            repeating: .never,
+            leeway: .nanoseconds(0)
+        )
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.pumpTimer = nil
             self.drainFramePump(generation: generation)
         }
+        pumpTimer = timer
+        timer.resume()
     }
 
     private func setFrameAcceptance(_ active: Bool) {

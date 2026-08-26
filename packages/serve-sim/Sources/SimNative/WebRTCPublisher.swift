@@ -121,13 +121,13 @@ final class WebRTCPublisher: @unchecked Sendable {
     private static let signalingTimeoutMs = 10_000
     private static let connectionTimeoutMs = 10_000
 
-    /// The playout-delay extension the sender stamps on every packet. min 0
-    /// keeps the receiver free to render immediately on a clean link; the max
-    /// gives it room to absorb arrival jitter instead of rendering it as
-    /// stutter. The old 0/0 pinned the jitter buffer at zero, and every
-    /// encode-time or network wobble on the ~150 ms transatlantic path showed
-    /// up as a hitch. Bounded so worst-case added latency stays capped.
-    private static let defaultPlayoutDelayMaxMs = 150
+    /// The playout-delay extension the sender stamps on every packet. The
+    /// default stays min 0 / max 0 — render every frame as soon as it arrives.
+    /// `SERVE_SIM_WEBRTC_PLAYOUT_MAX_MS` raises the max so a deployment can
+    /// let the receiver absorb arrival jitter instead of rendering it as
+    /// stutter; changing the default is a separate, data-driven decision
+    /// (viewer-visible latency), tracked against tap-to-pixel measurements.
+    private static let defaultPlayoutDelayMaxMs = 0
 
     private static func configureLowLatencyPlayout() {
         struct Once {

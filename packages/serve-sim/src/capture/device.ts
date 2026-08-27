@@ -101,6 +101,15 @@ async function readInjectedVar(udid: string, name: string, read: ReadEnv): Promi
     .filter((line) => line.length > 0 && !line.includes("[simnetproxy]"));
 }
 
+export async function isDeviceInjected(
+  udid: string,
+  portFile: string,
+  deps: InjectionDeps & { read?: ReadEnv } = {},
+): Promise<boolean> {
+  const lines = await readInjectedVar(udid, "SIMNET_PROXY_PORT_FILE", deps.read ?? readSimctl);
+  return lines.includes(portFile);
+}
+
 /** A device that is gone cannot still be injected, so its failure is the one safe failure to ignore. */
 function isDeviceUnavailable(error: unknown): boolean {
   const text = error instanceof Error ? error.message : String(error);

@@ -1640,7 +1640,7 @@ export function handleMetricsRequest(
   });
 }
 
-/** SSE of captured HTTPS traffic (read-only; does not start/stop capture). */
+/** Capture SSE (read-only; does not start/stop capture). */
 export function handleNetworkCaptureRequest(
   req: SimReq,
   res: SimRes,
@@ -1664,7 +1664,7 @@ export function handleNetworkCaptureRequest(
     if (!res.writableEnded) res.write("data: " + JSON.stringify(event) + "\n\n");
   });
 
-  res.write("event: meta\ndata: " + JSON.stringify(meta) + "\n\n");
+  res.write("data: " + JSON.stringify({ type: "meta", meta }) + "\n\n");
   for (const request of runtime.storeFor(state.device)?.list() ?? []) {
     if (res.writableEnded) break;
     // In-flight rows (null status) replay as started.
@@ -1672,8 +1672,12 @@ export function handleNetworkCaptureRequest(
     res.write("data: " + JSON.stringify({ type, request }) + "\n\n");
   }
 
+  // Re-verify injection on open + heartbeat (restart drops boot injection).
+  void runtime.refreshForDevice(state.device);
   const heartbeat = setInterval(() => {
-    if (!res.writableEnded) res.write(":\n\n");
+    if (res.writableEnded) return;
+    res.write(":\n\n");
+    void runtime.refreshForDevice(state.device);
   }, 15000);
   req.on("close", () => {
     clearInterval(heartbeat);
@@ -1681,7 +1685,7 @@ export function handleNetworkCaptureRequest(
   });
 }
 
-/** Headers/bodies for one captured request (on demand; kept off the live stream). */
+/** On-demand headers/bodies (omitted from the live stream). */
 export function handleCaptureBodyRequest(
   req: SimReq,
   res: SimRes,

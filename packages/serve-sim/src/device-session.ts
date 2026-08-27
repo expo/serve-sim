@@ -31,13 +31,16 @@ import {
   WebRtcSignalingError,
   parseWebRtcCloseRequest,
   parseWebRtcOffer,
+  parseWebRtcStatsSessionId,
 } from "./webrtc-signaling";
 import {
   normalizeStreamEncoderSettings,
   parseStreamEncoderSettingsPatch,
   streamControlSettingsFrom,
   streamEncoderSettingsFrom,
+  streamEncoderSettingsForTransport,
   type StreamEncoderSettings,
+  type StreamPlaybackSettings,
   type StreamSettings,
 } from "./stream-settings";
 
@@ -233,11 +236,13 @@ export class DeviceSession {
   private latestJpegLength = 0;
   private readonly hidSockets = new Set<HidSocket>();
   private touchGestureLog?: TouchGestureLog;
+  private readonly transport: StreamPlaybackSettings["transport"];
   private encoderSettings: StreamEncoderSettings;
   private streamSettingsUpdate: Promise<void> = Promise.resolve();
 
   constructor(public readonly udid: string, initialStreamSettings?: StreamSettings) {
     const streamSettings = streamControlSettingsFrom(initialStreamSettings);
+    this.transport = streamSettings.transport;
     this.encoderSettings = streamEncoderSettingsFrom(streamSettings);
     this.hid = new NativeHid(udid);
     this.capture = new NativeCapture(udid, this.encoderSettings);
@@ -313,6 +318,10 @@ export class DeviceSession {
   // ── HTTP handlers ────────────────────────────────────────────────────────
 
   handleMjpeg(req: IncomingMessage, res: ServerResponse): void {
+    if (this.transport === "webrtc") {
+      this.sendTransportLocked(res);
+      return;
+    }
     const raw = new URL(req.url ?? "", "http://x").searchParams.get("raw") === "1";
     res.writeHead(200, {
       "Content-Type": raw ? "application/octet-stream" : "multipart/x-mixed-replace; boundary=frame",
@@ -364,6 +373,10 @@ export class DeviceSession {
   }
 
   handleAvcc(req: IncomingMessage, res: ServerResponse): void {
+    if (this.transport === "webrtc") {
+      this.sendTransportLocked(res);
+      return;
+    }
     res.writeHead(200, {
       "Content-Type": "application/octet-stream",
       "Cache-Control": "no-cache, no-store",
@@ -460,7 +473,13 @@ export class DeviceSession {
   async handleStreamSettings(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method === "GET") {
       await this.streamSettingsUpdate;
-      if (!res.writableEnded && !res.destroyed) this.sendJson(res, 200, this.encoderSettings);
+      if (!res.writableEnded && !res.destroyed) {
+        this.sendJson(
+          res,
+          200,
+          streamEncoderSettingsForTransport(this.encoderSettings, this.transport),
+        );
+      }
       return;
     }
     if (req.method !== "PATCH") {
@@ -480,6 +499,7 @@ export class DeviceSession {
       );
       const patch = parseStreamEncoderSettingsPatch(
         parseJsonBody(body, "invalid_stream_settings"),
+        this.transport,
       );
       if (!patch) {
         throw new WebRtcSignalingError(
@@ -489,7 +509,13 @@ export class DeviceSession {
         );
       }
       const settings = await this.updateStreamSettings(patch);
-      if (!res.writableEnded && !res.destroyed) this.sendJson(res, 200, settings);
+      if (!res.writableEnded && !res.destroyed) {
+        this.sendJson(
+          res,
+          200,
+          streamEncoderSettingsForTransport(settings, this.transport),
+        );
+      }
     } catch (error) {
       if (res.writableEnded || res.destroyed) return;
       const status = error instanceof WebRtcSignalingError ? error.status : 500;
@@ -588,6 +614,36 @@ export class DeviceSession {
         error: code,
         message: err instanceof Error ? err.message : String(err),
       });
+    }
+  }
+
+  async handleWebRTCStats(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== "GET") {
+      this.sendJson(res, 405, { error: "method_not_allowed" });
+      return;
+    }
+    try {
+      const sessionId = parseWebRtcStatsSessionId(
+        new URL(req.url ?? "", "http://x").searchParams.get("sessionId"),
+      );
+      const stats = await this.capture.webRTCSenderStats(sessionId);
+      if (res.writableEnded || res.destroyed) return;
+      this.sendJson(res, 200, stats);
+    } catch (err) {
+      if (err instanceof WebRtcSignalingError) {
+        if (res.writableEnded || res.destroyed) return;
+        this.sendJson(res, err.status, {
+          error: err.code,
+          message: err.message,
+        });
+        return;
+      }
+      // Logged, not returned: the message can name a host path.
+      console.error(
+        `WebRTC stats unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      if (res.writableEnded || res.destroyed) return;
+      this.sendJson(res, 503, { error: "webrtc_stats_unavailable" });
     }
   }
 
@@ -901,6 +957,13 @@ export class DeviceSession {
     this.sendJsonString(res, status, JSON.stringify(body));
   }
 
+  private sendTransportLocked(res: ServerResponse): void {
+    this.sendJson(res, 409, {
+      error: "stream_transport_locked",
+      transport: this.transport,
+    });
+  }
+
   private sendJsonString(res: ServerResponse, status: number, json: string): void {
     const buf = Buffer.from(json, "utf8");
     res.writeHead(status, {
@@ -916,6 +979,11 @@ export class DeviceSession {
 // ── Registry ─────────────────────────────────────────────────────────────
 
 const sessions = new Map<string, DeviceSession>();
+
+/** Existing session only. Reading stats must never be the thing that starts capture. */
+export function peekDeviceSession(udid: string): DeviceSession | undefined {
+  return sessions.get(udid);
+}
 
 /**
  * Get (lazily creating + starting) the in-process session for `udid`. Throws if

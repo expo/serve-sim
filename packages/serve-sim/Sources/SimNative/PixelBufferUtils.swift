@@ -14,8 +14,8 @@ extension CVPixelBuffer {
 }
 
 struct Photocopier {
-    /// Full range, because every other biplanar pool in the package is full range and the
-    /// publisher forwards this buffer natively without a range conversion.
+    /// Video range, because that is what the transfer session writes. Labelling the pool full
+    /// range makes the decoder stretch 16-235 across 0-255 and blows out the highlights.
     private static let pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
     private var _pool: CVPixelBufferPool?
     private var dimensions: Dimensions?

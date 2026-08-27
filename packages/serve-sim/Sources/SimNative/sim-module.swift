@@ -31,10 +31,13 @@ private func u32(_ v: Int) -> UInt32 {
         Task { try await injector.setup(deviceUDID: udid) }
     }
 
+    /// NaN clientTimeMs means "no sender timestamp" (the smoother falls back
+    /// to arrival time).
     @NodeMethod func touch(_ type: String, _ x: Double, _ y: Double,
-                           _ w: Int, _ h: Int, _ edge: Int) async {
+                           _ w: Int, _ h: Int, _ edge: Int, _ clientTimeMs: Double) async {
         await injector.sendTouch(type: type, x: x, y: y,
-                           screenWidth: w, screenHeight: h, edge: u32(edge))
+                           screenWidth: w, screenHeight: h, edge: u32(edge),
+                           clientTimeMs: clientTimeMs)
     }
 
     @NodeMethod func multiTouch(_ type: String, _ x1: Double, _ y1: Double,

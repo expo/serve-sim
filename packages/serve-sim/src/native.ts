@@ -24,7 +24,7 @@ const require = createRequire(import.meta.url);
 // handle is garbage-collected (Swift `deinit`), so there are no explicit
 // destroy/free calls here.
 interface SimHIDHandle {
-  touch(type: TouchType, x: number, y: number, w: number, hh: number, edge: number): Promise<void>;
+  touch(type: TouchType, x: number, y: number, w: number, hh: number, edge: number, clientTimeMs: number): Promise<void>;
   multiTouch(type: TouchType, x1: number, y1: number, x2: number, y2: number, w: number, hh: number): Promise<void>;
   button(button: string): Promise<void>;
   buttonHid(page: number, usage: number, phase: ButtonPhase): Promise<void>;
@@ -169,8 +169,10 @@ export class NativeHid {
     }
   }
 
-  touch(type: TouchType, x: number, y: number, w: number, h: number, edge = 0): Promise<void> {
-    return this.guard("touch", () => this.handle.touch(type, x, y, w, h, edge), undefined);
+  /** `clientTimeMs` is the sender's own event time; omitted, the injector's
+   * trajectory smoothing falls back to arrival time. */
+  touch(type: TouchType, x: number, y: number, w: number, h: number, edge = 0, clientTimeMs?: number): Promise<void> {
+    return this.guard("touch", () => this.handle.touch(type, x, y, w, h, edge, clientTimeMs ?? NaN), undefined);
   }
 
   multiTouch(type: TouchType, x1: number, y1: number, x2: number, y2: number, w: number, h: number): Promise<void> {

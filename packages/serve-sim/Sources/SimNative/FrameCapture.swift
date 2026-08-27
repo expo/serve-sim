@@ -421,6 +421,8 @@ actor FrameCapture {
         surfacePollTimer?.cancel()
         surfacePollTimer = nil
         pollGrid = nil
+        // A capture that is started again must not book the time it spent stopped as a stall.
+        captureLastEntryNs = 0
 
         unregisterCallbacks()
         descriptors.removeAll()

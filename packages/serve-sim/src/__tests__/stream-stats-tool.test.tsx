@@ -53,7 +53,7 @@ function row(markup: string, label: string): string | null {
   return cell.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
-/** The hover description for one labelled row, which now carries the scope the row used to print. */
+/** The hover description for one labelled row, which carries the meaning and the scope. */
 function help(markup: string, label: string): string | null {
   const attribute = markup.indexOf(`data-stream-stat="${label}"`);
   if (attribute === -1) return null;
@@ -62,6 +62,16 @@ function help(markup: string, label: string): string | null {
   const start = markup.indexOf(">", tip) + 1;
   const body = markup.slice(start, markup.indexOf("</span></span>", start));
   return body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** The last line of a tooltip, which states the window the number covers. */
+function scopeOf(markup: string, label: string): string {
+  const body = help(markup, label) ?? "";
+  const scopes = [
+    "Last second", "Now", "Average per frame, this session",
+    "Average per frame, last second", "Since the session started",
+  ];
+  return scopes.find((scope) => body.endsWith(scope)) ?? "";
 }
 
 const sender = {
@@ -328,17 +338,6 @@ describe("stale samples", () => {
   });
 });
 
-describe("cell layout", () => {
-  test("lets a long label give way rather than run into the next column", () => {
-    const markup = renderToStaticMarkup(
-      <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} capture={capture} />,
-    );
-    // The label truncates, the value never shrinks.
-    expect(markup).toContain("min-w-0 truncate");
-    expect(markup).toContain("shrink-0 tabular-nums");
-  });
-});
-
 describe("diagnostics", () => {
   test("keeps the detail behind a disclosure, so the default read stays short", () => {
     const markup = renderToStaticMarkup(
@@ -382,7 +381,7 @@ describe("diagnostics", () => {
       />,
     );
     expect(row(markup, "Pump restarts")).toBe("7");
-    expect(help(markup, "Pump restarts")).toContain("Since the session started");
+    expect(help(markup, "Pump restarts")).toContain("WebRTC frame pump");
   });
 
   test("names the receiver cadence rows, which no other row reports", () => {
@@ -429,8 +428,14 @@ describe("diagnostics", () => {
       />,
     );
     const labels = [...markup.matchAll(/data-stream-stat="([^"]+)"/g)].map(([, label]) => label ?? "");
-    expect(labels.length).toBeGreaterThan(20);
-    for (const label of labels) expect(help(markup, label)).toContain(label);
+    expect(labels).toContain("Capture interval");
+    for (const label of labels) {
+      // The tooltip opens with the label, so the meaning and the scope are what is left.
+      const scope = scopeOf(markup, label);
+      expect(scope).not.toBe("");
+      const meaning = (help(markup, label) ?? "").slice(label.length, -scope.length).trim();
+      expect(meaning.length).toBeGreaterThan(20);
+    }
   });
 
   test("links a row to its description, so the help reaches a screen reader", () => {

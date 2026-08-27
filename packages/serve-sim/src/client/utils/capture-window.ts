@@ -20,6 +20,9 @@ export interface CaptureWindow {
 }
 
 const MIN_WINDOW_MS = 250;
+/** Poll gaps grow without bound when the tab is backgrounded. A rate over a minute of wall
+ * clock is not the "last second" the panel promises, so report nothing rather than a lie. */
+const MAX_WINDOW_MS = 4_000;
 
 export function describeCaptureCounts(
   previous: CaptureSample | null,
@@ -41,7 +44,7 @@ export function describeCaptureCounts(
   };
   if (previous === null) return unusable;
   const elapsedMs = current.atMs - previous.atMs;
-  if (elapsedMs < MIN_WINDOW_MS) return unusable;
+  if (elapsedMs < MIN_WINDOW_MS || elapsedMs > MAX_WINDOW_MS) return unusable;
 
   const seconds = elapsedMs / 1000;
   const before = previous.counts;

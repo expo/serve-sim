@@ -74,7 +74,7 @@ export function StreamStatsBody({
         stats={stats}
         sender={sender}
         capture={capture}
-        health={stale || faults.length > 0 ? null : health(stats)}
+        health={stale || faults.length > 0 ? null : healthLine(stats)}
       />
     </div>
   );
@@ -119,7 +119,6 @@ function Diagnostics({
           <Cell label="Encode" value={ms(sender.encodeMsPerFrame, 1)} />
           <Cell label="Frames sent" value={compact(sender.framesSent)} />
           <Cell label="Loss" value={percent(sender.lossRatio)} />
-          <Cell label="Pump restarts" value={compact(capture?.pumpRestarts ?? null)} />
         </Group>
       )}
 
@@ -133,52 +132,60 @@ function Diagnostics({
           <Cell label="Stall time" value={duration(capture.stallSumMs)} />
           <Cell label="Capture interval" value={ms(capture.intervalMs, 1)} />
           <Cell label="CPU fallbacks" value={compact(capture.cpuFallbacks)} />
+          <Cell label="Pump restarts" value={compact(capture.pumpRestarts)} />
         </Group>
       )}
     </details>
   );
 }
 
-/** Scopes are a closed set, so two metrics measured the same way never read as different. */
 const WINDOW = "Last second";
 const NOW = "Now";
-const PER_FRAME = "Average per frame";
+const PER_FRAME = "Average per frame, this session";
+const PER_FRAME_WINDOW = "Average per frame, last second";
 const SESSION = "Since the session started";
 
-const HELP: Record<string, { meaning: string; scope: string }> = {
+type Scope = typeof WINDOW | typeof NOW | typeof PER_FRAME | typeof PER_FRAME_WINDOW
+  | typeof SESSION;
+
+const HELP: Record<string, { meaning: string; scope: Scope }> = {
   "Frame rate": { meaning: "Frames the browser painted.", scope: WINDOW },
-  Bitrate: { meaning: "Video data arriving.", scope: WINDOW },
-  "Frame gap": { meaning: "Time between frames, and how much it varies. A low spread is smooth.", scope: WINDOW },
+  Bitrate: { meaning: "Rate of video data arriving.", scope: WINDOW },
+  "Frame gap": {
+    meaning: "Time between frames. The number after the plus-minus is how much that time varies, so a small one means smooth playback.",
+    scope: WINDOW,
+  },
   Resolution: { meaning: "Size of the video the browser receives. Not the device screen.", scope: NOW },
-  RTT: { meaning: "Round trip time to the simulator.", scope: NOW },
+  RTT: { meaning: "Round trip time to the simulator. A high value delays your taps, not the picture.", scope: NOW },
   Jitter: { meaning: "Variation in packet arrival time.", scope: NOW },
   "Jitter buffer": { meaning: "How long the browser holds packets before it decodes them.", scope: NOW },
-  Decode: { meaning: "Time the browser spends decoding one frame.", scope: PER_FRAME },
+  Decode: { meaning: "Time the browser spends decoding one frame.", scope: PER_FRAME_WINDOW },
   "ICE route": {
     meaning: "Direct is peer to peer. Via relay goes through a TURN server and adds latency.",
     scope: NOW,
   },
   "Encode FPS": { meaning: "Frames the encoder produced.", scope: WINDOW },
   Target: { meaning: "Bitrate the encoder aims for. It lowers this when the network is slow.", scope: NOW },
-  "Pacer FPS": { meaning: "Frames the pacer handed to the encoder.", scope: WINDOW },
+  "Pacer FPS": { meaning: "Frames the pacer handed to the encoder. The pacer is the stage between capture and the encoder that holds the send cadence.", scope: WINDOW },
   Encode: { meaning: "Time the encoder spends on one frame.", scope: PER_FRAME },
-  "Frames sent": { meaning: "Frames sent to the browser.", scope: SESSION },
+  "Frames sent": { meaning: "Frames the encoder put on the wire, repeats included.", scope: SESSION },
   Loss: { meaning: "Packets lost on the way to the browser.", scope: SESSION },
-  "Pump restarts": {
-    meaning: "Times the capture loop restarted after it stopped delivering frames.",
-    scope: SESSION,
-  },
+
   "Screen frames": { meaning: "New images the simulator produced.", scope: WINDOW },
-  "Idle frames": { meaning: "Polls that found no new image, so the last frame was reused.", scope: WINDOW },
+  "Idle frames": { meaning: "Frames sent by the 5 per second idle refresh, because nothing had changed for 200 ms.", scope: WINDOW },
   "Capture deliveries": { meaning: "Frames capture handed to the pacer.", scope: WINDOW },
   "Pacer submissions": {
-    meaning: "Frames the pacer handed to the encoder. Above capture deliveries means it is repeating the last frame.",
+    meaning: "Frames the pacer handed to the encoder. If this is higher than capture deliveries, the pacer is repeating the last frame.",
     scope: WINDOW,
   },
-  Stalls: { meaning: "Times capture went over 100 ms with no new frame.", scope: SESSION },
+  Stalls: { meaning: "Times the capture loop went over 100 ms without running. It measures scheduling, not whether the screen changed.", scope: SESSION },
   "Stall time": { meaning: "Total time spent in those stalls.", scope: SESSION },
-  "Capture interval": { meaning: "Average time between capture polls.", scope: WINDOW },
+  "Capture interval": { meaning: "Average time between capture attempts. The timer and the simulator\u2019s own frame callback both count.", scope: WINDOW },
   "CPU fallbacks": { meaning: "Frames copied on the CPU because the GPU transfer failed.", scope: SESSION },
+  "Pump restarts": {
+    meaning: "Times the WebRTC frame pump was restarted after its timer stopped ticking.",
+    scope: SESSION,
+  },
 };
 
 /** The wrapper cannot clip, so the truncation sits on an inner span rather than on the anchor. */
@@ -191,7 +198,6 @@ function Label({ label, className }: { label: string; className: string }) {
     <span
       className="relative min-w-0"
       tabIndex={0}
-      title={label}
       aria-describedby={id}
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
@@ -204,7 +210,6 @@ function Label({ label, className }: { label: string; className: string }) {
       <span
         id={id}
         role="tooltip"
-        aria-hidden={!open}
         className={`pointer-events-none absolute left-0 top-full z-50 mt-1 flex w-[190px] flex-col gap-1 rounded-md border border-white/10 bg-[#181818] p-2 text-[11px] leading-snug shadow-lg transition-opacity ${open ? "opacity-100" : "opacity-0"}`}
       >
         <span className="text-white/90">{label}</span>
@@ -223,8 +228,6 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
     </div>
   );
 }
-
-
 
 
 /** Stall totals reach seconds, where a millisecond figure stops being readable. */
@@ -272,7 +275,7 @@ function measured(history: StreamStats[], pick: (sample: StreamStats) => number 
 }
 
 /** Nothing measured is not the same as nothing wrong, so an unusable window says so. */
-function health(stats: StreamStats): string {
+function healthLine(stats: StreamStats): string {
   return stats.droppedInWindow === null ? "Measuring…" : "No drops, freezes or loss in this window";
 }
 

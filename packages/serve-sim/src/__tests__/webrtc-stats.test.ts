@@ -167,16 +167,6 @@ describe("frame pacing and decode", () => {
     expect(describeStreamStats(previous, current).frameGapMs).toBeCloseTo(16, 3);
   });
 
-  test("reports no gap either from a window the spread could not be read from", () => {
-    const previous = sampleAt(1_000, {
-      framesDecoded: 100, interFrameDelaySeconds: 1, interFrameDelaySquaredSeconds: 0.02,
-    });
-    const current = sampleAt(3_000, {
-      framesDecoded: 101, interFrameDelaySeconds: 1.4, interFrameDelaySquaredSeconds: 0.18,
-    });
-    expect(describeStreamStats(previous, current).frameGapMs).toBeNull();
-  });
-
   // Same four frames and the same mean, but delivered 2ms/30ms/2ms/30ms.
   test("separates a bursty stream from an even one at the same mean rate", () => {
     const previous = sampleAt(1_000, {
@@ -190,14 +180,16 @@ describe("frame pacing and decode", () => {
     expect(describeStreamStats(previous, current).pacingDeviationMs).toBeCloseTo(14, 0);
   });
 
-  test("reports no spread from a one-frame window, which has none by construction", () => {
+  test("reports neither gap nor spread from a one-frame window, which has no spread by construction", () => {
     const previous = sampleAt(1_000, {
       framesDecoded: 100, interFrameDelaySeconds: 1, interFrameDelaySquaredSeconds: 0.02,
     });
     const current = sampleAt(3_000, {
       framesDecoded: 101, interFrameDelaySeconds: 1.4, interFrameDelaySquaredSeconds: 0.18,
     });
-    expect(describeStreamStats(previous, current).pacingDeviationMs).toBeNull();
+    const described = describeStreamStats(previous, current);
+    expect(described.pacingDeviationMs).toBeNull();
+    expect(described.frameGapMs).toBeNull();
   });
 
   test("reports nothing rather than a negative spread when the stream was replaced", () => {

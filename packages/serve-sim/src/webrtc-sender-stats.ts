@@ -145,8 +145,8 @@ function readCaptureCounts(raw: unknown): CaptureCounts | null {
   return {
     screenFrames,
     idleFrames,
-    offeredFrames: typeof raw.offeredFrames === "number" ? raw.offeredFrames : null,
-    forwardedFrames: typeof raw.forwardedFrames === "number" ? raw.forwardedFrames : null,
+    offeredFrames: maybeNumber(raw.offeredFrames),
+    forwardedFrames: maybeNumber(raw.forwardedFrames),
     pumpRestarts: maybeNumber(raw.pumpRestarts),
     cpuFallbacks: maybeNumber(raw.cpuFallbacks),
     attempts: maybeNumber(raw.attempts),

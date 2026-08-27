@@ -58,7 +58,9 @@ export function useSenderStats(
         body = (await response.json()) as SenderStats;
       } catch {
         // A dropped tick; keeping the last sample beats blanking the column, and the watchdog
-        // will mark it stale if they keep failing.
+        // will mark it stale if they keep failing. The rate baseline goes, so the tick after a
+        // gap is not averaged across it.
+        previousCapture.current = null;
         return;
       }
       if (stopped || body === null) return;

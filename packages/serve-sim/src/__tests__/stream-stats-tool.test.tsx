@@ -151,6 +151,22 @@ describe("StreamStatsBody", () => {
     expect(markup).not.toContain("text-warning");
   });
 
+  test("files the all-clear behind the disclosure, since a quiet stream needs no line", () => {
+    const markup = renderToStaticMarkup(<StreamStatsBody stats={stats()} history={[stats()]} faults={[]} />);
+    const [before] = markup.split("Diagnostics");
+    expect(before).not.toContain("No drops");
+  });
+
+  test("keeps a fault in front of the disclosure, where a warning has to be seen", () => {
+    const dropping = stats({ droppedInWindow: 3 });
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody stats={dropping} history={[stats()]} faults={describeFaults(dropping)} />,
+    );
+    const [before] = markup.split("Diagnostics");
+    expect(before).toContain("3 frames dropped");
+    expect(markup).not.toContain("No drops");
+  });
+
   test("does not claim health for a window it could not measure", () => {
     const unmeasured = stats({
       fps: null, kbps: null, lossRatio: null, droppedInWindow: null,
@@ -330,6 +346,7 @@ describe("diagnostics", () => {
     const [before, inside] = markup.split("Diagnostics");
     expect(before).toContain("Frame gap");
     expect(before).not.toContain("Screen frames");
+    expect(inside).toContain("No drops, freezes or loss in this window");
     expect(inside).toContain("Screen frames");
     expect(inside).toContain("Encode FPS");
     expect(inside).toContain("Capture interval");

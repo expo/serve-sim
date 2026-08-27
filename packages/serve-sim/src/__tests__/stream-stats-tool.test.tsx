@@ -22,6 +22,7 @@ function stats(overrides: Partial<StreamStats> = {}): StreamStats {
     interFrameDelaySquaredSeconds: null,
     decodeSeconds: null,
     pacingDeviationMs: null,
+    frameGapMs: null,
     decodeMsPerFrame: null,
     width: 1280,
     height: 720,
@@ -43,10 +44,22 @@ function stats(overrides: Partial<StreamStats> = {}): StreamStats {
 function row(markup: string, label: string): string | null {
   const attribute = markup.indexOf(`data-stream-stat="${label}"`);
   if (attribute === -1) return null;
-  const start = markup.indexOf(">", attribute) + 1;
-  const cell = markup.slice(start, markup.indexOf("</div>", start));
-  const text = cell.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-  return text.startsWith(label) ? text.slice(label.length).trim() : text;
+  const value = markup.indexOf("data-stream-value", attribute);
+  if (value === -1) return null;
+  const start = markup.indexOf(">", value) + 1;
+  const cell = markup.slice(start, markup.indexOf("</span>", start));
+  return cell.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** The hover description for one labelled row, which now carries the scope the row used to print. */
+function help(markup: string, label: string): string | null {
+  const attribute = markup.indexOf(`data-stream-stat="${label}"`);
+  if (attribute === -1) return null;
+  const tip = markup.indexOf('role="tooltip"', attribute);
+  if (tip === -1) return null;
+  const start = markup.indexOf(">", tip) + 1;
+  const body = markup.slice(start, markup.indexOf("</span></span>", start));
+  return body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
 const sender = {
@@ -222,7 +235,8 @@ describe("StreamStatsBody", () => {
     const markup = renderToStaticMarkup(
       <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} sender={sender} />,
     );
-    expect(row(markup, "Encode")).toBe("2.4 ms /frame");
+    expect(row(markup, "Encode")).toBe("2.4 ms");
+    expect(help(markup, "Encode")).toContain("Average per frame");
   });
 
   test("omits the encode cost without the sender half", () => {
@@ -271,7 +285,7 @@ describe("stale samples", () => {
         stale
       />,
     );
-    expect(row(markup, "Encode")).toBe("2.4 ms /frame");
+    expect(row(markup, "Encode")).toBe("2.4 ms");
     expect(row(markup, "Screen frames")).toBe("900");
     expect(markup).toContain("opacity-50");
   });
@@ -314,7 +328,7 @@ describe("diagnostics", () => {
       />,
     );
     const [before, inside] = markup.split("Diagnostics");
-    expect(before).toContain("Frame spacing");
+    expect(before).toContain("Frame gap");
     expect(before).not.toContain("Screen frames");
     expect(inside).toContain("Screen frames");
     expect(inside).toContain("Encode FPS");
@@ -343,27 +357,65 @@ describe("diagnostics", () => {
         capture={{ ...capture, pumpRestarts: 7 }}
       />,
     );
-    expect(row(markup, "Pump restarts")).toBe("7 total");
+    expect(row(markup, "Pump restarts")).toBe("7");
+    expect(help(markup, "Pump restarts")).toContain("Since the session started");
   });
 
   test("names the receiver cadence rows, which no other row reports", () => {
     const markup = renderToStaticMarkup(
       <StreamStatsBody
-        stats={stats({ pacingDeviationMs: 1.62, decodeMsPerFrame: 0.44 })}
+        stats={stats({ frameGapMs: 16.7, pacingDeviationMs: 1.62, decodeMsPerFrame: 0.44 })}
         history={[stats()]}
         faults={[]}
       />,
     );
-    expect(row(markup, "Frame spacing")).toBe("± 1.6 ms");
+    expect(row(markup, "Frame gap")).toBe("16.7 ms ± 1.6");
     expect(row(markup, "Decode")).toBe("0.4 ms");
   });
 
-  test("drops a unit hint when there is no value, so a blank cell stays blank", () => {
+  test("shows the gap alone when its spread needed a second frame it did not get", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats({ frameGapMs: 16.7, pacingDeviationMs: null })}
+        history={[stats()]}
+        faults={[]}
+      />,
+    );
+    expect(row(markup, "Frame gap")).toBe("16.7 ms");
+  });
+
+  test("keeps the scope out of the value, so a blank cell stays blank", () => {
     const markup = renderToStaticMarkup(
       <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} capture={capture} />,
     );
-    expect(row(markup, "Frame spacing")).toBe("—");
-    expect(markup).not.toContain("— total");
+    expect(row(markup, "Frame gap")).toBe("—");
+    expect(row(markup, "Stalls")).toBe("0");
+    expect(help(markup, "Stalls")).toContain("Since the session started");
+    expect(markup).not.toContain("total<");
+  });
+
+  test("describes every labelled row, so a new metric cannot ship without its help text", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        sender={sender}
+        capture={capture}
+      />,
+    );
+    const labels = [...markup.matchAll(/data-stream-stat="([^"]+)"/g)].map(([, label]) => label ?? "");
+    expect(labels.length).toBeGreaterThan(20);
+    for (const label of labels) expect(help(markup, label)).toContain(label);
+  });
+
+  test("links a row to its description, so the help reaches a screen reader", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} capture={capture} />,
+    );
+    const described = markup.match(/aria-describedby="([^"]+)"/)?.[1];
+    expect(described).toBeString();
+    expect(markup).toContain(`id="${described}"`);
   });
 
   test("reads a long stall in seconds, where milliseconds stop being legible", () => {
@@ -371,7 +423,7 @@ describe("diagnostics", () => {
       <StreamStatsBody stats={stats()} history={[stats()]} faults={[]}
         capture={{ ...capture, stallSumMs: 2_936 }} />,
     );
-    expect(row(markup, "Stall time")).toBe("2.9 s total");
+    expect(row(markup, "Stall time")).toBe("2.9 s");
   });
 });
 

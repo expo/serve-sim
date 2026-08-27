@@ -7,6 +7,7 @@ function sampleAt(atMs: number, overrides: Partial<CaptureCounts> = {}): Capture
   return {
     atMs,
     counts: {
+      pickCount: 0, pickSumMs: 0, pickMaxMs: 0,
       screenFrames: 0, idleFrames: 0, offeredFrames: 0, forwardedFrames: 0,
       pumpRestarts: 0, cpuFallbacks: 0, attempts: 0, stalls: 0, gapSumMs: 0,
       stallSumMs: 0, pollTicks: 0, pollLateSumMs: 0,
@@ -46,6 +47,14 @@ describe("describeCaptureCounts", () => {
     expect(window.screenFps).toBeCloseTo(0, 3);
     expect(window.deliveredFps).toBeCloseTo(5, 3);
     expect(window.submittedFps).toBeCloseTo(60, 3);
+  });
+
+  test("averages the surface pick over the window, so a transition spike is visible", () => {
+    const window = describeCaptureCounts(
+      sampleAt(1_000, { pickCount: 1_000, pickSumMs: 10 }),
+      sampleAt(2_000, { pickCount: 1_120, pickSumMs: 34 }),
+    );
+    expect(window.pickMs).toBeCloseTo(0.2, 3);
   });
 
   test("averages the capture interval over the window, not over the session", () => {

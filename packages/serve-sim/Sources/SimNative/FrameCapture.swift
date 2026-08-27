@@ -37,6 +37,9 @@ actor FrameCapture {
     private var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
     private var frameCount: UInt64 = 0
     /// Counted by which path produced the frame, callback or idle deadline.
+    private var pickCount: UInt64 = 0
+    private var pickSumNs: UInt64 = 0
+    private var pickMaxNs: UInt64 = 0
     private var screenFrameCount: UInt64 = 0
     private var idleFrameCount: UInt64 = 0
     private var captureLastEntryNs: UInt64 = 0
@@ -327,6 +330,10 @@ actor FrameCapture {
         framebufferSurfaces[key] = surface
     }
 
+    func pickTimings() -> (count: UInt64, sumNs: UInt64, maxNs: UInt64) {
+        (count: pickCount, sumNs: pickSumNs, maxNs: pickMaxNs)
+    }
+
     func frameCounts() -> (screen: UInt64, idle: UInt64) {
         (screen: screenFrameCount, idle: idleFrameCount)
     }
@@ -343,7 +350,13 @@ actor FrameCapture {
             }
         }
         captureLastEntryNs = entryNs
-        guard let (key, surface) = currentSurface() else { return }
+        let pickStartNs = DispatchTime.now().uptimeNanoseconds
+        let picked = currentSurface()
+        let pickNs = DispatchTime.now().uptimeNanoseconds - pickStartNs
+        pickCount += 1
+        pickSumNs += pickNs
+        if pickNs > pickMaxNs { pickMaxNs = pickNs }
+        guard let (key, surface) = picked else { return }
 
         // Seed-skip: when the simulator's framebuffer content hasn't changed,
         // don't spend cycles re-encoding the same pixels back-to-back from the

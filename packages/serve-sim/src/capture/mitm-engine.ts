@@ -22,6 +22,7 @@ import {
   captureFieldSet,
   type CaptureField,
 } from "./fields";
+import { fetchMitmdumpIfAllowed } from "./mitm-fetch";
 import { redactHeaders } from "./redact";
 import { dirnameOf } from "../runtime";
 
@@ -343,7 +344,8 @@ export async function startMitmProxy(
 ): Promise<CaptureProxy> {
   sweepStaleConfdirs();
 
-  const mitmdump = locateMitmdump();
+  const mitmdump =
+    locateMitmdump() ?? fetchMitmdumpIfAllowed((message) => console.log(message));
   if (!mitmdump) throw new Error(mitmdumpMissingMessage(process.env.SERVE_SIM_MITMDUMP));
   const addon = locateAddon();
 

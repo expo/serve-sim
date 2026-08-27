@@ -1652,7 +1652,10 @@ async function serve(
 
   // Capture is applied to the device, not to a viewer, so it belongs here: after the device is up and
   // before anything can launch an app on it.
-  const capture = options.networkCapture ? await import("./capture") : null;
+  // TEMP (test branch): armed regardless of the flag, because the EAS session launcher does not pass
+  // --network-capture, so the panel's reboot-into-capture would otherwise be refused.
+  const networkCaptureOn = true;
+  const capture = networkCaptureOn ? await import("./capture") : null;
   if (capture) {
     // Set once, so the panel's reboot and a sidebar boot capture the same fields as the CLI asked for.
     capture.captureRuntime.setFields(capture.resolveCaptureFields(options.networkCaptureFields));
@@ -1695,7 +1698,7 @@ async function serve(
     streamSettings: options.stream,
     proxyHelpers: true,
     metricsCorsOrigins: options.metricsCorsOrigins ?? [],
-    networkCapture: !!options.networkCapture,
+    networkCapture: networkCaptureOn,
     execToken: previewToken,
     requirePreviewToken,
   });

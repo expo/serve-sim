@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { Download } from "lucide-react";
 
 import { triggerBrowserDownload } from "../utils/screenshot-capture";
@@ -62,7 +62,7 @@ export function StreamStatsBody({
       </div>
 
       <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 border-t border-white/10 pt-1.5">
-        <Cell label="Frame spacing" value={plusMinus(stats.pacingDeviationMs)} />
+        <Cell label="Frame gap" value={frameGap(stats.frameGapMs, stats.pacingDeviationMs)} />
         <Cell
           label="Resolution"
           value={stats.width === null || stats.height === null
@@ -108,10 +108,10 @@ function Diagnostics({
           <Cell label="Encode FPS" value={fps(sender.reportedFps)} />
           <Cell label="Target" value={bitrate(sender.targetKbps)} />
           <Cell label="Pacer FPS" value={fps(sender.sourceFps)} />
-          <Cell label="Encode" value={ms(sender.encodeMsPerFrame, 1)} hint="/frame" />
+          <Cell label="Encode" value={ms(sender.encodeMsPerFrame, 1)} />
           <Cell label="Frames sent" value={compact(sender.framesSent)} />
-          <Cell label="Loss" value={percent(sender.lossRatio)} hint="total" />
-          <Cell label="Pump restarts" value={compact(capture?.pumpRestarts ?? null)} hint="total" />
+          <Cell label="Loss" value={percent(sender.lossRatio)} />
+          <Cell label="Pump restarts" value={compact(capture?.pumpRestarts ?? null)} />
         </Group>
       )}
 
@@ -121,13 +121,86 @@ function Diagnostics({
           <Cell label="Idle frames" value={compact(capture.idleFrames)} />
           <Cell label="Capture deliveries" value={compact(capture.offeredFrames)} />
           <Cell label="Pacer submissions" value={compact(capture.forwardedFrames)} />
-          <Cell label="Stalls" value={compact(capture.stalls)} hint="total" />
-          <Cell label="Stall time" value={duration(capture.stallSumMs)} hint="total" />
+          <Cell label="Stalls" value={compact(capture.stalls)} />
+          <Cell label="Stall time" value={duration(capture.stallSumMs)} />
           <Cell label="Capture interval" value={ms(per(capture.gapSumMs, capture.attempts), 1)} />
-          <Cell label="CPU fallbacks" value={compact(capture.cpuFallbacks)} hint="total" />
+          <Cell label="CPU fallbacks" value={compact(capture.cpuFallbacks)} />
         </Group>
       )}
     </details>
+  );
+}
+
+/** Scopes are a closed set, so two metrics measured the same way never read as different. */
+const WINDOW = "Last 10 s";
+const NOW = "Now";
+const PER_FRAME = "Average per frame";
+const SESSION = "Since the session started";
+
+const HELP: Record<string, { meaning: string; scope: string }> = {
+  "Frame rate": { meaning: "Frames the browser painted.", scope: WINDOW },
+  Bitrate: { meaning: "Video data arriving.", scope: WINDOW },
+  "Frame gap": { meaning: "Time between frames, and how much it varies. A low spread is smooth.", scope: WINDOW },
+  Resolution: { meaning: "Size of the video the browser receives. Not the device screen.", scope: NOW },
+  RTT: { meaning: "Round trip time to the simulator.", scope: NOW },
+  Jitter: { meaning: "Variation in packet arrival time.", scope: NOW },
+  "Jitter buffer": { meaning: "How long the browser holds packets before it decodes them.", scope: NOW },
+  Decode: { meaning: "Time the browser spends decoding one frame.", scope: PER_FRAME },
+  "ICE route": {
+    meaning: "Direct is peer to peer. Via relay goes through a TURN server and adds latency.",
+    scope: NOW,
+  },
+  "Encode FPS": { meaning: "Frames the encoder produced.", scope: WINDOW },
+  Target: { meaning: "Bitrate the encoder aims for. It lowers this when the network is slow.", scope: NOW },
+  "Pacer FPS": { meaning: "Frames the pacer handed to the encoder.", scope: WINDOW },
+  Encode: { meaning: "Time the encoder spends on one frame.", scope: PER_FRAME },
+  "Frames sent": { meaning: "Frames sent to the browser.", scope: SESSION },
+  Loss: { meaning: "Packets lost on the way to the browser.", scope: SESSION },
+  "Pump restarts": {
+    meaning: "Times the capture loop restarted after it stopped delivering frames.",
+    scope: SESSION,
+  },
+  "Screen frames": { meaning: "New images the simulator produced.", scope: SESSION },
+  "Idle frames": { meaning: "Polls that found no new image, so the last frame was reused.", scope: SESSION },
+  "Capture deliveries": { meaning: "Frames capture handed to the pacer.", scope: SESSION },
+  "Pacer submissions": { meaning: "Frames the pacer handed to the encoder.", scope: SESSION },
+  Stalls: { meaning: "Times capture went over 100 ms with no new frame.", scope: SESSION },
+  "Stall time": { meaning: "Total time spent in those stalls.", scope: SESSION },
+  "Capture interval": { meaning: "Average time between capture polls.", scope: SESSION },
+  "CPU fallbacks": { meaning: "Frames copied on the CPU because the GPU transfer failed.", scope: SESSION },
+};
+
+/** The wrapper cannot clip, so the truncation sits on an inner span rather than on the anchor. */
+function Label({ label, className }: { label: string; className: string }) {
+  const help = HELP[label];
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  if (!help) return <span className={className}>{label}</span>;
+  return (
+    <span
+      className="relative min-w-0"
+      tabIndex={0}
+      title={label}
+      aria-describedby={id}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+    >
+      <span className={`block cursor-help decoration-dotted underline-offset-2 hover:underline ${className}`}>
+        {label}
+      </span>
+      <span
+        id={id}
+        role="tooltip"
+        aria-hidden={!open}
+        className={`pointer-events-none absolute left-0 top-full z-50 mt-1 flex w-[190px] flex-col gap-1 rounded-md border border-white/10 bg-[#181818] p-2 text-[11px] leading-snug shadow-lg transition-opacity ${open ? "opacity-100" : "opacity-0"}`}
+      >
+        <span className="text-white/90">{label}</span>
+        <span className="text-white/60">{help.meaning}</span>
+        <span className="text-white/35">{help.scope}</span>
+      </span>
+    </span>
   );
 }
 
@@ -154,8 +227,11 @@ function duration(value: number | null): string {
   return value < 1000 ? ms(value, 0) : `${(value / 1000).toFixed(1)} s`;
 }
 
-function plusMinus(value: number | null): string {
-  return value === null ? DASH : `± ${ms(value, 1)}`;
+/** The mean alone hides a stutter and the spread alone has nothing to sit against. */
+function frameGap(mean: number | null, deviation: number | null): string {
+  if (mean === null) return DASH;
+  if (deviation === null) return ms(mean, 1);
+  return `${ms(mean, 1)} ± ${deviation.toFixed(1)}`;
 }
 
 /** These are lifetime counters and reach millions, so a fixed-width cell needs them short. */
@@ -263,8 +339,8 @@ function Graph({
   return (
     <div className="flex flex-col gap-1" data-stream-stat={label}>
       <div className="flex items-baseline justify-between">
-        <span className="text-[11px] text-white/50">{label}</span>
-        <span className="tabular-nums text-[11px]">
+        <Label label={label} className="text-[11px] text-white/50" />
+        <span data-stream-value className="tabular-nums text-[11px]">
           {value}
           {hint && <span className="ml-1.5 text-[11px] text-white/30">{hint}</span>}
         </span>
@@ -274,15 +350,15 @@ function Graph({
   );
 }
 
-function Cell({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function Cell({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex min-w-0 items-baseline justify-between gap-2" data-stream-stat={label}>
-      <span className="min-w-0 truncate text-[11px] text-white/50" title={label}>{label}</span>
-      <span className="shrink-0 tabular-nums whitespace-nowrap text-[11px] text-white/90">
+    <div
+      className="flex min-w-0 items-baseline justify-between gap-2 [&:nth-child(even)_[role=tooltip]]:left-auto [&:nth-child(even)_[role=tooltip]]:right-0"
+      data-stream-stat={label}
+    >
+      <Label label={label} className="min-w-0 truncate text-[11px] text-white/50" />
+      <span data-stream-value className="shrink-0 tabular-nums whitespace-nowrap text-[11px] text-white/90">
         {value}
-        {hint && value !== DASH && (
-          <span className="ml-1.5 text-[11px] text-white/30">{hint}</span>
-        )}
       </span>
     </div>
   );

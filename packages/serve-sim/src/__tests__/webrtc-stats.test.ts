@@ -164,6 +164,17 @@ describe("frame pacing and decode", () => {
       interFrameDelaySquaredSeconds: 4 * 0.016 * 0.016,
     });
     expect(describeStreamStats(previous, current).pacingDeviationMs).toBeCloseTo(0, 3);
+    expect(describeStreamStats(previous, current).frameGapMs).toBeCloseTo(16, 3);
+  });
+
+  test("reports no gap either from a window the spread could not be read from", () => {
+    const previous = sampleAt(1_000, {
+      framesDecoded: 100, interFrameDelaySeconds: 1, interFrameDelaySquaredSeconds: 0.02,
+    });
+    const current = sampleAt(3_000, {
+      framesDecoded: 101, interFrameDelaySeconds: 1.4, interFrameDelaySquaredSeconds: 0.18,
+    });
+    expect(describeStreamStats(previous, current).frameGapMs).toBeNull();
   });
 
   // Same four frames and the same mean, but delivered 2ms/30ms/2ms/30ms.

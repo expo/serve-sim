@@ -121,13 +121,17 @@ final class WebRTCPublisher: @unchecked Sendable {
     private static let signalingTimeoutMs = 10_000
     private static let connectionTimeoutMs = 10_000
 
-    /// The playout-delay extension the sender stamps on every packet. The
-    /// default stays min 0 / max 0 — render every frame as soon as it arrives.
-    /// `SERVE_SIM_WEBRTC_PLAYOUT_MAX_MS` raises the max so a deployment can
-    /// let the receiver absorb arrival jitter instead of rendering it as
-    /// stutter; changing the default is a separate, data-driven decision
-    /// (viewer-visible latency), tracked against tap-to-pixel measurements.
-    private static let defaultPlayoutDelayMaxMs = 0
+    /// The playout-delay extension the sender stamps on every packet: an
+    /// adaptive window of min 0 / max 200 ms. On a clean second the receiver's
+    /// buffer sits near zero and frames render immediately; the buffer grows
+    /// only while arrival jitter or loss recovery needs it. The max clears one
+    /// ~150 ms transatlantic RTT so a NACK/RTX-recovered packet plays smoothly
+    /// instead of freezing the stream for the round trip — a production
+    /// capture with the old 0/0 pin showed a ~6 ms average buffer, jitter
+    /// spikes to 80 ms, and one visible freeze per loss event.
+    /// `SERVE_SIM_WEBRTC_PLAYOUT_MAX_MS` overrides in either direction
+    /// (0 restores render-on-arrival).
+    private static let defaultPlayoutDelayMaxMs = 200
 
     private static func configureLowLatencyPlayout() {
         struct Once {
@@ -138,6 +142,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                 LKRTCPeerConnectionFactory.configureFieldTrials(
                     "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:\(maxMs)/"
                 )
+                streamLog("[webrtc] Playout-delay window: min 0 / max \(maxMs) ms")
             }()
         }
         _ = Once.run

@@ -16,6 +16,7 @@ import {
   streamDisplayGeometry,
 } from "./orientation.js";
 import { digitalCrownDeltaFromWheel } from "./digitalCrown.js";
+import { DragPreviewTracker } from "./drag-preview.js";
 import { wheelDeltaToPixels } from "./scroll-wheel.js";
 import {
   resolveScreenConfigUpdate,
@@ -810,6 +811,69 @@ export function SimulatorView({
     }
   }, []);
 
+  // ── Local drag preview (experimental) ─────────────────────────────────────
+  // Translates the video layer under the finger instantly during a drag, so
+  // dragged content follows at 0 ms while the remote frames catch up beneath.
+  // Scrolling content mostly translates, so this reads as native drag-follow;
+  // the revealed strip along one edge is the cost. `?dragPreview=0` disables,
+  // `?dragPreview=<ms>` overrides the assumed drag-follow latency.
+  const [dragPreviewLatencyMs] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    const raw = new URLSearchParams(window.location.search).get("dragPreview");
+    if (raw === null) return 240;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return Math.min(1_000, parsed);
+  });
+  const dragPreviewWrapRef = useRef<HTMLDivElement | null>(null);
+  const dragPreviewTrackerRef = useRef<DragPreviewTracker | null>(null);
+  const dragPreviewRafRef = useRef(0);
+  const dragPreviewMaxOffsetRef = useRef(0);
+
+  const runDragPreviewLoop = useCallback(() => {
+    cancelAnimationFrame(dragPreviewRafRef.current);
+    const step = () => {
+      const tracker = dragPreviewTrackerRef.current;
+      const wrap = dragPreviewWrapRef.current;
+      if (!tracker || !wrap) return;
+      let { dx, dy, settled } = tracker.offsetAt(performance.now());
+      // A fast fling can owe more travel than looks acceptable as blank edge;
+      // clamp the preview vector, keeping its direction.
+      const magnitude = Math.hypot(dx, dy);
+      const maxOffset = dragPreviewMaxOffsetRef.current;
+      if (maxOffset > 0 && magnitude > maxOffset) {
+        dx *= maxOffset / magnitude;
+        dy *= maxOffset / magnitude;
+      }
+      wrap.style.transform = settled ? "" : `translate(${dx}px, ${dy}px)`;
+      if (!settled) dragPreviewRafRef.current = requestAnimationFrame(step);
+    };
+    dragPreviewRafRef.current = requestAnimationFrame(step);
+  }, []);
+
+  const beginDragPreview = useCallback((t: number, clientX: number, clientY: number) => {
+    if (dragPreviewLatencyMs === null) return;
+    const tracker = dragPreviewTrackerRef.current
+      ?? new DragPreviewTracker({ latencyMs: dragPreviewLatencyMs });
+    dragPreviewTrackerRef.current = tracker;
+    const rect = getInputRect();
+    dragPreviewMaxOffsetRef.current = rect
+      ? Math.min(rect.width, rect.height) * 0.4
+      : 0;
+    tracker.begin(t, clientX, clientY);
+    runDragPreviewLoop();
+  }, [dragPreviewLatencyMs, getInputRect, runDragPreviewLoop]);
+
+  const moveDragPreview = useCallback((t: number, clientX: number, clientY: number) => {
+    dragPreviewTrackerRef.current?.move(t, clientX, clientY);
+  }, []);
+
+  const endDragPreview = useCallback((t: number) => {
+    dragPreviewTrackerRef.current?.end(t);
+  }, []);
+
+  useEffect(() => () => cancelAnimationFrame(dragPreviewRafRef.current), []);
+
   // Scroll-to-pan: mouse-wheel/trackpad scrolling over the device is forwarded
   // as a native scroll event so iOS pans content exactly as it would for a
   // physical scroll wheel — no synthesized finger drag.
@@ -967,6 +1031,12 @@ export function SimulatorView({
             cornerShape: clipStyle?.cornerShape,
           } as CSSProperties}
         >
+        {/* The drag-preview wrapper translates the stream layer under the
+            finger during drags; input overlay and indicators stay put. */}
+        <div
+          ref={dragPreviewWrapRef}
+          style={{ position: "absolute", inset: 0, pointerEvents: "none", willChange: "transform" }}
+        >
         {useWebRtc ? (
           <video
             ref={videoRef}
@@ -1004,6 +1074,7 @@ export function SimulatorView({
             style={streamImageStyle}
           />
         )}
+        </div>
         {/* Interactive overlay — captures all pointer events */}
         <div
           ref={inputLayerRef}
@@ -1039,6 +1110,7 @@ export function SimulatorView({
               sendTouch({ type: "begin", x, y, edge });
             } else {
               edgeGestureRef.current = false;
+              beginDragPreview(e.timeStamp, e.clientX, e.clientY);
               handleTouch("begin", e);
             }
           }}
@@ -1081,6 +1153,7 @@ export function SimulatorView({
             if (edgeGestureRef.current) {
               sendTouch({ type: "move", x, y, edge: HID_EDGE_BOTTOM });
             } else {
+              moveDragPreview(e.timeStamp, e.clientX, e.clientY);
               handleTouch("move", e);
             }
           }}
@@ -1116,6 +1189,7 @@ export function SimulatorView({
             }
 
             hideTouchIndicator();
+            endDragPreview(e.timeStamp);
             if (edgeGestureRef.current) {
               const rect = getInputRect();
               if (rect) {
@@ -1139,6 +1213,7 @@ export function SimulatorView({
             }
 
             hideTouchIndicator();
+            endDragPreview(e.timeStamp);
             if (edgeGestureRef.current) {
               const rect = getInputRect();
               if (rect) {
@@ -1172,6 +1247,7 @@ export function SimulatorView({
               if (!realMultiTouchRef.current && !edgeGestureRef.current) {
                 sendTouch({ type: "end", x: fingers.x1, y: fingers.y1 });
               }
+              endDragPreview(e.timeStamp);
               realMultiTouchRef.current = true;
               multiTouchActiveRef.current = true;
               edgeGestureRef.current = false;
@@ -1191,6 +1267,7 @@ export function SimulatorView({
               sendTouch({ type: "begin", x, y, edge });
             } else {
               edgeGestureRef.current = false;
+              beginDragPreview(e.timeStamp, touch.clientX, touch.clientY);
               sendTouch({ type: "begin", x, y });
             }
           }}
@@ -1221,6 +1298,7 @@ export function SimulatorView({
             if (edgeGestureRef.current) {
               sendTouch({ type: "move", x, y, edge: HID_EDGE_BOTTOM, t: e.timeStamp });
             } else {
+              moveDragPreview(e.timeStamp, touch.clientX, touch.clientY);
               sendTouch({ type: "move", x, y, t: e.timeStamp });
             }
           }}
@@ -1258,6 +1336,7 @@ export function SimulatorView({
             const x = (touch.clientX - rect.left) / rect.width;
             const y = (touch.clientY - rect.top) / rect.height;
             hideTouchIndicator();
+            endDragPreview(e.timeStamp);
             if (edgeGestureRef.current) {
               sendTouch({ type: "end", x, y, edge: HID_EDGE_BOTTOM });
               edgeGestureRef.current = false;

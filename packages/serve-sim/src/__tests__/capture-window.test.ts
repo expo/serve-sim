@@ -64,6 +64,14 @@ describe("describeCaptureCounts", () => {
     expect(window.screenFps).toBeNull();
   });
 
+  test("rejects a window longer than the panel claims, which a backgrounded tab produces", () => {
+    const window = describeCaptureCounts(
+      sampleAt(1_000, { screenFrames: 100 }),
+      sampleAt(61_000, { screenFrames: 3_700 }),
+    );
+    expect(window.screenFps).toBeNull();
+  });
+
   test("rejects a window too short to divide by", () => {
     const window = describeCaptureCounts(
       sampleAt(1_000, { screenFrames: 100 }),

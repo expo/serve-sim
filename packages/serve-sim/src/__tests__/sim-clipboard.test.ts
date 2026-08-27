@@ -124,31 +124,41 @@ describe("sim paste HID", () => {
 });
 
 describe("readSimClipboard", () => {
-  test("returns stdout on success", async () => {
-    const text = await readSimClipboard("UDID-1", async () => ({
-      stdout: "café",
-      stderr: "",
-      exitCode: 0,
-    }));
-    expect(text).toBe("café");
+  function withStubs(response: Response, run: () => Promise<void>): Promise<void> {
+    const realFetch = globalThis.fetch;
+    const realWindow = Reflect.get(globalThis, "window");
+    Object.defineProperty(globalThis, "window", {
+      value: { __SIM_PREVIEW__: { basePath: "/" }, location: { pathname: "/" } },
+      configurable: true,
+      writable: true,
+    });
+    const stub: typeof fetch = Object.assign(async () => response, { preconnect: realFetch.preconnect });
+    globalThis.fetch = stub;
+    return run().finally(() => {
+      globalThis.fetch = realFetch;
+      if (realWindow === undefined) Reflect.deleteProperty(globalThis, "window");
+      else Object.defineProperty(globalThis, "window", { value: realWindow, configurable: true, writable: true });
+    });
+  }
+
+  test("returns the text the endpoint reports", async () => {
+    await withStubs(Response.json({ ok: true, text: "café 🎉" }), async () => {
+      expect(await readSimClipboard("UDID-1")).toBe("café 🎉");
+    });
   });
 
-  test("reports a plain failure with its exit code", async () => {
-    const failing = readSimClipboard("UDID-1", async () => ({
-      stdout: "",
-      stderr: "boom",
-      exitCode: 1,
-    }));
-    await expect(failing).rejects.toThrow(/exit 1/);
+  test("surfaces the endpoint's own error message", async () => {
+    await withStubs(
+      Response.json({ ok: false, error: "Timed out reading the simulator pasteboard" }, { status: 500 }),
+      async () => {
+        await expect(readSimClipboard("UDID-1")).rejects.toThrow(/Timed out/);
+      },
+    );
   });
 
-  test("names the missing GUI session when the pasteboard bridge crashes", async () => {
-    // Hosted simulators run without a GUI session and simctl segfaults there.
-    const crashed = readSimClipboard("UDID-1", async () => ({
-      stdout: "",
-      stderr: "Segmentation fault: 11  xcrun simctl pbpaste UDID-1",
-      exitCode: 139,
-    }));
-    await expect(crashed).rejects.toThrow(/no GUI session/);
+  test("falls back to a status message when the body carries no error", async () => {
+    await withStubs(Response.json({}, { status: 502 }), async () => {
+      await expect(readSimClipboard("UDID-1")).rejects.toThrow(/502/);
+    });
   });
 });

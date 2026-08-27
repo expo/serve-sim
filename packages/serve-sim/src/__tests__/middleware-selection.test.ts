@@ -51,6 +51,7 @@ describe("previewConfigForState", () => {
       basePath: "/preview",
       // Resolved from disk, so mirror the lookup rather than pin a path.
       pasteboardTool: locatePasteboardTool(),
+      pasteboardEndpoint: "/preview/api/pasteboard?device=DEVICE-B",
       logsEndpoint: "/preview/logs?device=DEVICE-B",
       appStateEndpoint: "/preview/appstate?device=DEVICE-B",
       eventLogEndpoint: "/preview/api/event-log?device=DEVICE-B",

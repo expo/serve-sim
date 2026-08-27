@@ -43,7 +43,7 @@ import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
 import { type WebMiddleware } from "./runtime-utils";
 import { connectToFetch, type ConnectMiddleware } from "./connect-to-fetch";
-import { locatePasteboardTool } from "./sim-pasteboard";
+import { locatePasteboardTool, readSimPasteboard } from "./sim-pasteboard";
 
 type SimReq = IncomingMessage;
 type SimRes = ServerResponse;
@@ -955,6 +955,7 @@ export function previewConfigForState(
   streamSettingsEndpoint: string;
   serveSimBin: string;
   pasteboardTool: string | null;
+  pasteboardEndpoint: string;
   gridApiEndpoint: string;
   gridCatalogEndpoint: string;
   gridStatusEndpoint: string;
@@ -988,6 +989,7 @@ export function previewConfigForState(
     streamSettingsEndpoint: streamSettingsEndpointFrom(state.streamUrl),
     serveSimBin,
     pasteboardTool: locatePasteboardTool(),
+    pasteboardEndpoint: endpoint(base, "/api/pasteboard", state.device),
     gridApiEndpoint: gridApiBase,
     gridCatalogEndpoint: gridApiBase + "/catalog",
     gridStatusEndpoint: gridApiBase + "/status",
@@ -2099,6 +2101,28 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // Expo Device Hub dashboard's save-screenshot action (the serve-sim web UI
     // shells out over exec-ws instead, so it never hits this route). Uses the
     // ?device= selection with a booted-simulator fallback.
+    if (url.startsWith(base + "/api/pasteboard")) {
+      const requested = new URL(url, "http://serve-sim.local").searchParams.get("device");
+      const udid = requested ?? selectedDevice ?? null;
+      if (!udid || !isSimulatorUdid(udid)) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid simulator device ID" }));
+        return;
+      }
+      try {
+        const text = await readSimPasteboard(udid);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, text }));
+      } catch (error) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          ok: false,
+          error: error instanceof Error ? error.message : "Could not read the simulator pasteboard",
+        }));
+      }
+      return;
+    }
+
     if (url === base + "/api/screenshot") {
       if (req.method !== "POST") {
         res.writeHead(405, {

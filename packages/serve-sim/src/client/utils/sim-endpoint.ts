@@ -35,6 +35,7 @@ declare global {
       // did not ship one. Writes spawn it inside the simulator because
       // `simctl pbcopy` needs a GUI session.
       pasteboardTool?: string | null;
+      pasteboardEndpoint?: string;
       /** Bearer token required by the /exec shell-exec route. */
       execToken?: string;
       streamSettings?: StreamSettings;

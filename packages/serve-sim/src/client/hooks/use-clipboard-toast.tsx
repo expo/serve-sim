@@ -1,7 +1,6 @@
 import { useCallback } from "react";
 import { toast as sonnerToast } from "sonner";
 import { ClipboardToastContent } from "../components/app-toasts";
-import { execOnHost } from "../utils/exec";
 import { randomId } from "../utils/random-id";
 import {
   canWriteBrowserClipboardAsync,
@@ -62,7 +61,7 @@ export function useClipboardToast(deviceUdid: string) {
   const copyFromSim = useCallback(async () => {
     try {
       if (canWriteBrowserClipboardAsync()) {
-        const pending = readSimClipboard(deviceUdid, execOnHost);
+        const pending = readSimClipboard(deviceUdid);
         // Settled separately so a read failure is reported as itself. The browser
         // turns a rejected ClipboardItem promise into NotAllowedError, which would
         // otherwise read as "you denied clipboard access".
@@ -82,7 +81,7 @@ export function useClipboardToast(deviceUdid: string) {
         return;
       }
 
-      const text = await readSimClipboard(deviceUdid, execOnHost);
+      const text = await readSimClipboard(deviceUdid);
       if (!text) {
         show("copied", "Simulator clipboard is empty");
         return;

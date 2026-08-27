@@ -1,6 +1,7 @@
 import { DROP_CHUNK_BYTES, arrayBufferToBase64 } from "./drop";
 import { shellEscape, type ExecResult } from "./exec";
 import { HID_USAGE_BY_CODE } from "./hid";
+import { simEndpoint } from "./sim-endpoint";
 import { randomId } from "./random-id";
 
 // simctl decodes pbpaste output as MacRoman unless LANG says otherwise.
@@ -73,19 +74,15 @@ export async function copyTextToSim(
   }
 }
 
-// simctl's pasteboard bridge needs a GUI login session and crashes without one,
-// which is what a hosted simulator runs as.
-export function clipboardBridgeError(exitCode: number, stderr: string): string {
-  if (exitCode === 139 || /Segmentation fault/i.test(stderr)) {
-    return "Simulator pasteboard unavailable on this host (no GUI session)";
+export async function readSimClipboard(udid: string): Promise<string> {
+  const endpoint = simEndpoint("api/pasteboard");
+  const separator = endpoint.includes("?") ? "&" : "?";
+  const response = await fetch(`${endpoint}${separator}device=${encodeURIComponent(udid)}`);
+  const body = (await response.json()) as { ok?: boolean; text?: string; error?: string };
+  if (!response.ok || !body.ok) {
+    throw new Error(body.error ?? `Could not read the simulator pasteboard (${response.status})`);
   }
-  return `Simulator pasteboard failed (exit ${exitCode})`;
-}
-
-export async function readSimClipboard(udid: string, exec: ExecFn): Promise<string> {
-  const { stdout, stderr, exitCode } = await exec(pbpasteCommand(udid));
-  if (exitCode !== 0) throw new Error(clipboardBridgeError(exitCode, stderr));
-  return stdout;
+  return body.text ?? "";
 }
 
 // Secure contexts include http://localhost but not the LAN URL from `--host 0.0.0.0`.

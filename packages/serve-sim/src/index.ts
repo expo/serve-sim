@@ -296,6 +296,16 @@ function bootDevice(udid: string): void {
       }
     }
   }
+  // serve-sim streams the raw device display, so Simulator.app is only needed
+  // to wire up the framebuffer — its device bezel is pure window-server
+  // overhead. Hide it. `defaults` is read when the app launches, so this must
+  // run before `open` below.
+  try {
+    execSync("defaults write com.apple.iphonesimulator ShowChrome -bool NO", {
+      encoding: "utf-8",
+      stdio: "pipe",
+    });
+  } catch {}
   // Ensure Simulator.app is running so the display/framebuffer pipeline is
   // wired up. `-g` = don't bring to foreground; safe to call even if already
   // running. A short timeout keeps us from hanging on headless macOS hosts

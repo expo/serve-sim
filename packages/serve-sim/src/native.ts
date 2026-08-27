@@ -34,6 +34,7 @@ interface SimHIDHandle {
   orientation(orientation: number): Promise<boolean>;
   memoryWarning(): Promise<void>;
   softwareKeyboard(): Promise<void>;
+  hardwareKeyboard(enabled: boolean): Promise<boolean>;
   caDebug(name: string, enabled: boolean): Promise<boolean>;
 }
 
@@ -203,6 +204,10 @@ export class NativeHid {
 
   softwareKeyboard(): Promise<void> {
     return this.guard("softwareKeyboard", () => this.handle.softwareKeyboard(), undefined);
+  }
+
+  hardwareKeyboard(enabled: boolean): Promise<boolean> {
+    return this.guard("hardwareKeyboard", () => this.handle.hardwareKeyboard(enabled), false);
   }
 
   caDebug(name: string, enabled: boolean): Promise<boolean> {

@@ -80,6 +80,10 @@ private func u32(_ v: Int) -> UInt32 {
         await injector.toggleSoftwareKeyboard()
     }
 
+    @NodeMethod func hardwareKeyboard(_ enabled: Bool) async -> Bool {
+        await injector.setHardwareKeyboardEnabled(enabled, deviceUDID: udid)
+    }
+
     @NodeMethod func caDebug(_ name: String, _ enabled: Bool) async -> Bool {
         await injector.setCADebugOption(name: name, enabled: enabled)
     }

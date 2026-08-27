@@ -43,6 +43,8 @@ export interface StreamStats extends StreamStatsSample {
    * This is the cadence the viewer sees, so it covers transport and decode. The sender paces its
    * own output and repeats its last frame, so a capture stall does not have to show up here. */
   pacingDeviationMs: number | null;
+  /** Mean gap between delivered frames, the value pacingDeviationMs is the spread around. */
+  frameGapMs: number | null;
   decodeMsPerFrame: number | null;
 }
 
@@ -174,6 +176,7 @@ export function describeStreamStats(
     freezeMsInWindow: null,
     jitterBufferMs: null,
     pacingDeviationMs: null,
+    frameGapMs: null,
     decodeMsPerFrame: null,
   };
   if (previous === null) return unusable;
@@ -192,6 +195,7 @@ export function describeStreamStats(
   if (decoded < 0 || bytes < 0 || dropped < 0 || freezes < 0 || freezeMs < 0) return unusable;
 
   const seconds = elapsedMs / 1000;
+  const frameGap = windowFrameGap(previous, current, decoded);
   return {
     ...current,
     fps: decoded / seconds,
@@ -201,18 +205,19 @@ export function describeStreamStats(
     freezesInWindow: freezes,
     freezeMsInWindow: freezeMs,
     jitterBufferMs: windowJitterBufferMs(previous, current),
-    pacingDeviationMs: windowPacingDeviationMs(previous, current, decoded),
+    pacingDeviationMs: frameGap?.deviationMs ?? null,
+    frameGapMs: frameGap?.meanMs ?? null,
     decodeMsPerFrame: windowDecodeMsPerFrame(previous, current, decoded),
   };
 }
 
-/** Spread of the inter-frame gap, from the cumulative sum and sum-of-squares libwebrtc keeps.
+/** Mean and spread of the inter-frame gap, from the cumulative sum and sum-of-squares libwebrtc keeps.
  * Variance can go slightly negative through floating-point cancellation, so it is clamped. */
-function windowPacingDeviationMs(
+function windowFrameGap(
   previous: StreamStatsSample,
   current: StreamStatsSample,
   frames: number,
-): number | null {
+): { meanMs: number; deviationMs: number } | null {
   if (previous.interFrameDelaySeconds === null || current.interFrameDelaySeconds === null) {
     return null;
   }
@@ -229,7 +234,10 @@ function windowPacingDeviationMs(
   const squared = current.interFrameDelaySquaredSeconds - previous.interFrameDelaySquaredSeconds;
   if (sum < 0 || squared < 0) return null;
   const mean = sum / frames;
-  return Math.sqrt(Math.max(0, squared / frames - mean * mean)) * 1000;
+  return {
+    meanMs: mean * 1000,
+    deviationMs: Math.sqrt(Math.max(0, squared / frames - mean * mean)) * 1000,
+  };
 }
 
 function windowDecodeMsPerFrame(

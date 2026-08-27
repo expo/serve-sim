@@ -56,9 +56,7 @@ export function StreamStatsBody({
             ))}
           </div>
         ) : (
-          <div className="text-[11px] text-white/30">
-            {measurable(stats) ? "No drops, freezes or loss in this window" : "Measuring…"}
-          </div>
+          <div />
         )}
         {action}
       </div>
@@ -73,7 +71,13 @@ export function StreamStatsBody({
         />
       </div>
 
-      <Diagnostics stats={stats} sender={sender} capture={capture} encoder={encoder} />
+      <Diagnostics
+        stats={stats}
+        sender={sender}
+        capture={capture}
+        encoder={encoder}
+        health={stale || faults.length > 0 ? null : health(stats)}
+      />
     </div>
   );
 }
@@ -84,11 +88,13 @@ function Diagnostics({
   sender,
   capture,
   encoder,
+  health,
 }: {
   stats: StreamStats;
   sender?: SenderStreamStats | null;
   capture?: CaptureCounts | null;
   encoder?: EncoderIdentity | null;
+  health: string | null;
 }) {
   return (
     <details className="border-t border-white/10 pt-1.5">
@@ -96,6 +102,8 @@ function Diagnostics({
         <span className="transition-transform [details[open]_&]:rotate-90">&rsaquo;</span>
         Diagnostics
       </summary>
+
+      {health && <div className="pt-1.5 text-[11px] text-white/30">{health}</div>}
 
       <Group label="Network">
         <Cell label="RTT" value={ms(stats.roundTripMs, 0)} />
@@ -271,9 +279,9 @@ function measured(history: StreamStats[], pick: (sample: StreamStats) => number 
   return values;
 }
 
-/** Whether this sample came from a usable window. Nothing measured is not the same as nothing wrong. */
-function measurable(stats: StreamStats): boolean {
-  return stats.droppedInWindow !== null;
+/** Nothing measured is not the same as nothing wrong, so an unusable window says so. */
+function health(stats: StreamStats): string {
+  return stats.droppedInWindow === null ? "Measuring…" : "No drops, freezes or loss in this window";
 }
 
 /** For the collapsed section header. */

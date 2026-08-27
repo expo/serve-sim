@@ -140,7 +140,7 @@ export function StreamSettingsTool({
           history={history}
           faults={faults}
           sender={sender}
-          capture={senderView.stale ? null : senderView.capture}
+          capture={senderView.stale ? null : senderView.captureWindow}
           requestedFps={settings.h264Fps}
           stale={stale}
           action={

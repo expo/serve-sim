@@ -263,8 +263,8 @@ actor FrameCapture {
         let interval = DispatchTimeInterval.nanoseconds(
             Int(SimulatorCapturePollPolicy.intervalNanoseconds)
         )
-        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
-        timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .nanoseconds(0))
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .microseconds(500))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
             self.assumeIsolated {

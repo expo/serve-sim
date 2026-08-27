@@ -1,4 +1,5 @@
 import CoreVideo
+import StreamingPolicy
 import VideoToolbox
 
 struct Dimensions: Hashable, Sendable {
@@ -13,33 +14,32 @@ extension CVPixelBuffer {
 }
 
 struct Photocopier {
-    var pixelFormat: OSType = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    /// Full range, because every other biplanar pool in the package is full range and the
+    /// publisher forwards this buffer natively without a range conversion.
+    private static let pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
     private var _pool: CVPixelBufferPool?
     private var dimensions: Dimensions?
-    private var poolFormat: OSType = 0
     private var _plainPool: CVPixelBufferPool?
     private var plainDimensions: Dimensions?
+    private var plainFormat: OSType = 0
     private var transfer: VTPixelTransferSession?
+    private var transferUnavailable = false
     private(set) var cpuFallbacks: UInt64 = 0
 
     init() {}
 
-    /// Even dimensions only: odd sizes cost the encoder an extra conversion.
     static func target(for source: CVPixelBuffer, maxDimension: Int) -> Dimensions {
         let size = source.dimensions
-        let longest = max(size.width, size.height)
-        guard maxDimension > 0, longest > maxDimension else { return size }
-        let scale = Double(maxDimension) / Double(longest)
-        return Dimensions(
-            width: max(2, Int((Double(size.width) * scale).rounded()) & ~1),
-            height: max(2, Int((Double(size.height) * scale).rounded()) & ~1)
+        let policy = SnapshotSizePolicy(
+            width: size.width, height: size.height, maxDimension: maxDimension
         )
+        return Dimensions(width: policy.width, height: policy.height)
     }
 
-    private mutating func plainPool(dimensions: Dimensions) -> CVPixelBufferPool? {
-        if let _plainPool, plainDimensions == dimensions { return _plainPool }
+    private mutating func plainPool(dimensions: Dimensions, format: OSType) -> CVPixelBufferPool? {
+        if let _plainPool, plainDimensions == dimensions, plainFormat == format { return _plainPool }
         let attrs: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferPixelFormatTypeKey as String: format,
             kCVPixelBufferWidthKey as String: dimensions.width,
             kCVPixelBufferHeightKey as String: dimensions.height,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:],
@@ -48,15 +48,14 @@ struct Photocopier {
         CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attrs as CFDictionary, &newPool)
         _plainPool = newPool
         plainDimensions = dimensions
+        plainFormat = format
         return newPool
     }
 
     private mutating func pool(dimensions: Dimensions) -> CVPixelBufferPool? {
-        if let _pool, self.dimensions == dimensions, self.poolFormat == pixelFormat {
-            return _pool
-        }
+        if let _pool, self.dimensions == dimensions { return _pool }
         let attrs: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
+            kCVPixelBufferPixelFormatTypeKey as String: Self.pixelFormat,
             kCVPixelBufferWidthKey as String: Int(dimensions.width),
             kCVPixelBufferHeightKey as String: Int(dimensions.height),
             kCVPixelBufferIOSurfacePropertiesKey as String: [:],
@@ -65,16 +64,22 @@ struct Photocopier {
         CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attrs as CFDictionary, &newPool)
         self._pool = newPool
         self.dimensions = dimensions
-        self.poolFormat = pixelFormat
         return newPool
     }
 
     private mutating func transferSession() -> VTPixelTransferSession? {
         if let transfer { return transfer }
+        // A host without a usable GPU transfer fails every time. Retrying per frame would be
+        // 60 session creations a second on exactly the host that can least afford them.
+        if transferUnavailable { return nil }
         var session: VTPixelTransferSession?
         guard VTPixelTransferSessionCreate(allocator: kCFAllocatorDefault,
                                            pixelTransferSessionOut: &session) == noErr,
-              let session else { return nil }
+              let session else {
+            transferUnavailable = true
+            print("[capture] GPU pixel transfer unavailable; falling back to CPU copies")
+            return nil
+        }
         VTSessionSetProperty(session,
                              key: kVTPixelTransferPropertyKey_ScalingMode,
                              value: kVTScalingMode_Normal)
@@ -100,11 +105,23 @@ struct Photocopier {
         // Without the transfer there is no GPU convert or resize, so degrade to what the
         // pipeline did before: a same-size copy in the framebuffer's own format, which the
         // consumers already know how to scale.
-        cpuFallbacks += 1
-        guard let plain = plainPool(dimensions: source.dimensions),
+        let format = CVPixelBufferGetPixelFormatType(source)
+        guard let plain = plainPool(dimensions: source.dimensions, format: format),
               let out = Self.buffer(from: plain),
               Self.copyOnCPU(source, into: out) else { return nil }
+        cpuFallbacks += 1
         return out
+    }
+
+    mutating func reset() {
+        if let transfer { VTPixelTransferSessionInvalidate(transfer) }
+        transfer = nil
+        transferUnavailable = false
+        _pool = nil
+        dimensions = nil
+        _plainPool = nil
+        plainDimensions = nil
+        plainFormat = 0
     }
 
     private static func buffer(from pool: CVPixelBufferPool) -> CVPixelBuffer? {
@@ -114,8 +131,8 @@ struct Photocopier {
         return out
     }
 
-    /// Only reached if the GPU transfer fails. Handles planar buffers, whose base address is
-    /// NULL: reading it as packed would drop every frame.
+    /// Only reached if the GPU transfer fails. Planar buffers have a NULL base address, so
+    /// reading one as packed would drop every frame.
     private static func copyOnCPU(_ source: CVPixelBuffer, into dst: CVPixelBuffer) -> Bool {
         guard source.dimensions == dst.dimensions,
               CVPixelBufferGetPixelFormatType(source) == CVPixelBufferGetPixelFormatType(dst)

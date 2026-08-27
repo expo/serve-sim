@@ -114,7 +114,7 @@ actor CaptureEngine {
         )
         self.frameContinuation = frameContinuation
         do {
-                await frameCapture.setSnapshotMaxDimension(options.maxDimension)
+            await frameCapture.setSnapshotMaxDimension(options.maxDimension)
             try await frameCapture.start(deviceUDID: deviceUDID) { pixelBuffer, timestamp in
                 frameContinuation.yield(Frame(pixelBuffer: pixelBuffer, timestamp: timestamp))
             }

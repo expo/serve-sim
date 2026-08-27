@@ -30,6 +30,9 @@ export interface SenderStreamStats {
 }
 
 export interface CaptureCounts {
+  pickCount: number | null;
+  pickSumMs: number | null;
+  pickMaxMs: number | null;
   screenFrames: number;
   idleFrames: number;
   offeredFrames: number | null;
@@ -143,6 +146,9 @@ function readCaptureCounts(raw: unknown): CaptureCounts | null {
   const idleFrames = raw.idleFrames;
   if (typeof screenFrames !== "number" || typeof idleFrames !== "number") return null;
   return {
+    pickCount: maybeNumber(raw.pickCount),
+    pickSumMs: maybeNumber(raw.pickSumMs),
+    pickMaxMs: maybeNumber(raw.pickMaxMs),
     screenFrames,
     idleFrames,
     offeredFrames: maybeNumber(raw.offeredFrames),

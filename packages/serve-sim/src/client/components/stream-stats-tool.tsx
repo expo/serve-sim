@@ -131,6 +131,7 @@ function Diagnostics({
           <Cell label="Stalls" value={compact(capture.stalls)} />
           <Cell label="Stall time" value={duration(capture.stallSumMs)} />
           <Cell label="Capture interval" value={ms(capture.intervalMs, 1)} />
+          <Cell label="Surface pick" value={ms(capture.pickMs, 2)} />
           <Cell label="CPU fallbacks" value={compact(capture.cpuFallbacks)} />
           <Cell label="Pump restarts" value={compact(capture.pumpRestarts)} />
         </Group>
@@ -181,6 +182,10 @@ const HELP: Record<string, { meaning: string; scope: Scope }> = {
   Stalls: { meaning: "Times the capture loop went over 100 ms without running. It measures scheduling, not whether the screen changed.", scope: SESSION },
   "Stall time": { meaning: "Total time spent in those stalls.", scope: SESSION },
   "Capture interval": { meaning: "Average time between capture attempts. The timer and the simulator\u2019s own frame callback both count.", scope: WINDOW },
+  "Surface pick": {
+    meaning: "Time spent choosing which framebuffer to capture. It climbs while the compositor swaps surfaces during a transition.",
+    scope: WINDOW,
+  },
   "CPU fallbacks": { meaning: "Frames copied on the CPU because the GPU transfer failed.", scope: SESSION },
   "Pump restarts": {
     meaning: "Times the WebRTC frame pump was restarted after its timer stopped ticking.",

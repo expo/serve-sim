@@ -70,6 +70,9 @@ struct WebRTCSenderStatsPayload: Codable {
 }
 
 struct WebRTCCaptureCounts: Codable {
+    let pickCount: UInt64
+    let pickSumMs: Double
+    let pickMaxMs: Double
     let screenFrames: UInt64
     let idleFrames: UInt64
     /// Offered frames are capture deliveries, including the 5 FPS idle refresh. Forwarded frames

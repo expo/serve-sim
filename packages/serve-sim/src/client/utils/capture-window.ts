@@ -13,6 +13,7 @@ export interface CaptureWindow {
   deliveredFps: number | null;
   submittedFps: number | null;
   intervalMs: number | null;
+  pickMs: number | null;
   stalls: number | null;
   stallSumMs: number | null;
   cpuFallbacks: number | null;
@@ -40,6 +41,7 @@ export function describeCaptureCounts(
     deliveredFps: null,
     submittedFps: null,
     intervalMs: null,
+    pickMs: null,
     ...totals,
   };
   if (previous === null) return unusable;
@@ -57,6 +59,10 @@ export function describeCaptureCounts(
     intervalMs: windowMean(
       delta(before.gapSumMs, after.gapSumMs),
       delta(before.attempts, after.attempts),
+    ),
+    pickMs: windowMean(
+      delta(before.pickSumMs, after.pickSumMs),
+      delta(before.pickCount, after.pickCount),
     ),
     ...totals,
   };

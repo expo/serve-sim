@@ -285,12 +285,16 @@ actor CaptureEngine {
     func webRTCSenderStats(sessionId: String? = nil) async throws -> String {
         let sessions = await webRTCPublisher?.senderStatistics(sessionId: sessionId) ?? []
         let counts = await frameCapture.frameCounts()
+        let pick = await frameCapture.pickTimings()
         let timings = await frameCapture.captureTimings()
         let poll = await frameCapture.pollTimings()
         let flow = webRTCPublisher?.frameFlowCounts()
         let data = try JSONEncoder().encode(WebRTCSenderStatsReport(
             sessions: sessions,
             capture: WebRTCCaptureCounts(
+                pickCount: pick.count,
+                pickSumMs: Double(pick.sumNs) / 1_000_000,
+                pickMaxMs: Double(pick.maxNs) / 1_000_000,
                 screenFrames: counts.screen,
                 idleFrames: counts.idle,
                 offeredFrames: flow?.offered,

@@ -288,13 +288,14 @@ describe("StreamStatsBody", () => {
 
 /** The download keeps the raw lifetime counters; only the panel reads the window. */
 const captureCounts: CaptureCounts = {
+  pickCount: 5400, pickSumMs: 53, pickMaxMs: 0.8,
   screenFrames: 900, idleFrames: 12, offeredFrames: 880, forwardedFrames: 830,
   pumpRestarts: 0, cpuFallbacks: 0, attempts: 5400, stalls: 0, gapSumMs: 90_000,
   stallSumMs: 0, pollTicks: 2400, pollLateSumMs: 600,
 };
 
 const capture: CaptureWindow = {
-  screenFps: 60, idleFps: 0, deliveredFps: 60, submittedFps: 60, intervalMs: 8.3,
+  screenFps: 60, idleFps: 0, deliveredFps: 60, submittedFps: 60, intervalMs: 8.3, pickMs: 0.01,
   stalls: 0, stallSumMs: 0, cpuFallbacks: 0, pumpRestarts: 0,
 };
 

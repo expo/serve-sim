@@ -40,6 +40,7 @@ import {
 } from "./camera-helper";
 import { parseIceUrlList, streamHelperArgs, streamSettingsEqual } from "./stream-runtime-args";
 import { MAX_MJPEG_STREAM_FPS, MAX_VIDEO_STREAM_FPS } from "./stream-settings";
+import { followCaptureHar } from "./capture";
 
 // `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
 // CLI works under plain `node` too.
@@ -1658,11 +1659,17 @@ async function serve(
     for (const udid of targetDevices) {
       try {
         const meta = await capture.captureRuntime.enableForDevice(udid);
+        const artifacts = capture.captureRuntime.artifactPathsFor(udid);
         console.log(
           `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from third-party apps on ` +
             "this device is recorded for the whole boot session (Apple system apps like Safari are left unproxied); " +
             "HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
         );
+        if (artifacts) {
+          console.log(
+            `Capture artifacts (live session; removed on exit): ${artifacts.networkCapturePath}, ${artifacts.harPath}`,
+          );
+        }
       } catch (error) {
         const reason =
           error instanceof capture.CaptureEnableError
@@ -1676,6 +1683,7 @@ async function serve(
   }
 
   const { simMiddleware } = await import("./middleware");
+  const execToken = randomBytes(32).toString("base64url");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
   // it can route helper/DevTools sockets through the single preview port.
   // Minted here rather than inside the middleware, because the operator has to be told what it is.
@@ -1725,7 +1733,7 @@ async function serve(
   // Record in-process state so the preview/grid enumerate these devices and the
   // CLI input subcommands can reach the same-origin /helper ws.
   for (const udid of targetDevices) {
-    writeState(inProcessServeSimState(udid, boundPort, "/", host, options.stream));
+    writeState(inProcessServeSimState(udid, boundPort, "/", host, options.stream, execToken));
   }
   const clearAll = () => {
     for (const udid of targetDevices) {
@@ -2161,5 +2169,64 @@ program
   .helpOption(false)
   .argument("[args...]")
   .action((args: string[]) => uiSettings(args));
+
+{
+  const capture = program.command("capture").description("Network capture helpers");
+  capture
+    .command("har")
+    .description("Follow the capture stream; write network-capture.json + HAR")
+    .requiredOption("-o, --out <path>", "HAR file to keep rewriting")
+    .option("--events <path>", "NDJSON event log (default: network-capture.json next to --out)")
+    .option(...deviceOpt)
+    .option("--flush-ms <ms>", "How often to rewrite the HAR", "5000")
+    .action(async (opts: {
+      out: string;
+      events?: string;
+      device?: string;
+      flushMs?: string;
+    }) => {
+      const udid = opts.device ? resolveDevice(opts.device) : undefined;
+      const state = readState(udid);
+      if (!state) {
+        console.error("No serve-sim server running. Run `serve-sim --network-capture` first.");
+        process.exit(1);
+      }
+      const outPath = resolve(opts.out);
+      const eventsPath = opts.events ? resolve(opts.events) : undefined;
+      const ac = new AbortController();
+      const stop = () => ac.abort();
+      process.on("SIGINT", stop);
+      process.on("SIGTERM", stop);
+      console.error(
+        `Recording capture for ${state.device} → ${outPath} (+ network-capture.json) (Ctrl-C to stop)`,
+      );
+      if (!state.execToken) {
+        console.error(
+          "This serve-sim session has no execToken in state (restart serve-sim). Capture HTTP routes require it.",
+        );
+        process.exit(1);
+      }
+      try {
+        const result = await followCaptureHar({
+          baseUrl: state.url,
+          device: state.device,
+          outPath,
+          eventsPath,
+          flushIntervalMs: Number(opts.flushMs) || 5000,
+          signal: ac.signal,
+          version: resolveVersion(),
+          token: state.execToken,
+        });
+        console.error(`Wrote ${result.size} entries to ${outPath}`);
+      } catch (err) {
+        if ((err as { name?: string })?.name === "AbortError") {
+          console.error(`Stopped. HAR at ${outPath}`);
+          return;
+        }
+        console.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+}
 
 await program.parseAsync(process.argv);

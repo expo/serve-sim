@@ -194,9 +194,10 @@ actor FrameCapture {
         return best
     }
 
-    /// The winning descriptor for as long as it stays valid. Re-ranking every frame costs a
-    /// size query per descriptor, and after a surfaces-changed callback it also re-enters the
-    /// private surface API, which is slowest while the compositor is mid-swap.
+    /// The winning descriptor for as long as it stays valid. Re-ranking every frame costs a size
+    /// query per descriptor, and a callback that clears a descriptor's cached surface sends the
+    /// next rank back through the private surface API, which is slowest while the compositor is
+    /// mid-swap.
     private func currentSurface() -> (key: ObjectIdentifier, surface: IOSurface)? {
         let now = ContinuousClock.now
         if let last = lastPickAttempt, (now - last) < Self.pickRevalidateInterval,
@@ -209,7 +210,6 @@ actor FrameCapture {
         return best
     }
 
-    /// Forces the next capture to re-pick rather than waiting out the interval.
     private func invalidatePick() {
         bestSurfaceKey = nil
         lastPickAttempt = nil

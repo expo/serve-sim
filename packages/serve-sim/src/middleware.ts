@@ -43,6 +43,7 @@ import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
 import { type WebMiddleware } from "./runtime-utils";
 import { connectToFetch, type ConnectMiddleware } from "./connect-to-fetch";
+import { locatePasteboardTool } from "./sim-pasteboard";
 
 type SimReq = IncomingMessage;
 type SimRes = ServerResponse;
@@ -953,6 +954,7 @@ export function previewConfigForState(
   devtoolsEndpoint: string;
   streamSettingsEndpoint: string;
   serveSimBin: string;
+  pasteboardTool: string | null;
   gridApiEndpoint: string;
   gridCatalogEndpoint: string;
   gridStatusEndpoint: string;
@@ -985,6 +987,7 @@ export function previewConfigForState(
     devtoolsEndpoint: endpoint(base, "/devtools", state.device),
     streamSettingsEndpoint: streamSettingsEndpointFrom(state.streamUrl),
     serveSimBin,
+    pasteboardTool: locatePasteboardTool(),
     gridApiEndpoint: gridApiBase,
     gridCatalogEndpoint: gridApiBase + "/catalog",
     gridStatusEndpoint: gridApiBase + "/status",

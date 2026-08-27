@@ -255,6 +255,20 @@ if (axSettingsBuild.status !== 0) {
 }
 console.log("dist/simax/serve-sim-ax-settings");
 
+const pasteboardBuild = spawnSync(
+  "bash",
+  [
+    resolve(root, "Sources/SimPasteboard/build.sh"),
+    resolve(distDir, "simpb"),
+  ],
+  { stdio: "inherit" },
+);
+if (pasteboardBuild.status !== 0) {
+  console.error("SimPasteboard build failed.");
+  process.exit(pasteboardBuild.status ?? 1);
+}
+console.log("dist/simpb/serve-sim-pasteboard");
+
 // ─── 8. serve-sim-native.node — in-process N-API addon ───────────────────
 // Replaces the spawned serve-sim-bin helper. Arm64 macOS binary; loaded by
 // path from both the node bundle (createRequire) and the bun-compiled executable.

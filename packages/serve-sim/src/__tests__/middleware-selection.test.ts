@@ -8,6 +8,7 @@ import {
   type ServeSimState,
 } from "../middleware";
 import { parseForegroundAppLogMessage } from "../foreground-tracker";
+import { locatePasteboardTool } from "../sim-pasteboard";
 
 const states: ServeSimState[] = [
   {
@@ -48,6 +49,8 @@ describe("previewConfigForState", () => {
     expect(previewConfigForState(state, "/preview", "/bin/serve-sim", "token-xyz")).toEqual({
       ...state,
       basePath: "/preview",
+      // Resolved from disk, so mirror the lookup rather than pin a path.
+      pasteboardTool: locatePasteboardTool(),
       logsEndpoint: "/preview/logs?device=DEVICE-B",
       appStateEndpoint: "/preview/appstate?device=DEVICE-B",
       eventLogEndpoint: "/preview/api/event-log?device=DEVICE-B",

@@ -725,10 +725,20 @@ export class DeviceSession {
 
     switch (tag) {
       case 0x03: {
-        const m = json<{ type: string; x: number; y: number; edge?: number }>();
+        const m = json<{ type: string; x: number; y: number; edge?: number; t?: number }>();
         if (m) {
           this.recordTouchEvent(m);
-          this.hid.touch(m.type as "begin" | "move" | "end", m.x, m.y, W, H, m.edge ?? 0);
+          this.hid.touch(
+            m.type as "begin" | "move" | "end",
+            m.x,
+            m.y,
+            W,
+            H,
+            m.edge ?? 0,
+            // The sender's own event time, for trajectory smoothing. Older
+            // clients omit it; the injector falls back to arrival time.
+            typeof m.t === "number" && Number.isFinite(m.t) ? m.t : undefined,
+          );
         }
         break;
       }

@@ -1,6 +1,7 @@
 import Foundation
 import ObjectiveC
 import Darwin
+import StreamingPolicy
 
 /// Per-event HID logging is gated behind `SERVE_SIM_DEBUG_HID`. These lines fire
 /// on every touch/move/button/key/crown event — a single drag emits a dozen —
@@ -181,13 +182,103 @@ actor HIDInjector {
         if let msg = touchMessage(type: type, x: x, y: y, edge: edge) { rawSend(msg) }
     }
 
-    func sendTouch(type: String, x: Double, y: Double, screenWidth: Int, screenHeight: Int, edge: UInt32 = 0) {
-        guard let msg = touchMessage(type: type, x: x, y: y, edge: edge) else { return }
-        hidLog("[hid] Sending \(type) at (\(String(format:"%.3f",x)),\(String(format:"%.3f",y)))\(edge > 0 ? " edge=\(edge)" : "")")
-        rawSend(msg)
+    // MARK: - Smoothed touch replay
+    //
+    // Single-finger drags are replayed through TouchMotionSmoother instead of
+    // being injected on arrival: over a long network path moves arrive in
+    // bursts, and raw injection makes the simulated finger teleport — jerky
+    // content motion and corrupted UIKit fling velocity. Taps, long-presses,
+    // edge (system) gestures, multi-touch, and the wheel-scroll drag keep the
+    // exact legacy timing.
+
+    /// Buffered trajectory delay in milliseconds. 0 disables smoothing, as
+    /// does SERVE_SIM_INPUT_SMOOTHING=0/false. Default 50 ms covers the
+    /// arrival jitter observed in production captures (20 ms baseline,
+    /// 80 ms spikes) without a noticeable drag-follow cost on top of the
+    /// path's round trip.
+    private static let inputSmoothingDelayMs: Double = {
+        let environment = ProcessInfo.processInfo.environment
+        switch environment["SERVE_SIM_INPUT_SMOOTHING"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "0", "false", "off", "no":
+            return 0
+        default:
+            break
+        }
+        let configured = environment["SERVE_SIM_INPUT_SMOOTHING_MS"].flatMap(Double.init)
+        return min(200, max(0, configured ?? 50))
+    }()
+
+    private var touchSmoother = TouchMotionSmoother(delayMilliseconds: HIDInjector.inputSmoothingDelayMs)
+    private var smootherTimer: DispatchSourceTimer?
+
+    func sendTouch(
+        type: String,
+        x: Double,
+        y: Double,
+        screenWidth: Int,
+        screenHeight: Int,
+        edge: UInt32 = 0,
+        clientTimeMs: Double = .nan
+    ) {
+        guard Self.inputSmoothingDelayMs > 0,
+              edge == 0,
+              let phase = TouchMotionSmoother.Phase(rawValue: type) else {
+            // Edge (system) gestures and unknown types keep raw timing; a
+            // buffered drag must not interleave with them.
+            applySmoother(touchSmoother.flushActiveGesture())
+            rawSendTouch(type: type, x: x, y: y, edge: edge)
+            return
+        }
+        applySmoother(touchSmoother.touchArrived(
+            phase: phase,
+            x: x,
+            y: y,
+            clientTimeMilliseconds: clientTimeMs.isFinite ? clientTimeMs : nil,
+            atNanoseconds: DispatchTime.now().uptimeNanoseconds
+        ))
+    }
+
+    private func applySmoother(_ result: TouchMotionSmoother.Result) {
+        for injection in result.injections {
+            hidLog("[hid] Sending \(injection.phase.rawValue) at (\(String(format: "%.3f", injection.x)),\(String(format: "%.3f", injection.y)))")
+            rawSendTouch(type: injection.phase.rawValue, x: injection.x, y: injection.y)
+        }
+        if let delayNs = result.nextTickDelayNanoseconds {
+            armSmootherTimer(afterNs: delayNs)
+        }
+    }
+
+    /// Strict zero-leeway one-shot on the injector's own queue, the same
+    /// pattern as the frame pump: virtualized hosts coalesce lax timers hard
+    /// enough to defeat the replay cadence. Arming cancels the previous timer,
+    /// so at most one replay tick is pending.
+    private func armSmootherTimer(afterNs delayNs: UInt64) {
+        smootherTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
+        timer.schedule(
+            deadline: .now() + .nanoseconds(Int(clamping: delayNs)),
+            repeating: .never,
+            leeway: .nanoseconds(0)
+        )
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.assumeIsolated { injector in
+                injector.smootherTimer = nil
+                injector.applySmoother(
+                    injector.touchSmoother.tick(atNanoseconds: DispatchTime.now().uptimeNanoseconds)
+                )
+            }
+        }
+        smootherTimer = timer
+        timer.resume()
     }
 
     func sendMultiTouch(type: String, x1: Double, y1: Double, x2: Double, y2: Double, screenWidth: Int, screenHeight: Int) {
+        // A buffered single-finger drag must finish before a two-finger
+        // gesture starts, or the replayed moves would interleave with it.
+        if type == "begin" {
+            applySmoother(touchSmoother.flushActiveGesture())
+        }
         guard let mouseFunc = mouseFunc else { return }
 
         let eventType: Int32

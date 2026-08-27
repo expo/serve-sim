@@ -52,7 +52,7 @@ export interface SimulatorViewProps {
   /** Called when the home button is pressed. If not provided, sends via WebSocket. */
   onHomePress?: () => void;
   /** External control callback for touch events (bypasses direct WS). */
-  onStreamTouch?: (data: { type: "begin" | "move" | "end"; x: number; y: number; edge?: number }) => void;
+  onStreamTouch?: (data: { type: "begin" | "move" | "end"; x: number; y: number; edge?: number; t?: number }) => void;
   /** External control callback for multi-touch events. */
   onStreamMultiTouch?: (data: { type: "begin" | "move" | "end"; x1: number; y1: number; x2: number; y2: number }) => void;
   /** External control callback for button events. */
@@ -417,6 +417,8 @@ export function SimulatorView({
       x: number;
       y: number;
       edge?: number;
+      /** The input event's own timeStamp; defaults to send time. */
+      t?: number;
     }) => {
       const orientation = streamDisplayGeometry(screenSizeRef.current).inputOrientation;
       const point = rawPointForDisplayPoint(orientation, touch.x, touch.y);
@@ -424,8 +426,13 @@ export function SimulatorView({
         touch.edge === undefined
           ? undefined
           : rawEdgeForDisplayEdge(orientation, touch.edge);
+      // The event time rides along so the server can replay the trajectory
+      // with the finger's timing instead of the network's arrival timing.
+      const t = Math.round(touch.t ?? performance.now());
       const payload =
-        edge === undefined ? { type: touch.type, ...point } : { type: touch.type, ...point, edge };
+        edge === undefined
+          ? { type: touch.type, ...point, t }
+          : { type: touch.type, ...point, edge, t };
 
       if (externalInput) {
         onStreamTouch?.(payload);
@@ -690,7 +697,7 @@ export function SimulatorView({
       if (!rect) return;
       const x = (event.clientX - rect.left) / rect.width;
       const y = (event.clientY - rect.top) / rect.height;
-      sendTouch({ type, x, y });
+      sendTouch({ type, x, y, t: event.timeStamp });
     },
     [getInputRect, sendTouch],
   );
@@ -1212,9 +1219,9 @@ export function SimulatorView({
             const y = (touch.clientY - rect.top) / rect.height;
             moveTouchIndicator(x, y);
             if (edgeGestureRef.current) {
-              sendTouch({ type: "move", x, y, edge: HID_EDGE_BOTTOM });
+              sendTouch({ type: "move", x, y, edge: HID_EDGE_BOTTOM, t: e.timeStamp });
             } else {
-              sendTouch({ type: "move", x, y });
+              sendTouch({ type: "move", x, y, t: e.timeStamp });
             }
           }}
           onTouchEnd={(e) => {

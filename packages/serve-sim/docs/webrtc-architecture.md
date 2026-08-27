@@ -213,6 +213,18 @@ flight. If a channel dies mid-gesture, the rest of the gesture falls back to
 the WebSocket immediately — a closed channel delivers nothing late, so that
 switch cannot reorder events.
 
+Single-finger drags are not injected on arrival. Whatever the transport, moves
+cross a long path in bursts, and raw injection makes the simulated finger
+teleport: the scrolled content jumps in steps the encoder then transmits
+faithfully, and UIKit derives fling velocity from the corrupted timing.
+`TouchMotionSmoother` buffers a small delay of trajectory (50 ms default) and
+re-injects interpolated positions on a strict 60 Hz timer, using the client's
+own event timestamps (`t` in the touch payload; arrival time when absent).
+Taps, long-presses, edge gestures, multi-touch, and the wheel-scroll drag keep
+their exact raw timing. `SERVE_SIM_INPUT_SMOOTHING=0` disables replay;
+`SERVE_SIM_INPUT_SMOOTHING_MS` tunes the buffered delay. The cost is
+drag-follow latency equal to the configured delay — tap latency is unchanged.
+
 What stays on the WebSocket:
 
 - Screen size and orientation pushes (server to client).

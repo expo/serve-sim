@@ -5,6 +5,7 @@ import { AppDetectionTool } from "./app-detection-tool";
 import { AppPermissionsTool } from "./app-permissions-tool";
 import { AxTreeTool } from "./ax-tree-tool";
 import { CameraTool } from "./camera-tool";
+import { CrashTool } from "./crash-tool";
 import { EventLogTool } from "./event-log-tool";
 import { MetricsTool } from "./metrics-tool";
 import { PANEL_BACKGROUND } from "./panel-colors";
@@ -27,6 +28,7 @@ export function ToolsPanel({
   currentApp,
   eventLogEventsEndpoint,
   metricsEndpoint,
+  crashesEndpoint,
   axOverlayEnabled,
   onToggleAxOverlay,
   streamSettings,
@@ -48,6 +50,7 @@ export function ToolsPanel({
   currentApp: { bundleId: string; isReactNative: boolean; pid?: number } | null;
   eventLogEventsEndpoint?: string;
   metricsEndpoint?: string;
+  crashesEndpoint?: string;
   axOverlayEnabled: boolean;
   onToggleAxOverlay: () => void;
   streamSettings: StreamControlSettings;
@@ -95,6 +98,7 @@ export function ToolsPanel({
             webrtcStatsUrl={webrtcStatsUrl}
             webrtcSessionId={webrtcSessionId}
           />
+          <CrashTool udid={udid} crashesEndpoint={crashesEndpoint} />
         </div>
       )}
     </Panel>

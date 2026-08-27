@@ -943,6 +943,7 @@ export function previewConfigForState(
 ): ServeSimState & {
   basePath: string;
   logsEndpoint: string;
+  crashesEndpoint: string;
   appStateEndpoint: string;
   eventLogEndpoint: string;
   eventLogEventsEndpoint: string;
@@ -975,6 +976,7 @@ export function previewConfigForState(
     ...state,
     basePath: base,
     logsEndpoint: endpoint(base, "/logs", state.device),
+    crashesEndpoint: endpoint(base, "/crashes", state.device),
     appStateEndpoint: endpoint(base, "/appstate", state.device),
     eventLogEndpoint: endpoint(base, "/api/event-log", state.device),
     eventLogEventsEndpoint: endpoint(base, "/api/event-log/events", state.device),

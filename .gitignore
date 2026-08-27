@@ -9,3 +9,5 @@ dist/
 *.tsbuildinfo
 /packages/serve-sim/.xcode-build
 *.bun-build
+.env.eas-simulator
+/packages/serve-sim/e2e/eas-simulator/artifacts/

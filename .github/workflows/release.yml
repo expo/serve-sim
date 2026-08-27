@@ -23,11 +23,136 @@ permissions:
   contents: read
 
 jobs:
-  release:
-    name: Release
+  stage:
+    name: Publish next
     if: github.repository == 'expo/serve-sim' && github.ref == 'refs/heads/expo'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    environment: npm-release
+    permissions:
+      contents: write
+      id-token: write
+    outputs:
+      next: ${{ steps.versions.outputs.next }}
+      released: ${{ steps.versions.outputs.released }}
+      stable: ${{ steps.versions.outputs.stable }}
+    steps:
+      - name: Checkout expo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: expo
+          fetch-depth: 2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Calculate release versions
+        id: versions
+        env:
+          BUMP: ${{ inputs.bump }}
+          DISPATCH_SHA: ${{ github.sha }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          LAST_RUN_ID=$(git log -1 --format='%(trailers:key=Release-Run,valueonly)')
+          if [ "$LAST_RUN_ID" = "$RELEASE_RUN_ID" ] && [ "$(git rev-parse HEAD^)" = "$DISPATCH_SHA" ]; then
+            STABLE_VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
+            RELEASED=true
+          elif [ "$(git rev-parse HEAD)" != "$DISPATCH_SHA" ]; then
+            echo "::error::expo moved after this release was started. Start a new release from the latest expo."
+            exit 1
+          else
+            npm version "$BUMP" --no-git-tag-version --no-package-lock --no-workspaces-update --workspace packages/serve-sim
+            STABLE_VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
+            git restore packages/serve-sim/package.json
+            RELEASED=false
+          fi
+
+          NEXT_VERSION="$STABLE_VERSION-next.$RELEASE_RUN_ID.$RELEASE_RUN_ATTEMPT"
+          echo "stable=$STABLE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "next=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "released=$RELEASED" >> "$GITHUB_OUTPUT"
+
+      - name: Build next package with EAS
+        if: steps.versions.outputs.released != 'true'
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_DEV_EXPO_GITHUB_ROBOT_ACCESS_TOKEN }}
+        run: |
+          npx --yes eas-cli@latest workflow:run .eas/workflows/build-release.yml \
+            --ref "${{ github.sha }}" \
+            --input "version=${{ steps.versions.outputs.next }}" \
+            --wait \
+            --non-interactive \
+            --json > /tmp/eas-next-workflow.json
+
+      - name: Download next package
+        if: steps.versions.outputs.released != 'true'
+        env:
+          EXPECTED_VERSION: ${{ steps.versions.outputs.next }}
+        run: |
+          ARTIFACT_URL=$(jq -er '
+            .jobs[]
+            | .turtleJobRun.artifacts[]?
+            | select(.name == "serve-sim-npm-package")
+            | .downloadUrl
+          ' /tmp/eas-next-workflow.json)
+          curl --fail --location "$ARTIFACT_URL" --output /tmp/serve-sim-next.tgz
+          PACKAGE_VERSION=$(tar -xOf /tmp/serve-sim-next.tgz package/package.json | jq -er .version)
+          test "$PACKAGE_VERSION" = "$EXPECTED_VERSION"
+
+      - name: Publish next to npm with OIDC
+        if: steps.versions.outputs.released != 'true'
+        run: npm publish /tmp/serve-sim-next.tgz --tag next
+
+  system_tests:
+    name: EAS Simulator system tests
+    needs: stage
+    if: needs.stage.outputs.released != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Run EAS Simulator system tests
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_DEV_EXPO_GITHUB_ROBOT_ACCESS_TOKEN }}
+        run: packages/serve-sim/e2e/eas-simulator/run-system-tests.sh "${{ needs.stage.outputs.next }}"
+
+      - name: Upload system test artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: serve-sim-system-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: packages/serve-sim/e2e/eas-simulator/artifacts
+          if-no-files-found: warn
+
+  release:
+    name: Publish latest
+    needs:
+      - stage
+      - system_tests
+    if: >-
+      always() &&
+      needs.stage.result == 'success' &&
+      (
+        (needs.stage.outputs.released == 'true' && needs.system_tests.result == 'skipped') ||
+        (needs.stage.outputs.released != 'true' && needs.system_tests.result == 'success')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: npm-release
     permissions:
       contents: write
@@ -49,48 +174,63 @@ jobs:
       - name: Create release commit
         id: release
         env:
-          BUMP: ${{ inputs.bump }}
           DISPATCH_SHA: ${{ github.sha }}
           RELEASE_RUN_ID: ${{ github.run_id }}
+          STABLE_VERSION: ${{ needs.stage.outputs.stable }}
         run: |
           LAST_RUN_ID=$(git log -1 --format='%(trailers:key=Release-Run,valueonly)')
           if [ "$LAST_RUN_ID" = "$RELEASE_RUN_ID" ] && [ "$(git rev-parse HEAD^)" = "$DISPATCH_SHA" ]; then
             echo "Reusing the release commit created by this run."
-          elif [ "$(git rev-parse HEAD)" != "$DISPATCH_SHA" ]; then
-            echo "::error::expo moved after this release was started. Start a new release from the latest expo."
-            exit 1
+            test "$(node -p "require('./packages/serve-sim/package.json').version")" = "$STABLE_VERSION"
           else
-            npm version "$BUMP" --no-git-tag-version --no-package-lock --no-workspaces-update --workspace packages/serve-sim
-            VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
+            git fetch origin expo
+            if [ "$(git rev-parse origin/expo)" != "$DISPATCH_SHA" ]; then
+              echo "::error::expo moved while the release candidate was being tested. Start a new release from the latest expo."
+              exit 1
+            fi
+
+            npm version "$STABLE_VERSION" --no-git-tag-version --no-package-lock --no-workspaces-update --workspace packages/serve-sim
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add packages/serve-sim/package.json
-            git commit -m "Release @expo/serve-sim $VERSION" -m "Release-Run: $RELEASE_RUN_ID"
-            git tag "@expo/serve-sim@$VERSION"
-            git push --atomic origin HEAD:expo "refs/tags/@expo/serve-sim@$VERSION"
+            git commit -m "Release @expo/serve-sim $STABLE_VERSION" -m "Release-Run: $RELEASE_RUN_ID"
+            git tag "@expo/serve-sim@$STABLE_VERSION"
+            git push --atomic origin HEAD:expo "refs/tags/@expo/serve-sim@$STABLE_VERSION"
           fi
 
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Build npm package with EAS
+      - name: Build latest package with EAS
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_DEV_EXPO_GITHUB_ROBOT_ACCESS_TOKEN }}
         run: |
           npx --yes eas-cli@latest workflow:run .eas/workflows/build-release.yml \
             --ref "${{ steps.release.outputs.sha }}" \
+            --input "version=${{ needs.stage.outputs.stable }}" \
             --wait \
             --non-interactive \
-            --json > /tmp/eas-workflow.json
+            --json > /tmp/eas-latest-workflow.json
 
-      - name: Download EAS artifact
+      - name: Download latest package
+        env:
+          EXPECTED_VERSION: ${{ needs.stage.outputs.stable }}
         run: |
           ARTIFACT_URL=$(jq -er '
             .jobs[]
             | .turtleJobRun.artifacts[]?
             | select(.name == "serve-sim-npm-package")
             | .downloadUrl
-          ' /tmp/eas-workflow.json)
-          curl --fail --location "$ARTIFACT_URL" --output /tmp/serve-sim.tgz
+          ' /tmp/eas-latest-workflow.json)
+          curl --fail --location "$ARTIFACT_URL" --output /tmp/serve-sim-latest.tgz
+          PACKAGE_VERSION=$(tar -xOf /tmp/serve-sim-latest.tgz package/package.json | jq -er .version)
+          test "$PACKAGE_VERSION" = "$EXPECTED_VERSION"
 
-      - name: Publish to npm with OIDC
-        run: npm publish /tmp/serve-sim.tgz
+      - name: Publish latest to npm with OIDC
+        env:
+          STABLE_VERSION: ${{ needs.stage.outputs.stable }}
+        run: |
+          if [ "$(npm view "@expo/serve-sim@$STABLE_VERSION" version 2>/dev/null || true)" = "$STABLE_VERSION" ]; then
+            echo "@expo/serve-sim@$STABLE_VERSION is already published."
+          else
+            npm publish /tmp/serve-sim-latest.tgz --tag latest
+          fi

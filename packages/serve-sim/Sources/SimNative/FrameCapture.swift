@@ -344,8 +344,8 @@ actor FrameCapture {
         onFrame?(copy, timestamp)
     }
 
-    /// The size frames are delivered at. Snapshotting straight to it avoids moving the whole
-    /// framebuffer through the GPU only to shrink it a step later.
+    /// Snapshotting straight to the delivery size avoids moving the whole framebuffer through
+    /// the GPU only to shrink it a step later.
     func setSnapshotMaxDimension(_ value: Int) {
         snapshotMaxDimension = max(0, value)
     }
@@ -368,6 +368,7 @@ actor FrameCapture {
         lastSeeds.removeAll()
         framebufferSurfaces.removeAll()
         invalidatePick()
+        photocopier.reset()
         ioClient = nil
     }
 

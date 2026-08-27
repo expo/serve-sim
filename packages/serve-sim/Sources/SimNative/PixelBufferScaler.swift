@@ -29,10 +29,12 @@ final class PixelBufferScaler: @unchecked Sendable {
             CVPixelBufferUnlockBaseAddress(output, [])
             CVPixelBufferUnlockBaseAddress(source, .readOnly)
         }
+        // vImage here is packed-BGRA only. Anything else is passed through at its own size:
+        // an oversized frame is a worse picture, a dropped one is no picture at all.
         guard CVPixelBufferGetPixelFormatType(source) == kCVPixelFormatType_32BGRA,
               let sourceAddress = CVPixelBufferGetBaseAddress(source),
               let outputAddress = CVPixelBufferGetBaseAddress(output) else {
-            return nil
+            return source
         }
         var sourceBuffer = vImage_Buffer(
             data: sourceAddress,

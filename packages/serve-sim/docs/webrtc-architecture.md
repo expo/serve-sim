@@ -143,12 +143,12 @@ trace showed an earlier pump silently degrading on a virtualized macOS VM:
   exists, so macOS does not apply App Nap-style throttling to the detached
   daemon.
 
-The sender stamps the playout-delay extension as min 0 / max 0 by default:
-every frame renders as soon as it arrives. `SERVE_SIM_WEBRTC_PLAYOUT_MAX_MS`
-raises the max for a deployment, letting the receiver absorb arrival jitter —
-encode-time spikes, transatlantic wobble — instead of rendering it as stutter.
-Changing the default is a viewer-visible latency decision and waits on
-tap-to-pixel measurements.
+The sender stamps the playout-delay extension as min 0 / max 200 ms: an
+adaptive window, near zero on clean seconds, that grows only while arrival
+jitter or loss recovery needs it. The 200 ms max clears one transatlantic RTT,
+so a NACK/RTX-recovered packet plays smoothly instead of freezing the stream
+for the round trip. `SERVE_SIM_WEBRTC_PLAYOUT_MAX_MS` overrides in either
+direction; 0 restores render-on-arrival.
 
 The WebRTC publisher is created lazily on the first offer. Its frame consumer
 currently remains attached until the device capture session stops, but sending

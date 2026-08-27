@@ -1,4 +1,10 @@
-import { execSync } from "child_process";
+import { execFile, execSync } from "child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
+const SHUTDOWN_TIMEOUT_MS = 60_000;
+const BOOT_TIMEOUT_MS = 120_000;
 
 /**
  * UDID of a booted simulator, or null if none is booted. Prefers an iOS device
@@ -46,4 +52,31 @@ export function resolveDevice(nameOrUDID: string): string {
   } catch {}
   console.error(`Could not resolve device: ${nameOrUDID}`);
   process.exit(1);
+}
+
+/**
+ * Ignore a device that is already off — every other failure propagates.
+ *
+ * Anchored to simctl's own sentence. `execFile` puts the command line in the message, so a bare `shutdown`
+ * or `current state` match is true of every failure, including `Invalid device`, and would report a device
+ * that never shut down as shut down.
+ */
+export function isAlreadyShutDown(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return /Unable to shutdown device in current state: Shutdown/i.test(text);
+}
+
+export async function shutdownDevice(udid: string): Promise<void> {
+  await execFileAsync("xcrun", ["simctl", "shutdown", udid], { timeout: SHUTDOWN_TIMEOUT_MS }).catch(
+    (error: unknown) => {
+      if (!isAlreadyShutDown(error)) throw error;
+    },
+  );
+}
+
+export async function bootDevice(udid: string): Promise<void> {
+  await execFileAsync("xcrun", ["simctl", "boot", udid], { timeout: BOOT_TIMEOUT_MS });
+  await execFileAsync("xcrun", ["simctl", "bootstatus", udid, "-b"], {
+    timeout: BOOT_TIMEOUT_MS,
+  });
 }

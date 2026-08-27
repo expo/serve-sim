@@ -60,19 +60,45 @@ export async function readSimPasteboard(udid: string): Promise<string> {
   }
 }
 
-export async function readSimPasteboardViaApp(udid: string): Promise<string> {
+// `simctl install` costs seconds, so the install, the TCC grant and the
+// container lookup are done once per device and reused. Keyed by udid; a
+// simulator that is erased or reset resolves again through the retry below.
+const readerSetups = new Map<string, Promise<string>>();
+
+async function prepareReader(udid: string): Promise<string> {
   const app = locatePasteboardApp();
   if (!app) throw new Error("Pasteboard reader app is missing from this build");
 
-  const previous = await frontmostAppViaAx(udid).catch(() => null);
+  const container = (
+    await simctl(["get_app_container", udid, PASTEBOARD_APP_BUNDLE_ID, "data"]).catch(async () => {
+      await simctl(["install", udid, app]);
+      return simctl(["get_app_container", udid, PASTEBOARD_APP_BUNDLE_ID, "data"]);
+    })
+  ).trim();
+  if (!container) throw new Error("Could not locate the pasteboard reader container");
 
-  await simctl(["install", udid, app]);
   // Without this grant iOS shows a consent alert and the read blocks on it.
   await simctl(["privacy", udid, "grant", "pasteboard", PASTEBOARD_APP_BUNDLE_ID]);
+  return container;
+}
 
-  const container = (await simctl(["get_app_container", udid, PASTEBOARD_APP_BUNDLE_ID, "data"]))
-    .trim();
-  if (!container) throw new Error("Could not locate the pasteboard reader container");
+function readerContainer(udid: string): Promise<string> {
+  let setup = readerSetups.get(udid);
+  if (!setup) {
+    setup = prepareReader(udid).catch((error: unknown) => {
+      readerSetups.delete(udid);
+      throw error;
+    });
+    readerSetups.set(udid, setup);
+  }
+  return setup;
+}
+
+export async function readSimPasteboardViaApp(udid: string): Promise<string> {
+  const [container, previous] = await Promise.all([
+    readerContainer(udid),
+    frontmostAppViaAx(udid).catch(() => null),
+  ]);
 
   const valuePath = join(container, "Documents", "pasteboard.txt");
   const donePath = join(container, "Documents", "done");
@@ -88,9 +114,11 @@ export async function readSimPasteboardViaApp(udid: string): Promise<string> {
     }
     throw new Error("Timed out reading the simulator pasteboard");
   } finally {
-    await simctl(["terminate", udid, PASTEBOARD_APP_BUNDLE_ID]).catch(() => {});
-    if (previous?.bundleId && previous.bundleId !== PASTEBOARD_APP_BUNDLE_ID) {
-      await simctl(["launch", udid, previous.bundleId]).catch(() => {});
+    // The reader exits once it has written, so only the previous app needs
+    // restoring — and SpringBoard is where exiting already leaves us.
+    const restore = previous?.bundleId;
+    if (restore && restore !== PASTEBOARD_APP_BUNDLE_ID && restore !== "com.apple.springboard") {
+      await simctl(["launch", udid, restore]).catch(() => {});
     }
   }
 }

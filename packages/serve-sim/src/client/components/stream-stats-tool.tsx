@@ -3,6 +3,7 @@ import { Download } from "lucide-react";
 
 import { triggerBrowserDownload } from "../utils/screenshot-capture";
 import type { CaptureCounts, SenderStreamStats } from "../../webrtc-sender-stats";
+import type { CaptureWindow } from "../utils/capture-window";
 import type { StreamStats } from "../utils/webrtc-stats";
 import { Sparkline } from "./sparkline";
 
@@ -20,7 +21,7 @@ export function StreamStatsBody({
   history: StreamStats[];
   faults: string[];
   sender?: SenderStreamStats | null;
-  capture?: CaptureCounts | null;
+  capture?: CaptureWindow | null;
   requestedFps?: number;
   stale?: boolean;
   action?: ReactNode;
@@ -88,7 +89,7 @@ function Diagnostics({
 }: {
   stats: StreamStats;
   sender?: SenderStreamStats | null;
-  capture?: CaptureCounts | null;
+  capture?: CaptureWindow | null;
   health: string | null;
 }) {
   return (
@@ -124,13 +125,13 @@ function Diagnostics({
 
       {capture && (
         <Group label="Capture">
-          <Cell label="Screen frames" value={compact(capture.screenFrames)} />
-          <Cell label="Idle frames" value={compact(capture.idleFrames)} />
-          <Cell label="Capture deliveries" value={compact(capture.offeredFrames)} />
-          <Cell label="Pacer submissions" value={compact(capture.forwardedFrames)} />
+          <Cell label="Screen frames" value={perSecond(capture.screenFps)} />
+          <Cell label="Idle frames" value={perSecond(capture.idleFps)} />
+          <Cell label="Capture deliveries" value={perSecond(capture.deliveredFps)} />
+          <Cell label="Pacer submissions" value={perSecond(capture.submittedFps)} />
           <Cell label="Stalls" value={compact(capture.stalls)} />
           <Cell label="Stall time" value={duration(capture.stallSumMs)} />
-          <Cell label="Capture interval" value={ms(per(capture.gapSumMs, capture.attempts), 1)} />
+          <Cell label="Capture interval" value={ms(capture.intervalMs, 1)} />
           <Cell label="CPU fallbacks" value={compact(capture.cpuFallbacks)} />
         </Group>
       )}
@@ -139,7 +140,7 @@ function Diagnostics({
 }
 
 /** Scopes are a closed set, so two metrics measured the same way never read as different. */
-const WINDOW = "Last 10 s";
+const WINDOW = "Last second";
 const NOW = "Now";
 const PER_FRAME = "Average per frame";
 const SESSION = "Since the session started";
@@ -167,13 +168,16 @@ const HELP: Record<string, { meaning: string; scope: string }> = {
     meaning: "Times the capture loop restarted after it stopped delivering frames.",
     scope: SESSION,
   },
-  "Screen frames": { meaning: "New images the simulator produced.", scope: SESSION },
-  "Idle frames": { meaning: "Polls that found no new image, so the last frame was reused.", scope: SESSION },
-  "Capture deliveries": { meaning: "Frames capture handed to the pacer.", scope: SESSION },
-  "Pacer submissions": { meaning: "Frames the pacer handed to the encoder.", scope: SESSION },
+  "Screen frames": { meaning: "New images the simulator produced.", scope: WINDOW },
+  "Idle frames": { meaning: "Polls that found no new image, so the last frame was reused.", scope: WINDOW },
+  "Capture deliveries": { meaning: "Frames capture handed to the pacer.", scope: WINDOW },
+  "Pacer submissions": {
+    meaning: "Frames the pacer handed to the encoder. Above capture deliveries means it is repeating the last frame.",
+    scope: WINDOW,
+  },
   Stalls: { meaning: "Times capture went over 100 ms with no new frame.", scope: SESSION },
   "Stall time": { meaning: "Total time spent in those stalls.", scope: SESSION },
-  "Capture interval": { meaning: "Average time between capture polls.", scope: SESSION },
+  "Capture interval": { meaning: "Average time between capture polls.", scope: WINDOW },
   "CPU fallbacks": { meaning: "Frames copied on the CPU because the GPU transfer failed.", scope: SESSION },
 };
 
@@ -223,11 +227,6 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
 
 
 
-function per(total: number | null, count: number | null): number | null {
-  if (total === null || count === null || count <= 0) return null;
-  return total / count;
-}
-
 /** Stall totals reach seconds, where a millisecond figure stops being readable. */
 function duration(value: number | null): string {
   if (value === null) return DASH;
@@ -239,6 +238,12 @@ function frameGap(mean: number | null, deviation: number | null): string {
   if (mean === null) return DASH;
   if (deviation === null) return ms(mean, 1);
   return `${ms(mean, 1)} ± ${deviation.toFixed(1)}`;
+}
+
+/** One decimal under 10, so a capture limping at 4 frames a second is not "4/s" against a 60/s pacer. */
+function perSecond(value: number | null): string {
+  if (value === null) return DASH;
+  return `${value < 10 ? value.toFixed(1) : value.toFixed(0)}/s`;
 }
 
 /** These are lifetime counters and reach millions, so a fixed-width cell needs them short. */
@@ -385,7 +390,7 @@ export function StreamStatsSection({
   history: StreamStats[];
   faults: string[];
   sender?: SenderStreamStats | null;
-  capture?: CaptureCounts | null;
+  capture?: CaptureWindow | null;
   requestedFps?: number;
   stale?: boolean;
   action?: ReactNode;

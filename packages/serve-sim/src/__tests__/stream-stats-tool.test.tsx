@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { StreamStatsBody, describeFaults, statsToJson } from "../client/components/stream-stats-tool";
+import type { CaptureCounts } from "../webrtc-sender-stats";
+import type { CaptureWindow } from "../client/utils/capture-window";
 import type { StreamStats } from "../client/utils/webrtc-stats";
 
 function stats(overrides: Partial<StreamStats> = {}): StreamStats {
@@ -274,11 +276,16 @@ describe("StreamStatsBody", () => {
   });
 });
 
-const capture = {
+/** The download keeps the raw lifetime counters; only the panel reads the window. */
+const captureCounts: CaptureCounts = {
   screenFrames: 900, idleFrames: 12, offeredFrames: 880, forwardedFrames: 830,
-  pumpRestarts: 0,
-  cpuFallbacks: 0, attempts: 5400, stalls: 0, gapSumMs: 90_000, stallSumMs: 0,
-  pollTicks: 2400, pollLateSumMs: 600,
+  pumpRestarts: 0, cpuFallbacks: 0, attempts: 5400, stalls: 0, gapSumMs: 90_000,
+  stallSumMs: 0, pollTicks: 2400, pollLateSumMs: 600,
+};
+
+const capture: CaptureWindow = {
+  screenFps: 60, idleFps: 0, deliveredFps: 60, submittedFps: 60, intervalMs: 8.3,
+  stalls: 0, stallSumMs: 0, cpuFallbacks: 0, pumpRestarts: 0,
 };
 
 describe("stale samples", () => {
@@ -302,7 +309,7 @@ describe("stale samples", () => {
       />,
     );
     expect(row(markup, "Encode")).toBe("2.4 ms");
-    expect(row(markup, "Screen frames")).toBe("900");
+    expect(row(markup, "Screen frames")).toBe("60/s");
     expect(markup).toContain("opacity-50");
   });
 
@@ -352,13 +359,13 @@ describe("diagnostics", () => {
     expect(inside).toContain("Capture interval");
   });
 
-  test("reports the interval per capture rather than as a raw lifetime sum", () => {
+  test("reports the interval per capture rather than as a raw sum", () => {
     const markup = renderToStaticMarkup(
       <StreamStatsBody
         stats={stats()}
         history={[stats()]}
         faults={[]}
-        capture={{ ...capture, attempts: 1000, gapSumMs: 16_500 }}
+        capture={{ ...capture, intervalMs: 16.5 }}
       />,
     );
     expect(row(markup, "Capture interval")).toBe("16.5 ms");
@@ -449,10 +456,10 @@ describe("capture rows", () => {
     const markup = renderToStaticMarkup(
       <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} capture={capture} />,
     );
-    expect(row(markup, "Screen frames")).toBe("900");
-    expect(row(markup, "Idle frames")).toBe("12");
-    expect(row(markup, "Capture deliveries")).toBe("880");
-    expect(row(markup, "Pacer submissions")).toBe("830");
+    expect(row(markup, "Screen frames")).toBe("60/s");
+    expect(row(markup, "Idle frames")).toBe("0.0/s");
+    expect(row(markup, "Capture deliveries")).toBe("60/s");
+    expect(row(markup, "Pacer submissions")).toBe("60/s");
   });
 
   test("shows a fractional encoder rate, so a limping encoder is not a dead one", () => {
@@ -468,27 +475,41 @@ describe("capture rows", () => {
     expect(row(markup, "Pacer FPS")).toBe("0.4 fps");
   });
 
-  test("shortens a lifetime counter so it fits its cell", () => {
+  test("separates a repeated frame from a captured one, which the frame rate cannot", () => {
     const markup = renderToStaticMarkup(
       <StreamStatsBody
         stats={stats()}
         history={[stats()]}
         faults={[]}
-        capture={{ ...capture, screenFrames: 1_621_585, idleFrames: 0, offeredFrames: 105_469,
-                   forwardedFrames: 4_414 }}
+        capture={{ ...capture, screenFps: 0, deliveredFps: 4.7, submittedFps: 60 }}
       />,
     );
-    expect(row(markup, "Screen frames")).toBe("1.62M");
-    expect(row(markup, "Capture deliveries")).toBe("105.5k");
-    expect(row(markup, "Pacer submissions")).toBe("4.4k");
-    expect(row(markup, "Idle frames")).toBe("0");
+    expect(row(markup, "Screen frames")).toBe("0.0/s");
+    expect(row(markup, "Capture deliveries")).toBe("4.7/s");
+    expect(row(markup, "Pacer submissions")).toBe("60/s");
+  });
+
+  test("blanks a rate it has no window for rather than reading it as a stall", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        capture={{ ...capture, screenFps: null, deliveredFps: null, submittedFps: null }}
+      />,
+    );
+    expect(row(markup, "Screen frames")).toBe("—");
+    expect(row(markup, "Capture deliveries")).toBe("—");
+    expect(row(markup, "Pacer submissions")).toBe("—");
   });
 });
 
 describe("statsToJson", () => {
   test("records the session context, so the file explains itself", () => {
     const parsed = JSON.parse(
-      statsToJson([stats()], { transport: "webrtc", codec: "video/VP8", sender, capture }),
+      statsToJson([stats()], {
+        transport: "webrtc", codec: "video/VP8", sender, capture: captureCounts,
+      }),
     );
     expect(parsed.sender.encodeMsPerFrame).toBe(2.4);
     expect(parsed.capture.forwardedFrames).toBe(830);

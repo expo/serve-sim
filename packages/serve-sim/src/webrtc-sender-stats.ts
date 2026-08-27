@@ -36,6 +36,7 @@ export interface CaptureCounts {
   forwardedFrames: number | null;
   /** Frame-pump watchdog restarts; nonzero means the host starved or dropped pump timers. */
   pumpRestarts: number | null;
+  captureCpuCopies: number | null;
 }
 
 export interface SenderStats {
@@ -141,5 +142,6 @@ function readCaptureCounts(raw: unknown): CaptureCounts | null {
     offeredFrames: typeof raw.offeredFrames === "number" ? raw.offeredFrames : null,
     forwardedFrames: typeof raw.forwardedFrames === "number" ? raw.forwardedFrames : null,
     pumpRestarts: typeof raw.pumpRestarts === "number" ? raw.pumpRestarts : null,
+    captureCpuCopies: maybeNumber(raw.captureCpuCopies),
   };
 }

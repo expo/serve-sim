@@ -114,6 +114,7 @@ actor CaptureEngine {
         )
         self.frameContinuation = frameContinuation
         do {
+            await frameCapture.setSnapshotMaxDimension(options.maxDimension)
             try await frameCapture.start(deviceUDID: deviceUDID) { pixelBuffer, timestamp in
                 frameContinuation.yield(Frame(pixelBuffer: pixelBuffer, timestamp: timestamp))
             }
@@ -244,6 +245,7 @@ actor CaptureEngine {
                     maxDimension: options.maxDimension
                 )
             }
+            await frameCapture.setSnapshotMaxDimension(options.maxDimension)
             await webRTCPublisher?.updateSettings(
                 maxFps: options.h264Fps,
                 targetBitrate: options.h264Bitrate,
@@ -283,6 +285,7 @@ actor CaptureEngine {
     func webRTCSenderStats(sessionId: String? = nil) async throws -> String {
         let sessions = await webRTCPublisher?.senderStatistics(sessionId: sessionId) ?? []
         let counts = await frameCapture.frameCounts()
+        let cpuCopies = await frameCapture.snapshotCpuCopies()
         let flow = webRTCPublisher?.frameFlowCounts()
         let data = try JSONEncoder().encode(WebRTCSenderStatsReport(
             sessions: sessions,
@@ -291,14 +294,16 @@ actor CaptureEngine {
                 idleFrames: counts.idle,
                 offeredFrames: flow?.offered,
                 forwardedFrames: flow?.forwarded,
-                pumpRestarts: flow?.pumpRestarts
+                pumpRestarts: flow?.pumpRestarts,
+                captureCpuCopies: cpuCopies
             )
         ))
         return String(decoding: data, as: UTF8.self)
     }
 
-    func currentScreenSize() -> Dimensions {
-        screenSize
+    func currentScreenSize() async -> Dimensions {
+        guard let size = await frameCapture.getScreenSize() else { return screenSize }
+        return Dimensions(width: size.width, height: size.height)
     }
 
     func stop() async {

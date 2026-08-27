@@ -33,7 +33,7 @@ actor FrameCapture {
     private var snapshotMaxDimension = 0
     private var pollTicks: UInt64 = 0
     private var pollLateSumNs: UInt64 = 0
-    private var lastPollWakeNs: UInt64 = 0
+    private var pollDeadlineNs: UInt64 = 0
     private var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
     private var frameCount: UInt64 = 0
     /// Counted by which path produced the frame, callback or idle deadline.
@@ -260,15 +260,16 @@ actor FrameCapture {
     /// held the poll to 48Hz on bare metal even with nothing else running. `.strict` opts out
     /// of coalescing, which is what the frame pump needed on virtualized hosts.
     private func startSurfacePoller() {
-        let interval = DispatchTimeInterval.nanoseconds(
-            Int(SimulatorCapturePollPolicy.intervalNanoseconds)
-        )
+        let intervalNs = UInt64(SimulatorCapturePollPolicy.intervalNanoseconds)
+        let interval = DispatchTimeInterval.nanoseconds(Int(intervalNs))
+        let first = DispatchTime.now() + interval
+        pollDeadlineNs = first.uptimeNanoseconds
         let timer = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
-        timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .nanoseconds(0))
+        timer.schedule(deadline: first, repeating: interval, leeway: .nanoseconds(0))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
             self.assumeIsolated {
-                $0.recordPollWake()
+                $0.recordPollWake(intervalNs: intervalNs)
                 $0.onSurfacePollTick()
             }
         }
@@ -276,17 +277,18 @@ actor FrameCapture {
         surfacePollTimer = timer
     }
 
-    /// How late the fixed-interval poll actually wakes. Anything past the interval is time
-    /// the runtime could not get on a core, which no work removed from capture can recover.
-    private func recordPollWake() {
+    /// Measured against the deadline the timer was scheduled for, not against the previous
+    /// wake. The handler runs capture on this same serial queue, so wake-to-wake would charge
+    /// our own capture cost to the host and hide the thing this number exists to find.
+    private func recordPollWake(intervalNs: UInt64) {
         let now = DispatchTime.now().uptimeNanoseconds
-        defer { lastPollWakeNs = now }
-        guard lastPollWakeNs > 0 else { return }
-        let elapsed = now - lastPollWakeNs
-        let expected = UInt64(SimulatorCapturePollPolicy.intervalNanoseconds)
+        let deadline = pollDeadlineNs
         pollTicks += 1
-        guard elapsed > expected else { return }
-        pollLateSumNs += elapsed - expected
+        // A wake this late means the grid has moved on; re-anchor rather than reporting the
+        // backlog again on every tick that follows.
+        pollDeadlineNs = now > deadline + intervalNs ? now + intervalNs : deadline + intervalNs
+        guard deadline > 0, now > deadline else { return }
+        pollLateSumNs += now - deadline
     }
 
     private func onSurfacePollTick() {
@@ -386,9 +388,14 @@ actor FrameCapture {
         return (capturedWidth, capturedHeight)
     }
 
+    deinit {
+        surfacePollTimer?.cancel()
+    }
+
     func stop() {
         surfacePollTimer?.cancel()
         surfacePollTimer = nil
+        pollDeadlineNs = 0
 
         unregisterCallbacks()
         descriptors.removeAll()

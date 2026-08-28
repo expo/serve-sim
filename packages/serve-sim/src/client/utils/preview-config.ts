@@ -26,5 +26,6 @@ export function proxyPreviewConfigForBrowser(
     url: `${httpOrigin}${devicePath}`,
     streamUrl: `${httpOrigin}${devicePath}/stream.mjpeg`,
     wsUrl: `${wsProtocol}//${location.host}${devicePath}/ws`,
+    streamSettingsEndpoint: `${httpOrigin}${devicePath}/stream-settings`,
   };
 }

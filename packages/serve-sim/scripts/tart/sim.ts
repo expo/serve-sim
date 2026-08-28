@@ -1,53 +1,44 @@
-import type { TartGuest } from "./guest";
+import { GUEST_PATH, type TartGuest } from "./guest";
+import { parseSimctlDevices, pickAvailableNamed, pickBootedIphone, pickBootedNamed } from "./simctl";
 
-const GUEST_PATH = 'export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"';
+const DEVICE_NAME = "iPhone 17";
 
-const BOOT_SIM = `${GUEST_PATH}
-set -euo pipefail
-if xcrun simctl list devices booted | grep -q Booted; then
-  exit 0
-fi
-UDID="$(xcrun simctl list devices available -j | python3 -c '
-import json, sys
-data = json.load(sys.stdin)
-for runtime, devices in data.get("devices", {}).items():
-    if "iOS" not in runtime:
-        continue
-    for device in devices:
-        if device.get("name") == "iPhone 17" and device.get("isAvailable"):
-            print(device["udid"])
-            raise SystemExit
-raise SystemExit("no available iPhone 17")
-')"
-echo "booting $UDID"
-xcrun simctl boot "$UDID"
-xcrun simctl bootstatus "$UDID" -b
-`;
-
-export async function bootSim(guest: TartGuest): Promise<void> {
-  const code = await guest.sshInherit(BOOT_SIM);
-  if (code !== 0) throw new Error("failed to boot an iPhone 17 on the guest");
+async function simctlList(guest: TartGuest, extra: string): Promise<string> {
+  return guest.ssh(`${GUEST_PATH}\nxcrun simctl list devices ${extra} -j`);
 }
 
-// First app launch after boot with DYLD_INSERT_LIBRARIES set is denied by
-// SpringBoard. Same shape as EAS: launch a system app with insert cleared.
-const WARM_SAFARI = `${GUEST_PATH}
-set -euo pipefail
-UDID="$(xcrun simctl list devices booted -j | python3 -c '
-import json, sys
-data = json.load(sys.stdin)
-for devices in data.get("devices", {}).values():
-    for device in devices:
-        if device.get("state") == "Booted" and "iPhone" in device.get("name", ""):
-            print(device["udid"])
-            raise SystemExit
-raise SystemExit("no booted iPhone")
-')"
-env SIMCTL_CHILD_DYLD_INSERT_LIBRARIES= xcrun simctl spawn "$UDID" launchctl unsetenv DYLD_INSERT_LIBRARIES >/dev/null 2>&1 || true
-xcrun simctl launch "$UDID" com.apple.mobilesafari >/dev/null
-`;
+export async function bootSim(guest: TartGuest): Promise<string> {
+  const booted = parseSimctlDevices(await simctlList(guest, "booted"));
+  const preferred = pickBootedNamed(booted, DEVICE_NAME);
+  if (preferred) return preferred;
+  const already = pickBootedIphone(booted);
+  if (already) {
+    const name = booted.find((device) => device.udid === already)?.name ?? already;
+    console.log(`reusing booted ${name} (wanted ${DEVICE_NAME})`);
+    return already;
+  }
 
-export async function warmSafari(guest: TartGuest): Promise<void> {
-  const code = await guest.sshInherit(WARM_SAFARI);
+  const available = parseSimctlDevices(await simctlList(guest, "available"));
+  const udid = pickAvailableNamed(available, DEVICE_NAME);
+  if (!udid) throw new Error(`no available ${DEVICE_NAME}`);
+
+  const quoted = JSON.stringify(udid);
+  const code = await guest.sshInherit(`${GUEST_PATH}
+set -euo pipefail
+echo "booting ${udid}"
+xcrun simctl boot ${quoted}
+xcrun simctl bootstatus ${quoted} -b
+`);
+  if (code !== 0) throw new Error(`failed to boot ${DEVICE_NAME} on the guest`);
+  return udid;
+}
+
+export async function warmSafari(guest: TartGuest, udid: string): Promise<void> {
+  const quoted = JSON.stringify(udid);
+  const code = await guest.sshInherit(`${GUEST_PATH}
+set -euo pipefail
+env SIMCTL_CHILD_DYLD_INSERT_LIBRARIES= xcrun simctl spawn ${quoted} launchctl unsetenv DYLD_INSERT_LIBRARIES >/dev/null 2>&1 || true
+xcrun simctl launch ${quoted} com.apple.mobilesafari >/dev/null
+`);
   if (code !== 0) throw new Error("failed to warm Safari on the guest");
 }

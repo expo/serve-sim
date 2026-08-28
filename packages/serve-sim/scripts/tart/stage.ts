@@ -1,12 +1,10 @@
 import { existsSync } from "fs";
 import { join } from "path";
-import { guestPkgPath, type TartGuest } from "./guest";
+import { GUEST_PATH, guestPkgPath, type TartGuest } from "./guest";
 import { warmSafari } from "./sim";
 
 export const GUEST_PKG = "/tmp/serve-sim-pkg";
 export const GUEST_SIMPB = "/tmp/simpb";
-
-const GUEST_PATH = 'export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"';
 
 function simpbFiles(pkgDir: string): string[] {
   const dir = join(pkgDir, "dist", "simpb");
@@ -30,27 +28,19 @@ export async function stageGuest(guest: TartGuest): Promise<void> {
     await guest.tarTo(join(pkgDir, "dist", "simpb"), ["PasteboardFixture.app"], GUEST_SIMPB);
   }
 
-  const extras = ["bun.lock", "bun.lockb"].filter((name) => existsSync(join(pkgDir, name)));
+  const extras = ["bun.lock", "bun.lockb", "dev.ts", "dist"].filter((name) => existsSync(join(pkgDir, name)));
   await guest.tarTo(pkgDir, ["src", "package.json", ...extras], GUEST_PKG);
 }
 
-export async function warmFixture(guest: TartGuest): Promise<void> {
+export async function warmFixture(guest: TartGuest, udid: string): Promise<void> {
+  const quoted = JSON.stringify(udid);
   const code = await guest.sshInherit(`${GUEST_PATH}
 set -euo pipefail
-UDID="$(xcrun simctl list devices booted -j | python3 -c '
-import json, sys
-data = json.load(sys.stdin)
-for devices in data.get("devices", {}).values():
-    for device in devices:
-        if device.get("state") == "Booted" and "iPhone" in device.get("name", ""):
-            print(device["udid"])
-            raise SystemExit
-raise SystemExit("no booted iPhone")
-')"
-if [[ -d ${GUEST_SIMPB}/PasteboardFixture.app ]]; then
-  xcrun simctl install "$UDID" ${GUEST_SIMPB}/PasteboardFixture.app >/dev/null
-  xcrun simctl privacy "$UDID" grant pasteboard dev.expo.serve-sim.pasteboard-fixture >/dev/null
+if [[ ! -d ${GUEST_SIMPB}/PasteboardFixture.app ]]; then
+  exit 0
 fi
+xcrun simctl install ${quoted} ${GUEST_SIMPB}/PasteboardFixture.app >/dev/null
+xcrun simctl privacy ${quoted} grant pasteboard dev.expo.serve-sim.pasteboard-fixture >/dev/null
 `);
   if (code !== 0) throw new Error("failed to install the pasteboard fixture on the guest");
 }
@@ -64,14 +54,14 @@ export function resolveTestFiles(pkgDir: string, args: string[]): string[] {
 }
 
 export async function runGuestTests(guest: TartGuest, files: string[]): Promise<number> {
-  const share = guestPkgPath(guest.config);
+  const share = JSON.stringify(guestPkgPath(guest.config));
   const quoted = files.map((file) => JSON.stringify(file)).join(" ");
   return guest.sshInherit(`${GUEST_PATH}
 set -euo pipefail
 chmod -R 755 ${GUEST_SIMPB}
 xattr -cr ${GUEST_SIMPB} 2>/dev/null || true
 export SERVE_SIM_SIMPB_DIR=${GUEST_SIMPB}
-SHARE=${JSON.stringify(share)}
+SHARE=${share}
 if [[ -d "$SHARE/node_modules" ]]; then
   ln -sfn "$SHARE/node_modules" ${GUEST_PKG}/node_modules
 else
@@ -86,9 +76,9 @@ exec bun test --max-concurrency=1 ${quoted}
 `);
 }
 
-export async function testOnce(guest: TartGuest, files: string[]): Promise<number> {
+export async function testOnce(guest: TartGuest, files: string[], udid: string): Promise<number> {
   await stageGuest(guest);
-  await warmSafari(guest);
-  await warmFixture(guest);
+  await warmSafari(guest, udid);
+  await warmFixture(guest, udid);
   return runGuestTests(guest, files);
 }

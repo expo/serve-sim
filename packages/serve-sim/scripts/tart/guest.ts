@@ -1,7 +1,7 @@
-import { spawn } from "bun";
+import { spawn, type Subprocess } from "bun";
 import { homedir } from "os";
-import { existsSync, readFileSync } from "fs";
-import { resolve } from "path";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { join, resolve } from "path";
 
 export type TartConfig = {
   vm: string;
@@ -10,6 +10,8 @@ export type TartConfig = {
   repoDir: string;
   pkgDir: string;
 };
+
+export const GUEST_PATH = 'export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"';
 
 export const SSH_OPTS = [
   "-o",
@@ -22,11 +24,28 @@ export const SSH_OPTS = [
   "ConnectTimeout=8",
 ];
 
+export function sshTunnelArgs(target: string, localPort: number, remotePort: number): string[] {
+  return [
+    "ssh",
+    ...SSH_OPTS,
+    "-N",
+    "-o",
+    "ExitOnForwardFailure=yes",
+    "-L",
+    `${localPort}:127.0.0.1:${remotePort}`,
+    target,
+  ];
+}
+
 export function loadTartConfig(): TartConfig {
   const pkgDir = resolve(import.meta.dir, "../..");
+  const user = process.env.TART_USER ?? "expo";
+  if (!/^[A-Za-z0-9_-]+$/.test(user)) {
+    throw new Error(`invalid TART_USER: ${JSON.stringify(user)}`);
+  }
   return {
     vm: process.env.TART_VM ?? "tahoe-xcode",
-    user: process.env.TART_USER ?? "expo",
+    user,
     shareName: process.env.TART_SHARE_NAME ?? "serve-sim",
     repoDir: resolve(pkgDir, "../.."),
     pkgDir,
@@ -86,12 +105,23 @@ export class TartGuest {
   }
 
   async sshInherit(script: string): Promise<number> {
-    const proc = spawn(["ssh", ...SSH_OPTS, this.sshTarget(), "bash", "-s"], {
+    return this.sshSpawn(script).exited;
+  }
+
+  sshSpawn(script: string): Subprocess {
+    return spawn(["ssh", ...SSH_OPTS, this.sshTarget(), "bash", "-s"], {
       stdin: Buffer.from(script),
       stdout: "inherit",
       stderr: "inherit",
     });
-    return proc.exited;
+  }
+
+  tunnel(localPort: number, remotePort: number): Subprocess {
+    return spawn(sshTunnelArgs(this.sshTarget(), localPort, remotePort), {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "inherit",
+    });
   }
 
   async scp(files: string[], dest: string): Promise<void> {
@@ -105,12 +135,35 @@ export class TartGuest {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const [stderr, exit] = await Promise.all([new Response(ssh.stderr).text(), ssh.exited]);
-    if (exit !== 0) throw new Error(`stage tar failed (${exit})${stderr ? `\n${stderr}` : ""}`);
+    const [tarStderr, sshStderr, tarExit, sshExit] = await Promise.all([
+      new Response(tar.stderr).text(),
+      new Response(ssh.stderr).text(),
+      tar.exited,
+      ssh.exited,
+    ]);
+    if (tarExit !== 0) {
+      throw new Error(`stage tar failed (${tarExit})${tarStderr ? `\n${tarStderr}` : ""}`);
+    }
+    if (sshExit !== 0) {
+      throw new Error(`stage tar failed (${sshExit})${sshStderr ? `\n${sshStderr}` : ""}`);
+    }
   }
 
   async sshOk(command: string[]): Promise<boolean> {
     const proc = spawn(["ssh", ...SSH_OPTS, this.sshTarget(), ...command], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    return (await proc.exited) === 0;
+  }
+
+  async exec(args: string[], opts?: { allowFail?: boolean; stdin?: string }): Promise<string> {
+    const interactive = opts?.stdin != null ? ["-i"] : [];
+    return run(["tart", "exec", ...interactive, this.config.vm, ...args], opts);
+  }
+
+  async execOk(args: string[]): Promise<boolean> {
+    const proc = spawn(["tart", "exec", this.config.vm, ...args], {
       stdout: "ignore",
       stderr: "ignore",
     });
@@ -133,7 +186,7 @@ export class TartGuest {
     }
 
     console.log(`starting ${this.config.vm} with ${this.config.repoDir} mounted as ${this.config.shareName}`);
-    spawn(
+    const child = spawn(
       [
         "tart",
         "run",
@@ -144,14 +197,42 @@ export class TartGuest {
         `${this.config.shareName}:${this.config.repoDir}`,
         this.config.vm,
       ],
-      { stdout: "ignore", stderr: "ignore" },
+      { stdout: "ignore", stderr: "inherit", stdin: "ignore" },
     );
+    child.unref();
     for (let i = 0; i < 60; i++) {
       this.ip = await this.tartIp();
       if (this.ip) return;
       await Bun.sleep(2000);
     }
     throw new Error("tart VM never got an IP");
+  }
+
+  async assertShare(): Promise<void> {
+    const share = guestPkgPath(this.config);
+    const present = (await this.ssh(`test -d ${JSON.stringify(`${share}/src`)} && echo ok`)).trim() === "ok";
+    if (!present) return;
+
+    const stampDir = join(this.config.pkgDir, "dist");
+    mkdirSync(stampDir, { recursive: true });
+    const stamp = join(stampDir, ".tart-share");
+    const token = `${this.config.repoDir}:${process.pid}:${Date.now()}`;
+    writeFileSync(stamp, token);
+    try {
+      const remote = `${share}/dist/.tart-share`;
+      for (let i = 0; i < 10; i++) {
+        const seen = (await this.ssh(`cat ${JSON.stringify(remote)} 2>/dev/null || true`)).trim();
+        if (seen === token) return;
+        await Bun.sleep(200);
+      }
+      throw new Error(
+        `VM share is not this checkout (${this.config.repoDir}). Stop the VM and rerun bun run tart up.`,
+      );
+    } finally {
+      try {
+        unlinkSync(stamp);
+      } catch {}
+    }
   }
 }
 
@@ -164,47 +245,41 @@ function publicKey(): string {
 }
 
 export async function setupGuest(guest: TartGuest): Promise<void> {
-  const { vm, user } = guest.config;
+  const { user } = guest.config;
   const pub = publicKey();
   if (!(await guest.isRunning())) {
     throw new Error("start the VM first (bun run tart up)");
   }
   await guest.connect();
 
-  // Creating the non-console user is the one place `tart exec` as admin is OK.
-  // Tests SSH as this user so Aqua/pbpaste match EAS.
-  await run([
-    "tart",
-    "exec",
-    vm,
-    "/bin/bash",
-    "-lc",
-    `
-set -euo pipefail
-if ! id ${user} >/dev/null 2>&1; then
-  sudo sysadminctl -addUser ${user} -password ${user} -fullName ${user}
-fi
-sudo systemsetup -setremotelogin on >/dev/null || true
-sudo dseditgroup -o edit -a ${user} -t user com.apple.access_ssh || true
-hom=$(dscl . -read /Users/${user} NFSHomeDirectory | awk '{print $2}')
-sudo mkdir -p "$hom/.ssh"
-sudo touch "$hom/.ssh/authorized_keys"
-if ! sudo grep -qxF ${JSON.stringify(pub)} "$hom/.ssh/authorized_keys"; then
-  printf '%s\\n' ${JSON.stringify(pub)} | sudo tee -a "$hom/.ssh/authorized_keys" >/dev/null
-fi
-sudo chmod 700 "$hom/.ssh"
-sudo chmod 600 "$hom/.ssh/authorized_keys"
-sudo chown -R ${user}:staff "$hom/.ssh"
-`,
-  ]);
+  if (!(await guest.execOk(["id", user]))) {
+    await guest.exec(["sudo", "sysadminctl", "-addUser", user, "-password", user, "-fullName", user]);
+  }
+  await guest.exec(["sudo", "systemsetup", "-setremotelogin", "on"], { allowFail: true });
+  await guest.exec(["sudo", "dseditgroup", "-o", "edit", "-a", user, "-t", "user", "com.apple.access_ssh"], {
+    allowFail: true,
+  });
 
-  const bunPresent = (await guest.ssh('if test -x "$HOME/.bun/bin/bun"; then echo ok; fi')).trim() === "ok";
-  if (!bunPresent) {
+  const hom = (await guest.exec(["dscl", ".", "-read", `/Users/${user}`, "NFSHomeDirectory"])).trim().split(/\s+/).at(-1);
+  if (!hom?.startsWith("/")) throw new Error(`no home directory for ${user}`);
+  const sshDir = `${hom}/.ssh`;
+  const keys = `${sshDir}/authorized_keys`;
+  await guest.exec(["sudo", "mkdir", "-p", sshDir]);
+  await guest.exec(["sudo", "touch", keys]);
+  const existing = await guest.exec(["sudo", "cat", keys], { allowFail: true });
+  if (!existing.split("\n").includes(pub)) {
+    await guest.exec(["sudo", "tee", "-a", keys], { stdin: `${pub}\n` });
+  }
+  await guest.exec(["sudo", "chmod", "700", sshDir]);
+  await guest.exec(["sudo", "chmod", "600", keys]);
+  await guest.exec(["sudo", "chown", "-R", `${user}:staff`, sshDir]);
+  await guest.waitSsh();
+
+  if ((await guest.ssh('if test -x "$HOME/.bun/bin/bun"; then echo ok; fi')).trim() !== "ok") {
     const bunBin = Bun.which("bun");
     if (!bunBin) throw new Error("bun is not on the host PATH");
     await guest.scp([bunBin], "/tmp/bun");
     await guest.ssh('mkdir -p "$HOME/.bun/bin" && mv /tmp/bun "$HOME/.bun/bin/bun" && chmod +x "$HOME/.bun/bin/bun"');
   }
-  await guest.waitSsh();
   console.log(`setup ok (${guest.config.user}@${guest.ip})`);
 }

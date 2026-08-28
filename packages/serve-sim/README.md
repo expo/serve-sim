@@ -298,7 +298,34 @@ bun install
 bun run packages/serve-sim/build.ts                    # full production build
 packages/serve-sim/Sources/SimNative/build.sh           # native addon only
 bun run --filter serve-sim dev                          # watch mode
+bun run --filter serve-sim tart-dev                     # guest preview at localhost:3200
 ```
+
+### Tart guest
+
+`tart-dev` runs serve-sim inside a [tart](https://github.com/cirruslabs/tart) macOS VM and tunnels the preview to the host. The guest process is SSH as Unix user `expo` (not `tart exec` as admin), which matches how EAS-shaped VMs actually run.
+
+Needs the `tart` CLI, a VM with Xcode (default name `tahoe-xcode`), and a built native addon.
+
+```sh
+bun run packages/serve-sim/build.ts
+bun run --filter serve-sim tart-dev
+# → Preview at http://localhost:3200
+```
+
+First run starts the VM (if needed), creates the `expo` user, copies bun onto the guest, boots an iPhone 17, and forwards guest `:3200`. Host port `3200` must be free. Ctrl-C stops the tunnel and the guest server.
+
+The VM mounts this checkout at `/Volumes/My Shared Files/serve-sim`. If the VM was started from a different worktree, stop it and rerun `tart-dev` from this one.
+
+```sh
+bun run --filter serve-sim tart -- setup              # once per VM
+bun run --filter serve-sim tart -- ssh                 # shell as expo
+bun run --filter serve-sim tart-test -- src/__tests__/foo.test.ts
+```
+
+`tart` also has `up`, `boot`, and `stage` if you need the pieces separately. `tart test` with no files exits instead of running the whole guest suite.
+
+Env (all optional): `TART_VM=tahoe-xcode`, `TART_USER=expo`, `TART_SHARE_NAME=serve-sim`, `PORT=3200`.
 
 ## Origin and attribution
 

@@ -71,6 +71,7 @@ import {
 } from "./utils/panel-widths";
 import { proxyPreviewConfigForBrowser } from "./utils/preview-config";
 import { mjpegStreamUrlFrom, simEndpoint, streamConfigFrom, webrtcCloseUrlFrom, webrtcOfferUrlFrom, webrtcStatsUrlFrom } from "./utils/sim-endpoint";
+import { parseDeviceLogJson } from "./utils/device-log-format";
 import { shouldStreamSimulatorLogs } from "./utils/simulator-logs";
 import {
   SIMULATOR_RESIZE_DRAG_TRANSITION,
@@ -319,42 +320,36 @@ function App() {
     let groupOpen = false;
 
     es.onmessage = (event) => {
-      try {
-        const entry = JSON.parse(event.data);
-        const proc = entry.processImagePath?.split("/").pop() ?? entry.senderImagePath?.split("/").pop() ?? "";
-        const subsystem = entry.subsystem ?? "";
-        const category = entry.category ?? "";
-        const msg = entry.eventMessage ?? "";
-        if (!msg) return;
+      const fields = parseDeviceLogJson(event.data);
+      if (!fields) return;
+      const { process: proc, subsystem, category, message: msg, level } = fields;
 
-        if (proc !== lastProc) {
-          if (groupOpen) console.groupEnd();
-          const color = colorFor(proc);
-          console.groupCollapsed(
-            `%c${proc}${subsystem ? ` %c${subsystem}${category ? ":" + category : ""}` : ""}`,
-            `color:${color};font-weight:bold`,
-            ...(subsystem ? ["color:#888;font-weight:normal"] : []),
-          );
-          groupOpen = true;
-          lastProc = proc;
-        }
+      if (proc !== lastProc) {
+        if (groupOpen) console.groupEnd();
+        const color = colorFor(proc);
+        console.groupCollapsed(
+          `%c${proc}${subsystem ? ` %c${subsystem}${category ? ":" + category : ""}` : ""}`,
+          `color:${color};font-weight:bold`,
+          ...(subsystem ? ["color:#888;font-weight:normal"] : []),
+        );
+        groupOpen = true;
+        lastProc = proc;
+      }
 
-        const level = (entry.messageType ?? "").toLowerCase();
-        const tag = subsystem && proc === lastProc
-          ? `%c${category || subsystem}%c `
-          : "";
-        const tagStyles = tag
-          ? ["color:#888;font-style:italic", "color:inherit"]
-          : [];
+      const tag = subsystem && proc === lastProc
+        ? `%c${category || subsystem}%c `
+        : "";
+      const tagStyles = tag
+        ? ["color:#888;font-style:italic", "color:inherit"]
+        : [];
 
-        if (level === "fault" || level === "error") {
-          console.log(`${tag}%c${msg}`, ...tagStyles, "color:#ff5555");
-        } else if (level === "debug") {
-          console.log(`${tag}%c${msg}`, ...tagStyles, "color:#6272a4");
-        } else {
-          console.log(`${tag}%c${msg}`, ...tagStyles, "color:inherit");
-        }
-      } catch {}
+      if (level === "fault" || level === "error") {
+        console.log(`${tag}%c${msg}`, ...tagStyles, "color:#ff5555");
+      } else if (level === "debug") {
+        console.log(`${tag}%c${msg}`, ...tagStyles, "color:#6272a4");
+      } else {
+        console.log(`${tag}%c${msg}`, ...tagStyles, "color:inherit");
+      }
     };
 
     return () => {
@@ -1300,6 +1295,7 @@ function AppWithConfig({
         deviceRuntime={deviceRuntime}
         currentApp={currentApp}
         eventLogEventsEndpoint={config.eventLogEventsEndpoint}
+        logsEndpoint={config.logsEndpoint}
         metricsEndpoint={config.metricsEndpoint}
         axOverlayEnabled={axOverlayEnabled}
         onToggleAxOverlay={() => setAxOverlayEnabled((enabled) => !enabled)}

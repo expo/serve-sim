@@ -6,6 +6,7 @@ import { AppPermissionsTool } from "./app-permissions-tool";
 import { AxTreeTool } from "./ax-tree-tool";
 import { CameraTool } from "./camera-tool";
 import { EventLogTool } from "./event-log-tool";
+import { LogsTool } from "./logs-tool";
 import { MetricsTool } from "./metrics-tool";
 import { PANEL_BACKGROUND } from "./panel-colors";
 import { SimulatorSettingsTool } from "./simulator-settings-tool";
@@ -16,7 +17,7 @@ import type {
   StreamPlaybackSettings,
 } from "../../stream-settings";
 
-/** The preview's collapsible tools panel: app detection, metrics, camera, permissions, and settings. */
+/** The preview's collapsible tools panel: app detection, metrics, logs, camera, permissions, and settings. */
 export function ToolsPanel({
   open,
   onClose,
@@ -27,6 +28,7 @@ export function ToolsPanel({
   deviceRuntime,
   currentApp,
   eventLogEventsEndpoint,
+  logsEndpoint,
   metricsEndpoint,
   axOverlayEnabled,
   onToggleAxOverlay,
@@ -48,6 +50,7 @@ export function ToolsPanel({
   deviceRuntime: string | null;
   currentApp: { bundleId: string; isReactNative: boolean; pid?: number } | null;
   eventLogEventsEndpoint?: string;
+  logsEndpoint?: string;
   metricsEndpoint?: string;
   axOverlayEnabled: boolean;
   onToggleAxOverlay: () => void;
@@ -76,6 +79,7 @@ export function ToolsPanel({
             metricsEndpoint={metricsEndpoint}
           />
           <EventLogTool udid={udid} eventsEndpoint={eventLogEventsEndpoint} />
+          <LogsTool udid={udid} logsEndpoint={logsEndpoint} />
           <SimulatorSettingsTool udid={udid} runtime={deviceRuntime} />
           <AxTreeTool
             overlayEnabled={axOverlayEnabled}

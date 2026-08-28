@@ -151,6 +151,8 @@ describe("capture counts", () => {
       forwardedFrames: null,
       pumpRestarts: null,
       captureCpuCopies: null,
+      pollTicks: null,
+      pollLateSumMs: null,
     });
   });
 

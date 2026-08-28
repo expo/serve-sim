@@ -31,6 +31,9 @@ actor FrameCapture {
 
     private var photocopier = Photocopier()
     private var snapshotMaxDimension = 0
+    private var pollTicks: UInt64 = 0
+    private var pollLateSumNs: UInt64 = 0
+    private var pollGrid: PollDeadlineGrid?
     private var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
     private var frameCount: UInt64 = 0
     /// Counted by which path produced the frame, callback or idle deadline.
@@ -38,7 +41,7 @@ actor FrameCapture {
     private var idleFrameCount: UInt64 = 0
     private(set) var capturedWidth: Int = 0
     private(set) var capturedHeight: Int = 0
-    private var surfacePollTask: Task<Void, Never>?
+    private var surfacePollTimer: DispatchSourceTimer?
     private var lastCaptureTime: ContinuousClock.Instant = .now
     private var lastSeeds: [ObjectIdentifier: UInt32] = [:]
     private var lastRewireAttempt: ContinuousClock.Instant = .now
@@ -53,9 +56,6 @@ actor FrameCapture {
     ///    idle sim never gets a cached frame to show.
     /// Re-emitting at ~5 fps fixes both without meaningful CPU cost.
     private static let idleInterval: ContinuousClock.Duration = .milliseconds(200)
-    private static let surfacePollInterval: ContinuousClock.Duration = .nanoseconds(
-        SimulatorCapturePollPolicy.intervalNanoseconds
-    )
     private static let rewireInterval: ContinuousClock.Duration = .seconds(1)
     /// The surfaces-changed callback is the primary invalidation. Some virtualized
     /// runtimes deliver it unreliably, so re-pick on a slow timer as well.
@@ -256,14 +256,38 @@ actor FrameCapture {
         )
     }
 
+    /// A DispatchSourceTimer on the actor's own queue rather than `Task.sleep`, whose leeway
+    /// held the poll to 48Hz on bare metal even with nothing else running. `.strict` opts out
+    /// of coalescing, which is what the frame pump needed on virtualized hosts.
     private func startSurfacePoller() {
-        self.surfacePollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: Self.surfacePollInterval)
-                guard let self else { return }
-                await self.onSurfacePollTick()
+        let intervalNs = UInt64(SimulatorCapturePollPolicy.intervalNanoseconds)
+        let interval = DispatchTimeInterval.nanoseconds(Int(intervalNs))
+        let first = DispatchTime.now() + interval
+        pollGrid = PollDeadlineGrid(
+            firstDeadlineNanoseconds: first.uptimeNanoseconds, intervalNanoseconds: intervalNs
+        )
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
+        timer.schedule(deadline: first, repeating: interval, leeway: .nanoseconds(0))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.assumeIsolated {
+                $0.recordPollWake()
+                $0.onSurfacePollTick()
             }
         }
+        timer.resume()
+        surfacePollTimer = timer
+    }
+
+    /// Measured against the deadline the timer was scheduled for, not against the previous
+    /// wake. The handler runs capture on this same serial queue, so wake-to-wake would charge
+    /// our own capture cost to the host and hide the thing this number exists to find.
+    private func recordPollWake() {
+        // Both counters advance together or not at all: the mean is their ratio.
+        guard let lateNs = pollGrid?.wake(atNanoseconds: DispatchTime.now().uptimeNanoseconds)
+        else { return }
+        pollTicks += 1
+        pollLateSumNs += lateNs
     }
 
     private func onSurfacePollTick() {
@@ -354,14 +378,23 @@ actor FrameCapture {
         photocopier.cpuFallbacks
     }
 
+    func pollTimings() -> (ticks: UInt64, lateSumNs: UInt64) {
+        (ticks: pollTicks, lateSumNs: pollLateSumNs)
+    }
+
     func getScreenSize() -> (width: Int, height: Int)? {
         guard capturedWidth > 0, capturedHeight > 0 else { return nil }
         return (capturedWidth, capturedHeight)
     }
 
+    deinit {
+        surfacePollTimer?.cancel()
+    }
+
     func stop() {
-        surfacePollTask?.cancel()
-        surfacePollTask = nil
+        surfacePollTimer?.cancel()
+        surfacePollTimer = nil
+        pollGrid = nil
 
         unregisterCallbacks()
         descriptors.removeAll()

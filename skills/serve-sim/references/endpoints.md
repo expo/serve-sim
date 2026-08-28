@@ -67,7 +67,7 @@ mounts it at `/`. Prefix the paths below with that configured base.
 | `POST` | `/api/screenshot` | Still PNG of the selected simulator (`simctl io <udid> screenshot`). |
 | `GET` | `/api/event-log` | Recent normalized simulator input events. |
 | `GET` | `/api/event-log/events` | SSE event-log updates. |
-| `GET` | `/logs` | Simulator console log (NDJSON). SSE by default, replaying the buffered backlog before live lines; JSON on `Accept: application/json` or `?snapshot`. The preview subscribes locally by default; remote previews require `?logs=1`. |
+| `GET` | `/logs` | Simulator console log (NDJSON). SSE by default, replaying the buffered backlog before live lines; JSON on `Accept: application/json` or `?snapshot`. Tools → Logs subscribes while the section is open. The browser console still follows locally by default; remote previews require `?logs=1`. |
 | `GET` | `/ax` | SSE accessibility snapshots. |
 | `POST` | `/exec` | Host command execution; requires JSON, same-origin checks, and bearer token. |
 | `GET` | `/appstate` | Frontmost-app event stream. |

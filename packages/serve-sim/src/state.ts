@@ -33,6 +33,27 @@ export interface ServeSimDeviceState {
 }
 
 /**
+ * Machine-readable startup payload for the preview server's `--quiet` output. Mirrors the shape the
+ * follow/detach paths already print, and carries the session token only when the gate is on, so an
+ * orchestrator (e.g. eas-cli) reads it once and presents it on every later call. The token is stdout
+ * only: it is never written to the on-disk state file, which other local accounts could read.
+ */
+export function previewStartupPayload(
+  states: ServeSimDeviceState[],
+  token?: string,
+): Record<string, unknown> {
+  const view = (s: ServeSimDeviceState) => ({
+    url: s.url,
+    streamUrl: s.streamUrl,
+    wsUrl: s.wsUrl,
+    port: s.port,
+    device: s.device,
+  });
+  const base = states.length === 1 ? view(states[0]!) : { devices: states.map(view) };
+  return token ? { ...base, token } : base;
+}
+
+/**
  * Build the state for a device served in-process. There's no separate helper
  * port — the URLs point at the preview server's own same-origin
  * `{base}/helper/<device>/…` routes, which simMiddleware serves from a

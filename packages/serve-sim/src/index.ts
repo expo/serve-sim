@@ -10,6 +10,7 @@ import {
   stateFileForDevice,
   listStateFiles,
   inProcessServeSimState,
+  previewStartupPayload,
   writeServeSimState,
   clearServeSimState,
   type ServeSimDeviceState,
@@ -1632,12 +1633,14 @@ async function serve(
     metricsCorsOrigins?: string[];
     debugStreamPath?: string;
     requireToken?: boolean;
+    quiet?: boolean;
   } = {},
 ) {
+  const quiet = !!options.quiet;
   // Boot the target simulators; the preview server streams them in-process
   // (no spawned helper). Sessions are created lazily on the first stream request.
   const targetDevices = resolveTargetDevices(devices);
-  if (devices.length === 0 && readAllStates().length === 0) {
+  if (!quiet && devices.length === 0 && readAllStates().length === 0) {
     console.log("Starting simulator stream...");
   }
   for (const udid of targetDevices) await ensureBooted(udid);
@@ -1708,30 +1711,41 @@ async function serve(
         `http://127.0.0.1:${boundPort}/helper/${encodeURIComponent(device)}/webrtc/stats`,
     });
     runStreamDebugLog(targetDevices, logger);
-      console.log(`  - Stream debug: recording to ${options.debugStreamPath}`);
+    if (!quiet) console.log(`  - Stream debug: recording to ${options.debugStreamPath}`);
   }
 
   const exposedToLan = !isLoopbackHost(host);
   const networkIP = getLocalNetworkIP();
   const tokenQuery = requirePreviewToken ? `/?token=${previewToken}` : "";
-  console.log("");
-  console.log(`  - Local:   http://localhost:${boundPort}${tokenQuery}`);
-  if (exposedToLan && networkIP) {
-    console.log(`  - Network: http://${networkIP}:${boundPort}${tokenQuery}`);
-    console.log("");
-    console.log(
-      requirePreviewToken
-        ? "  This server is listening on the network. The links above carry a token because anyone who " +
-          "has it can run commands on this machine."
-        : "  This server is listening on the network with no token required. Anyone who can reach it can " +
-          "run commands on this machine. Pass --require-token to gate it.",
+  if (quiet) {
+    // JSON-only contract for orchestrators: the token rides here so a caller reads it once and
+    // presents it on every later request. Emitted only when the gate is on, and never persisted.
+    const states = targetDevices.map((udid) =>
+      inProcessServeSimState(udid, boundPort, "/", host, options.stream),
     );
-  } else if (networkIP) {
-    console.log(`  - Network: \x1b[2muse --host 0.0.0.0 to expose on http://${networkIP}:${boundPort}\x1b[0m`);
+    console.log(
+      JSON.stringify(previewStartupPayload(states, requirePreviewToken ? previewToken : undefined)),
+    );
   } else {
-    console.log("  - Network: \x1b[2muse --host 0.0.0.0 to expose on the LAN\x1b[0m");
+    console.log("");
+    console.log(`  - Local:   http://localhost:${boundPort}${tokenQuery}`);
+    if (exposedToLan && networkIP) {
+      console.log(`  - Network: http://${networkIP}:${boundPort}${tokenQuery}`);
+      console.log("");
+      console.log(
+        requirePreviewToken
+          ? "  This server is listening on the network. The links above carry a token because anyone who " +
+            "has it can run commands on this machine."
+          : "  This server is listening on the network with no token required. Anyone who can reach it can " +
+            "run commands on this machine. Pass --require-token to gate it.",
+      );
+    } else if (networkIP) {
+      console.log(`  - Network: \x1b[2muse --host 0.0.0.0 to expose on http://${networkIP}:${boundPort}\x1b[0m`);
+    } else {
+      console.log("  - Network: \x1b[2muse --host 0.0.0.0 to expose on the LAN\x1b[0m");
+    }
+    console.log("");
   }
-  console.log("");
 
   // Exit cleanly on Ctrl+C
   process.on("SIGINT", () => process.exit(0));
@@ -1985,6 +1999,7 @@ Examples:
         metricsCorsOrigins: opts.metricsCorsOrigin,
         debugStreamPath,
         requireToken: !!opts.requireToken,
+        quiet: !!opts.quiet,
       });
     }
   });

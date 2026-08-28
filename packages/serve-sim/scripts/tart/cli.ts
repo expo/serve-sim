@@ -1,28 +1,33 @@
 #!/usr/bin/env bun
 import { SSH_OPTS, loadTartConfig, setupGuest, TartGuest } from "./guest";
 import { bootSim } from "./sim";
-import { resolveTestFiles, stageGuest, testOnce } from "./stage";
-import { watchDev } from "./dev";
+import { GUEST_PKG, GUEST_SIMPB, resolveTestFiles, stageGuest, testOnce } from "./stage";
+import { runDev } from "./dev";
 
 const USAGE = `bun run tart <command>
 
-  setup   create the non-console guest user and copy bun (once per VM)
-  up      start the VM with the repo shared (no-op if already running)
+  setup   create the guest user and copy bun (once per VM)
+  up      start the VM (no-op if already running)
   boot    boot an iPhone 17 on the guest
-  stage   pack host src + dist/simpb onto the guest (EAS-shaped, not virtiofs)
-  test    stage, warm, bun test on the guest as the non-console user
-  dev     watch host src/Sources/dist/simpb, rebuild, restage, retest
+  stage   pack host src onto the guest
+  test    run bun test on the guest
+  dev     run serve-sim on the guest, print http://localhost:3200
   ssh     ssh to the guest (remaining args are a remote command)
 
-Tests always SSH as TART_USER (default expo). tart exec as admin still has
-Aqua, so it is not an EAS-shaped pasteboard host.
+SSH as TART_USER (default expo), not tart exec as admin.
 
-Env: TART_VM=tahoe-xcode TART_USER=expo TART_SHARE_NAME=serve-sim
+Env: TART_VM=tahoe-xcode TART_USER=expo TART_SHARE_NAME=serve-sim PORT=3200
 `;
 
 async function prepare(guest: TartGuest): Promise<void> {
   await guest.ensureRunning();
-  await guest.waitSsh();
+  try {
+    await guest.waitSsh(20);
+  } catch {
+    console.log("guest user not ready; running setup");
+    await setupGuest(guest);
+  }
+  await guest.assertShare();
 }
 
 async function main(): Promise<void> {
@@ -54,17 +59,21 @@ async function main(): Promise<void> {
     case "stage":
       await prepare(guest);
       await stageGuest(guest);
-      console.log("staged /tmp/serve-sim-pkg and /tmp/simpb");
+      console.log(`staged ${GUEST_PKG} and ${GUEST_SIMPB}`);
       return;
     case "test": {
       await prepare(guest);
-      await bootSim(guest);
-      process.exit(await testOnce(guest, resolveTestFiles(config.pkgDir, rest)));
+      const files = resolveTestFiles(config.pkgDir, rest);
+      if (!files.length) {
+        console.error("no test files. Pass paths after tart test.");
+        process.exit(2);
+      }
+      const udid = await bootSim(guest);
+      process.exit(await testOnce(guest, files, udid));
     }
     case "dev": {
       await prepare(guest);
-      await bootSim(guest);
-      await watchDev(guest, resolveTestFiles(config.pkgDir, rest));
+      await runDev(guest, await bootSim(guest));
       return;
     }
     case "ssh": {

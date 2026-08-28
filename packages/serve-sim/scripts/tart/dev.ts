@@ -1,70 +1,110 @@
-import { existsSync, watch } from "fs";
+import { existsSync } from "fs";
+import { createServer } from "net";
 import { join } from "path";
-import type { TartGuest } from "./guest";
-import { testOnce } from "./stage";
+import type { Subprocess } from "bun";
+import { GUEST_PATH, guestPkgPath, type TartGuest } from "./guest";
+import { GUEST_PKG, stageGuest } from "./stage";
 
-async function buildNative(pkgDir: string): Promise<void> {
-  const proc = Bun.spawn(["bun", "run", "build"], {
-    cwd: pkgDir,
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  const code = await proc.exited;
-  if (code !== 0) throw new Error("host build failed");
+const PREVIEW_PORT = Number(process.env.PORT) || 3200;
+
+export function guestPreviewScript(root: string, share: string, port: number): string {
+  return `${GUEST_PATH}
+set -euo pipefail
+cd ${JSON.stringify(root)}
+SHARE=${JSON.stringify(share)}
+if [[ ! -d node_modules && -d "$SHARE/node_modules" ]]; then
+  ln -sfn "$SHARE/node_modules" node_modules
+fi
+if [[ ! -d node_modules ]]; then
+  bun install
+fi
+if [[ -d "$SHARE/dist" && ! -e dist ]]; then
+  ln -sfn "$SHARE/dist" dist
+fi
+export PORT=${port}
+exec bun run dev.ts
+`;
 }
 
-function shouldRebuild(path: string): boolean {
-  return path.includes("/Sources/") || path.endsWith("build.ts");
-}
-
-export async function watchDev(guest: TartGuest, files: string[]): Promise<void> {
-  const { pkgDir } = guest.config;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let rebuild = false;
-  let running = false;
-  let queued = false;
-
-  const run = async () => {
-    if (running) {
-      queued = true;
-      return;
-    }
-    running = true;
+async function waitOk(url: string, serve: Subprocess, tunnel: Subprocess, tries = 240): Promise<void> {
+  for (let i = 0; i < tries; i++) {
+    if (tunnel.exitCode != null) throw new Error(`ssh tunnel exited ${tunnel.exitCode}`);
+    if (serve.exitCode != null) throw new Error(`guest serve-sim exited ${serve.exitCode}`);
     try {
-      if (rebuild) {
-        rebuild = false;
-        console.log("building on host");
-        await buildNative(pkgDir);
-      }
-      const code = await testOnce(guest, files);
-      if (code !== 0) console.error(`guest tests exited ${code}`);
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : error);
-    } finally {
-      running = false;
-      if (queued) {
-        queued = false;
-        void run();
-      }
-    }
-  };
+      const res = await fetch(url);
+      if (res.ok) return;
+    } catch {}
+    if (i > 0 && i % 20 === 0) console.log("waiting for serve-sim...");
+    await Bun.sleep(500);
+  }
+  throw new Error(`serve-sim did not come up at ${url}`);
+}
 
-  const kick = (path?: string) => {
-    if (path && shouldRebuild(path)) rebuild = true;
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => {
-      void run();
-    }, 400);
-  };
+async function startDevice(url: string, udid: string): Promise<void> {
+  const res = await fetch(`${url}/grid/api/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ udid }),
+  });
+  if (!res.ok) {
+    throw new Error(`grid start failed (${res.status}): ${await res.text()}`);
+  }
+}
 
-  for (const dir of ["src", "Sources", "dist/simpb"].map((rel) => join(pkgDir, rel))) {
-    if (!existsSync(dir)) continue;
-    watch(dir, { recursive: true }, (_event, filename) => {
-      if (filename) kick(join(dir, String(filename)));
+function stop(proc: Subprocess): void {
+  try {
+    proc.kill("SIGTERM");
+  } catch {}
+}
+
+export function assertPortFree(port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", () => {
+      reject(new Error(`port ${port} is already in use`));
+    });
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => resolve());
+    });
+  });
+}
+
+export async function runDev(guest: TartGuest, udid: string): Promise<void> {
+  const share = guestPkgPath(guest.config);
+  const port = PREVIEW_PORT;
+  const url = `http://localhost:${port}`;
+  const native = join(guest.config.pkgDir, "dist", "native", "serve-sim-native.node");
+  if (!existsSync(native)) {
+    throw new Error(`${native} is missing. Run bun run build.`);
+  }
+  await assertPortFree(port);
+
+  const shareReady = (await guest.ssh(`test -d ${JSON.stringify(`${share}/src`)} && echo ok`)).trim() === "ok";
+  if (!shareReady) await stageGuest(guest);
+  const root = shareReady ? share : GUEST_PKG;
+  await guest.ssh(`lsof -ti tcp:${port} | xargs kill -TERM 2>/dev/null || true`);
+
+  const serve = guest.sshSpawn(guestPreviewScript(root, share, port));
+  const tunnel = guest.tunnel(port, port);
+  const shutdown = () => {
+    stop(serve);
+    stop(tunnel);
+  };
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      shutdown();
+      process.exit(0);
     });
   }
 
-  console.log("tart dev: watching src, Sources, dist/simpb (Ctrl-C to stop)");
-  await run();
-  await new Promise(() => {});
+  try {
+    await waitOk(url + "/healthz", serve, tunnel);
+    await startDevice(url, udid);
+    console.log(`\n  ${url}\n`);
+    const code = await Promise.race([serve.exited, tunnel.exited]);
+    process.exit(code ?? 1);
+  } finally {
+    shutdown();
+  }
 }

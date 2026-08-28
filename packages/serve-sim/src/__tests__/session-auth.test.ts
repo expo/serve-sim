@@ -147,10 +147,10 @@ describe("assertPreviewAccess", () => {
     ).toBe(true);
   });
 
-  test("trades a one-time query token for a cookie and redirects it out of the address bar", () => {
+  test("trades a page navigation's query token for a cookie and redirects it out of the address bar", () => {
     const { sent, res: r } = res();
     expect(
-      assertPreviewAccess(req({}, `/?token=${TOKEN}&device=abc`), r, TOKEN, {
+      assertPreviewAccess(req({ "sec-fetch-dest": "document" }, `/?token=${TOKEN}&device=abc`), r, TOKEN, {
         required: true,
         basePath: "/",
       }),
@@ -160,6 +160,19 @@ describe("assertPreviewAccess", () => {
     expect(sent.headers?.Location).toBe("/?device=abc");
     expect(sent.headers?.["Set-Cookie"]).toContain(`${ACCESS_COOKIE}=${encodeURIComponent(TOKEN)}`);
     expect(sent.headers?.["Set-Cookie"]).toContain("HttpOnly");
+  });
+
+  test("serves a cross-origin SSE/API query token directly, without a cookie redirect", () => {
+    const { sent, res: r } = res();
+    expect(
+      assertPreviewAccess(
+        req({ "sec-fetch-dest": "empty", accept: "text/event-stream" }, `/metrics?token=${TOKEN}`),
+        r,
+        TOKEN,
+        { required: true, basePath: "/" },
+      ),
+    ).toBe(true);
+    expect(sent.status).toBeUndefined();
   });
 
   test("accepts the cookie it set, so the page's own requests work", () => {

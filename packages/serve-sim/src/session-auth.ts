@@ -130,6 +130,14 @@ function carriesSessionToken(
   return false;
 }
 
+/** Whether the request is a top-level page navigation (rather than a fetch/XHR/EventSource). */
+function isDocumentNavigation(headers: SessionAuthReq["headers"]): boolean {
+  const dest = headerValue(headers["sec-fetch-dest"]);
+  if (dest !== undefined) return dest === "document";
+  // Older clients without Sec-Fetch-Dest: fall back to the Accept header.
+  return (headerValue(headers["accept"]) ?? "").includes("text/html");
+}
+
 /**
  * Require the session token before serving anything that carries it.
  *
@@ -144,11 +152,15 @@ export function assertPreviewAccess(
 ): boolean {
   if (!opts.required) return true;
 
-  // Trade a valid `?token=` for the cookie first, even when the caller already holds one, so the
-  // secret never lingers in the URL — where it could reach logs, history, or an outbound proxy.
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const fromQuery = url.searchParams.get("token");
   if (fromQuery && safeEqualString(fromQuery, sessionToken)) {
+    // A top-level page load trades the token for a cookie so it never lingers in the address bar. A
+    // cross-origin API/SSE caller (e.g. the dashboard's metrics EventSource) cannot send a header or a
+    // SameSite=Strict cookie, so it must be served directly with the query token instead of redirected.
+    if (!isDocumentNavigation(req.headers)) {
+      return true;
+    }
     url.searchParams.delete("token");
     res.writeHead(302, {
       Location: `${url.pathname}${url.search}`,

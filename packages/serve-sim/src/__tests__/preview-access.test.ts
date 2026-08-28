@@ -36,7 +36,9 @@ describe("preview access with --require-token", () => {
   });
 
   test("trades a link token for a cookie and redirects it out of the URL", async () => {
-    const response = await gated(true)(`/?token=${TOKEN}`);
+    const response = await gated(true)(`/?token=${TOKEN}`, {
+      headers: { "sec-fetch-dest": "document" },
+    });
 
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe("/");

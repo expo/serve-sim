@@ -2,7 +2,7 @@ import XCTest
 @testable import StreamingPolicy
 
 final class WebRTCFieldTrialPolicyTests: XCTestCase {
-    func testConfiguresAggressiveVP8QualityScalingAlongsideLowLatencyPlayout() {
+    func testConfiguresFastVP8DownscalingWithBalancedRecovery() {
         let policy = WebRTCFieldTrialPolicy(playoutDelayMaxMilliseconds: 42)
 
         XCTAssertEqual(
@@ -11,7 +11,7 @@ final class WebRTCFieldTrialPolicyTests: XCTestCase {
                 + "WebRTC-Video-QualityScalerSettings/"
                 + "sampling_period_ms:16,min_frames:10,initial_scale_factor:31.25/"
                 + "WebRTC-Video-QualityScaling/"
-                + "Enabled-1,85,149,205,24,37,26,36,0,0.9999,1/"
+                + "Enabled-29,85,149,205,24,37,26,36,0,0.999,1/"
                 + "WebRTC-VideoRateControl/vp8_qp_max:63/"
         )
     }

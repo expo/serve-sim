@@ -12,10 +12,10 @@ public struct WebRTCFieldTrialPolicy: Equatable, Sendable {
             // React after WebRTC's minimum supported ten-frame evidence window.
             + "WebRTC-Video-QualityScalerSettings/"
             + "sampling_period_ms:16,min_frames:10,initial_scale_factor:31.25/"
-            // Downscale sooner, suppress automatic upscale, and use the latest
-            // high-QP sample instead of retaining a long static-scene history.
+            // Downscale quickly while allowing resolution to recover once the
+            // lower-resolution encode remains healthy for roughly one second.
             + "WebRTC-Video-QualityScaling/"
-            + "Enabled-1,85,149,205,24,37,26,36,0,0.9999,1/"
+            + "Enabled-29,85,149,205,24,37,26,36,0,0.999,1/"
             // Raise VP8's quantizer ceiling to add compression headroom before
             // rate control has to drop a frame.
             + "WebRTC-VideoRateControl/vp8_qp_max:63/"

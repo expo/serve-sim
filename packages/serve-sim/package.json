@@ -73,7 +73,9 @@
   },
   "scripts": {
     "build": "bun run build.ts",
-    "dev": "bun run dev.ts"
+    "dev": "bun run dev.ts",
+    "tart": "bun scripts/tart/cli.ts",
+    "tart-test": "bun scripts/tart/cli.ts test"
   },
   "devDependencies": {
     "@types/bun": "latest",

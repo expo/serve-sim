@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { SSH_OPTS, loadTartConfig, setupGuest, TartGuest } from "./guest";
 import { bootSim } from "./sim";
-import { GUEST_PKG, GUEST_SIMPB, resolveTestFiles, stageGuest, testOnce } from "./stage";
+import { GUEST_PKG, GUEST_SIMPB, stageGuest, testOnce } from "./stage";
 import { runDev } from "./dev";
 
 const USAGE = `bun run tart <command>
@@ -63,13 +63,12 @@ async function main(): Promise<void> {
       return;
     case "test": {
       await prepare(guest);
-      const files = resolveTestFiles(config.pkgDir, rest);
-      if (!files.length) {
+      if (!rest.length) {
         console.error("no test files. Pass paths after tart test.");
         process.exit(2);
       }
       const udid = await bootSim(guest);
-      process.exit(await testOnce(guest, files, udid));
+      process.exit(await testOnce(guest, rest, udid));
     }
     case "dev": {
       await prepare(guest);

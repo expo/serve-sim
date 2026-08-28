@@ -316,14 +316,12 @@ bun run --filter serve-sim tart-dev
 
 `tart-dev` starts the VM if needed, boots an iPhone 17, runs `bun run dev.ts` on the guest, and tunnels guest `:3200` to the host. Host port `3200` must be free. Ctrl-C stops the tunnel and the guest server.
 
-`tart-test` uses the same guest, but runs `bun test` there. It stages package src onto the VM, boots an iPhone, and executes the files you pass over SSH as `expo`:
+`tart-test` uses the same guest, but runs `bun test` there. It stages package src onto the VM, boots an iPhone, and executes the files you pass over SSH as `expo`. Pass the files; with none it exits instead of running the whole guest suite.
 
 ```sh
 bun run --filter serve-sim tart-test -- src/__tests__/foo.test.ts
 bun run --filter serve-sim tart -- test src/__tests__/foo.test.ts
 ```
-
-With no files it looks for the pasteboard e2e tests. If those are missing it exits instead of running the whole guest suite.
 
 First run creates the `expo` user and copies bun onto the guest (`bun run --filter serve-sim tart -- setup` if you want that step alone).
 

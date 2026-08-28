@@ -45,14 +45,6 @@ xcrun simctl privacy ${quoted} grant pasteboard dev.expo.serve-sim.pasteboard-fi
   if (code !== 0) throw new Error("failed to install the pasteboard fixture on the guest");
 }
 
-export function resolveTestFiles(pkgDir: string, args: string[]): string[] {
-  if (args.length) return args;
-  return [
-    "src/__tests__/pasteboard-inject.e2e.test.ts",
-    "src/__tests__/pasteboard-endpoint.test.ts",
-  ].filter((file) => existsSync(join(pkgDir, file)));
-}
-
 export async function runGuestTests(guest: TartGuest, files: string[]): Promise<number> {
   const share = JSON.stringify(guestPkgPath(guest.config));
   const quoted = files.map((file) => JSON.stringify(file)).join(" ");

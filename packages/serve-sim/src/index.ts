@@ -19,6 +19,7 @@ import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from ".
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
 import { killPortHolder } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
+import { fpsShmName, readFpsSample } from "./fps-shm";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
 import { permissions } from "./permissions";
 import { uiSettings } from "./ui-settings";
@@ -1083,6 +1084,114 @@ function buildCameraHelper(): string {
   return out;
 }
 
+function locateFpsDylib(): string | null {
+  const candidates = [
+    join(__dirname, "..", "dist", "simfps", "libSimFpsProbe.dylib"),
+    join(__dirname, "simfps", "libSimFpsProbe.dylib"),
+    join(__dirname, "..", "Sources", "SimFpsProbe", "build", "libSimFpsProbe.dylib"),
+  ];
+  for (const p of candidates) if (existsSync(p)) return resolve(p);
+  return null;
+}
+
+function buildFpsDylib(): string {
+  const buildScript = join(__dirname, "..", "Sources", "SimFpsProbe", "build.sh");
+  if (!existsSync(buildScript)) {
+    throw new Error(
+      "SimFpsProbe source not found — this build of serve-sim does not " +
+        "include FPS probe sources. Reinstall from a recent release.",
+    );
+  }
+  console.error("[serve-sim] building libSimFpsProbe.dylib (one-time)…");
+  execSync(`bash "${buildScript}"`, { stdio: "inherit" });
+  const out = locateFpsDylib();
+  if (!out) throw new Error("Build succeeded but dylib not found.");
+  return out;
+}
+
+async function fpsProbe(
+  bundleId: string,
+  opts: { device?: string; duration?: string; json?: boolean; build?: boolean },
+): Promise<void> {
+  const udid = opts.device ? resolveDevice(opts.device) : findBootedDevice();
+  if (!udid) {
+    console.error("No booted simulator found. Boot one or pass --device <udid>.");
+    process.exit(1);
+  }
+
+  const durationSec = opts.duration ? Number(opts.duration) : undefined;
+  if (
+    durationSec !== undefined &&
+    (!Number.isFinite(durationSec) || durationSec <= 0)
+  ) {
+    console.error(
+      `Invalid --duration "${opts.duration}"; expected a positive number of seconds.`,
+    );
+    process.exit(1);
+  }
+
+  const dylib = opts.build ? buildFpsDylib() : (locateFpsDylib() ?? buildFpsDylib());
+  const shmName = fpsShmName(udid);
+
+  try {
+    execSync(`xcrun simctl terminate "${udid}" "${bundleId}"`, { stdio: "ignore" });
+  } catch {}
+
+  try {
+    execSync(`xcrun simctl launch "${udid}" "${bundleId}"`, {
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: dylib,
+        SIMCTL_CHILD_SERVE_SIM_FPS_SHM: shmName,
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`simctl launch failed for "${bundleId}". ${message}`);
+    process.exit(1);
+  }
+
+  if (!opts.json) {
+    console.error(`📈 Sampling FPS for ${bundleId} on ${udid} (relaunched with probe)…`);
+  }
+
+  let stop = false;
+  process.on("SIGINT", () => {
+    stop = true;
+  });
+  const deadline = durationSec !== undefined ? Date.now() + durationSec * 1000 : undefined;
+  let sawSample = false;
+  let lastTs = 0;
+  while (!stop && (deadline === undefined || Date.now() < deadline)) {
+    const sample = readFpsSample(udid, bundleId);
+    if (sample && sample.timestampMs !== lastTs) {
+      lastTs = sample.timestampMs;
+      sawSample = true;
+      if (opts.json) {
+        console.log(
+          JSON.stringify({
+            bundleId,
+            udid,
+            fps: sample.fps,
+            mainThreadFps: sample.mainThreadFps,
+            max: sample.maxFps,
+          }),
+        );
+      } else {
+        console.log(
+          `fps=${sample.fps.toFixed(1)}  main=${sample.mainThreadFps.toFixed(1)}  (max ${sample.maxFps})`,
+        );
+      }
+    }
+    sleepSync(200);
+  }
+  if (!sawSample && !stop) {
+    console.error(`No FPS sample from "${bundleId}". Is the probe dylib injected?`);
+    process.exit(1);
+  }
+}
+
 function shmNameForUdid(udid: string): string {
   // POSIX shm names on macOS have a 31-char limit. Hash the UDID short.
   const short = createHash("sha1").update(udid).digest("hex").slice(0, 8);
@@ -2026,6 +2135,16 @@ program
   .description("Simulate a memory warning on the device")
   .option(...deviceOpt)
   .action((opts) => memoryWarning(opts.device));
+
+program
+  .command("fps")
+  .description("Measure an app's render-loop FPS by injecting a CADisplayLink probe")
+  .argument("<bundle-id>")
+  .option(...deviceOpt)
+  .option("--duration <seconds>", "Sample for N seconds then detach (default: until Ctrl-C)")
+  .option("-j, --json", "Print one JSON sample per second")
+  .option("--build", "Force a rebuild of the probe dylib")
+  .action((bundleId: string, opts) => fpsProbe(bundleId, opts));
 
 program
   .command("event-log")

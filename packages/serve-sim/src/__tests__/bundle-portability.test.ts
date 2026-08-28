@@ -23,6 +23,8 @@ const ARM64_MACH_O_ARTIFACTS = [
   "dist/bin/LiveKitWebRTC.framework/LiveKitWebRTC",
   "dist/simcam/libSimCameraInjector.dylib",
   "dist/simcam/serve-sim-camera-helper",
+  "dist/simfps/libSimFpsProbe.dylib",
+  "dist/simfps/fps-shm.node",
   "dist/simax/serve-sim-ax-settings",
 ] as const;
 

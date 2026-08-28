@@ -239,6 +239,20 @@ if (helperBuild.status !== 0) {
 }
 console.log("dist/simcam/serve-sim-camera-helper");
 
+const fpsBuild = spawnSync(
+  "bash",
+  [
+    resolve(root, "Sources/SimFpsProbe/build.sh"),
+    resolve(distDir, "simfps"),
+  ],
+  { stdio: "inherit" },
+);
+if (fpsBuild.status !== 0) {
+  console.error("SimFpsProbe dylib build failed.");
+  process.exit(fpsBuild.status ?? 1);
+}
+console.log("dist/simfps/libSimFpsProbe.dylib");
+
 // ─── 7. sim-ax-settings in-sim CLI (simulator-wide UI settings) ──────────
 
 const axSettingsBuild = spawnSync(

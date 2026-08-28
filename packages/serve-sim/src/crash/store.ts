@@ -1,4 +1,4 @@
-import type { CrashReport } from "./report";
+import type { CrashFrame, CrashReport } from "./report";
 
 export const MAX_CRASHES = 20;
 export const MAX_OCCURRENCES = 5;
@@ -9,6 +9,7 @@ export interface CrashOccurrence {
   capturedAt: string | null;
   capturedAtMs: number | null;
   rawPath: string;
+  frames: CrashFrame[];
   logTail: string[];
   logTailSource: LogTailSource;
   seenAt: number;
@@ -24,9 +25,16 @@ export interface CrashRecord extends CrashReport {
   lastSeen: number;
 }
 
+export type OccurrenceStamp = {
+  capturedAtMs: number | null;
+  capturedAt: string | null;
+  rawPath: string;
+};
+
 export type CrashSummary = Omit<CrashRecord, "frames" | "occurrences"> & {
   logTailLines: number;
   occurrenceCount: number;
+  occurrenceTimes: OccurrenceStamp[];
 };
 
 export type LogTailSource = "none" | "buffer-rolled-past" | "no-app-lines" | "app-windowed";
@@ -79,6 +87,7 @@ export class CrashStore {
       capturedAt: report.capturedAt,
       capturedAtMs: report.capturedAtMs,
       rawPath,
+      frames: [...report.frames],
       logTail: [...logTail],
       logTailSource,
       seenAt: at,
@@ -138,6 +147,10 @@ function snapshot(record: CrashRecord): CrashRecord {
   return {
     ...record,
     frames: [...record.frames],
-    occurrences: record.occurrences.map((o) => ({ ...o, logTail: [...o.logTail] })),
+    occurrences: record.occurrences.map((o) => ({
+      ...o,
+      frames: [...o.frames],
+      logTail: [...o.logTail],
+    })),
   };
 }

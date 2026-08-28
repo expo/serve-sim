@@ -16,7 +16,15 @@ function bundleRoot(udid: string): string {
   );
 }
 
-function ips(udid = UDID, symbol = "AppDelegate.boot()"): string {
+function ips({
+  udid = UDID,
+  symbol = "AppDelegate.boot()",
+  capturedAt = "2026-08-04 23:14:07.8433 -0700",
+}: {
+  udid?: string;
+  symbol?: string;
+  capturedAt?: string;
+} = {}): string {
   const root = bundleRoot(udid);
   const header = {
     app_name: "Demo",
@@ -29,7 +37,7 @@ function ips(udid = UDID, symbol = "AppDelegate.boot()"): string {
     procName: "Demo",
     procPath: `${root}/Demo`,
     pid: 42,
-    captureTime: "2026-08-04 23:14:07.8433 -0700",
+    captureTime: capturedAt,
     exception: { type: "EXC_CRASH", signal: "SIGABRT" },
     termination: { indicator: "Abort trap: 6" },
     faultingThread: 0,
@@ -112,7 +120,10 @@ async function runtimeWithRepeat(): Promise<CrashRuntime> {
       emit = listener;
       return { close: () => {} };
     },
-    readReport: async () => ips(),
+    readReport: async (path) =>
+      path.endsWith("Demo-2.ips")
+        ? ips({ capturedAt: "2026-08-04 23:15:07.8433 -0700" })
+        : ips(),
     readDir: async () => [],
     statFile: async () => ({ mtimeMs: 0 }),
     onError: () => {},
@@ -147,6 +158,14 @@ describe("handleCrashesRequest", () => {
     expect(payload.crashes[0].culpritFrame).toBe("Demo AppDelegate.boot()");
     expect(payload.crashes[0].logTail).toBeUndefined();
     expect(payload.crashes[0].logTailLines).toBe(0);
+    expect(payload.crashes[0].occurrenceCount).toBe(1);
+    expect(payload.crashes[0].occurrenceTimes).toEqual([
+      {
+        capturedAtMs: payload.crashes[0].capturedAtMs,
+        capturedAt: payload.crashes[0].capturedAt,
+        rawPath: payload.crashes[0].rawPath,
+      },
+    ]);
   });
 
   test("explains itself when collection is unavailable, with an empty list", () => {
@@ -248,6 +267,9 @@ describe("handleCrashReportRequest", () => {
     expect(payload.record.id).toBe("INC-1");
     expect(payload.record.logTailLines).toBe(0);
     expect(payload.occurrence.logTail).toEqual([]);
+    expect(payload.occurrence.frames).toEqual([
+      { image: "Demo", symbol: "AppDelegate.boot()", imageOffset: 1, appOwned: true },
+    ]);
     expect(payload.report).toBe("RAW IPS");
     expect(payload.reportError).toBeNull();
   });
@@ -260,6 +282,18 @@ describe("handleCrashReportRequest", () => {
     const payload = JSON.parse(res.body_);
     expect(payload.record.count).toBe(2);
     expect(payload.occurrence).toMatchObject({ index: 1, total: 2 });
+    expect(payload.record.occurrenceTimes).toEqual([
+      {
+        capturedAtMs: Date.parse("2026-08-04 23:14:07.8433 -0700"),
+        capturedAt: "2026-08-04 23:14:07.8433 -0700",
+        rawPath: "/reports/Demo-1.ips",
+      },
+      {
+        capturedAtMs: Date.parse("2026-08-04 23:15:07.8433 -0700"),
+        capturedAt: "2026-08-04 23:15:07.8433 -0700",
+        rawPath: "/reports/Demo-2.ips",
+      },
+    ]);
     expect(payload.report).toBe("/reports/Demo-2.ips");
   });
 

@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import type { IncomingMessage } from "http";
+import type { Socket } from "net";
 
 import { ACCESS_COOKIE } from "../session-auth";
 import { simMiddleware } from "../middleware";
+import type { UpgradeHandlerWebSocket } from "../middleware-utils";
 
 const TOKEN = "preview-token-xyz";
 const ORIGIN = "http://192.168.1.20:34567";
@@ -111,5 +114,89 @@ describe("the protected surface", () => {
     for (const path of ["/healthz", "/readyz"]) {
       expect((await request(path)).status).not.toBe(401);
     }
+  });
+});
+
+describe("websocket upgrades with --require-token", () => {
+  // Upgrades never reach the HTTP gate, so they are gated at the two upgrade entry points instead.
+
+  function fakeSocket() {
+    const calls = { destroyed: false, ended: false };
+    const socket = {
+      destroy: () => {
+        calls.destroyed = true;
+      },
+      end: () => {
+        calls.ended = true;
+      },
+    };
+    return { calls, socket: socket as unknown as Socket };
+  }
+
+  function upgradeRequest(url: string) {
+    return { url, method: "GET", headers: {} } as unknown as IncomingMessage;
+  }
+
+  function fakeWebSocket() {
+    const calls = { closed: false, listeners: 0 };
+    const ws: UpgradeHandlerWebSocket = {
+      OPEN: 1,
+      readyState: 1,
+      on: () => {
+        calls.listeners += 1;
+      },
+      send: () => {},
+      close: () => {
+        calls.closed = true;
+      },
+    };
+    return { calls, ws };
+  }
+
+  // The devtools branch is async, so the only way this socket is torn down synchronously is the gate.
+  test("destroys a tokenless devtools socket (handleUpgrade)", () => {
+    const handler = simMiddleware({ basePath: "/", execToken: TOKEN, requirePreviewToken: true });
+    const { calls, socket } = fakeSocket();
+
+    handler.handleUpgrade?.(upgradeRequest("/devtools/page/1"), socket, Buffer.alloc(0));
+
+    expect(calls.destroyed).toBe(true);
+  });
+
+  // exec-ws would otherwise wire the socket and wait for its token frame; a synchronous close is the gate.
+  test("closes a tokenless exec-ws socket before wiring it (handleWebSocket)", () => {
+    const handler = simMiddleware({ basePath: "/", execToken: TOKEN, requirePreviewToken: true });
+    const { calls, ws } = fakeWebSocket();
+
+    const claimed = handler.handleWebSocket?.(new Request(`${ORIGIN}/exec-ws`), ws);
+
+    expect(claimed).toBe(true);
+    expect(calls.closed).toBe(true);
+    expect(calls.listeners).toBe(0);
+  });
+
+  test("wires the exec-ws socket when it carries the cookie", () => {
+    const handler = simMiddleware({ basePath: "/", execToken: TOKEN, requirePreviewToken: true });
+    const { calls, ws } = fakeWebSocket();
+
+    handler.handleWebSocket?.(
+      new Request(`${ORIGIN}/exec-ws`, {
+        headers: { cookie: `${ACCESS_COOKIE}=${encodeURIComponent(TOKEN)}` },
+      }),
+      ws,
+    );
+
+    expect(calls.closed).toBe(false);
+    expect(calls.listeners).toBeGreaterThan(0);
+  });
+
+  test("leaves upgrades open when the flag is off", () => {
+    const handler = simMiddleware({ basePath: "/", execToken: TOKEN, requirePreviewToken: false });
+    const { calls, ws } = fakeWebSocket();
+
+    handler.handleWebSocket?.(new Request(`${ORIGIN}/exec-ws`), ws);
+
+    expect(calls.closed).toBe(false);
+    expect(calls.listeners).toBeGreaterThan(0);
   });
 });

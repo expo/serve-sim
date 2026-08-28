@@ -4,6 +4,7 @@ import {
   ACCESS_COOKIE,
   assertPreviewAccess,
   assertSessionAccess,
+  assertUpgradeAccess,
   captureAuthError,
   execAuthError,
   isJsonContentType,
@@ -195,5 +196,42 @@ describe("assertPreviewAccess", () => {
       assertPreviewAccess(req({}, "/?token=wrong"), r, TOKEN, { required: true, basePath: "/" }),
     ).toBe(false);
     expect(sent.status).toBe(401);
+  });
+});
+
+describe("assertUpgradeAccess", () => {
+  const TOKEN = "s3cret-token";
+
+  test("stays open when not required, so loopback upgrades are untouched", () => {
+    expect(assertUpgradeAccess({}, TOKEN, { required: false })).toBe(true);
+  });
+
+  test("accepts the bearer a script holds", () => {
+    expect(
+      assertUpgradeAccess({ authorization: `Bearer ${TOKEN}` }, TOKEN, { required: true }),
+    ).toBe(true);
+  });
+
+  test("accepts the cookie the page carries on its own sockets", () => {
+    expect(
+      assertUpgradeAccess(
+        { cookie: `${ACCESS_COOKIE}=${encodeURIComponent(TOKEN)}` },
+        TOKEN,
+        { required: true },
+      ),
+    ).toBe(true);
+  });
+
+  test("refuses an upgrade with no token", () => {
+    expect(assertUpgradeAccess({}, TOKEN, { required: true })).toBe(false);
+  });
+
+  test("refuses a wrong token in either position", () => {
+    expect(
+      assertUpgradeAccess({ authorization: "Bearer wrong" }, TOKEN, { required: true }),
+    ).toBe(false);
+    expect(
+      assertUpgradeAccess({ cookie: `${ACCESS_COOKIE}=wrong` }, TOKEN, { required: true }),
+    ).toBe(false);
   });
 });

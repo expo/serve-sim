@@ -106,7 +106,15 @@ function cookieValue(header: string | undefined, name: string): string | null {
   if (!header) return null;
   for (const part of header.split(";")) {
     const [key, ...rest] = part.trim().split("=");
-    if (key === name) return decodeURIComponent(rest.join("="));
+    if (key === name) {
+      // A malformed percent-encoding must not throw: this runs on the synchronous upgrade path,
+      // where an uncaught URIError would crash the process. A bad cookie is simply not a match.
+      try {
+        return decodeURIComponent(rest.join("="));
+      } catch {
+        return null;
+      }
+    }
   }
   return null;
 }
@@ -125,8 +133,8 @@ function carriesSessionToken(
 /**
  * Require the session token before serving anything that carries it.
  *
- * Loopback is ungated: reaching it means being on the machine already. Returns false when the request
- * has been answered and must stop.
+ * Off unless `--require-token` is set; when on, every gated route needs the token regardless of the
+ * bind address. Returns false when the request has been answered and must stop.
  */
 export function assertPreviewAccess(
   req: SessionAuthReq & { url?: string },
@@ -136,8 +144,8 @@ export function assertPreviewAccess(
 ): boolean {
   if (!opts.required) return true;
 
-  if (carriesSessionToken(req.headers, sessionToken)) return true;
-
+  // Trade a valid `?token=` for the cookie first, even when the caller already holds one, so the
+  // secret never lingers in the URL — where it could reach logs, history, or an outbound proxy.
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const fromQuery = url.searchParams.get("token");
   if (fromQuery && safeEqualString(fromQuery, sessionToken)) {
@@ -151,9 +159,11 @@ export function assertPreviewAccess(
     return false;
   }
 
+  if (carriesSessionToken(req.headers, sessionToken)) return true;
+
   res.writeHead(401, { "Content-Type": "text/plain", "Cache-Control": "no-store, private" });
   res.end(
-    "Unauthorized. This serve-sim is bound to a non-loopback address, so the preview needs the access " +
+    "Unauthorized. This serve-sim was started with --require-token, so the preview needs the access " +
       "token it printed at startup. Open the URL it logged, which carries `?token=`, or send the token " +
       "as `Authorization: Bearer <token>`.\n",
   );
@@ -161,15 +171,21 @@ export function assertPreviewAccess(
 }
 
 /**
- * Gate a WebSocket upgrade the same way as the HTTP surface: a bearer header or the access cookie the
- * page already holds. Upgrades cannot redirect, so there is no `?token=` exchange here — the page's own
- * sockets are same-origin and send the cookie. Returns false when the socket must be closed.
+ * Gate a WebSocket upgrade: a bearer header, the access cookie the page already holds, or a `?token=`
+ * query param. The page's own sockets are same-origin and send the cookie; the local CLI subcommands
+ * use the global `WebSocket`, which has no header API, so they present the token in the URL instead.
+ * There is no redirect (an upgrade cannot). Returns false when the socket must be closed.
  */
 export function assertUpgradeAccess(
-  headers: { authorization?: string | string[]; cookie?: string | string[] },
+  req: { authorization?: string | string[]; cookie?: string | string[]; url?: string },
   sessionToken: string,
   opts: { required: boolean },
 ): boolean {
   if (!opts.required) return true;
-  return carriesSessionToken(headers, sessionToken);
+  if (carriesSessionToken(req, sessionToken)) return true;
+  if (req.url) {
+    const fromQuery = new URL(req.url, "http://127.0.0.1").searchParams.get("token");
+    if (fromQuery && safeEqualString(fromQuery, sessionToken)) return true;
+  }
+  return false;
 }

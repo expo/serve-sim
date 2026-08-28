@@ -188,6 +188,16 @@ function writeState(state: ServerState) {
   debugState("wrote state pid=%d device=%s port=%d", state.pid, state.device, state.port);
 }
 
+// Helper-socket URL for a device, with the session token appended when the server runs gated
+// (--require-token). The input subcommands use the global WebSocket, which has no header API, so the
+// token rides the URL; the server accepts `?token=` on the upgrade the same as a bearer or cookie.
+function helperSocketUrl(state: ServerState): string {
+  if (!state.token) return state.wsUrl;
+  const url = new URL(state.wsUrl);
+  url.searchParams.set("token", state.token);
+  return url.toString();
+}
+
 function clearState(udid?: string) {
   if (udid) {
     debugState("clearState device=%s", udid);
@@ -765,7 +775,7 @@ async function gesture(jsonStr: string, deviceArg?: string) {
   }
 
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(state.wsUrl);
+    const ws = new WebSocket(helperSocketUrl(state));
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
@@ -799,7 +809,7 @@ async function tap(xArg: string, yArg: string, deviceArg?: string) {
     process.exit(1);
   }
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(state.wsUrl);
+    const ws = new WebSocket(helperSocketUrl(state));
     ws.binaryType = "arraybuffer";
     const send = (type: "begin" | "end") => {
       const json = new TextEncoder().encode(JSON.stringify({ type, x, y }));
@@ -897,7 +907,7 @@ async function rotate(orientation: string, deviceArg?: string) {
   }
 
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(state.wsUrl);
+    const ws = new WebSocket(helperSocketUrl(state));
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
@@ -940,7 +950,7 @@ async function button(buttonName = "home", deviceArg?: string) {
   const payload = hid ? { button: buttonName, ...hid } : { button: buttonName };
 
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(state.wsUrl);
+    const ws = new WebSocket(helperSocketUrl(state));
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
@@ -989,7 +999,7 @@ async function caDebug(option: string, stateRaw: string, deviceArg?: string) {
   }
 
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(stateFile.wsUrl);
+    const ws = new WebSocket(helperSocketUrl(stateFile));
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       const json = new TextEncoder().encode(JSON.stringify({ option: resolved, enabled }));
@@ -1014,7 +1024,7 @@ async function memoryWarning(deviceArg?: string) {
     process.exit(1);
   }
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(stateFile.wsUrl);
+    const ws = new WebSocket(helperSocketUrl(stateFile));
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       ws.send(new Uint8Array([0x09]));
@@ -1617,8 +1627,7 @@ function resolveTargetDevices(devices: string[]): string[] {
   if (booted) return [booted];
   const fallback = pickDefaultDevice();
   if (!fallback) {
-    console.error("No device specified and no available iOS simulator found.");
-    process.exit(1);
+    throw new Error("No device specified and no available iOS simulator found.");
   }
   return [fallback.udid];
 }
@@ -1637,13 +1646,24 @@ async function serve(
   } = {},
 ) {
   const quiet = !!options.quiet;
+  // Under --quiet the caller parses stdout, so a failure must be a JSON line there, not bare stderr.
+  const failStartup = (message: string): never => {
+    if (quiet) console.log(JSON.stringify({ error: message }));
+    else console.error(message);
+    process.exit(1);
+  };
   // Boot the target simulators; the preview server streams them in-process
   // (no spawned helper). Sessions are created lazily on the first stream request.
-  const targetDevices = resolveTargetDevices(devices);
-  if (!quiet && devices.length === 0 && readAllStates().length === 0) {
-    console.log("Starting simulator stream...");
+  let targetDevices: string[];
+  try {
+    targetDevices = resolveTargetDevices(devices);
+    if (!quiet && devices.length === 0 && readAllStates().length === 0) {
+      console.log("Starting simulator stream...");
+    }
+    for (const udid of targetDevices) await ensureBooted(udid);
+  } catch (err) {
+    return failStartup(err instanceof Error ? err.message : String(err));
   }
-  for (const udid of targetDevices) await ensureBooted(udid);
   const targetDevice = targetDevices[0];
 
   const { simMiddleware } = await import("./middleware");
@@ -1681,21 +1701,21 @@ async function serve(
   }
   if (!bound) {
     if ((lastErr as any)?.code === "EADDRINUSE") {
-      if (portExplicit) {
-        console.error(`Port ${servePort} is already in use. Pass a different --port or stop the other process.`);
-      } else {
-        console.error(`No available port found in range ${servePort}-${servePort + maxScan - 1}.`);
-      }
+      failStartup(
+        portExplicit
+          ? `Port ${servePort} is already in use. Pass a different --port or stop the other process.`
+          : `No available port found in range ${servePort}-${servePort + maxScan - 1}.`,
+      );
     } else {
-      console.error(`Failed to start preview server: ${(lastErr as any)?.message ?? lastErr}`);
+      failStartup(`Failed to start preview server: ${(lastErr as any)?.message ?? lastErr}`);
     }
-    process.exit(1);
   }
 
   // Record in-process state so the preview/grid enumerate these devices and the
   // CLI input subcommands can reach the same-origin /helper ws.
   for (const udid of targetDevices) {
-    writeState(inProcessServeSimState(udid, boundPort, "/", host, options.stream));
+    const state = inProcessServeSimState(udid, boundPort, "/", host, options.stream);
+    writeState(requirePreviewToken ? { ...state, token: previewToken } : state);
   }
   const clearAll = () => {
     for (const udid of targetDevices) {
@@ -1709,6 +1729,7 @@ async function serve(
       path: options.debugStreamPath,
       statsUrl: (device) =>
         `http://127.0.0.1:${boundPort}/helper/${encodeURIComponent(device)}/webrtc/stats`,
+      authToken: requirePreviewToken ? previewToken : undefined,
     });
     runStreamDebugLog(targetDevices, logger);
     if (!quiet) console.log(`  - Stream debug: recording to ${options.debugStreamPath}`);
@@ -1718,8 +1739,6 @@ async function serve(
   const networkIP = getLocalNetworkIP();
   const tokenQuery = requirePreviewToken ? `/?token=${previewToken}` : "";
   if (quiet) {
-    // JSON-only contract for orchestrators: the token rides here so a caller reads it once and
-    // presents it on every later request. Emitted only when the gate is on, and never persisted.
     const states = targetDevices.map((udid) =>
       inProcessServeSimState(udid, boundPort, "/", host, options.stream),
     );
@@ -1987,6 +2006,13 @@ Examples:
         console.error(unusable);
         process.exit(1);
       }
+    }
+    if (opts.requireToken && (opts.detach || opts.preview === false)) {
+      console.error(
+        "--require-token needs the preview server, so drop --detach/--no-preview. It gates the " +
+          "network-exposed preview; those modes bind loopback only, where the token does nothing.",
+      );
+      process.exit(1);
     }
     if (opts.detach) {
       const states = await detach(devices, startPort ?? 3100, stream, streamOptionsProvided);

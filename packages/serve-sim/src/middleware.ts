@@ -2507,7 +2507,13 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   connectMiddleware.handleUpgrade = (req: SimReq, socket: Socket, head: Buffer) => {
     // WebSocket upgrades skip the HTTP request path, so gate them here too: the HID and devtools
     // sockets carry no token of their own, and without this an exposed server hands them to any caller.
-    if (!assertUpgradeAccess(req.headers, execToken, { required: requirePreviewToken })) {
+    if (
+      !assertUpgradeAccess(
+        { authorization: req.headers.authorization, cookie: req.headers.cookie, url: req.url },
+        execToken,
+        { required: requirePreviewToken },
+      )
+    ) {
       socket.destroy();
       return;
     }
@@ -2566,8 +2572,10 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     onCommandResult: (command, result) => recordCommandEvent(command, result),
     onSseRequest(path, websocketRequest) {
       const url = new URL(path, websocketRequest.url);
+      // The exec channel already authenticated (token frame), so its internal fan-out to same-origin
+      // SSE routes carries the token past the whole-surface gate. Without this it 401s when gated.
       return fetchMiddleware(new Request(url, {
-        headers: { accept: "text/event-stream" },
+        headers: { accept: "text/event-stream", authorization: `Bearer ${execToken}` },
       }));
     },
   });
@@ -2580,6 +2588,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         {
           authorization: request.headers.get("authorization") ?? undefined,
           cookie: request.headers.get("cookie") ?? undefined,
+          url: request.url,
         },
         execToken,
         { required: requirePreviewToken },

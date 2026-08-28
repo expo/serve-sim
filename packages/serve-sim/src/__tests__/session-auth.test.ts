@@ -222,8 +222,24 @@ describe("assertUpgradeAccess", () => {
     ).toBe(true);
   });
 
+  test("accepts a ?token= query param, for the global-WebSocket CLI subcommands", () => {
+    expect(
+      assertUpgradeAccess({ url: `/helper/x/ws?token=${encodeURIComponent(TOKEN)}` }, TOKEN, {
+        required: true,
+      }),
+    ).toBe(true);
+    expect(
+      assertUpgradeAccess({ url: `/helper/x/ws?token=wrong` }, TOKEN, { required: true }),
+    ).toBe(false);
+  });
+
   test("refuses an upgrade with no token", () => {
     expect(assertUpgradeAccess({}, TOKEN, { required: true })).toBe(false);
+  });
+
+  test("refuses, without throwing, a malformed cookie on the synchronous upgrade path", () => {
+    expect(() => assertUpgradeAccess({ cookie: `${ACCESS_COOKIE}=%` }, TOKEN, { required: true })).not.toThrow();
+    expect(assertUpgradeAccess({ cookie: `${ACCESS_COOKIE}=%` }, TOKEN, { required: true })).toBe(false);
   });
 
   test("refuses a wrong token in either position", () => {

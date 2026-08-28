@@ -30,13 +30,18 @@ export interface ServeSimDeviceState {
   streamUrl: string;
   wsUrl: string;
   streamSettings?: StreamSettings;
+  /**
+   * Present only under `--require-token`. Lets same-user CLI subcommands reach the gated helper
+   * socket by appending it to `wsUrl`. Owner-only on disk (0600); a network peer cannot read it.
+   */
+  token?: string;
 }
 
 /**
  * Machine-readable startup payload for the preview server's `--quiet` output. Mirrors the shape the
  * follow/detach paths already print, and carries the session token only when the gate is on, so an
- * orchestrator (e.g. eas-cli) reads it once and presents it on every later call. The token is stdout
- * only: it is never written to the on-disk state file, which other local accounts could read.
+ * orchestrator (e.g. eas-cli) reads it once and presents it on every later call. The same token is
+ * also written to the owner-only (0600) state file, so local subcommands can reach the gated socket.
  */
 export function previewStartupPayload(
   states: ServeSimDeviceState[],
@@ -89,8 +94,8 @@ export function writeServeSimState(state: ServeSimDeviceState): void {
   mkdirSync(STATE_DIR, { recursive: true });
   const file = stateFileForDevice(state.device);
   const tmp = `${file}.${process.pid}.tmp`;
-  // WebRTC state can contain short-lived TURN credentials. Keep the file
-  // readable only by the account running serve-sim.
+  // Holds secrets: short-lived TURN credentials, and the session token under --require-token. Keep
+  // the file readable only by the account running serve-sim.
   writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
   renameSync(tmp, file);
 }

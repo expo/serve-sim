@@ -169,13 +169,14 @@ describe("StreamStatsBody", () => {
     expect(before).not.toContain("No drops");
   });
 
-  test("keeps a fault in front of the disclosure, where a warning has to be seen", () => {
+  test("puts a fault where the all-clear would be, so one slot carries the verdict", () => {
     const dropping = stats({ droppedInWindow: 3 });
     const markup = renderToStaticMarkup(
       <StreamStatsBody stats={dropping} history={[stats()]} faults={describeFaults(dropping)} />,
     );
-    const [before] = markup.split("Diagnostics");
-    expect(before).toContain("3 frames dropped");
+    const [before, inside] = markup.split("Diagnostics");
+    expect(before).not.toContain("3 frames dropped");
+    expect(inside).toContain("3 frames dropped");
     expect(markup).not.toContain("No drops");
   });
 

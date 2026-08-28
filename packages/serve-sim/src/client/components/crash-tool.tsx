@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CrashSummary } from "../../crash/store";
+import { formatCrashAgo, remapOccurrenceIndex } from "../utils/crash-format";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
 import { CrashDetailModal, type SelectedOccurrence } from "./crash-detail-modal";
@@ -18,25 +19,16 @@ type CrashDetail = {
   reportError: string | null;
 };
 
-/** Recency is what you want mid-session; the exact clock time stays on hover. */
-function agoOf(record: CrashSummary, now: number): string {
-  if (record.capturedAtMs === null) return "";
-  const seconds = Math.max(0, Math.round((now - record.capturedAtMs) / 1000));
-  if (seconds < 60) return `${seconds}s ago`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  return `${Math.floor(seconds / 3600)}h ago`;
-}
-
-function clockOf(record: CrashSummary): string {
-  if (record.capturedAtMs === null) return record.capturedAt ?? "";
-  return new Date(record.capturedAtMs).toLocaleTimeString();
-}
-
 export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndpoint?: string }) {
   const [open, setOpen] = useState(false);
   const [payload, setPayload] = useState<CrashListPayload | null>(null);
   const [detail, setDetail] = useState<CrashDetail | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [pendingIndex, setPendingIndex] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const fetchGen = useRef(0);
+  const requested = useRef<number | null>(null);
+  const confirmed = useRef<number | null>(null);
 
   const path = useMemo(
     () => crashesEndpoint ?? `${simEndpoint("crashes")}?device=${encodeURIComponent(udid)}`,
@@ -59,14 +51,16 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
 
   useEffect(() => {
     let cancelled = false;
+    let gen = 0;
     const load = async (): Promise<void> => {
+      const thisGen = ++gen;
       try {
         const response = await authorized(path);
-        if (!response.ok || cancelled) return;
-        setPayload((await response.json()) as CrashListPayload);
-      } catch {
-        // A dropped poll is not worth surfacing; the next one recovers.
-      }
+        if (!response.ok) return;
+        const next = (await response.json()) as CrashListPayload;
+        if (cancelled || thisGen !== gen) return;
+        setPayload(next);
+      } catch {}
     };
     void load();
     const timer = setInterval(() => void load(), POLL_INTERVAL_MS);
@@ -76,17 +70,85 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
     };
   }, [path, authorized]);
 
-  const loadDetail = async (id: string, occurrence?: number): Promise<void> => {
-    const query = occurrence === undefined ? "" : `?occurrence=${occurrence}`;
-    try {
-      const response = await authorized(
-        `${path.split("?")[0]}/${encodeURIComponent(id)}${query}`
-      );
-      if (!response.ok) return;
-      setDetail((await response.json()) as CrashDetail);
-    } catch {
-      // Leave the panel as it was rather than opening an empty dialog.
+  const loadDetail = useCallback(
+    async (id: string, occurrence?: number): Promise<void> => {
+      const gen = ++fetchGen.current;
+      setLoadError(null);
+      const query = occurrence === undefined ? "" : `?occurrence=${occurrence}`;
+      const failMessage =
+        confirmed.current === null ? "Could not load that crash." : "Could not load that occurrence.";
+      const revert = (): void => {
+        if (gen !== fetchGen.current) return;
+        requested.current = confirmed.current;
+        setPendingIndex(confirmed.current);
+        setLoadError(failMessage);
+      };
+      try {
+        const response = await authorized(
+          `${path.split("?")[0]}/${encodeURIComponent(id)}${query}`
+        );
+        if (!response.ok) {
+          revert();
+          return;
+        }
+        const next = (await response.json()) as CrashDetail;
+        if (gen !== fetchGen.current) return;
+        requested.current = next.occurrence.index;
+        confirmed.current = next.occurrence.index;
+        setPendingIndex(next.occurrence.index);
+        setDetail(next);
+      } catch {
+        revert();
+      }
+    },
+    [authorized, path]
+  );
+
+  useEffect(() => {
+    if (!detail || !payload) return;
+    const listed = payload.crashes.find((crash) => crash.id === detail.record.id);
+    if (!listed) return;
+    const remapped = remapOccurrenceIndex(listed.occurrenceTimes, detail.occurrence.rawPath);
+    const index = remapped ?? detail.occurrence.index;
+    const total = listed.occurrenceCount;
+    if (
+      listed.count === detail.record.count &&
+      total === detail.occurrence.total &&
+      index === detail.occurrence.index
+    ) {
+      return;
     }
+    if (remapped !== null) {
+      if (requested.current === detail.occurrence.index) requested.current = remapped;
+      if (confirmed.current === detail.occurrence.index) confirmed.current = remapped;
+      setPendingIndex((pending) => (pending === detail.occurrence.index ? remapped : pending));
+    }
+    setDetail((prev) =>
+      prev && prev.record.id === listed.id
+        ? {
+            ...prev,
+            record: listed,
+            occurrence: { ...prev.occurrence, index, total },
+          }
+        : prev
+    );
+  }, [payload, detail]);
+
+  const selectOccurrence = (index: number): void => {
+    if (!detail) return;
+    if (index < 0 || index >= detail.occurrence.total) return;
+    if (index === requested.current) return;
+    requested.current = index;
+    setPendingIndex(index);
+    void loadDetail(detail.record.id, index);
+  };
+
+  const stepOccurrence = (delta: number): boolean => {
+    const index = (requested.current ?? detail?.occurrence.index ?? 0) + delta;
+    if (!detail || index < 0 || index >= detail.occurrence.total) return false;
+    if (index === requested.current) return false;
+    selectOccurrence(index);
+    return true;
   };
 
   const crashes = payload?.crashes ?? [];
@@ -115,6 +177,11 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
         </>
       }
     >
+      {loadError && !detail && (
+        <p role="status" className="text-[11px] text-amber-300/80">
+          {loadError}
+        </p>
+      )}
       {unavailable ? (
         <p className="text-[11px] leading-relaxed text-amber-300/80">{payload?.meta.statusError}</p>
       ) : crashes.length === 0 ? (
@@ -127,7 +194,10 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
             <li key={crash.id}>
               <button
                 type="button"
-                onClick={() => void loadDetail(crash.id)}
+                onClick={() => {
+                  if (detail) return;
+                  void loadDetail(crash.id);
+                }}
                 className="w-full rounded-md bg-white/[0.03] px-2 py-1.5 text-left hover:bg-white/[0.06]"
               >
                 <span className="flex items-center gap-2">
@@ -141,10 +211,14 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
                   )}
                   <span className="truncate text-[11px] text-white/50">{crash.appName}</span>
                   <span
-                    title={clockOf(crash)}
+                    title={
+                      crash.capturedAtMs === null
+                        ? (crash.capturedAt ?? "")
+                        : new Date(crash.capturedAtMs).toLocaleTimeString()
+                    }
                     className="ml-auto shrink-0 font-mono text-[10px] text-white/35"
                   >
-                    {agoOf(crash, now)}
+                    {formatCrashAgo(crash.capturedAtMs, now)}
                   </span>
                 </span>
                 <span className="mt-0.5 block truncate font-mono text-[10px] text-white/40">
@@ -161,8 +235,19 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
           occurrence={detail.occurrence}
           report={detail.report}
           reportError={detail.reportError}
-          onSelectOccurrence={(index) => void loadDetail(detail.record.id, index)}
-          onClose={() => setDetail(null)}
+          now={now}
+          pendingIndex={pendingIndex ?? detail.occurrence.index}
+          loadError={loadError}
+          onSelectOccurrence={selectOccurrence}
+          onStepOccurrence={stepOccurrence}
+          onClose={() => {
+            fetchGen.current += 1;
+            requested.current = null;
+            confirmed.current = null;
+            setPendingIndex(null);
+            setLoadError(null);
+            setDetail(null);
+          }}
         />
       )}
     </CollapsibleSection>

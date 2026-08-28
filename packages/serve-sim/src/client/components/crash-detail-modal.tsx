@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import type { CrashFrame } from "../../crash/report";
 import type { CrashOccurrence, CrashSummary } from "../../crash/store";
+import { collapseSystemFrames, formatCrashAgo } from "../utils/crash-format";
 
 /** Raw device-log lines are NDJSON; a reader wants the message, not the envelope. */
 function messageOf(raw: string): string {
@@ -32,40 +34,150 @@ function useCopy(): [boolean, (text: string) => void] {
   return [copied, copy];
 }
 
+function FrameRow({ index, frame }: { index: number; frame: CrashFrame }) {
+  return (
+    <div
+      className={`grid grid-cols-[24px_140px_1fr] gap-2 font-mono text-[10px] ${
+        frame.appOwned ? "text-white/75" : "text-white/35"
+      }`}
+    >
+      <span className="text-white/25">{index}</span>
+      <span className="truncate">{frame.image}</span>
+      <span className="break-all">{frame.symbol ?? `+${frame.imageOffset ?? 0}`}</span>
+    </div>
+  );
+}
+
+function StackTrace({ frames }: { frames: CrashFrame[] }) {
+  const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
+  const rows = collapseSystemFrames(frames);
+
+  useEffect(() => {
+    setExpanded(new Set());
+  }, [frames]);
+
+  const toggle = (start: number): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(start)) next.delete(start);
+      else next.add(start);
+      return next;
+    });
+  };
+
+  if (frames.length === 0) {
+    return <p className="text-[11px] text-white/35">No symbolicated frames in this report.</p>;
+  }
+
+  return (
+    <ol className="flex flex-col gap-0.5">
+      {rows.map((row) => {
+        if (row.kind === "frame") {
+          return (
+            <li key={row.index}>
+              <FrameRow index={row.index} frame={row.frame} />
+            </li>
+          );
+        }
+        const open = expanded.has(row.start);
+        return (
+          <li key={`collapsed-${row.start}`} className="flex flex-col gap-0.5">
+            <button
+              type="button"
+              onClick={() => toggle(row.start)}
+              className="grid grid-cols-[24px_1fr] gap-2 rounded px-0.5 text-left font-mono text-[10px] text-white/50 hover:bg-white/5 hover:text-white/70"
+            >
+              <span className="text-white/50">…</span>
+              <span>
+                {open ? "Hide" : "Show"} {row.count} system frames
+              </span>
+            </button>
+            {open &&
+              row.frames.map((item) => (
+                <FrameRow key={item.index} index={item.index} frame={item.frame} />
+              ))}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 export type SelectedOccurrence = CrashOccurrence & { index: number; total: number };
+
+function formatOccurrenceClock(ms: number | null, fallback: string): string {
+  if (ms === null) return fallback;
+  return new Date(ms).toLocaleString();
+}
 
 export function CrashDetailModal({
   record,
   occurrence,
   report,
   reportError,
+  now,
+  pendingIndex,
+  loadError,
   onSelectOccurrence,
+  onStepOccurrence,
   onClose,
 }: {
   record: CrashSummary;
   occurrence: SelectedOccurrence;
   report: string | null;
   reportError: string | null;
+  now: number;
+  pendingIndex: number;
+  loadError: string | null;
   onSelectOccurrence: (index: number) => void;
+  onStepOccurrence: (delta: number) => boolean;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<"stack" | "log">("stack");
   const [copied, copy] = useCopy();
-  const older = occurrence.index - 1;
-  const newer = occurrence.index + 1;
+  const panelRef = useRef<HTMLDivElement>(null);
+  const ago = formatCrashAgo(occurrence.capturedAtMs, now);
+  const clock = formatOccurrenceClock(occurrence.capturedAtMs, occurrence.capturedAt ?? "unknown time");
+  const frames = occurrence.frames;
+
+  useEffect(() => {
+    panelRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") onClose();
-      if (e.key === "ArrowLeft" && older >= 0) onSelectOccurrence(older);
-      if (e.key === "ArrowRight" && newer < occurrence.total) onSelectOccurrence(newer);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      if (e.key === "Tab") {
+        const root = panelRef.current;
+        if (!root) return;
+        const focusable = [...root.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+        if (focusable.length === 0) return;
+        const first = focusable[0]!;
+        const last = focusable[focusable.length - 1]!;
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+        return;
+      }
+      if (occurrence.total <= 1) return;
+      if (e.key === "ArrowLeft") {
+        if (onStepOccurrence(-1)) e.preventDefault();
+      } else if (e.key === "ArrowRight") {
+        if (onStepOccurrence(1)) e.preventDefault();
+      }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, onSelectOccurrence, older, newer, occurrence.total]);
+  }, [onClose, onStepOccurrence, occurrence.total]);
 
-  // The route needs a bearer token, so the file is fetched into memory and saved from there
-  // rather than linked directly.
   const download = (): void => {
     if (!report) return;
     const url = URL.createObjectURL(new Blob([report], { type: "application/json" }));
@@ -76,17 +188,17 @@ export function CrashDetailModal({
     URL.revokeObjectURL(url);
   };
 
-  const when =
-    occurrence.capturedAtMs === null ? occurrence.capturedAt : new Date(occurrence.capturedAtMs);
-
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
       onClick={onClose}
     >
       <div
+        ref={panelRef}
         role="dialog"
+        aria-modal="true"
         aria-label="Crash report"
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         className="flex max-h-[80vh] w-[min(720px,90vw)] flex-col rounded-[12px] bg-panel border border-white/12 shadow-[0_16px_48px_rgba(0,0,0,0.6)]"
       >
@@ -96,15 +208,10 @@ export function CrashDetailModal({
               <span className="font-mono text-[13px] text-red-300">
                 {record.signal ?? record.exceptionType}
               </span>
-              {record.count > 1 && (
-                <span className="rounded border border-red-400/30 px-1 text-[10px] font-mono text-red-300">
-                  ×{record.count}
-                </span>
-              )}
               <span className="text-[13px] text-white/80">{record.appName}</span>
             </p>
-            <p className="mt-0.5 text-[11px] text-white/40">
-              {when instanceof Date ? when.toLocaleString() : (when ?? "unknown time")}
+            <p className="mt-0.5 text-[11px] text-white/40" title={clock}>
+              {ago !== "" ? ago : clock}
               {occurrence.pid !== null && <span className="text-white/25"> · pid {occurrence.pid}</span>}
             </p>
           </div>
@@ -129,43 +236,84 @@ export function CrashDetailModal({
         </header>
 
         {occurrence.total > 1 && (
-          <div className="flex items-center gap-2 border-b border-white/8 px-4 py-2">
-            <button
-              type="button"
-              disabled={older < 0}
-              onClick={() => onSelectOccurrence(older)}
-              className="rounded-md border border-white/12 px-2 py-0.5 text-[11px] text-white/70 hover:bg-white/8 disabled:opacity-30"
-            >
-              ← Older
-            </button>
-            <span className="flex-1 text-center font-mono text-[11px] text-white/45">
-              {occurrence.index + 1} of {occurrence.total}
-              {record.count > occurrence.total && (
-                <span className="text-white/25"> (last {occurrence.total} of {record.count})</span>
-              )}
-            </span>
-            <button
-              type="button"
-              disabled={newer >= occurrence.total}
-              onClick={() => onSelectOccurrence(newer)}
-              className="rounded-md border border-white/12 px-2 py-0.5 text-[11px] text-white/70 hover:bg-white/8 disabled:opacity-30"
-            >
-              Newer →
-            </button>
+          <div className="flex flex-col gap-1.5 border-b border-white/8 px-4 py-2">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={pendingIndex <= 0}
+                onClick={() => onStepOccurrence(-1)}
+                className="rounded-md border border-white/12 px-2 py-1 text-[11px] text-white/70 hover:bg-white/8 disabled:opacity-30"
+              >
+                ← Older
+              </button>
+              <div
+                role="group"
+                aria-label="Occurrences"
+                aria-busy={pendingIndex !== occurrence.index}
+                className="flex flex-1 items-center justify-center gap-1"
+              >
+                {Array.from({ length: occurrence.total }, (_, index) => {
+                  const current =
+                    index === occurrence.index &&
+                    record.occurrenceTimes[index]?.rawPath === occurrence.rawPath;
+                  const pending = index === pendingIndex && !current;
+                  return (
+                    <button
+                      key={index}
+                      type="button"
+                      aria-current={current ? "true" : undefined}
+                      aria-label={`Occurrence ${index + 1} of ${occurrence.total}`}
+                      title={formatOccurrenceClock(
+                        record.occurrenceTimes[index]?.capturedAtMs ?? null,
+                        record.occurrenceTimes[index]?.capturedAt ?? ""
+                      )}
+                      onClick={() => onSelectOccurrence(index)}
+                      className={`flex h-7 w-7 items-center justify-center rounded-full ${
+                        current ? "" : "hover:bg-white/10"
+                      }`}
+                    >
+                      <span
+                        className={`rounded-full ${
+                          current
+                            ? "h-1.5 w-3 bg-red-300"
+                            : pending
+                              ? "h-1.5 w-1.5 bg-white/50 ring-1 ring-white/40"
+                              : "h-1.5 w-1.5 bg-white/40"
+                        }`}
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                disabled={pendingIndex >= occurrence.total - 1}
+                onClick={() => onStepOccurrence(1)}
+                className="rounded-md border border-white/12 px-2 py-1 text-[11px] text-white/70 hover:bg-white/8 disabled:opacity-30"
+              >
+                Newer →
+              </button>
+            </div>
+            {record.count > occurrence.total && (
+              <p className="text-center font-mono text-[11px] text-white/25">
+                last {occurrence.total} of {record.count}
+              </p>
+            )}
           </div>
+        )}
+
+        {loadError && (
+          <p className="border-b border-white/8 px-4 py-2 text-center text-[11px] text-amber-300/80">
+            {loadError}
+          </p>
         )}
 
         <div className="flex flex-col gap-2 border-b border-white/8 px-4 py-3">
           <Row label="Bundle" value={record.bundleId ?? "unknown"} />
-          <Row
-            label="Seen"
-            value={`first ${new Date(record.firstSeen).toLocaleTimeString()} · last ${new Date(record.lastSeen).toLocaleTimeString()} · ${record.count}×`}
-          />
           <Row label="Exception" value={`${record.exceptionType ?? "?"} · ${record.terminationIndicator ?? "?"}`} />
           <Row label="Thread" value={record.faultingQueue ?? "unknown queue"} />
           <Row label="Version" value={`${record.appVersion ?? "?"} (${record.buildVersion ?? "?"})`} />
           <Row label="Report" value={occurrence.rawPath} />
-          <Row label="Grouped by" value={record.signature} />
         </div>
 
         <nav className="flex items-center gap-1 px-4 pt-3">
@@ -178,7 +326,7 @@ export function CrashDetailModal({
                 tab === id ? "bg-white/10 text-white/90" : "text-white/45 hover:bg-white/5"
               }`}
             >
-              {id === "stack" ? `Stack (${record.frames.length})` : `Log tail (${occurrence.logTail.length})`}
+              {id === "stack" ? `Stack (${frames.length})` : `Log tail (${occurrence.logTail.length})`}
             </button>
           ))}
           <button
@@ -186,8 +334,11 @@ export function CrashDetailModal({
             onClick={() =>
               copy(
                 tab === "stack"
-                  ? record.frames
-                      .map((f, i) => `${i}\t${f.image}\t${f.symbol ?? `+${f.imageOffset ?? 0}`}`)
+                  ? frames
+                      .map(
+                        (frame, index) =>
+                          `${index}\t${frame.image}\t${frame.symbol ?? `+${frame.imageOffset ?? 0}`}`
+                      )
                       .join("\n")
                   : occurrence.logTail.map(messageOf).join("\n")
               )
@@ -201,24 +352,7 @@ export function CrashDetailModal({
         <div className="flex-1 overflow-auto px-4 py-3">
           {reportError && <p className="mb-2 text-[11px] text-amber-300/80">{reportError}</p>}
           {tab === "stack" ? (
-            record.frames.length === 0 ? (
-              <p className="text-[11px] text-white/35">No symbolicated frames in this report.</p>
-            ) : (
-              <ol className="flex flex-col gap-0.5">
-                {record.frames.map((frame, index) => (
-                  <li
-                    key={index}
-                    className={`grid grid-cols-[24px_140px_1fr] gap-2 font-mono text-[10px] ${
-                      frame.appOwned ? "text-white/75" : "text-white/35"
-                    }`}
-                  >
-                    <span className="text-white/25">{index}</span>
-                    <span className="truncate">{frame.image}</span>
-                    <span className="break-all">{frame.symbol ?? `+${frame.imageOffset ?? 0}`}</span>
-                  </li>
-                ))}
-              </ol>
-            )
+            <StackTrace frames={frames} />
           ) : occurrence.logTail.length === 0 ? (
             <p className="text-[11px] text-white/35">
               No log lines were captured for this crash ({occurrence.logTailSource}).

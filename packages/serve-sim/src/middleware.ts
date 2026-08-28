@@ -1622,10 +1622,18 @@ export function handleLogsRequest(
   });
 }
 
-/** The list carries the line count; `/crashes/<id>` carries the lines. */
 function summarize(record: CrashRecord): CrashSummary {
   const { logTail, occurrences, ...rest } = record;
-  return { ...rest, logTailLines: logTail.length, occurrenceCount: occurrences.length };
+  return {
+    ...rest,
+    logTailLines: logTail.length,
+    occurrenceCount: occurrences.length,
+    occurrenceTimes: occurrences.map((item) => ({
+      capturedAtMs: item.capturedAtMs,
+      capturedAt: item.capturedAt,
+      rawPath: item.rawPath,
+    })),
+  };
 }
 
 /** JSON by default; SSE on `Accept: text/event-stream`. */

@@ -17,7 +17,7 @@ export interface CrashHeader {
   incidentId: string | null;
 }
 
-interface CrashFrame {
+export interface CrashFrame {
   image: string;
   symbol: string | null;
   imageOffset: number | null;

@@ -14,5 +14,10 @@ export function summarizeCrash(record: CrashRecord): CrashSummary {
     ...rest,
     logTailLines: newest?.logTail.length ?? 0,
     occurrenceCount: occurrences.length,
+    occurrenceTimes: occurrences.map((item) => ({
+      capturedAtMs: item.capturedAtMs,
+      capturedAt: item.capturedAt,
+      rawPath: item.rawPath,
+    })),
   };
 }

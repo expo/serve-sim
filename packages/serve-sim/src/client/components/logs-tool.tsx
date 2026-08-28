@@ -39,9 +39,11 @@ export function LogsTool({
   const pendingRef = useRef<DisplayLine[]>([]);
   const rafRef = useRef<number | null>(null);
   const nextIdRef = useRef(1);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   useEffect(() => {
-    if (!open || paused) return;
+    if (!open) return;
     setErrored(false);
     setLines([]);
     nextIdRef.current = 1;
@@ -60,6 +62,8 @@ export function LogsTool({
     };
 
     stream.onmessage = ({ data }) => {
+      setErrored(false);
+      if (pausedRef.current) return;
       const fields = parseDeviceLogJson(data);
       if (!fields) return;
       pendingRef.current.push({ ...fields, id: nextIdRef.current++ });
@@ -76,7 +80,7 @@ export function LogsTool({
       }
       pendingRef.current = [];
     };
-  }, [open, paused, path]);
+  }, [open, path]);
 
   const visible = useMemo(
     () => (filter.trim() ? lines.filter((line) => deviceLogMatches(line, filter)) : lines),

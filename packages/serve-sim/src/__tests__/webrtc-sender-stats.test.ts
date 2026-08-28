@@ -145,12 +145,19 @@ describe("capture counts", () => {
     const stats = readSenderStats({ sessions: [], capture: { screenFrames: 900, idleFrames: 40 } });
 
     expect(stats.capture).toEqual({
+      pickCount: null,
+      pickSumMs: null,
+      pickMaxMs: null,
       screenFrames: 900,
       idleFrames: 40,
       offeredFrames: null,
       forwardedFrames: null,
       pumpRestarts: null,
-      captureCpuCopies: null,
+      cpuFallbacks: null,
+      attempts: null,
+      stalls: null,
+      gapSumMs: null,
+      stallSumMs: null,
       pollTicks: null,
       pollLateSumMs: null,
     });

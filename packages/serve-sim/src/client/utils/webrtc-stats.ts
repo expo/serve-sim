@@ -17,6 +17,10 @@ export interface StreamStatsSample {
   jitterBufferEmitted: number | null;
   /** libwebrtc's own figure, kept for the export as a cross-check on our window maths. */
   reportedFps: number | null;
+  /** Cumulative sum and sum-of-squares, which together give the spread without a histogram. */
+  interFrameDelaySeconds: number | null;
+  interFrameDelaySquaredSeconds: number | null;
+  decodeSeconds: number | null;
   width: number | null;
   height: number | null;
   codec: string | null;
@@ -35,6 +39,13 @@ export interface StreamStats extends StreamStatsSample {
   freezeMsInWindow: number | null;
   /** Mean delay over the frames emitted in this window, not over the session. */
   jitterBufferMs: number | null;
+  /** Standard deviation of the gap between delivered frames; a locked cadence sits near zero.
+   * This is the cadence the viewer sees, so it covers transport and decode. The sender paces its
+   * own output and repeats its last frame, so a capture stall does not have to show up here. */
+  pacingDeviationMs: number | null;
+  /** Mean gap between delivered frames, the value pacingDeviationMs is the spread around. */
+  frameGapMs: number | null;
+  decodeMsPerFrame: number | null;
 }
 
 function number(value: unknown): number {
@@ -60,6 +71,9 @@ export function readStreamStats(report: RTCStatsReport, now: number): StreamStat
     jitterBufferSeconds: null,
     jitterBufferEmitted: null,
     reportedFps: null,
+    interFrameDelaySeconds: null,
+    interFrameDelaySquaredSeconds: null,
+    decodeSeconds: null,
     width: null,
     height: null,
     codec: null,
@@ -95,6 +109,9 @@ export function readStreamStats(report: RTCStatsReport, now: number): StreamStat
         sample.packetsReceived = number(entry.packetsReceived);
         sample.packetsLost = maybeNumber(entry.packetsLost);
         sample.reportedFps = maybeNumber(entry.framesPerSecond);
+        sample.interFrameDelaySeconds = maybeNumber(entry.totalInterFrameDelay);
+        sample.interFrameDelaySquaredSeconds = maybeNumber(entry.totalSquaredInterFrameDelay);
+        sample.decodeSeconds = maybeNumber(entry.totalDecodeTime);
         sample.width = maybeNumber(entry.frameWidth);
         sample.height = maybeNumber(entry.frameHeight);
         const jitter = maybeNumber(entry.jitter);
@@ -158,6 +175,9 @@ export function describeStreamStats(
     freezesInWindow: null,
     freezeMsInWindow: null,
     jitterBufferMs: null,
+    pacingDeviationMs: null,
+    frameGapMs: null,
+    decodeMsPerFrame: null,
   };
   if (previous === null) return unusable;
 
@@ -175,6 +195,7 @@ export function describeStreamStats(
   if (decoded < 0 || bytes < 0 || dropped < 0 || freezes < 0 || freezeMs < 0) return unusable;
 
   const seconds = elapsedMs / 1000;
+  const frameGap = windowFrameGap(previous, current, decoded);
   return {
     ...current,
     fps: decoded / seconds,
@@ -184,7 +205,51 @@ export function describeStreamStats(
     freezesInWindow: freezes,
     freezeMsInWindow: freezeMs,
     jitterBufferMs: windowJitterBufferMs(previous, current),
+    pacingDeviationMs: frameGap?.deviationMs ?? null,
+    frameGapMs: frameGap?.meanMs ?? null,
+    decodeMsPerFrame: windowDecodeMsPerFrame(previous, current, decoded),
   };
+}
+
+/** Mean and spread of the inter-frame gap, from the cumulative sum and sum-of-squares libwebrtc keeps.
+ * Variance can go slightly negative through floating-point cancellation, so it is clamped. */
+function windowFrameGap(
+  previous: StreamStatsSample,
+  current: StreamStatsSample,
+  frames: number,
+): { meanMs: number; deviationMs: number } | null {
+  if (previous.interFrameDelaySeconds === null || current.interFrameDelaySeconds === null) {
+    return null;
+  }
+  if (
+    previous.interFrameDelaySquaredSeconds === null
+    || current.interFrameDelaySquaredSeconds === null
+  ) {
+    return null;
+  }
+  // A spread needs two samples. One frame yields 0 by construction, which would render a
+  // stalled window as a perfectly even one.
+  if (frames < 2) return null;
+  const sum = current.interFrameDelaySeconds - previous.interFrameDelaySeconds;
+  const squared = current.interFrameDelaySquaredSeconds - previous.interFrameDelaySquaredSeconds;
+  if (sum < 0 || squared < 0) return null;
+  const mean = sum / frames;
+  return {
+    meanMs: mean * 1000,
+    deviationMs: Math.sqrt(Math.max(0, squared / frames - mean * mean)) * 1000,
+  };
+}
+
+function windowDecodeMsPerFrame(
+  previous: StreamStatsSample,
+  current: StreamStatsSample,
+  frames: number,
+): number | null {
+  if (previous.decodeSeconds === null || current.decodeSeconds === null) return null;
+  if (frames <= 0) return null;
+  const decode = current.decodeSeconds - previous.decodeSeconds;
+  if (decode < 0) return null;
+  return (decode / frames) * 1000;
 }
 
 /** Both counters must move forward, or the ratio is taken across two different streams. */

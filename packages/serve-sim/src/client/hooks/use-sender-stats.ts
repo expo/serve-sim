@@ -6,6 +6,7 @@ import {
   type SenderStats,
   type SenderStreamStats,
 } from "../../webrtc-sender-stats";
+import { describeCaptureCounts, type CaptureSample, type CaptureWindow } from "../utils/capture-window";
 import { startExclusivePoll } from "../utils/exclusive-poll";
 import { webrtcSessionStatsUrl } from "../utils/sim-endpoint";
 
@@ -15,21 +16,26 @@ const STALE_AFTER_MS = 4_000;
 export interface SenderView {
   session: SenderStreamStats | null;
   capture: CaptureCounts | null;
+  captureWindow: CaptureWindow | null;
   stale: boolean;
 }
+
+const EMPTY: SenderView = { session: null, capture: null, captureWindow: null, stale: false };
 
 export function useSenderStats(
   statsUrl: string,
   sessionId: string | null,
   enabled: boolean,
 ): SenderView {
-  const [stats, setStats] = useState<SenderView>({ session: null, capture: null, stale: false });
+  const [stats, setStats] = useState<SenderView>(EMPTY);
   const lastSampleAt = useRef(0);
+  const previousCapture = useRef<CaptureSample | null>(null);
 
   useEffect(() => {
     // Reset unconditionally so a device switch drops the previous device's samples.
     lastSampleAt.current = 0;
-    setStats({ session: null, capture: null, stale: false });
+    previousCapture.current = null;
+    setStats(EMPTY);
     if (!enabled || sessionId === null) return;
 
     let stopped = false;
@@ -41,7 +47,10 @@ export function useSenderStats(
         // A non-ok answer means no session is streaming, which is definite: clear rather than keep
         // numbers from a session that has gone. A throw is a dropped tick, handled below.
         if (!response.ok) {
-          if (!stopped) setStats({ session: null, capture: null, stale: false });
+          if (!stopped) {
+            previousCapture.current = null;
+            setStats(EMPTY);
+          }
           return;
         }
         // The route already returns display units: `native.ts` runs `readSenderStats` server-side.
@@ -49,17 +58,26 @@ export function useSenderStats(
         body = (await response.json()) as SenderStats;
       } catch {
         // A dropped tick; keeping the last sample beats blanking the column, and the watchdog
-        // will mark it stale if they keep failing.
+        // will mark it stale if they keep failing. The rate baseline goes, so the tick after a
+        // gap is not averaged across it.
+        previousCapture.current = null;
         return;
       }
       if (stopped || body === null) return;
       const sessions = Array.isArray(body.sessions) ? body.sessions : [];
-      lastSampleAt.current = Date.now();
+      const at = Date.now();
+      lastSampleAt.current = at;
+      const counts = body.capture ?? null;
+      const sample: CaptureSample | null = counts === null ? null : { counts, atMs: at };
       setStats({
         session: senderSessionForViewer(sessions, sessionId),
-        capture: body.capture ?? null,
+        capture: counts,
+        captureWindow: sample === null
+          ? null
+          : describeCaptureCounts(previousCapture.current, sample),
         stale: false,
       });
+      previousCapture.current = sample;
     };
 
     const stopPoll = startExclusivePoll(sample, POLL_MS);

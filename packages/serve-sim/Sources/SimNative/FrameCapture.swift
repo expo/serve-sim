@@ -37,8 +37,16 @@ actor FrameCapture {
     private var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
     private var frameCount: UInt64 = 0
     /// Counted by which path produced the frame, callback or idle deadline.
+    private var pickCount: UInt64 = 0
+    private var pickSumNs: UInt64 = 0
+    private var pickMaxNs: UInt64 = 0
     private var screenFrameCount: UInt64 = 0
     private var idleFrameCount: UInt64 = 0
+    private var captureLastEntryNs: UInt64 = 0
+    private var captureAttempts: UInt64 = 0
+    private var captureGapSumNs: UInt64 = 0
+    private var captureStalls: UInt64 = 0
+    private var captureStallSumNs: UInt64 = 0
     private(set) var capturedWidth: Int = 0
     private(set) var capturedHeight: Int = 0
     private var surfacePollTimer: DispatchSourceTimer?
@@ -60,6 +68,8 @@ actor FrameCapture {
     /// The surfaces-changed callback is the primary invalidation. Some virtualized
     /// runtimes deliver it unreliably, so re-pick on a slow timer as well.
     private static let pickRevalidateInterval: ContinuousClock.Duration = .seconds(1)
+    /// A gap this long is a visible hitch rather than ordinary jitter.
+    private static let stallThresholdNanoseconds: UInt64 = 100_000_000
 
     private var descriptors: [NSObject] = []
     private var callbackUUIDs: [ObjectIdentifier: UUID] = [:]
@@ -320,12 +330,33 @@ actor FrameCapture {
         framebufferSurfaces[key] = surface
     }
 
+    func pickTimings() -> (count: UInt64, sumNs: UInt64, maxNs: UInt64) {
+        (count: pickCount, sumNs: pickSumNs, maxNs: pickMaxNs)
+    }
+
     func frameCounts() -> (screen: UInt64, idle: UInt64) {
         (screen: screenFrameCount, idle: idleFrameCount)
     }
 
     private func captureFrame(force: Bool = false) {
-        guard let (key, surface) = currentSurface() else { return }
+        let entryNs = DispatchTime.now().uptimeNanoseconds
+        if captureLastEntryNs > 0 {
+            let gapNs = entryNs - captureLastEntryNs
+            captureAttempts += 1
+            captureGapSumNs += gapNs
+            if gapNs > Self.stallThresholdNanoseconds {
+                captureStalls += 1
+                captureStallSumNs += gapNs
+            }
+        }
+        captureLastEntryNs = entryNs
+        let pickStartNs = DispatchTime.now().uptimeNanoseconds
+        let picked = currentSurface()
+        let pickNs = DispatchTime.now().uptimeNanoseconds - pickStartNs
+        pickCount += 1
+        pickSumNs += pickNs
+        if pickNs > pickMaxNs { pickMaxNs = pickNs }
+        guard let (key, surface) = picked else { return }
 
         // Seed-skip: when the simulator's framebuffer content hasn't changed,
         // don't spend cycles re-encoding the same pixels back-to-back from the
@@ -374,8 +405,16 @@ actor FrameCapture {
         snapshotMaxDimension = max(0, value)
     }
 
-    func snapshotCpuCopies() -> UInt64 {
-        photocopier.cpuFallbacks
+    func captureTimings() -> (
+        attempts: UInt64, gapSumNs: UInt64, stalls: UInt64, stallSumNs: UInt64, cpuFallbacks: UInt64
+    ) {
+        (
+            attempts: captureAttempts,
+            gapSumNs: captureGapSumNs,
+            stalls: captureStalls,
+            stallSumNs: captureStallSumNs,
+            cpuFallbacks: photocopier.cpuFallbacks
+        )
     }
 
     func pollTimings() -> (ticks: UInt64, lateSumNs: UInt64) {
@@ -395,6 +434,8 @@ actor FrameCapture {
         surfacePollTimer?.cancel()
         surfacePollTimer = nil
         pollGrid = nil
+        // A capture that is started again must not book the time it spent stopped as a stall.
+        captureLastEntryNs = 0
 
         unregisterCallbacks()
         descriptors.removeAll()

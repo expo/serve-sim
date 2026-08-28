@@ -70,6 +70,9 @@ struct WebRTCSenderStatsPayload: Codable {
 }
 
 struct WebRTCCaptureCounts: Codable {
+    let pickCount: UInt64
+    let pickSumMs: Double
+    let pickMaxMs: Double
     let screenFrames: UInt64
     let idleFrames: UInt64
     /// Offered frames are capture deliveries, including the 5 FPS idle refresh. Forwarded frames
@@ -79,7 +82,11 @@ struct WebRTCCaptureCounts: Codable {
     /// Times the arrival-side watchdog replaced a frame pump that stopped
     /// ticking. Nonzero means the host starved or dropped pump timers.
     let pumpRestarts: UInt64?
-    let captureCpuCopies: UInt64
+    let cpuFallbacks: UInt64
+    let attempts: UInt64
+    let stalls: UInt64
+    let gapSumMs: Double
+    let stallSumMs: Double
     let pollTicks: UInt64
     let pollLateSumMs: Double
 }

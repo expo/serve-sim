@@ -98,7 +98,7 @@ export function StreamSettingsTool({
     webrtcSessionId ?? null,
     webrtcStatsUrl !== undefined && peerConnection !== null && webrtcSessionId != null,
   );
-  const sender = senderView.stale ? null : senderView.session;
+  const sender = senderView.session;
   const faults = stats === null || stale ? [] : describeFaults(stats, sender);
   const warning = stale ? "Stream samples have stopped" : faults.join("; ");
   const summary = stats === null ? null : summariseStream(stats);
@@ -145,9 +145,9 @@ export function StreamSettingsTool({
           history={history}
           faults={faults}
           sender={sender}
-          capture={senderView.stale ? null : senderView.capture}
+          capture={senderView.captureWindow}
           requestedFps={settings.h264Fps}
-          stale={stale}
+          stale={stale || senderView.stale}
           action={
             <StreamStatsDownload
               history={history}
@@ -155,7 +155,7 @@ export function StreamSettingsTool({
                 transport: settings.transport,
                 codec: stats?.codec,
                 sender,
-                capture: senderView.stale ? null : senderView.capture,
+                capture: senderView.capture,
               }}
             />
           }

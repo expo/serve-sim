@@ -30,13 +30,20 @@ export interface SenderStreamStats {
 }
 
 export interface CaptureCounts {
+  pickCount: number | null;
+  pickSumMs: number | null;
+  pickMaxMs: number | null;
   screenFrames: number;
   idleFrames: number;
   offeredFrames: number | null;
   forwardedFrames: number | null;
   /** Frame-pump watchdog restarts; nonzero means the host starved or dropped pump timers. */
   pumpRestarts: number | null;
-  captureCpuCopies: number | null;
+  cpuFallbacks: number | null;
+  attempts: number | null;
+  stalls: number | null;
+  gapSumMs: number | null;
+  stallSumMs: number | null;
   pollTicks: number | null;
   pollLateSumMs: number | null;
 }
@@ -139,12 +146,19 @@ function readCaptureCounts(raw: unknown): CaptureCounts | null {
   const idleFrames = raw.idleFrames;
   if (typeof screenFrames !== "number" || typeof idleFrames !== "number") return null;
   return {
+    pickCount: maybeNumber(raw.pickCount),
+    pickSumMs: maybeNumber(raw.pickSumMs),
+    pickMaxMs: maybeNumber(raw.pickMaxMs),
     screenFrames,
     idleFrames,
-    offeredFrames: typeof raw.offeredFrames === "number" ? raw.offeredFrames : null,
-    forwardedFrames: typeof raw.forwardedFrames === "number" ? raw.forwardedFrames : null,
-    pumpRestarts: typeof raw.pumpRestarts === "number" ? raw.pumpRestarts : null,
-    captureCpuCopies: maybeNumber(raw.captureCpuCopies),
+    offeredFrames: maybeNumber(raw.offeredFrames),
+    forwardedFrames: maybeNumber(raw.forwardedFrames),
+    pumpRestarts: maybeNumber(raw.pumpRestarts),
+    cpuFallbacks: maybeNumber(raw.cpuFallbacks),
+    attempts: maybeNumber(raw.attempts),
+    stalls: maybeNumber(raw.stalls),
+    gapSumMs: maybeNumber(raw.gapSumMs),
+    stallSumMs: maybeNumber(raw.stallSumMs),
     pollTicks: maybeNumber(raw.pollTicks),
     pollLateSumMs: maybeNumber(raw.pollLateSumMs),
   };

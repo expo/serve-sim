@@ -111,6 +111,17 @@ function cookieValue(header: string | undefined, name: string): string | null {
   return null;
 }
 
+function carriesSessionToken(
+  headers: { authorization?: string | string[]; cookie?: string | string[] },
+  sessionToken: string,
+): boolean {
+  const fromBearer = bearerToken(headerValue(headers.authorization));
+  if (fromBearer && safeEqualString(fromBearer, sessionToken)) return true;
+  const fromCookie = cookieValue(headerValue(headers.cookie), ACCESS_COOKIE);
+  if (fromCookie && safeEqualString(fromCookie, sessionToken)) return true;
+  return false;
+}
+
 /**
  * Require the session token before serving anything that carries it.
  *
@@ -125,12 +136,7 @@ export function assertPreviewAccess(
 ): boolean {
   if (!opts.required) return true;
 
-  const header = headerValue(req.headers.authorization);
-  const fromBearer = bearerToken(header);
-  if (fromBearer && safeEqualString(fromBearer, sessionToken)) return true;
-
-  const cookie = cookieValue(headerValue(req.headers.cookie), ACCESS_COOKIE);
-  if (cookie && safeEqualString(cookie, sessionToken)) return true;
+  if (carriesSessionToken(req.headers, sessionToken)) return true;
 
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const fromQuery = url.searchParams.get("token");
@@ -152,4 +158,18 @@ export function assertPreviewAccess(
       "as `Authorization: Bearer <token>`.\n",
   );
   return false;
+}
+
+/**
+ * Gate a WebSocket upgrade the same way as the HTTP surface: a bearer header or the access cookie the
+ * page already holds. Upgrades cannot redirect, so there is no `?token=` exchange here — the page's own
+ * sockets are same-origin and send the cookie. Returns false when the socket must be closed.
+ */
+export function assertUpgradeAccess(
+  headers: { authorization?: string | string[]; cookie?: string | string[] },
+  sessionToken: string,
+  opts: { required: boolean },
+): boolean {
+  if (!opts.required) return true;
+  return carriesSessionToken(headers, sessionToken);
 }

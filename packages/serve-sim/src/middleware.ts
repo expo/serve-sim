@@ -24,7 +24,7 @@ import {
   sendCorsPreflight,
   type HidSocket,
 } from "./device-session";
-import { assertPreviewAccess, assertSessionAccess, execAuthError } from "./session-auth";
+import { assertPreviewAccess, assertSessionAccess, assertUpgradeAccess, execAuthError } from "./session-auth";
 import {
   eventLogEventForCommand,
   readEventLog,
@@ -2505,6 +2505,12 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     if (next) return next();
   }) as ConnectMiddleware;
   connectMiddleware.handleUpgrade = (req: SimReq, socket: Socket, head: Buffer) => {
+    // WebSocket upgrades skip the HTTP request path, so gate them here too: the HID and devtools
+    // sockets carry no token of their own, and without this an exposed server hands them to any caller.
+    if (!assertUpgradeAccess(req.headers, execToken, { required: requirePreviewToken })) {
+      socket.destroy();
+      return;
+    }
     const rawUrl = req.url ?? "";
     const selectedDevice = queryDevice(rawUrl) ?? options?.device ?? null;
     const helperTarget = helperProxyTarget(rawUrl, helperPrefix);
@@ -2567,6 +2573,21 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   });
 
   fetchMiddleware.handleWebSocket = (request: Request, websocket: UpgradeHandlerWebSocket): boolean => {
+    // Hosts that forward accepted sockets here (embedded mode) bypass the request gate too. The exec
+    // channel re-checks the token in its first frame; the helper HID socket does not, so gate up front.
+    if (
+      !assertUpgradeAccess(
+        {
+          authorization: request.headers.get("authorization") ?? undefined,
+          cookie: request.headers.get("cookie") ?? undefined,
+        },
+        execToken,
+        { required: requirePreviewToken },
+      )
+    ) {
+      websocket.close();
+      return true;
+    }
     if (execWebSocketHandler(request, websocket)) return true;
     if (claimHelperHidSocket(request, websocket, {
       helperProxyTarget: (rawUrl) => helperProxyTarget(rawUrl, helperPrefix),

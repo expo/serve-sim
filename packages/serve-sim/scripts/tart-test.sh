@@ -5,7 +5,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 CLI="$HERE/tart/cli.ts"
 cmd="${1:-test}"
 case "$cmd" in
-  setup | up | boot | stage | test | ssh | help | -h | --help)
+  setup | up | boot | stage | test | dev | ssh | help | -h | --help)
     exec bun "$CLI" "$@"
     ;;
   *)

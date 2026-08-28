@@ -45,22 +45,7 @@ export function StreamStatsBody({
         className="text-sky-400"
       />
 
-      <div className="flex items-start justify-between gap-2">
-        {stale ? (
-          <div className="text-[11px] text-warning">No samples in the last few seconds</div>
-        ) : faults.length > 0 ? (
-          <div className="flex flex-col gap-0.5">
-            {faults.map((fault) => (
-              <div key={fault} className="text-[11px] text-warning" data-stream-fault={fault}>
-                {fault}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div />
-        )}
-        {action}
-      </div>
+      <div className="flex items-start justify-end gap-2">{action}</div>
 
       <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 border-t border-white/10 pt-1.5">
         <Cell label="Frame gap" value={frameGap(stats.frameGapMs, stats.pacingDeviationMs)} />
@@ -77,7 +62,8 @@ export function StreamStatsBody({
         sender={sender}
         capture={capture}
         encoder={encoder}
-        health={stale || faults.length > 0 ? null : healthLine(stats)}
+        faults={faults}
+        stale={stale}
       />
     </div>
   );
@@ -89,13 +75,15 @@ function Diagnostics({
   sender,
   capture,
   encoder,
-  health,
+  faults,
+  stale,
 }: {
   stats: StreamStats;
   sender?: SenderStreamStats | null;
   capture?: CaptureWindow | null;
   encoder?: EncoderIdentity | null;
-  health: string | null;
+  faults: string[];
+  stale?: boolean;
 }) {
   return (
     <details className="border-t border-white/10 pt-1.5">
@@ -104,7 +92,21 @@ function Diagnostics({
         Diagnostics
       </summary>
 
-      {health && <div className="pt-1.5 text-[11px] text-white/30">{health}</div>}
+      <div className="pt-1.5">
+        {stale ? (
+          <div className="text-[11px] text-warning">No samples in the last few seconds</div>
+        ) : faults.length > 0 ? (
+          <div className="flex flex-col gap-0.5">
+            {faults.map((fault) => (
+              <div key={fault} className="text-[11px] text-warning" data-stream-fault={fault}>
+                {fault}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-[11px] text-white/30">{healthLine(stats)}</div>
+        )}
+      </div>
 
       <Group label="Network">
         <Cell label="RTT" value={ms(stats.roundTripMs, 0)} />

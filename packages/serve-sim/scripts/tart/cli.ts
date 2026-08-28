@@ -2,6 +2,7 @@
 import { SSH_OPTS, loadTartConfig, setupGuest, TartGuest } from "./guest";
 import { bootSim } from "./sim";
 import { resolveTestFiles, stageGuest, testOnce } from "./stage";
+import { watchDev } from "./dev";
 
 const USAGE = `bun run tart <command>
 
@@ -10,6 +11,7 @@ const USAGE = `bun run tart <command>
   boot    boot an iPhone 17 on the guest
   stage   pack host src + dist/simpb onto the guest (EAS-shaped, not virtiofs)
   test    stage, warm, bun test on the guest as the non-console user
+  dev     watch host src/Sources/dist/simpb, rebuild, restage, retest
   ssh     ssh to the guest (remaining args are a remote command)
 
 Tests always SSH as TART_USER (default expo). tart exec as admin still has
@@ -58,6 +60,12 @@ async function main(): Promise<void> {
       await prepare(guest);
       await bootSim(guest);
       process.exit(await testOnce(guest, resolveTestFiles(config.pkgDir, rest)));
+    }
+    case "dev": {
+      await prepare(guest);
+      await bootSim(guest);
+      await watchDev(guest, resolveTestFiles(config.pkgDir, rest));
+      return;
     }
     case "ssh": {
       await prepare(guest);

@@ -1560,12 +1560,28 @@ export function handleLogsRequest(
       ? (req.headers.accept ?? "").includes("application/json")
       : booleanParam(params, "snapshot");
   const wantsEnvelope = booleanParam(params, "envelope");
-
-  const buffer = cache.ensure(state.device);
+  const wantsFollow = booleanParam(params, "follow");
 
   if (wantsJson) {
-    const lines = buffer.read({ since, limit });
+    // Peek leaves simctl off. `follow` is the 2s UI poll: start the child, then
+    // idle-timeout kills it if the drawer stops asking.
+    const buffer = wantsFollow ? cache.ensure(state.device) : cache.peek(state.device);
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    if (!buffer) {
+      res.end(
+        JSON.stringify({
+          device: state.device,
+          latestSeq: 0,
+          oldestSeq: 0,
+          bufferedBytes: 0,
+          status: "stopped",
+          streamError: null,
+          lines: [],
+        })
+      );
+      return;
+    }
+    const lines = buffer.read({ since, limit });
     res.end(
       JSON.stringify({
         device: state.device,
@@ -1580,6 +1596,7 @@ export function handleLogsRequest(
     return;
   }
 
+  const buffer = cache.ensure(state.device);
   const stream = openSseStream(req, res);
 
   const frame = (line: LogLine): string =>
@@ -1596,11 +1613,15 @@ export function handleLogsRequest(
   }
 
   stream.onClose(
-    buffer.subscribe(
-      (line) => {
-        if (line.seq <= lastSent) return;
-        lastSent = line.seq;
-        stream.write(frame(line));
+    buffer.subscribeBatch(
+      (lines) => {
+        let chunk = "";
+        for (const line of lines) {
+          if (line.seq <= lastSent) continue;
+          lastSent = line.seq;
+          chunk += frame(line);
+        }
+        if (chunk) stream.write(chunk);
       },
       () => {
         if (stream.isOpen()) res.end();
@@ -1615,7 +1636,7 @@ export function handleLogsRequest(
  * Routes handled under `basePath` (default `/.sim`):
  *   GET  {basePath}         — the preview HTML page
  *   GET  {basePath}/api     — serve-sim state JSON
- *   GET  {basePath}/logs    — SSE stream of simctl logs
+ *   GET  {basePath}/logs    — simctl logs (JSON snapshot, or SSE)
  *   GET  {basePath}/ax      — SSE stream of normalized accessibility snapshots
  */
 export function handleMetricsRequest(

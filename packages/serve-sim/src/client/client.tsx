@@ -27,7 +27,7 @@ import {
   type StreamConfig,
 } from "./simulator";
 
-import { Globe, Maximize2, PanelRight, Upload } from "lucide-react";
+import { Globe, Maximize2, PanelRight, ScrollText, Upload } from "lucide-react";
 import { ReloadIcon } from "./icons";
 import { AxDomOverlay } from "./components/ax-dom-overlay";
 import { AxStateProvider } from "./components/ax-state-provider";
@@ -43,6 +43,7 @@ import { DeviceKitChrome, type ChromeButtonPress } from "./components/device-chr
 import { createPacedKeySender } from "./utils/paced-key-sender";
 import { GridPanel } from "./components/grid-panel";
 import { IconButton } from "./components/icon-button";
+import { LogsDrawer } from "./components/logs-drawer";
 import { ResizeHandle } from "./components/resize-handle";
 import { SimulatorResizeCornerHandle } from "./components/simulator-resize-corner-handle";
 import { ServeSimToaster } from "./components/app-toasts";
@@ -54,7 +55,7 @@ import { useMediaDrop } from "./hooks/use-media-drop";
 import { useMjpegStream } from "./hooks/use-mjpeg-stream";
 import { useAvccStream } from "./hooks/use-avcc-stream";
 import { useWebRtcStream } from "./hooks/use-webrtc-stream";
-import { useResizableWidth } from "./hooks/use-resizable-width";
+import { useResizableHeight, useResizableWidth } from "./hooks/use-resizable-width";
 import { useScreenshotToast } from "./hooks/use-screenshot-toast";
 import { useSimulatorResize } from "./hooks/use-simulator-resize";
 import { useFlipLayout } from "./hooks/use-flip-layout";
@@ -75,11 +76,12 @@ import { keydownForward } from "./utils/mobile-keyboard";
 import {
   DEVICE_SIDEBAR_WIDTH,
   DEVTOOLS_PANEL_WIDTH,
+  LOGS_DRAWER_HEIGHT,
   PANEL_WIDTH,
 } from "./utils/panel-widths";
 import { proxyPreviewConfigForBrowser } from "./utils/preview-config";
 import { mjpegStreamUrlFrom, simEndpoint, streamConfigFrom, webrtcCloseUrlFrom, webrtcOfferUrlFrom, webrtcStatsUrlFrom } from "./utils/sim-endpoint";
-import { parseDeviceLogJson } from "./utils/device-log-format";
+import { startLogsPoll } from "./utils/logs-poll";
 import { shouldStreamSimulatorLogs } from "./utils/simulator-logs";
 import { useBlockPageZoom } from "./hooks/use-block-page-zoom";
 import { useCoarsePointer } from "./hooks/use-coarse-pointer";
@@ -113,6 +115,17 @@ import {
 // ─── App ───
 
 type PreviewConfig = NonNullable<Window["__SIM_PREVIEW__"]>;
+
+function isLogsShortcut(e: KeyboardEvent): boolean {
+  return e.code === "Backquote" && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey;
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  return target.isContentEditable;
+}
 
 function previewConfigKey(config: PreviewConfig | null): string {
   return config
@@ -157,6 +170,17 @@ function App() {
     const id = setTimeout(() => setChromeGone(true), SIMULATOR_RESIZE_PRESENTATION_TRANSITION_MS);
     return () => clearTimeout(id);
   }, [presentation]);
+  const [logsOpen, setLogsOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!isLogsShortcut(e)) return;
+      if (isTypingTarget(e.target)) return;
+      e.preventDefault();
+      setLogsOpen((open) => !open);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // Open the sidebar by default when the viewport has room for it beside the
   // simulator; narrow windows keep it collapsed so the device isn't squeezed.
   const [gridOpen, setGridOpen] = useState(() => {
@@ -370,12 +394,10 @@ function App() {
     return () => es.close();
   }, [selectedUdid, selectedHasHelper]);
 
-  // Stream simctl logs into the browser console with colors + grouping. The
-  // full simulator log is too expensive to send through remote tunnels by
-  // default; remote previews can opt in with `?logs=1`.
+  // Opt-in dump of simctl logs into the browser console (`?logs=1`). Polls
+  // the JSON snapshot so it never shares the control socket with Home / HID.
   useEffect(() => {
     if (!config?.logsEndpoint || !shouldStreamSimulatorLogs(window.location)) return;
-    const es = openHostEventStream(config.logsEndpoint);
 
     const procColors = new Map<string, string>();
     const palette = [
@@ -396,43 +418,51 @@ function App() {
 
     let lastProc = "";
     let groupOpen = false;
+    let since = 0;
 
-    es.onmessage = (event) => {
-      const fields = parseDeviceLogJson(event.data);
-      if (!fields) return;
-      const { process: proc, subsystem, category, message: msg, level } = fields;
+    const stop = startLogsPoll(config.logsEndpoint, {
+      getSince: () => since,
+      setSince: (seq) => {
+        since = seq;
+      },
+      onError: () => {},
+      onBatch: (batch) => {
+        for (const { fields } of batch) {
+          const { process: proc, subsystem, category, message: msg, level } = fields;
 
-      if (proc !== lastProc) {
-        if (groupOpen) console.groupEnd();
-        const color = colorFor(proc);
-        console.groupCollapsed(
-          `%c${proc}${subsystem ? ` %c${subsystem}${category ? ":" + category : ""}` : ""}`,
-          `color:${color};font-weight:bold`,
-          ...(subsystem ? ["color:#888;font-weight:normal"] : []),
-        );
-        groupOpen = true;
-        lastProc = proc;
-      }
+          if (proc !== lastProc) {
+            if (groupOpen) console.groupEnd();
+            const color = colorFor(proc);
+            console.groupCollapsed(
+              `%c${proc}${subsystem ? ` %c${subsystem}${category ? ":" + category : ""}` : ""}`,
+              `color:${color};font-weight:bold`,
+              ...(subsystem ? ["color:#888;font-weight:normal"] : []),
+            );
+            groupOpen = true;
+            lastProc = proc;
+          }
 
-      const tag = subsystem && proc === lastProc
-        ? `%c${category || subsystem}%c `
-        : "";
-      const tagStyles = tag
-        ? ["color:#888;font-style:italic", "color:inherit"]
-        : [];
+          const tag = subsystem && proc === lastProc
+            ? `%c${category || subsystem}%c `
+            : "";
+          const tagStyles = tag
+            ? ["color:#888;font-style:italic", "color:inherit"]
+            : [];
 
-      if (level === "fault" || level === "error") {
-        console.log(`${tag}%c${msg}`, ...tagStyles, "color:#ff5555");
-      } else if (level === "debug") {
-        console.log(`${tag}%c${msg}`, ...tagStyles, "color:#6272a4");
-      } else {
-        console.log(`${tag}%c${msg}`, ...tagStyles, "color:inherit");
-      }
-    };
+          if (level === "fault" || level === "error") {
+            console.log(`${tag}%c${msg}`, ...tagStyles, "color:#ff5555");
+          } else if (level === "debug") {
+            console.log(`${tag}%c${msg}`, ...tagStyles, "color:#6272a4");
+          } else {
+            console.log(`${tag}%c${msg}`, ...tagStyles, "color:inherit");
+          }
+        }
+      },
+    });
 
     return () => {
       if (groupOpen) console.groupEnd();
-      es.close();
+      stop();
     };
   }, [config?.logsEndpoint]);
 
@@ -460,6 +490,8 @@ function App() {
         setAxOverlayEnabled={setAxOverlayEnabled}
         devtoolsOpen={devtoolsOpen}
         setDevtoolsOpen={setDevtoolsOpen}
+        logsOpen={logsOpen}
+        setLogsOpen={setLogsOpen}
         gridOpen={gridOpen}
         setGridOpen={setGridOpen}
         gridPanelWidth={gridPanelWidth}
@@ -562,6 +594,8 @@ interface AppWithConfigProps {
   setAxOverlayEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   devtoolsOpen: boolean;
   setDevtoolsOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  logsOpen: boolean;
+  setLogsOpen: React.Dispatch<React.SetStateAction<boolean>>;
   gridOpen: boolean;
   setGridOpen: React.Dispatch<React.SetStateAction<boolean>>;
   gridPanelWidth: number;
@@ -586,6 +620,8 @@ function AppWithConfig({
   setAxOverlayEnabled,
   devtoolsOpen,
   setDevtoolsOpen,
+  logsOpen,
+  setLogsOpen,
   gridOpen,
   setGridOpen,
   gridPanelWidth,
@@ -952,6 +988,12 @@ function AppWithConfig({
     420,
     1400,
   );
+  const { height: logsDrawerHeight, onPointerDown: onLogsResize } = useResizableHeight(
+    "serve-sim:logs-drawer-height",
+    LOGS_DRAWER_HEIGHT,
+    140,
+    720,
+  );
   const [viewportWidth, setViewportWidth] = useState(
     () => (typeof window !== "undefined" ? window.innerWidth : 0),
   );
@@ -1156,6 +1198,7 @@ function AppWithConfig({
         sendWs(0x06, { type, usage });
         return;
       }
+      if (isLogsShortcut(e)) return;
       const usage = keydownForward(e.code, {
         simFocused,
         keyboardOpen,
@@ -1280,7 +1323,7 @@ function AppWithConfig({
       style={{
         height: containerHeight > 0 ? containerHeight : undefined,
         paddingTop: presentation ? presentationInset : undefined,
-        paddingBottom: presentation ? presentationInset : undefined,
+        paddingBottom: presentation ? presentationInset : logsOpen ? logsDrawerHeight : undefined,
         paddingLeft: presentation ? presentationInset : 24 + shiftForLeftPanel,
         paddingRight: presentation ? presentationInset : 24 + shiftForRightPanel,
         transition: resizing || scaling ? "none" : SIMULATOR_RESIZE_PAGE_TRANSITION,
@@ -1610,6 +1653,14 @@ function AppWithConfig({
         >
           <Globe size={18} strokeWidth={1.75} />
         </IconButton>
+        <IconButton
+          onClick={() => setLogsOpen((o) => !o)}
+          aria-label="Open device logs"
+          aria-pressed={logsOpen}
+          title="Logs"
+        >
+          <ScrollText size={18} strokeWidth={1.75} />
+        </IconButton>
       </div>
 
       <ToolsPanel
@@ -1619,7 +1670,6 @@ function AppWithConfig({
         deviceRuntime={deviceRuntime}
         currentApp={currentApp}
         eventLogEventsEndpoint={config.eventLogEventsEndpoint}
-        logsEndpoint={config.logsEndpoint}
         metricsEndpoint={config.metricsEndpoint}
         axOverlayEnabled={axOverlayEnabled}
         onToggleAxOverlay={() => setAxOverlayEnabled((enabled) => !enabled)}
@@ -1667,6 +1717,17 @@ function AppWithConfig({
       />
       </>
       )}
+      <LogsDrawer
+        open={logsOpen}
+        onClose={() => setLogsOpen(false)}
+        udid={config.device}
+        logsEndpoint={config.logsEndpoint}
+        currentAppPid={currentApp?.pid ?? null}
+        height={logsDrawerHeight}
+        leftInset={gridOpen ? gridPanelWidth : 0}
+        rightInset={rightPanelWidthPx > 0 ? 12 + rightPanelWidthPx : 0}
+        onResizePointerDown={onLogsResize}
+      />
     </div>
     </AxStateProvider>
   );

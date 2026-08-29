@@ -46,7 +46,7 @@ import { useMediaDrop } from "./hooks/use-media-drop";
 import { useMjpegStream } from "./hooks/use-mjpeg-stream";
 import { useAvccStream } from "./hooks/use-avcc-stream";
 import { useWebRtcStream } from "./hooks/use-webrtc-stream";
-import { HidTransportRouter } from "./webrtc-input-channel";
+import { GestureStamper, HidTransportRouter } from "./webrtc-input-channel";
 import { useResizableWidth } from "./hooks/use-resizable-width";
 import { useScreenshotToast } from "./hooks/use-screenshot-toast";
 import { useSimulatorResize } from "./hooks/use-simulator-resize";
@@ -77,6 +77,7 @@ import {
   SIMULATOR_RESIZE_PAGE_TRANSITION,
 } from "./utils/simulator-resize";
 import {
+  encodeWsMessage,
   flushWsMessageQueue,
   sendOrQueueWsMessage,
   type QueuedWsMessage,
@@ -697,23 +698,42 @@ function AppWithConfig({
     };
   }, [config.wsUrl]);
 
-  // In WebRTC mode, HID prefers the "input" data channel: it rides the media
-  // path (UDP, no tunnel hops) instead of the tunneled TCP WebSocket. The
-  // router pins each gesture to one transport so the two ordered channels
-  // cannot interleave one gesture's begin/move/end; everything falls back to
-  // the WebSocket whenever the channel is not open.
+  // In WebRTC mode, HID prefers the data channels: they ride the media path
+  // (UDP, no tunnel hops) instead of the tunneled TCP WebSocket. Gesture
+  // boundaries, buttons and keys go on the reliable "input" channel; touch
+  // moves, scroll and crown deltas on the lossy "moves" channel, where a lost
+  // packet never stalls the ones behind it. begin/end are duplicated onto the
+  // lossy lane so the common case lands fast, and every touch message carries
+  // a gesture id + sequence so the server applies each once and in order. The
+  // router pins each gesture to one transport (channels or socket) so the
+  // socket cannot interleave with them; everything falls back to the
+  // WebSocket whenever the input channel is not open.
   const inputRouterRef = useRef(new HidTransportRouter());
+  const gestureStamperRef = useRef(new GestureStamper());
   const webRtcInputTarget = webrtc.inputTarget;
+  const webRtcMovesTarget = webrtc.movesTarget;
   const sendWs = useCallback((tag: number, payload: object) => {
-    const channelTarget = useWebRtcVideo ? webRtcInputTarget : null;
-    const route = inputRouterRef.current.route(tag, payload, channelTarget !== null);
-    pendingWsMessagesRef.current = sendOrQueueWsMessage(
-      route === "channel" ? channelTarget : wsRef.current,
-      pendingWsMessagesRef.current,
-      tag,
-      payload,
-    );
-  }, [useWebRtcVideo, webRtcInputTarget]);
+    const stamped = gestureStamperRef.current.stamp(tag, payload);
+    const inputTarget = useWebRtcVideo ? webRtcInputTarget : null;
+    const movesTarget = useWebRtcVideo ? webRtcMovesTarget : null;
+    const dispatch = inputRouterRef.current.route(tag, stamped, inputTarget !== null, movesTarget !== null);
+    if (dispatch.via === "socket" || !inputTarget) {
+      pendingWsMessagesRef.current = sendOrQueueWsMessage(
+        wsRef.current,
+        pendingWsMessagesRef.current,
+        tag,
+        stamped,
+      );
+      return;
+    }
+    // Anything queued while the socket was down goes out on the reliable lane
+    // first, so it still precedes this event.
+    pendingWsMessagesRef.current = flushWsMessageQueue(inputTarget, pendingWsMessagesRef.current);
+    const bytes = encodeWsMessage(tag, stamped).buffer;
+    for (const lane of dispatch.lanes) {
+      (lane === "moves" ? movesTarget : inputTarget)?.send(bytes);
+    }
+  }, [useWebRtcVideo, webRtcInputTarget, webRtcMovesTarget]);
 
   const onStreamTouch = useCallback((data: any) => sendWs(0x03, data), [sendWs]);
   const onStreamMultiTouch = useCallback((data: any) => sendWs(0x05, data), [sendWs]);

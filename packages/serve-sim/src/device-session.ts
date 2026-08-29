@@ -26,6 +26,7 @@ import {
   type NativeUnsubscribe,
 } from "./native";
 import { eventLogEventForHidMessage, formatEventLogPoint, recordEventLogEvent, updateEventLogEvent } from "./event-log";
+import { TouchSequencer, type SequencedTouch } from "./input-sequencer";
 import {
   MAX_WEBRTC_SIGNALING_BODY_BYTES,
   WebRtcSignalingError,
@@ -234,6 +235,9 @@ export class DeviceSession {
   private latestJpegLength = 0;
   private readonly hidSockets = new Set<HidSocket>();
   private touchGestureLog?: TouchGestureLog;
+  // One per touch tag: single-finger and multi-touch gestures are independent.
+  private readonly touchSequencer = new TouchSequencer();
+  private readonly multiTouchSequencer = new TouchSequencer();
   private readonly transport: StreamPlaybackSettings["transport"];
   private encoderSettings: StreamEncoderSettings;
   private streamSettingsUpdate: Promise<void> = Promise.resolve();
@@ -725,11 +729,22 @@ export class DeviceSession {
 
     switch (tag) {
       case 0x03: {
-        const m = json<{ type: string; x: number; y: number; edge?: number }>();
-        if (m) {
-          this.recordTouchEvent(m);
-          this.hid.touch(m.type as "begin" | "move" | "end", m.x, m.y, W, H, m.edge ?? 0);
+        const m = json<SequencedTouch & { x: number; y: number; edge?: number }>();
+        if (!m) break;
+        // Touch may arrive over the reliable and the lossy data channel at
+        // once (begin/end are sent on both; moves only on the lossy one), so
+        // duplicates, gaps and reordering are expected. The sequencer applies
+        // each begin/end once and only forward-moving moves of the finger
+        // that is down; a finger whose end went missing is lifted first.
+        const decision = this.touchSequencer.decide(m);
+        if (!decision.apply) break;
+        if (decision.liftFirst) {
+          const lift = decision.liftFirst as SequencedTouch & { x: number; y: number; edge?: number };
+          this.recordTouchEvent(lift);
+          this.hid.touch("end", lift.x, lift.y, W, H, lift.edge ?? 0);
         }
+        this.recordTouchEvent(m);
+        this.hid.touch(m.type, m.x, m.y, W, H, m.edge ?? 0);
         break;
       }
       case 0x04: {
@@ -744,11 +759,17 @@ export class DeviceSession {
         break;
       }
       case 0x05: {
-        const m = json<{ type: string; x1: number; y1: number; x2: number; y2: number }>();
-        if (m) {
-          this.recordHidEvent(tag, m);
-          this.hid.multiTouch(m.type as "begin" | "move" | "end", m.x1, m.y1, m.x2, m.y2, W, H);
+        const m = json<SequencedTouch & { x1: number; y1: number; x2: number; y2: number }>();
+        if (!m) break;
+        const decision = this.multiTouchSequencer.decide(m);
+        if (!decision.apply) break;
+        if (decision.liftFirst) {
+          const lift = decision.liftFirst as SequencedTouch & { x1: number; y1: number; x2: number; y2: number };
+          this.recordHidEvent(tag, lift);
+          this.hid.multiTouch("end", lift.x1, lift.y1, lift.x2, lift.y2, W, H);
         }
+        this.recordHidEvent(tag, m);
+        this.hid.multiTouch(m.type, m.x1, m.y1, m.x2, m.y2, W, H);
         break;
       }
       case 0x06: {

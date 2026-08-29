@@ -207,21 +207,41 @@ segment stalls the whole gesture stream for a retransmit round trip. The
 WebRTC media path had already negotiated a direct (or TURN) UDP route between
 the same two machines — input now uses it.
 
-Each viewer opens one ordered, reliable data channel labeled `input` before its
-SDP offer. It carries the exact `[tag][JSON]` frames the `/ws` socket carries,
-and the server funnels both into the same `DeviceSession` HID dispatch, so the
-two paths cannot drift in behavior. The server closes data channels with any
-other label.
+Each viewer opens two data channels before its SDP offer. Both carry the exact
+`[tag][JSON]` frames the `/ws` socket carries, and the server funnels all three
+sources into the same `DeviceSession` HID dispatch, so the paths cannot drift in
+behavior. The server closes data channels with any other label.
+
+- `input` — ordered, reliable. Gesture boundaries (`begin`/`end`), hardware
+  buttons, keys, orientation: anything whose delivery and order must be exact.
+- `moves` — unordered, `maxPacketLifeTime` 100 ms. Touch `move`, scroll and
+  Digital Crown deltas. A lost move is superseded by the next one, and never
+  holds back the moves behind it; on an ordered channel one lost segment
+  stalls the whole gesture until SCTP retransmits (its minimum RTO is several
+  hundred milliseconds).
+
+`begin` and `end` are sent on both channels: the lossy copy usually lands
+first, the reliable copy guarantees delivery. To make that safe, the client
+stamps every touch and multi-touch message with a gesture id `g` (incremented
+per gesture) and a sequence `s` (0 for `begin`, +1 per event) —
+`GestureStamper` in `webrtc-input-channel.ts`, applied before routing so the
+WebSocket fallback carries the same fields. The server's `TouchSequencer`
+(`src/input-sequencer.ts`, one per touch tag) then applies each `begin`/`end`
+once, applies only forward-moving `move`s of the gesture that is down, drops
+stragglers of ended gestures, and lifts a finger whose `end` went missing
+before the next gesture begins. Unstamped messages (older clients, the CLI)
+are applied as-is.
 
 The original removal was motivated by a real hazard: `begin` sent on the
-WebSocket and `move`/`end` on the data channel are each ordered, but their
+WebSocket and `move`/`end` on a data channel are each ordered, but their
 combined delivery order is undefined. The client closes that hazard with a
-gesture-boundary router (`webrtc-input-channel.ts`): every event of one touch
-or multi-touch gesture travels on the transport the gesture began on, and the
-router only re-evaluates which transport to prefer while no gesture is in
-flight. If a channel dies mid-gesture, the rest of the gesture falls back to
-the WebSocket immediately — a closed channel delivers nothing late, so that
-switch cannot reorder events.
+gesture-boundary router (`HidTransportRouter`): every event of one touch or
+multi-touch gesture travels on the transport the gesture began on (the
+channels or the socket), and the router only re-evaluates which transport to
+prefer while no gesture is in flight. If the input channel dies mid-gesture,
+the rest of the gesture falls back to the WebSocket immediately — a closed
+channel delivers nothing late, so that switch cannot reorder events. If only
+the lossy channel dies, moves continue on the reliable one.
 
 What stays on the WebSocket:
 

@@ -56,6 +56,8 @@ export function useWebRtcStream({
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [inputChannelOpen, setInputChannelOpen] = useState(false);
   const inputChannelRef = useRef<RTCDataChannel | null>(null);
+  const [movesChannelOpen, setMovesChannelOpen] = useState(false);
+  const movesChannelRef = useRef<RTCDataChannel | null>(null);
   const firstFrameTimeoutRef = useRef<number | undefined>(undefined);
   const firstFrameDecodedRef = useRef(false);
   const transportRetryAttemptRef = useRef(0);
@@ -68,6 +70,12 @@ export function useWebRtcStream({
   const inputTarget = useMemo(
     () => (inputChannelOpen ? dataChannelSendTarget(inputChannelRef.current) : null),
     [inputChannelOpen],
+  );
+  // The lossy lane for touch moves, scroll and crown deltas. Null until open;
+  // the router then keeps those on the reliable channel.
+  const movesTarget = useMemo(
+    () => (movesChannelOpen ? dataChannelSendTarget(movesChannelRef.current) : null),
+    [movesChannelOpen],
   );
 
   const markFrameDecoded = useCallback(() => {
@@ -110,6 +118,8 @@ export function useWebRtcStream({
     setError(null);
     inputChannelRef.current = null;
     setInputChannelOpen(false);
+    movesChannelRef.current = null;
+    setMovesChannelOpen(false);
     firstFrameDecodedRef.current = false;
     if (firstFrameTimeoutRef.current !== undefined) {
       window.clearTimeout(firstFrameTimeoutRef.current);
@@ -134,6 +144,10 @@ export function useWebRtcStream({
       if (inputChannelRef.current) {
         inputChannelRef.current = null;
         setInputChannelOpen(false);
+      }
+      if (movesChannelRef.current) {
+        movesChannelRef.current = null;
+        setMovesChannelOpen(false);
       }
       pc?.close();
       // Readers of `peerConnection` would otherwise keep polling a closed connection for the whole
@@ -221,6 +235,21 @@ export function useWebRtcStream({
           if (inputChannelRef.current === inputChannel) {
             inputChannelRef.current = null;
             setInputChannelOpen(false);
+          }
+        };
+        // Unordered and lifetime-limited: a move that is not delivered within
+        // ~100 ms is dropped rather than retransmitted, and later moves are
+        // never held behind it. begin/end are duplicated onto this lane too;
+        // the server de-duplicates by gesture id and sequence.
+        const movesChannel = pc.createDataChannel("moves", { ordered: false, maxPacketLifeTime: 100 });
+        movesChannelRef.current = movesChannel;
+        movesChannel.onopen = () => {
+          if (!stopped && movesChannelRef.current === movesChannel) setMovesChannelOpen(true);
+        };
+        movesChannel.onclose = () => {
+          if (movesChannelRef.current === movesChannel) {
+            movesChannelRef.current = null;
+            setMovesChannelOpen(false);
           }
         };
 
@@ -332,11 +361,13 @@ export function useWebRtcStream({
       setStream(null);
       inputChannelRef.current = null;
       setInputChannelOpen(false);
+      movesChannelRef.current = null;
+      setMovesChannelOpen(false);
       setPeerConnection(null);
       setSessionId(null);
       pc?.close();
     };
   }, [enabled, offerUrl, closeUrl, codec, iceServers, retryGeneration]);
 
-  return { stream, failure, error, markFrameDecoded, peerConnection, sessionId, inputTarget };
+  return { stream, failure, error, markFrameDecoded, peerConnection, sessionId, inputTarget, movesTarget };
 }

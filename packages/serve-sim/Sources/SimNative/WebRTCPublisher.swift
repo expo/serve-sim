@@ -1799,8 +1799,13 @@ private final class WebRTCSession {
 }
 
 private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate, LKRTCDataChannelDelegate {
-    /// The label the browser gives its HID input channel; anything else is closed.
-    static let inputDataChannelLabel = "input"
+    /// The labels the browser gives its HID channels; anything else is closed.
+    /// `input` is ordered and reliable (begin/end, buttons, keys); `moves` is
+    /// unordered with a short lifetime (touch moves, scroll, crown), so a lost
+    /// packet never stalls the ones behind it. Both carry the same
+    /// `[tag][JSON]` frames and land in the same dispatch; the server-side
+    /// sequencer sorts out duplicates and reordering.
+    static let inputDataChannelLabels: Set<String> = ["input", "moves"]
 
     weak var peerConnection: LKRTCPeerConnection?
     private let onConnected: (LKRTCPeerConnection) -> Void
@@ -1878,12 +1883,12 @@ private final class WebRTCSessionDelegate: NSObject, LKRTCPeerConnectionDelegate
         streamLog("[webrtc] ICE candidate error: url=\(event.url) code=\(event.errorCode) text=\(event.errorText)")
     }
     func peerConnection(_ peerConnection: LKRTCPeerConnection, didOpen dataChannel: LKRTCDataChannel) {
-        guard dataChannel.label == Self.inputDataChannelLabel else {
+        guard Self.inputDataChannelLabels.contains(dataChannel.label) else {
             streamLog("[webrtc] Closing unsupported data channel: \(dataChannel.label)")
             dataChannel.close()
             return
         }
-        streamLog("[webrtc] Viewer opened input data channel")
+        streamLog("[webrtc] Viewer opened \(dataChannel.label) data channel")
         retainedDataChannelsLock.lock()
         retainedDataChannels[ObjectIdentifier(dataChannel)] = dataChannel
         retainedDataChannelsLock.unlock()

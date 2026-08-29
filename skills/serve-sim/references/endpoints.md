@@ -68,6 +68,8 @@ mounts it at `/`. Prefix the paths below with that configured base.
 | `GET` | `/api/event-log` | Recent normalized simulator input events. |
 | `GET` | `/api/event-log/events` | SSE event-log updates. |
 | `GET` | `/logs` | Simulator console log (NDJSON). SSE by default, replaying the buffered backlog before live lines; JSON on `Accept: application/json` or `?snapshot`. Tools → Logs subscribes while the section is open. The browser console still follows locally by default; remote previews require `?logs=1`. |
+| `GET` | `/crashes` | Crash reports for the device, with collection health. JSON by default; SSE on `Accept: text/event-stream`. Requires the bearer token. |
+| `GET` | `/crashes/<id>` | One crash record, its pre-crash log tail, and its full `.ips`. Requires the bearer token. |
 | `GET` | `/ax` | SSE accessibility snapshots. |
 | `POST` | `/exec` | Host command execution; requires JSON, same-origin checks, and bearer token. |
 | `GET` | `/appstate` | Frontmost-app event stream. |
@@ -103,9 +105,22 @@ The JSON body carries `lines`, `latestSeq`, `oldestSeq`, `bufferedBytes`,
 
 ## Authentication and state
 
-The `/exec` route requires the per-process bearer token injected
+The `/exec` and `/crashes` routes require the per-process bearer token injected
 into the same-origin preview. Non-browser callers can read it as `execToken`
 from `GET {base}/api`. Stream, input,
 accessibility, and signaling routes are intentionally unauthenticated, so expose
 serve-sim only on trusted networks or behind an authenticated proxy.
 
+A crash report lands a few seconds after the process dies, so an empty
+`crashes` array shortly after a crash means "not yet", not "nothing happened".
+The `meta.reportDelaySeconds` field carries that bound, and `meta.status` says
+whether collection is running at all.
+
+The list omits each crash's `logTail` and reports `logTailLines` instead; fetch
+`/crashes/<id>` for the lines. A tail holds the crashed app's own device-log
+lines from at or before the crash, and `logTailSource` says how it was chosen:
+`app-windowed` (lines found), `buffer-rolled-past` (the buffer no longer
+reached back that far), or `none` (nothing buffered for that device).
+
+Prefer `npx @expo/serve-sim --list -q` over reading state files directly. The state
+format is internal and may also contain short-lived TURN credentials.

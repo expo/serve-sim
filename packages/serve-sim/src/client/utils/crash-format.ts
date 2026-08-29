@@ -16,6 +16,14 @@ export function remapOccurrenceIndex(
   return index === -1 ? null : index;
 }
 
+export function crashDetailUrl(listPath: string, id: string, occurrence?: number): string {
+  const [pathname, search] = listPath.split("?");
+  const params = new URLSearchParams(search);
+  if (occurrence !== undefined) params.set("occurrence", String(occurrence));
+  const qs = params.toString();
+  return `${pathname}/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`;
+}
+
 export type StackRow =
   | { kind: "frame"; index: number; frame: CrashFrame }
   | {

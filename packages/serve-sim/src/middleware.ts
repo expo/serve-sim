@@ -1694,8 +1694,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
   const frameAncestors = options?.frameAncestors ?? [];
 
-  // The watch starts on the first `/crashes` read, so building a middleware never touches the
-  // host's crash directory.
   crashRuntime.arm();
 
   // Simulator-settings requests run in-process (just the underlying simctl /

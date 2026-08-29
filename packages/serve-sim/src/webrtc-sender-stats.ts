@@ -34,6 +34,10 @@ export interface CaptureCounts {
   idleFrames: number;
   offeredFrames: number | null;
   forwardedFrames: number | null;
+  /** Fresh captures submitted on arrival. Tracks `offeredFrames` while a peer is connected. */
+  arrivalFrames: number | null;
+  /** Retained frame re-sent by the repeat chain because nothing fresh arrived for an interval. */
+  repeatFrames: number | null;
   /** Frame-pump watchdog restarts; nonzero means the host starved or dropped pump timers. */
   pumpRestarts: number | null;
   captureCpuCopies: number | null;
@@ -143,6 +147,8 @@ function readCaptureCounts(raw: unknown): CaptureCounts | null {
     idleFrames,
     offeredFrames: typeof raw.offeredFrames === "number" ? raw.offeredFrames : null,
     forwardedFrames: typeof raw.forwardedFrames === "number" ? raw.forwardedFrames : null,
+    arrivalFrames: maybeNumber(raw.arrivalFrames),
+    repeatFrames: maybeNumber(raw.repeatFrames),
     pumpRestarts: typeof raw.pumpRestarts === "number" ? raw.pumpRestarts : null,
     captureCpuCopies: maybeNumber(raw.captureCpuCopies),
     pollTicks: maybeNumber(raw.pollTicks),

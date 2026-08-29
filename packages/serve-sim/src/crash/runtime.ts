@@ -12,9 +12,7 @@ import { CrashStore, type CrashEvent, type CrashRecord, type LogTailSource } fro
 const DEFAULT_REPORTS_DIR = join(homedir(), "Library", "Logs", "DiagnosticReports");
 
 const CRASH_SCHEMA_VERSION = 1;
-
 const REPORT_DELAY_SECONDS = 5;
-
 const MAX_INGESTED = 500;
 const RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30_000;

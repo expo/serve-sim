@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CrashSummary } from "../../crash/store";
-import { formatCrashAgo, remapOccurrenceIndex } from "../utils/crash-format";
+import { crashDetailUrl, formatCrashAgo, remapOccurrenceIndex } from "../utils/crash-format";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
 import { CrashDetailModal, type SelectedOccurrence } from "./crash-detail-modal";
@@ -74,7 +74,6 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
     async (id: string, occurrence?: number): Promise<void> => {
       const gen = ++fetchGen.current;
       setLoadError(null);
-      const query = occurrence === undefined ? "" : `?occurrence=${occurrence}`;
       const failMessage =
         confirmed.current === null ? "Could not load that crash." : "Could not load that occurrence.";
       const revert = (): void => {
@@ -84,9 +83,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
         setLoadError(failMessage);
       };
       try {
-        const response = await authorized(
-          `${path.split("?")[0]}/${encodeURIComponent(id)}${query}`
-        );
+        const response = await authorized(crashDetailUrl(path, id, occurrence));
         if (!response.ok) {
           revert();
           return;

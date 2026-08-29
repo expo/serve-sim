@@ -4,7 +4,6 @@ import type { CrashFrame } from "../../crash/report";
 import type { CrashOccurrence, CrashSummary } from "../../crash/store";
 import { collapseSystemFrames, formatCrashAgo } from "../utils/crash-format";
 
-/** Raw device-log lines are NDJSON; a reader wants the message, not the envelope. */
 function messageOf(raw: string): string {
   try {
     const entry = JSON.parse(raw) as { eventMessage?: unknown };

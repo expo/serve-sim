@@ -260,7 +260,6 @@ describe("parseCrashReport", () => {
     const first = parseCrashReport(deepStack("App.alpha()"));
     expect(first?.culpritFrame).toBe("Demo App.alpha()");
     expect(first?.frames).toHaveLength(24);
-    // Two crashes that differ only past the cap must not share a signature.
     expect(first?.signature).not.toBe(parseCrashReport(deepStack("App.beta()"))?.signature);
   });
 

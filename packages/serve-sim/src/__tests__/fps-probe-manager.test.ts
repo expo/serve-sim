@@ -48,7 +48,6 @@ describe("startFpsProbeManager", () => {
       launchEnvironment: () => ({ PROBE: "1" }),
       resetShm: (udid) => {
         resets.push(udid);
-        return true;
       },
       launch: async (udid, bundleId, env) => {
         launches.push({ udid, bundleId, env });
@@ -166,7 +165,7 @@ describe("startFpsProbeManager", () => {
       readFps: () => null,
       isInstalledApp: async () => true,
       launchEnvironment: () => ({}),
-      resetShm: () => true,
+      resetShm: () => {},
       launch: async () => {
         launches++;
         return null;
@@ -191,7 +190,7 @@ describe("startFpsProbeManager", () => {
       readFps: () => null,
       isInstalledApp: async () => true,
       launchEnvironment: () => ({}),
-      resetShm: () => true,
+      resetShm: () => {},
       launch: async () => {
         launches++;
         foreground.emit({ bundleId: "dev.expo.A", pid: 22 });

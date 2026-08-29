@@ -7,8 +7,17 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#import "SimFpsLog.h"
 #include "SimFpsShared.h"
+
+static void simfps_log(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
+
+static void simfps_log(NSString *fmt, ...) {
+    va_list args; va_start(args, fmt);
+    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:args];
+    va_end(args);
+    fprintf(stderr, "[SimFps] %s\n", msg.UTF8String);
+    NSLog(@"[SimFps] %@", msg);
+}
 
 typedef unsigned int (*SimFpsRenderCounter)(unsigned int);
 

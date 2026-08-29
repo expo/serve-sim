@@ -1,24 +1,20 @@
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 
 import { dirnameOf } from "./runtime";
 
 const here = dirnameOf(import.meta.url);
 
 function locate(candidates: string[]): string | null {
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return resolve(candidate);
-  }
-  return null;
+  return candidates.find(existsSync) ?? null;
 }
 
 export function locateCameraDylib(): string | null {
   return locate([
     join(dirname(process.execPath), "simcam", "libSimCameraInjector.dylib"),
     join(here, "..", "dist", "simcam", "libSimCameraInjector.dylib"),
-    join(here, "simcam", "libSimCameraInjector.dylib"),
     join(here, "..", "Sources", "SimCameraInjector", "build", "libSimCameraInjector.dylib"),
   ]);
 }
@@ -35,16 +31,14 @@ export function buildCameraDylib(): string {
   return dylib;
 }
 
-export function locateFpsDylib(): string | null {
+function locateFpsDylib(): string | null {
   return locate([
     join(dirname(process.execPath), "simfps", "libSimFpsProbe.dylib"),
     join(here, "..", "dist", "simfps", "libSimFpsProbe.dylib"),
-    join(here, "simfps", "libSimFpsProbe.dylib"),
-    join(here, "..", "Sources", "SimFpsProbe", "build", "libSimFpsProbe.dylib"),
   ]);
 }
 
-export function buildFpsDylib(): string {
+function buildFpsDylib(): string {
   const buildScript = join(here, "..", "Sources", "SimFpsProbe", "build.sh");
   if (!existsSync(buildScript)) {
     throw new Error("SimFpsProbe source not found. Reinstall from a recent release.");
@@ -56,8 +50,8 @@ export function buildFpsDylib(): string {
   return dylib;
 }
 
-export function fpsDylib(forceBuild = false): string {
-  return forceBuild ? buildFpsDylib() : (locateFpsDylib() ?? buildFpsDylib());
+export function fpsDylib(): string {
+  return locateFpsDylib() ?? buildFpsDylib();
 }
 
 export function cameraShmName(udid: string): string {
@@ -72,10 +66,11 @@ export function injectedAppEnvironment({
   fps: { dylib: string; shmName: string };
   camera?: { dylib: string; shmName: string; mirror?: string };
 }): NodeJS.ProcessEnv {
-  const dylibs = [fps.dylib, camera?.dylib].filter((value): value is string => !!value);
   return {
     ...process.env,
-    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: dylibs.join(":"),
+    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: camera
+      ? `${fps.dylib}:${camera.dylib}`
+      : fps.dylib,
     SIMCTL_CHILD_SERVE_SIM_FPS_SHM: fps.shmName,
     ...(camera
       ? {

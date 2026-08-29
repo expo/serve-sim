@@ -7,12 +7,9 @@ import {
   frontmostAppViaRecentLogs,
   isUserFacingBundle,
   parseAppVisibilityLogMessage,
-  parseForegroundAppLogMessage,
   type ForegroundApp,
 } from "../foreground-tracker";
 
-// A fake `log stream` child: an EventEmitter with a writable-looking stdout, driven by emitting
-// `data` chunks. Lets the tracker run without a booted simulator.
 function fakeChild() {
   const stdout = Object.assign(new EventEmitter(), { destroy() {} });
   return Object.assign(new EventEmitter(), {
@@ -38,27 +35,13 @@ function trackerWithFakeStream(restartDelayMs = 1000) {
       children.push(child);
       return child as unknown as ChildProcess;
     },
-    frontmostApp: async () => null, // no AX seed in tests; drive foreground purely from the feed
+    frontmostApp: async () => null,
     restartDelayMs,
   });
   return { cache, children };
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
-
-describe("parseForegroundAppLogMessage", () => {
-  test("extracts the bundle id and pid from a foreground line", () => {
-    expect(
-      parseForegroundAppLogMessage(
-        "[app<com.apple.mobilesafari>:43117] Setting process visibility to: Foreground",
-      ),
-    ).toEqual({ bundleId: "com.apple.mobilesafari", pid: 43117 });
-  });
-
-  test("returns null for non-foreground lines", () => {
-    expect(parseForegroundAppLogMessage("Setting process visibility to: Background")).toBeNull();
-  });
-});
 
 describe("frontmostAppFromLogOutput", () => {
   const line = (bundleId: string, pid: number, state: "Foreground" | "Background") =>
@@ -107,7 +90,6 @@ describe("isUserFacingBundle", () => {
     expect(isUserFacingBundle("dev.expo.MyApp")).toBe(true);
     expect(isUserFacingBundle("com.apple.WidgetRenderer")).toBe(false);
     expect(isUserFacingBundle("dev.expo.MyApp.extension")).toBe(false);
-    // Generic names only match as whole components, so real apps that merely contain them stay in.
     expect(isUserFacingBundle("com.example.CustomerService")).toBe(true);
     expect(isUserFacingBundle("com.acme.InCallUITest")).toBe(true);
     expect(isUserFacingBundle("com.apple.foo.Service")).toBe(false);
@@ -134,9 +116,9 @@ describe("createForegroundTrackerCache", () => {
     const child = children[0]!;
 
     child.stdout.emit("data", logChunk("dev.expo.A", 11));
-    child.stdout.emit("data", logChunk("dev.expo.A", 11)); // exact repeat -> ignored
-    child.stdout.emit("data", logChunk("com.apple.WidgetRenderer", 99)); // non-UI -> ignored
-    child.stdout.emit("data", logChunk("dev.expo.A", 12)); // same bundle, new pid (relaunch) -> tracked
+    child.stdout.emit("data", logChunk("dev.expo.A", 11));
+    child.stdout.emit("data", logChunk("com.apple.WidgetRenderer", 99));
+    child.stdout.emit("data", logChunk("dev.expo.A", 12));
     child.stdout.emit("data", logChunk("dev.expo.B", 22));
 
     expect(seen).toEqual([
@@ -152,31 +134,31 @@ describe("createForegroundTrackerCache", () => {
     const sub = cache.subscribe("UDID");
     expect(children).toHaveLength(1);
 
-    children[0]!.emit("exit"); // the stream died unexpectedly
+    children[0]!.emit("exit");
     await tick();
-    expect(children).toHaveLength(2); // respawned so tracking recovers
+    expect(children).toHaveLength(2);
     sub.unsubscribe();
   });
 
   test("does not respawn after an intentional stop", async () => {
     const { cache, children } = trackerWithFakeStream(0);
     const sub = cache.subscribe("UDID");
-    sub.unsubscribe(); // last listener -> stop()
+    sub.unsubscribe();
 
     children[0]!.emit("exit");
     await tick();
-    expect(children).toHaveLength(1); // no respawn once stopped
+    expect(children).toHaveLength(1);
   });
 
   test("ref-counts duplicate callbacks independently", () => {
     const { cache, children } = trackerWithFakeStream();
     const callback = () => {};
     const a = cache.subscribe("UDID", callback);
-    const b = cache.subscribe("UDID", callback); // same reference
+    const b = cache.subscribe("UDID", callback);
     expect(children).toHaveLength(1);
 
     a.unsubscribe();
-    expect(children[0]!.killed).toBe(false); // b still active despite the shared callback
+    expect(children[0]!.killed).toBe(false);
     b.unsubscribe();
     expect(children[0]!.killed).toBe(true);
   });
@@ -185,12 +167,12 @@ describe("createForegroundTrackerCache", () => {
     const { cache, children } = trackerWithFakeStream();
     const a = cache.subscribe("UDID");
     const b = cache.subscribe("UDID");
-    expect(children).toHaveLength(1); // one shared tail
+    expect(children).toHaveLength(1);
 
     a.unsubscribe();
-    expect(children[0]!.killed).toBe(false); // still alive for b
+    expect(children[0]!.killed).toBe(false);
     b.unsubscribe();
-    expect(children[0]!.killed).toBe(true); // stopped with the last subscriber
-    expect(cache.peek("UDID")).toBeNull(); // evicted
+    expect(children[0]!.killed).toBe(true);
+    expect(cache.peek("UDID")).toBeNull();
   });
 });

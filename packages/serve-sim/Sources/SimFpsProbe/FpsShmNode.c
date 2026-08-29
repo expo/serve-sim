@@ -1,6 +1,4 @@
 #include <node_api.h>
-#include <errno.h>
-#include <stdbool.h>
 #include <string.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -51,15 +49,12 @@ static napi_value Copy(napi_env env, napi_callback_info info) {
         return ud;
     }
 
-    uint8_t buf[SIMFPS_SHM_SIZE];
-    if (simfps_shm_copy(name, buf) != 0) return ud;
-
     void *data = NULL;
     napi_value ab;
     if (napi_create_arraybuffer(env, SIMFPS_SHM_SIZE, &data, &ab) != napi_ok || data == NULL) {
         return ud;
     }
-    memcpy(data, buf, SIMFPS_SHM_SIZE);
+    if (simfps_shm_copy(name, data) != 0) return ud;
     return ab;
 }
 
@@ -67,18 +62,15 @@ static napi_value Remove(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1];
     napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
-
-    bool removed = false;
     if (argc >= 1) {
         char name[32];
         size_t len = 0;
         if (napi_get_value_string_utf8(env, argv[0], name, sizeof(name), &len) == napi_ok && len > 0) {
-            removed = shm_unlink(name) == 0 || errno == ENOENT;
+            shm_unlink(name);
         }
     }
-
     napi_value result;
-    napi_get_boolean(env, removed, &result);
+    napi_get_undefined(env, &result);
     return result;
 }
 

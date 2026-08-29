@@ -22,8 +22,7 @@ xcrun --sdk iphonesimulator clang \
     -framework QuartzCore \
     -install_name "@rpath/libSimFpsProbe.dylib" \
     -o "$DYLIB" \
-    "$HERE/SimFpsProbe.m" \
-    "$HERE/SimFpsLog.m"
+    "$HERE/SimFpsProbe.m"
 
 echo "Built: $DYLIB"
 file "$DYLIB"

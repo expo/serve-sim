@@ -58,8 +58,6 @@
     "Sources/SimCameraHelper/main.m",
     "Sources/SimCameraHelper/build.sh",
     "Sources/SimFpsProbe/SimFpsProbe.m",
-    "Sources/SimFpsProbe/SimFps*.h",
-    "Sources/SimFpsProbe/SimFps*.m",
     "Sources/SimFpsProbe/include/SimFpsShared.h",
     "Sources/SimFpsProbe/FpsShmNode.c",
     "Sources/SimFpsProbe/build.sh",

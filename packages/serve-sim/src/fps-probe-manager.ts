@@ -11,7 +11,6 @@ import {
 import { readInjectedCameraBundles } from "./camera-helper";
 import {
   foregroundTracker,
-  isUserFacingBundle,
   type ForegroundApp,
   type ForegroundTrackerCache,
 } from "./foreground-tracker";
@@ -44,8 +43,7 @@ export interface FpsProbeManagerDeps {
     stopped: () => boolean,
   ) => Promise<number | null>;
   launchEnvironment?: (udid: string, bundleId: string) => NodeJS.ProcessEnv;
-  resetShm?: (udid: string) => boolean;
-  now?: () => number;
+  resetShm?: (udid: string) => void;
   graceMs?: number;
   verifyMs?: number;
   retryMs?: number;
@@ -102,6 +100,15 @@ function launchEnvironment(udid: string, bundleId: string): NodeJS.ProcessEnv {
   });
 }
 
+export function launchAppWithFpsProbe(
+  udid: string,
+  bundleId: string,
+): Promise<number | null> {
+  const environment = launchEnvironment(udid, bundleId);
+  unlinkFpsShm(udid);
+  return launchWithProbe(udid, bundleId, environment, () => false);
+}
+
 function isFreshForProcess(sample: FpsSample | null, observedAt: number): boolean {
   return sample !== null && sample.timestampMs >= observedAt;
 }
@@ -116,7 +123,6 @@ export function startFpsProbeManager(
   const launch = deps.launch ?? launchWithProbe;
   const environment = deps.launchEnvironment ?? launchEnvironment;
   const resetShm = deps.resetShm ?? unlinkFpsShm;
-  const now = deps.now ?? Date.now;
   const graceMs = deps.graceMs ?? DEFAULT_GRACE_MS;
   const verifyMs = deps.verifyMs ?? DEFAULT_VERIFY_MS;
   const retryMs = deps.retryMs ?? DEFAULT_RETRY_MS;
@@ -138,18 +144,14 @@ export function startFpsProbeManager(
     timer = setTimeout(() => {
       timer = null;
       void drain();
-    }, Math.max(0, pending.dueAt - now()));
+    }, Math.max(0, pending.dueAt - Date.now()));
   };
 
-  const schedule = (app: ForegroundApp, observedAt = now(), waitMs = graceMs): void => {
-    if (
-      stopped ||
-      app.bundleId.startsWith("com.apple.") ||
-      !isUserFacingBundle(app.bundleId)
-    ) {
+  const schedule = (app: ForegroundApp, observedAt = Date.now(), waitMs = graceMs): void => {
+    if (stopped || app.bundleId.startsWith("com.apple.")) {
       return;
     }
-    pending = { app, observedAt, dueAt: now() + waitMs };
+    pending = { app, observedAt, dueAt: Date.now() + waitMs };
     armTimer();
   };
 
@@ -171,14 +173,14 @@ export function startFpsProbeManager(
         failure = undefined;
       }
       if (failure && failure.count >= MAX_FAILURES) return;
-      if (failure && failure.retryAt > now()) {
-        schedule(app, observedAt, failure.retryAt - now());
+      if (failure && failure.retryAt > Date.now()) {
+        schedule(app, observedAt, failure.retryAt - Date.now());
         return;
       }
       const installed = await checkInstalled(udid, app.bundleId);
       if (stopped || !installed || !currentMatches(app)) return;
 
-      const launchedAt = now();
+      const launchedAt = Date.now();
       resetShm(udid);
       const launchedPid = await launch(
         udid,
@@ -197,25 +199,25 @@ export function startFpsProbeManager(
       const failedPid =
         launchedPid ?? (current?.bundleId === app.bundleId ? current.pid : app.pid);
       const count = (failure?.count ?? 0) + 1;
-      failures.set(app.bundleId, { pid: failedPid, count, retryAt: now() + retryMs });
+      failures.set(app.bundleId, { pid: failedPid, count, retryAt: Date.now() + retryMs });
       if (
         current?.bundleId === app.bundleId &&
         current.pid === failedPid &&
         count < MAX_FAILURES
       ) {
-        schedule(current, now(), retryMs);
+        schedule(current, Date.now(), retryMs);
       }
     } catch (error) {
       const app = work.app;
       const previous = failures.get(app.bundleId);
       const count = previous?.pid === app.pid ? previous.count + 1 : 1;
-      failures.set(app.bundleId, { pid: app.pid, count, retryAt: now() + retryMs });
+      failures.set(app.bundleId, { pid: app.pid, count, retryAt: Date.now() + retryMs });
       console.error(
         `[serve-sim] FPS probe failed for ${app.bundleId}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
-      if (count < MAX_FAILURES && currentMatches(app)) schedule(app, now(), retryMs);
+      if (count < MAX_FAILURES && currentMatches(app)) schedule(app, Date.now(), retryMs);
     } finally {
       running = false;
       armTimer();
@@ -239,13 +241,8 @@ export function startFpsProbeManager(
 
 const managers = new Map<string, FpsProbeManager>();
 
-export function ensureFpsProbeManager(udid: string): FpsProbeManager {
-  let manager = managers.get(udid);
-  if (!manager) {
-    manager = startFpsProbeManager(udid);
-    managers.set(udid, manager);
-  }
-  return manager;
+export function ensureFpsProbeManager(udid: string): void {
+  if (!managers.has(udid)) managers.set(udid, startFpsProbeManager(udid));
 }
 
 export function stopFpsProbeManager(udid: string): void {

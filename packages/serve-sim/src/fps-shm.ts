@@ -63,7 +63,7 @@ export function decodeFpsShm(
   const mainThreadFps = view.getFloat32(16, true);
   const maxFps = view.getUint32(20, true);
   const timestampMs = Number(view.getBigUint64(24, true));
-  if (!Number.isFinite(fps) || !Number.isFinite(mainThreadFps) || !Number.isFinite(timestampMs)) {
+  if (!Number.isFinite(fps) || !Number.isFinite(mainThreadFps)) {
     return null;
   }
   if (now - timestampMs > MAX_AGE_MS) return null;
@@ -89,7 +89,7 @@ const require = createRequire(import.meta.url);
 
 type FpsShmAddon = {
   copy: (name: string) => ArrayBuffer | undefined;
-  remove?: (name: string) => boolean;
+  remove?: (name: string) => void;
 };
 
 let addonImpl: FpsShmAddon | undefined;
@@ -99,7 +99,6 @@ function loadFpsShmAddon(): FpsShmAddon | null {
   const here = dirnameOf(import.meta.url);
   const path = [
     join(dirname(process.execPath), "simfps", "fps-shm.node"),
-    join(here, "simfps", "fps-shm.node"),
     join(here, "..", "dist", "simfps", "fps-shm.node"),
   ].find((p) => existsSync(p));
   if (!path) return null;
@@ -116,6 +115,6 @@ function copyFpsShm(name: string): Uint8Array | null {
   return buf ? new Uint8Array(buf) : null;
 }
 
-export function unlinkFpsShm(udid: string): boolean {
-  return loadFpsShmAddon()?.remove?.(fpsShmName(udid)) ?? false;
+export function unlinkFpsShm(udid: string): void {
+  loadFpsShmAddon()?.remove?.(fpsShmName(udid));
 }

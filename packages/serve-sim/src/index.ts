@@ -26,7 +26,12 @@ import {
   injectedAppEnvironment,
   locateCameraDylib,
 } from "./app-injection";
-import { ensureFpsProbeManager, stopFpsProbeManager } from "./fps-probe-manager";
+import {
+  ensureFpsProbeManager,
+  launchAppWithFpsProbe,
+  stopFpsProbeManager,
+} from "./fps-probe-manager";
+import { installAndLaunchApp } from "./launch-app";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
 import { permissions } from "./permissions";
 import { uiSettings } from "./ui-settings";
@@ -1600,6 +1605,7 @@ async function serve(
     stream?: StreamRuntimeOptions;
     metricsCorsOrigins?: string[];
     debugStreamPath?: string;
+    launchAppPath?: string;
   } = {},
 ) {
   // Boot the target simulators; the preview server streams them in-process
@@ -1609,6 +1615,12 @@ async function serve(
     console.log("Starting simulator stream...");
   }
   for (const udid of targetDevices) await ensureBooted(udid);
+  if (options.launchAppPath) {
+    for (const udid of targetDevices) ensureFpsProbeManager(udid);
+    for (const udid of targetDevices) {
+      await installAndLaunchApp(udid, options.launchAppPath, launchAppWithFpsProbe);
+    }
+  }
   const targetDevice = targetDevices[0];
 
   const { simMiddleware } = await import("./middleware");
@@ -1736,6 +1748,7 @@ program
   .option("--detach", "Spawn helper and exit (daemon mode)")
   .option("-q, --quiet", "Suppress human-readable output, JSON only")
   .option("--no-preview", "Skip the web preview server; stream in foreground only")
+  .option("--launch-app <path>", "Install and launch an iOS .app with FPS injection")
   .option("--transport <http|webrtc>", "Stream transport", "http")
   .option(
     "--codec <codec>",
@@ -1867,6 +1880,15 @@ Examples:
       console.error("--turn-username and --turn-credential require --turn-url.");
       process.exit(1);
     }
+    const launchAppPath = opts.launchApp?.trim();
+    if (opts.launchApp !== undefined && !launchAppPath) {
+      console.error("--launch-app needs an .app path.");
+      process.exit(1);
+    }
+    if (launchAppPath && (opts.detach || opts.preview === false)) {
+      console.error("--launch-app requires the preview server.");
+      process.exit(1);
+    }
     const stunUrls: string[] = opts.stunUrl ?? [];
     const webrtcIceServers: WebRtcIceServer[] = [];
     if (stunUrls.length) webrtcIceServers.push({ urls: stunUrls });
@@ -1934,6 +1956,7 @@ Examples:
         stream,
         metricsCorsOrigins: opts.metricsCorsOrigin,
         debugStreamPath,
+        launchAppPath,
       });
     }
   });

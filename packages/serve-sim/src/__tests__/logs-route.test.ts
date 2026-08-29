@@ -12,11 +12,13 @@ const state = inProcessServeSimState(UDID, 4000);
 class FakeChild extends EventEmitter {
   readonly stdout = new EventEmitter() as EventEmitter & { destroy: () => void };
   readonly stderr = new EventEmitter();
+  killed = false;
   constructor() {
     super();
     this.stdout.destroy = () => {};
   }
   kill(): boolean {
+    this.killed = true;
     return true;
   }
   emitLines(text: string): void {
@@ -215,6 +217,28 @@ describe("handleLogsRequest", () => {
     expect(JSON.parse(res.body_).lines).toHaveLength(1);
   });
 
+  test("JSON snapshot does not start simctl unless follow is set", () => {
+    expect(cache.peek(UDID)).toBeNull();
+    handleLogsRequest(fakeReq({ accept: "application/json" }), fakeRes(), state, "/logs", cache);
+    expect(cache.peek(UDID)).toBeNull();
+
+    handleLogsRequest(
+      fakeReq({ accept: "application/json" }),
+      fakeRes(),
+      state,
+      "/logs?follow=1",
+      cache
+    );
+    expect(cache.peek(UDID)).not.toBeNull();
+    expect(spawned).toHaveLength(1);
+  });
+
+  test("snapshot=1 with follow warms the ring the same way", () => {
+    expect(cache.peek(UDID)).toBeNull();
+    handleLogsRequest(fakeReq(), fakeRes(), state, "/logs?snapshot=1&follow=1", cache);
+    expect(cache.peek(UDID)).not.toBeNull();
+  });
+
   test("warms the buffer for a device nothing had touched", () => {
     expect(cache.peek(UDID)).toBeNull();
     handleLogsRequest(fakeReq(), fakeRes(), state, "/logs", cache);
@@ -232,7 +256,6 @@ describe("handleLogsRequest", () => {
     spawned[0]!.emitLines('{"m":"after close"}\n');
 
     expect(res.body_).not.toContain("after close");
-    // The ring keeps filling even though the reader went away.
-    expect(cache.peek(UDID)?.read()).toHaveLength(1);
+    expect(spawned[0]!.killed).toBe(true);
   });
 });

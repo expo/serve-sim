@@ -61,3 +61,56 @@ export function useResizableWidth(
 
   return { width: effectiveWidth, onPointerDown };
 }
+
+// Bottom drawers grow as the handle is dragged upwards (delta = startY - clientY).
+export function useResizableHeight(
+  storageKey: string,
+  defaultHeight: number,
+  min: number,
+  max: number,
+) {
+  const clamp = useCallback(
+    (h: number) => Math.max(min, Math.min(max, h)),
+    [min, max],
+  );
+  const [height, setHeight] = useState<number>(() => {
+    if (typeof window === "undefined") return defaultHeight;
+    const raw = window.localStorage.getItem(storageKey);
+    const parsed = raw != null ? Number(raw) : NaN;
+    return Number.isFinite(parsed) ? clamp(parsed) : defaultHeight;
+  });
+  const effectiveMax =
+    typeof window !== "undefined" ? Math.min(max, window.innerHeight - 48) : max;
+  const effectiveHeight = Math.max(min, Math.min(effectiveMax, height));
+
+  const onPointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      const startY = e.clientY;
+      const startHeight = effectiveHeight;
+      const target = e.currentTarget;
+      target.setPointerCapture(e.pointerId);
+      const move = (ev: PointerEvent) => {
+        setHeight(clamp(startHeight + (startY - ev.clientY)));
+      };
+      const up = (ev: PointerEvent) => {
+        target.releasePointerCapture(ev.pointerId);
+        target.removeEventListener("pointermove", move);
+        target.removeEventListener("pointerup", up);
+        target.removeEventListener("pointercancel", up);
+        try {
+          window.localStorage.setItem(
+            storageKey,
+            String(clamp(startHeight + (startY - ev.clientY))),
+          );
+        } catch {}
+      };
+      target.addEventListener("pointermove", move);
+      target.addEventListener("pointerup", up);
+      target.addEventListener("pointercancel", up);
+    },
+    [clamp, effectiveHeight, storageKey],
+  );
+
+  return { height: effectiveHeight, onPointerDown };
+}

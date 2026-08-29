@@ -16,7 +16,6 @@ import type {
   StreamPlaybackSettings,
 } from "../../stream-settings";
 
-/** The preview's collapsible tools panel: app detection, metrics, camera, permissions, and settings. */
 export function ToolsPanel({
   open,
   onClose,

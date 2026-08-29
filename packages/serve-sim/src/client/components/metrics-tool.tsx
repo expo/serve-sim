@@ -92,14 +92,12 @@ export function MetricsTool({
             downValues={history.map((s) => s.netInBytesPerSec)}
             upValues={history.map((s) => s.netOutBytesPerSec)}
           />
-          {latest.fps != null && (
-            <FpsRow
-              refresh={latest.mainThreadFps ?? latest.fps}
-              rendered={latest.fps}
-              refreshValues={fpsHistory.map((s) => s.mainThreadFps ?? 0)}
-              renderedValues={fpsHistory.map((s) => s.fps ?? 0)}
-            />
-          )}
+          <FpsRow
+            refresh={latest.mainThreadFps ?? latest.fps}
+            rendered={latest.fps}
+            refreshValues={fpsHistory.map((s) => s.mainThreadFps ?? 0)}
+            renderedValues={fpsHistory.map((s) => s.fps ?? 0)}
+          />
         </>
       ) : null}
     </CollapsibleSection>
@@ -134,14 +132,14 @@ function MetricRow({
   );
 }
 
-function FpsRow({
+export function FpsRow({
   refresh,
   rendered,
   refreshValues,
   renderedValues,
 }: {
-  refresh: number;
-  rendered: number;
+  refresh: number | null;
+  rendered: number | null;
   refreshValues: number[];
   renderedValues: number[];
 }) {
@@ -165,9 +163,13 @@ function FpsRow({
         </span>
         <span className="inline-flex items-center gap-1.5">
           <span className="tabular-nums text-[11px]">
-            <span className="text-cyan-400">Refresh {Math.round(refresh)}</span>
+            <span className="text-cyan-400">
+              Refresh {refresh == null ? "--" : Math.round(refresh)}
+            </span>
             <span className="text-white/30 mx-1.5">·</span>
-            <span className="text-violet-400">Rendered {Math.round(rendered)}</span>
+            <span className="text-violet-400">
+              Rendered {rendered == null ? "--" : Math.round(rendered)}
+            </span>
           </span>
           <Chevron open={open} />
         </span>

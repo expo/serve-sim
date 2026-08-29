@@ -1,0 +1,214 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+import {
+  buildCameraDylib,
+  cameraShmName,
+  fpsDylib,
+  injectedAppEnvironment,
+  locateCameraDylib,
+} from "./app-injection";
+import { readInjectedCameraBundles } from "./camera-helper";
+import {
+  foregroundTracker,
+  isUserFacingBundle,
+  type ForegroundApp,
+  type ForegroundTrackerCache,
+} from "./foreground-tracker";
+import {
+  fpsShmName,
+  readFpsSample,
+  unlinkFpsShm,
+  type FpsSample,
+} from "./fps-shm";
+
+const execFileAsync = promisify(execFile);
+const DEFAULT_GRACE_MS = 1250;
+const DEFAULT_VERIFY_MS = 1250;
+const DEFAULT_RETRY_MS = 30_000;
+const MAX_FAILURES = 3;
+
+export interface FpsProbeManagerDeps {
+  tracker?: ForegroundTrackerCache;
+  readFps?: (udid: string, bundleId: string) => FpsSample | null;
+  isInstalledApp?: (udid: string, bundleId: string) => Promise<boolean>;
+  launch?: (udid: string, bundleId: string, env: NodeJS.ProcessEnv) => Promise<number | null>;
+  launchEnvironment?: (udid: string, bundleId: string) => NodeJS.ProcessEnv;
+  resetShm?: (udid: string) => boolean;
+  now?: () => number;
+  graceMs?: number;
+  verifyMs?: number;
+  retryMs?: number;
+}
+
+export interface FpsProbeManager {
+  stop: () => void;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function isInstalledApp(udid: string, bundleId: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync(
+      "xcrun",
+      ["simctl", "get_app_container", udid, bundleId, "app"],
+      { timeout: 3000 },
+    );
+    return stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function launchWithProbe(
+  udid: string,
+  bundleId: string,
+  env: NodeJS.ProcessEnv,
+): Promise<number | null> {
+  await execFileAsync("xcrun", ["simctl", "terminate", udid, bundleId], {
+    timeout: 3000,
+  }).catch(() => {});
+  const { stdout } = await execFileAsync("xcrun", ["simctl", "launch", udid, bundleId], {
+    timeout: 5000,
+    env,
+  });
+  const match = stdout.trim().match(/:\s*(\d+)\s*$/);
+  return match ? Number(match[1]) : null;
+}
+
+function launchEnvironment(udid: string, bundleId: string): NodeJS.ProcessEnv {
+  const preserveCamera = readInjectedCameraBundles(udid).includes(bundleId);
+  const cameraDylib = preserveCamera ? (locateCameraDylib() ?? buildCameraDylib()) : null;
+  return injectedAppEnvironment({
+    fps: { dylib: fpsDylib(), shmName: fpsShmName(udid) },
+    ...(cameraDylib
+      ? { camera: { dylib: cameraDylib, shmName: cameraShmName(udid) } }
+      : {}),
+  });
+}
+
+function isFreshForProcess(sample: FpsSample | null, observedAt: number): boolean {
+  return sample !== null && sample.timestampMs >= observedAt;
+}
+
+export function startFpsProbeManager(
+  udid: string,
+  deps: FpsProbeManagerDeps = {},
+): FpsProbeManager {
+  const tracker = deps.tracker ?? foregroundTracker;
+  const readFps = deps.readFps ?? readFpsSample;
+  const checkInstalled = deps.isInstalledApp ?? isInstalledApp;
+  const launch = deps.launch ?? launchWithProbe;
+  const environment = deps.launchEnvironment ?? launchEnvironment;
+  const resetShm = deps.resetShm ?? unlinkFpsShm;
+  const now = deps.now ?? Date.now;
+  const graceMs = deps.graceMs ?? DEFAULT_GRACE_MS;
+  const verifyMs = deps.verifyMs ?? DEFAULT_VERIFY_MS;
+  const retryMs = deps.retryMs ?? DEFAULT_RETRY_MS;
+
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let pending: { app: ForegroundApp; observedAt: number; dueAt: number } | null = null;
+  let running = false;
+  const failures = new Map<string, { pid: number; count: number; retryAt: number }>();
+
+  const currentMatches = (app: ForegroundApp): boolean => {
+    const current = tracker.peek(udid);
+    return current?.bundleId === app.bundleId && current.pid === app.pid;
+  };
+
+  const armTimer = (): void => {
+    if (stopped || running || !pending) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      void drain();
+    }, Math.max(0, pending.dueAt - now()));
+  };
+
+  const schedule = (app: ForegroundApp, observedAt = now(), waitMs = graceMs): void => {
+    if (
+      stopped ||
+      app.bundleId.startsWith("com.apple.") ||
+      !isUserFacingBundle(app.bundleId)
+    ) {
+      return;
+    }
+    pending = { app, observedAt, dueAt: now() + waitMs };
+    armTimer();
+  };
+
+  const drain = async (): Promise<void> => {
+    if (stopped || running || !pending) return;
+    const work = pending;
+    pending = null;
+    running = true;
+    try {
+      const { app, observedAt } = work;
+      if (!currentMatches(app)) return;
+      if (isFreshForProcess(readFps(udid, app.bundleId), observedAt)) {
+        failures.delete(app.bundleId);
+        return;
+      }
+      let failure = failures.get(app.bundleId);
+      if (failure && failure.pid !== app.pid) {
+        failures.delete(app.bundleId);
+        failure = undefined;
+      }
+      if (failure && failure.count >= MAX_FAILURES) return;
+      if (failure && failure.retryAt > now()) {
+        schedule(app, observedAt, failure.retryAt - now());
+        return;
+      }
+      if (!(await checkInstalled(udid, app.bundleId)) || !currentMatches(app)) return;
+
+      const launchedAt = now();
+      resetShm(udid);
+      await launch(udid, app.bundleId, environment(udid, app.bundleId));
+      await delay(verifyMs);
+      if (stopped) return;
+      if (isFreshForProcess(readFps(udid, app.bundleId), launchedAt)) {
+        failures.delete(app.bundleId);
+        return;
+      }
+
+      const current = tracker.peek(udid);
+      const failedPid = current?.bundleId === app.bundleId ? current.pid : app.pid;
+      const count = (failure?.count ?? 0) + 1;
+      failures.set(app.bundleId, { pid: failedPid, count, retryAt: now() + retryMs });
+      if (current?.bundleId === app.bundleId && count < MAX_FAILURES) {
+        schedule(current, now(), retryMs);
+      }
+    } catch (error) {
+      const app = work.app;
+      const previous = failures.get(app.bundleId);
+      const count = previous?.pid === app.pid ? previous.count + 1 : 1;
+      failures.set(app.bundleId, { pid: app.pid, count, retryAt: now() + retryMs });
+      console.error(
+        `[serve-sim] FPS probe failed for ${app.bundleId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      if (count < MAX_FAILURES && currentMatches(app)) schedule(app, now(), retryMs);
+    } finally {
+      running = false;
+      armTimer();
+    }
+  };
+
+  const subscription = tracker.subscribe(udid, (app) => schedule(app));
+  const current = tracker.peek(udid);
+  if (current) schedule(current);
+
+  return {
+    stop: () => {
+      stopped = true;
+      pending = null;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      subscription.unsubscribe();
+    },
+  };
+}

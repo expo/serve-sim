@@ -88,29 +88,35 @@ export function readFpsSample(
 
 const require = createRequire(import.meta.url);
 
-let copyImpl: ((name: string) => Uint8Array | null) | undefined;
+type FpsShmAddon = {
+  copy: (name: string) => ArrayBuffer | undefined;
+  remove?: (name: string) => boolean;
+};
+
+let addonImpl: FpsShmAddon | undefined;
+
+function loadFpsShmAddon(): FpsShmAddon | null {
+  if (addonImpl) return addonImpl;
+  const here = dirnameOf(import.meta.url);
+  const path = [
+    join(dirname(process.execPath), "simfps", "fps-shm.node"),
+    join(here, "simfps", "fps-shm.node"),
+    join(here, "..", "dist", "simfps", "fps-shm.node"),
+  ].find((p) => existsSync(p));
+  if (!path) return null;
+  try {
+    addonImpl = require(path) as FpsShmAddon;
+    return addonImpl;
+  } catch {
+    return null;
+  }
+}
 
 function copyFpsShm(name: string): Uint8Array | null {
-  if (!copyImpl) {
-    const here = dirnameOf(import.meta.url);
-    const path = [
-      join(dirname(process.execPath), "simfps", "fps-shm.node"),
-      join(here, "simfps", "fps-shm.node"),
-      join(here, "..", "dist", "simfps", "fps-shm.node"),
-    ].find((p) => existsSync(p));
-    if (!path) {
-      copyImpl = () => null;
-    } else {
-      try {
-        const addon = require(path) as { copy: (n: string) => ArrayBuffer | undefined };
-        copyImpl = (n) => {
-          const buf = addon.copy(n);
-          return buf ? new Uint8Array(buf) : null;
-        };
-      } catch {
-        copyImpl = () => null;
-      }
-    }
-  }
-  return copyImpl(name);
+  const buf = loadFpsShmAddon()?.copy(name);
+  return buf ? new Uint8Array(buf) : null;
+}
+
+export function unlinkFpsShm(udid: string): boolean {
+  return loadFpsShmAddon()?.remove?.(fpsShmName(udid)) ?? false;
 }

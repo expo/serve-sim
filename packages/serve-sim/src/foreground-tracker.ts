@@ -3,9 +3,12 @@
 // focused macOS app, so it's null when driving from a browser). One shared tail per udid feeds
 // both the /appstate stream and the CPU/mem sampler's per-app scoping.
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
 
 import { axFrontmostAsync } from "./native";
+
+const execFileAsync = promisify(execFile);
 
 // The foreground user app: `pid` is the frontmost process, `bundleId` its app.
 export interface ForegroundApp {
@@ -30,6 +33,40 @@ export function parseForegroundAppLogMessage(message: string): ForegroundApp | n
   const match = /\[app<([^>]+)>:(\d+)\] Setting process visibility to: Foreground/.exec(message);
   if (!match) return null;
   return { bundleId: match[1]!, pid: parseInt(match[2]!, 10) };
+}
+
+export function parseAppVisibilityLogMessage(
+  message: string,
+): (ForegroundApp & { foreground: boolean }) | null {
+  const match =
+    /\[app<([^>]+)>:(\d+)\] Setting process visibility to: (Foreground|Background)/.exec(message);
+  if (!match) return null;
+  return {
+    bundleId: match[1]!,
+    pid: parseInt(match[2]!, 10),
+    foreground: match[3] === "Foreground",
+  };
+}
+
+export function frontmostAppFromLogOutput(output: string): ForegroundApp | null {
+  const latestByBundle = new Map<
+    string,
+    ForegroundApp & { foreground: boolean; order: number }
+  >();
+  let order = 0;
+  for (const line of output.split("\n")) {
+    try {
+      const message = JSON.parse(line).eventMessage ?? "";
+      const app = parseAppVisibilityLogMessage(message);
+      if (app && isUserFacingBundle(app.bundleId)) {
+        latestByBundle.set(app.bundleId, { ...app, order: order++ });
+      }
+    } catch {}
+  }
+  const foreground = [...latestByBundle.values()]
+    .filter((app) => app.foreground)
+    .sort((a, b) => b.order - a.order)[0];
+  return foreground ? { bundleId: foreground.bundleId, pid: foreground.pid } : null;
 }
 
 const LINE_BUFFER_LIMIT = 1024 * 1024; // drop a pathological unbroken line rather than grow forever
@@ -64,6 +101,47 @@ export async function frontmostAppViaAx(udid: string): Promise<ForegroundApp | n
   } catch {
     return null;
   }
+}
+
+export async function frontmostAppViaRecentLogs(
+  udid: string,
+  deps: {
+    readLogs?: (udid: string) => Promise<string>;
+    isProcessAlive?: (pid: number) => boolean;
+  } = {},
+): Promise<ForegroundApp | null> {
+  try {
+    const stdout = deps.readLogs
+      ? await deps.readLogs(udid)
+      : (
+          await execFileAsync(
+            "xcrun",
+            [
+              "simctl", "spawn", udid, "log", "show",
+              "--style", "ndjson",
+              "--last", "15m",
+              "--predicate",
+              'process == "SpringBoard" AND eventMessage CONTAINS "Setting process visibility to:"',
+            ],
+            { timeout: 5000, maxBuffer: 8 * 1024 * 1024 },
+          )
+        ).stdout;
+    const app = frontmostAppFromLogOutput(stdout);
+    if (!app) return null;
+    if (deps.isProcessAlive) return deps.isProcessAlive(app.pid) ? app : null;
+    try {
+      process.kill(app.pid, 0);
+      return app;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EPERM" ? app : null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+async function seedFrontmostApp(udid: string): Promise<ForegroundApp | null> {
+  return (await frontmostAppViaAx(udid)) ?? frontmostAppViaRecentLogs(udid);
 }
 
 // Injected so tests can drive the tracker without a booted simulator.
@@ -212,7 +290,7 @@ export type ForegroundTrackerCache = ReturnType<typeof createForegroundTrackerCa
 export function createForegroundTrackerCache(deps: ForegroundTrackerDeps = {}) {
   const resolved: Required<ForegroundTrackerDeps> = {
     spawnLogStream: deps.spawnLogStream ?? spawnForegroundLogStream,
-    frontmostApp: deps.frontmostApp ?? frontmostAppViaAx,
+    frontmostApp: deps.frontmostApp ?? seedFrontmostApp,
     restartDelayMs: deps.restartDelayMs ?? RESTART_DELAY_MS,
   };
   const byUdid = new Map<string, ForegroundTracker>();

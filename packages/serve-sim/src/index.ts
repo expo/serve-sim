@@ -2,9 +2,8 @@
 import { Command, InvalidArgumentError } from "commander";
 import { execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
 import { existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unlinkSync, writeFileSync } from "fs";
-import { createHash } from "crypto";
 import { networkInterfaces } from "os";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import {
   STATE_DIR,
   stateFileForDevice,
@@ -19,7 +18,15 @@ import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from ".
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
 import { killPortHolder } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
-import { fpsShmName, readFpsSample } from "./fps-shm";
+import { fpsShmName, unlinkFpsShm } from "./fps-shm";
+import {
+  buildCameraDylib,
+  cameraShmName,
+  fpsDylib,
+  injectedAppEnvironment,
+  locateCameraDylib,
+} from "./app-injection";
+import { startFpsProbeManager } from "./fps-probe-manager";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
 import { permissions } from "./permissions";
 import { uiSettings } from "./ui-settings";
@@ -1025,43 +1032,9 @@ async function memoryWarning(deviceArg?: string) {
   });
 }
 
-// ─── Camera injection ───
-
-/**
- * Resolve the path to the SimCameraInjector dylib. The dev/source layout
- * places it under packages/serve-sim/dist/simcam/; the published npm tarball
- * ships the same file at <package>/dist/simcam/.
- */
-function locateCameraDylib(): string | null {
-  const candidates = [
-    join(__dirname, "..", "dist", "simcam", "libSimCameraInjector.dylib"),
-    join(__dirname, "simcam", "libSimCameraInjector.dylib"),
-    join(__dirname, "..", "Sources", "SimCameraInjector", "build",
-         "libSimCameraInjector.dylib"),
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) return resolve(p);
-  }
-  return null;
-}
-
-function buildCameraDylib(): string {
-  const buildScript = join(__dirname, "..", "Sources", "SimCameraInjector", "build.sh");
-  if (!existsSync(buildScript)) {
-    throw new Error(
-      "SimCameraInjector source not found — this build of serve-sim does not " +
-      "include camera support sources. Reinstall from a recent release.",
-    );
-  }
-  console.error("[serve-sim] building libSimCameraInjector.dylib (one-time)…");
-  execSync(`bash "${buildScript}"`, { stdio: "inherit" });
-  const out = locateCameraDylib();
-  if (!out) throw new Error("Build succeeded but dylib not found.");
-  return out;
-}
-
 function locateCameraHelper(): string | null {
   const candidates = [
+    join(dirname(process.execPath), "simcam", "serve-sim-camera-helper"),
     join(__dirname, "..", "dist", "simcam", "serve-sim-camera-helper"),
     join(__dirname, "simcam", "serve-sim-camera-helper"),
   ];
@@ -1082,120 +1055,6 @@ function buildCameraHelper(): string {
   const out = locateCameraHelper();
   if (!out) throw new Error("Build succeeded but helper binary not found.");
   return out;
-}
-
-function locateFpsDylib(): string | null {
-  const candidates = [
-    join(__dirname, "..", "dist", "simfps", "libSimFpsProbe.dylib"),
-    join(__dirname, "simfps", "libSimFpsProbe.dylib"),
-    join(__dirname, "..", "Sources", "SimFpsProbe", "build", "libSimFpsProbe.dylib"),
-  ];
-  for (const p of candidates) if (existsSync(p)) return resolve(p);
-  return null;
-}
-
-function buildFpsDylib(): string {
-  const buildScript = join(__dirname, "..", "Sources", "SimFpsProbe", "build.sh");
-  if (!existsSync(buildScript)) {
-    throw new Error(
-      "SimFpsProbe source not found — this build of serve-sim does not " +
-        "include FPS probe sources. Reinstall from a recent release.",
-    );
-  }
-  console.error("[serve-sim] building libSimFpsProbe.dylib (one-time)…");
-  execSync(`bash "${buildScript}"`, { stdio: "inherit" });
-  const out = locateFpsDylib();
-  if (!out) throw new Error("Build succeeded but dylib not found.");
-  return out;
-}
-
-async function fpsProbe(
-  bundleId: string,
-  opts: { device?: string; duration?: string; json?: boolean; build?: boolean },
-): Promise<void> {
-  const udid = opts.device ? resolveDevice(opts.device) : findBootedDevice();
-  if (!udid) {
-    console.error("No booted simulator found. Boot one or pass --device <udid>.");
-    process.exit(1);
-  }
-
-  const durationSec = opts.duration ? Number(opts.duration) : undefined;
-  if (
-    durationSec !== undefined &&
-    (!Number.isFinite(durationSec) || durationSec <= 0)
-  ) {
-    console.error(
-      `Invalid --duration "${opts.duration}"; expected a positive number of seconds.`,
-    );
-    process.exit(1);
-  }
-
-  const dylib = opts.build ? buildFpsDylib() : (locateFpsDylib() ?? buildFpsDylib());
-  const shmName = fpsShmName(udid);
-
-  try {
-    execSync(`xcrun simctl terminate "${udid}" "${bundleId}"`, { stdio: "ignore" });
-  } catch {}
-
-  try {
-    execSync(`xcrun simctl launch "${udid}" "${bundleId}"`, {
-      stdio: "ignore",
-      env: {
-        ...process.env,
-        SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: dylib,
-        SIMCTL_CHILD_SERVE_SIM_FPS_SHM: shmName,
-      },
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`simctl launch failed for "${bundleId}". ${message}`);
-    process.exit(1);
-  }
-
-  if (!opts.json) {
-    console.error(`📈 Sampling FPS for ${bundleId} on ${udid} (relaunched with probe)…`);
-  }
-
-  let stop = false;
-  process.on("SIGINT", () => {
-    stop = true;
-  });
-  const deadline = durationSec !== undefined ? Date.now() + durationSec * 1000 : undefined;
-  let sawSample = false;
-  let lastTs = 0;
-  while (!stop && (deadline === undefined || Date.now() < deadline)) {
-    const sample = readFpsSample(udid, bundleId);
-    if (sample && sample.timestampMs !== lastTs) {
-      lastTs = sample.timestampMs;
-      sawSample = true;
-      if (opts.json) {
-        console.log(
-          JSON.stringify({
-            bundleId,
-            udid,
-            fps: sample.fps,
-            mainThreadFps: sample.mainThreadFps,
-            max: sample.maxFps,
-          }),
-        );
-      } else {
-        console.log(
-          `fps=${sample.fps.toFixed(1)}  main=${sample.mainThreadFps.toFixed(1)}  (max ${sample.maxFps})`,
-        );
-      }
-    }
-    sleepSync(200);
-  }
-  if (!sawSample && !stop) {
-    console.error(`No FPS sample from "${bundleId}". Is the probe dylib injected?`);
-    process.exit(1);
-  }
-}
-
-function shmNameForUdid(udid: string): string {
-  // POSIX shm names on macOS have a 31-char limit. Hash the UDID short.
-  const short = createHash("sha1").update(udid).digest("hex").slice(0, 8);
-  return `/serve-sim-cam-${short}`;
 }
 
 function recordInjectedBundle(udid: string, bundleId: string, helperPid: number): void {
@@ -1352,7 +1211,7 @@ async function ensureHelperWithSource(opts: {
   source: ResolvedSource;
   forceBuild: boolean;
 }): Promise<{ helperPid: number | null; shmName: string; relaunched: boolean }> {
-  const shmName = shmNameForUdid(opts.udid);
+  const shmName = cameraShmName(opts.udid);
   const sockPath = helperSocketFile(opts.udid);
   if (isHelperAlive(opts.udid)) {
     // Hot-swap source via control socket — no relaunch needed.
@@ -1665,12 +1524,15 @@ Examples:
     execSync(`xcrun simctl terminate "${udid}" "${bundleId}"`, { stdio: "ignore" });
   } catch {}
 
-  const env = {
-    ...process.env,
-    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: dylib,
-    SIMCTL_CHILD_SIMCAM_SHM_NAME: shmName,
-    ...(mirror !== "auto" ? { SIMCTL_CHILD_SIMCAM_MIRROR_MODE: mirror } : {}),
-  };
+  const env = injectedAppEnvironment({
+    fps: { dylib: fpsDylib(), shmName: fpsShmName(udid) },
+    camera: {
+      dylib,
+      shmName,
+      ...(mirror !== "auto" ? { mirror } : {}),
+    },
+  });
+  unlinkFpsShm(udid);
 
   let stdoutBuf = "";
   try {
@@ -1716,7 +1578,7 @@ Examples:
 
 /** Resolve which simulators to stream, without spawning anything. */
 function resolveTargetDevices(devices: string[]): string[] {
-  if (devices.length > 0) return devices.map(resolveDevice);
+  if (devices.length > 0) return [...new Set(devices.map(resolveDevice))];
   const existing = readAllStates();
   if (existing.length > 0) return [existing[0]!.device];
   const booted = findBootedDevice();
@@ -1795,7 +1657,9 @@ async function serve(
   for (const udid of targetDevices) {
     writeState(inProcessServeSimState(udid, boundPort, "/", host, options.stream));
   }
+  const fpsManagers = targetDevices.map((udid) => startFpsProbeManager(udid));
   const clearAll = () => {
+    for (const manager of fpsManagers) manager.stop();
     for (const udid of targetDevices) {
       try { clearState(udid); } catch {}
     }
@@ -2135,16 +1999,6 @@ program
   .description("Simulate a memory warning on the device")
   .option(...deviceOpt)
   .action((opts) => memoryWarning(opts.device));
-
-program
-  .command("fps")
-  .description("Measure an app's render-loop FPS by injecting a CADisplayLink probe")
-  .argument("<bundle-id>")
-  .option(...deviceOpt)
-  .option("--duration <seconds>", "Sample for N seconds then detach (default: until Ctrl-C)")
-  .option("-j, --json", "Print one JSON sample per second")
-  .option("--build", "Force a rebuild of the probe dylib")
-  .action((bundleId: string, opts) => fpsProbe(bundleId, opts));
 
 program
   .command("event-log")

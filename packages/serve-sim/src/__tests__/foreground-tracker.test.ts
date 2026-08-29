@@ -3,7 +3,10 @@ import { EventEmitter } from "events";
 import type { ChildProcess } from "child_process";
 import {
   createForegroundTrackerCache,
+  frontmostAppFromLogOutput,
+  frontmostAppViaRecentLogs,
   isUserFacingBundle,
+  parseAppVisibilityLogMessage,
   parseForegroundAppLogMessage,
   type ForegroundApp,
 } from "../foreground-tracker";
@@ -54,6 +57,47 @@ describe("parseForegroundAppLogMessage", () => {
 
   test("returns null for non-foreground lines", () => {
     expect(parseForegroundAppLogMessage("Setting process visibility to: Background")).toBeNull();
+  });
+});
+
+describe("frontmostAppFromLogOutput", () => {
+  const line = (bundleId: string, pid: number, state: "Foreground" | "Background") =>
+    JSON.stringify({
+      eventMessage: `[app<${bundleId}>:${pid}] Setting process visibility to: ${state}`,
+    });
+
+  test("returns the latest foreground user app", () => {
+    expect(frontmostAppFromLogOutput([
+      line("dev.expo.A", 11, "Foreground"),
+      line("dev.expo.A", 11, "Background"),
+      line("dev.expo.B", 22, "Foreground"),
+    ].join("\n"))).toEqual({ bundleId: "dev.expo.B", pid: 22 });
+  });
+
+  test("returns null when the latest user app was backgrounded", () => {
+    expect(frontmostAppFromLogOutput([
+      line("dev.expo.A", 11, "Foreground"),
+      line("com.apple.WidgetRenderer", 99, "Foreground"),
+      line("dev.expo.A", 11, "Background"),
+    ].join("\n"))).toBeNull();
+  });
+
+  test("parses visibility state", () => {
+    expect(
+      parseAppVisibilityLogMessage(
+        "[app<dev.expo.A>:11] Setting process visibility to: Background",
+      ),
+    ).toEqual({ bundleId: "dev.expo.A", pid: 11, foreground: false });
+  });
+
+  test("rejects a stale foreground event whose process exited", async () => {
+    const output = line("dev.expo.A", 11, "Foreground");
+    expect(
+      await frontmostAppViaRecentLogs("UDID", {
+        readLogs: async () => output,
+        isProcessAlive: () => false,
+      }),
+    ).toBeNull();
   });
 });
 

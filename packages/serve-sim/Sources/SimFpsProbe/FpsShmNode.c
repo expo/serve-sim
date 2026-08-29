@@ -1,4 +1,6 @@
 #include <node_api.h>
+#include <errno.h>
+#include <stdbool.h>
 #include <string.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -55,9 +57,31 @@ static napi_value Copy(napi_env env, napi_callback_info info) {
     return ab;
 }
 
+static napi_value Remove(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+
+    bool removed = false;
+    if (argc >= 1) {
+        char name[32];
+        size_t len = 0;
+        if (napi_get_value_string_utf8(env, argv[0], name, sizeof(name), &len) == napi_ok && len > 0) {
+            removed = shm_unlink(name) == 0 || errno == ENOENT;
+        }
+    }
+
+    napi_value result;
+    napi_get_boolean(env, removed, &result);
+    return result;
+}
+
 NAPI_MODULE_INIT() {
-    napi_value fn;
-    napi_create_function(env, "copy", NAPI_AUTO_LENGTH, Copy, NULL, &fn);
-    napi_set_named_property(env, exports, "copy", fn);
+    napi_value copy;
+    napi_create_function(env, "copy", NAPI_AUTO_LENGTH, Copy, NULL, &copy);
+    napi_set_named_property(env, exports, "copy", copy);
+    napi_value remove;
+    napi_create_function(env, "remove", NAPI_AUTO_LENGTH, Remove, NULL, &remove);
+    napi_set_named_property(env, exports, "remove", remove);
     return exports;
 }

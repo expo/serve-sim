@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { CrashFrame } from "../crash/report";
 import {
   collapseSystemFrames,
+  crashDetailUrl,
   formatCrashAgo,
   remapOccurrenceIndex,
 } from "../client/utils/crash-format";
@@ -18,6 +19,18 @@ describe("remapOccurrenceIndex", () => {
 
   test("returns null when the occurrence has aged out of the window", () => {
     expect(remapOccurrenceIndex([{ rawPath: "/b.ips" }], "/a.ips")).toBeNull();
+  });
+});
+
+describe("crashDetailUrl", () => {
+  test("keeps the list query when fetching a record", () => {
+    expect(crashDetailUrl("/crashes?device=B", "INC-1")).toBe("/crashes/INC-1?device=B");
+  });
+
+  test("adds occurrence without dropping device", () => {
+    expect(crashDetailUrl("/.sim/crashes?device=B", "INC 1", 2)).toBe(
+      "/.sim/crashes/INC%201?device=B&occurrence=2"
+    );
   });
 });
 

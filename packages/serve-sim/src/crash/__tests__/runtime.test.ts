@@ -111,7 +111,6 @@ function makeRuntime(
   });
 }
 
-/** fs.watch is async; drive the queue so the ingest promise settles. */
 async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -457,7 +456,6 @@ describe("createCrashRuntime back-scan", () => {
     failWatch(new Error("ENOENT"));
     expect(runtime.meta().status).toBe("unavailable");
 
-    // Landed while unavailable, so no watch event was ever delivered for it.
     files.set("DuringOutage.ips", ips());
     clock = 5_000;
     await runtime.start();
@@ -490,7 +488,6 @@ describe("createCrashRuntime back-scan", () => {
 describe("createCrashRuntime cancellation", () => {
   const dirEntries: string[] = [];
 
-  /** A runtime whose first report read is held open until the test releases it. */
   function gatedRuntime() {
     let release: (() => void) | null = null;
     let gated = true;
@@ -534,7 +531,6 @@ describe("createCrashRuntime cancellation", () => {
     await flush();
     expect(runtime.listFor(UDID_A)).toHaveLength(0);
 
-    // The dropped read released its claim, so a restart's scan still finds the report.
     dirEntries.push("Demo-1.ips");
     clock = 2_000;
     await runtime.start();
@@ -608,7 +604,6 @@ describe("createCrashRuntime cancellation", () => {
     await Promise.all([cancelled, replacement]);
     await flush();
 
-    // Only the replacement scan may walk the directory; the cancelled one must bail.
     expect(statted.filter((name) => name === "b.ips")).toHaveLength(1);
     runtime.stop();
   });
@@ -675,7 +670,6 @@ describe("createCrashRuntime meta", () => {
   test("reports idle before start, with no error", () => {
     const runtime = makeRuntime();
     const meta = runtime.meta();
-    // A poller has to tell "not started, retry" from "broken, give up".
     expect(meta.status).toBe("idle");
     expect(meta.statusError).toBeNull();
     expect(meta.reportsDir).toBe("/reports");
@@ -786,7 +780,6 @@ describe("createCrashRuntime arm", () => {
     expect(touchedFilesystem).toBe(false);
     expect(runtime.meta().status).toBe("idle");
 
-    // A report written at 1200 predates the start but not the arm, so it is still in range.
     clock = 5_000;
     await runtime.start();
     await flush();
@@ -799,7 +792,6 @@ describe("createCrashRuntime arm", () => {
 describe("createCrashRuntime log tail", () => {
   const CRASH_AT = "2026-08-04 23:14:07.8433 -0700";
   const crashMs = Date.parse(CRASH_AT);
-  // `Demo` is the fixture's app_name, which is what the tail filters the emitter on.
   const appLine = (message: string): string =>
     JSON.stringify({ processImagePath: "/x/Demo.app/Demo", m: message });
   const daemonLine = (message: string): string =>
@@ -820,7 +812,6 @@ describe("createCrashRuntime log tail", () => {
     }
   }
 
-  /** Drives the real DeviceLogBuffer, so the windowing under test is production's. */
   function warmRing(lines: { at: number; raw: string }[]) {
     let child: FakeLogChild | undefined;
     let ringClock = 0;

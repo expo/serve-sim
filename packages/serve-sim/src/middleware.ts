@@ -1505,7 +1505,6 @@ function nonNegativeIntParam(params: URLSearchParams, name: string): number | un
   return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
-/** `?flag=0` and `?flag=false` mean off, not "present so on". */
 function booleanParam(params: URLSearchParams, name: string): boolean {
   const raw = params.get(name);
   if (raw === null) return false;
@@ -1513,7 +1512,6 @@ function booleanParam(params: URLSearchParams, name: string): boolean {
   return value !== "0" && value !== "false" && value !== "no";
 }
 
-/** SSE by default; JSON on `Accept: application/json` or `?snapshot`. `follow` starts simctl for pollers. */
 export function handleLogsRequest(
   req: SimReq,
   res: SimRes,
@@ -1532,7 +1530,6 @@ export function handleLogsRequest(
   const limit = nonNegativeIntParam(params, "limit");
   const wantsJson =
     booleanParam(params, "snapshot") || (req.headers.accept ?? "").includes("application/json");
-  // The raw line is already JSON, so default frames are unwrapped.
   const wantsEnvelope = booleanParam(params, "envelope");
   const wantsFollow = booleanParam(params, "follow");
 
@@ -1540,8 +1537,6 @@ export function handleLogsRequest(
   const logsOpen = (): boolean => !res.writableEnded && !res.destroyed;
 
   if (wantsJson) {
-    // Peek leaves simctl off. `follow` is the 2s UI poll: start the child, then
-    // idle-timeout kills it if the drawer stops asking.
     const buffer = wantsFollow ? cache.ensure(state.device) : cache.peek(state.device);
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     if (!buffer) {
@@ -1636,7 +1631,6 @@ function summarize(record: CrashRecord): CrashSummary {
   };
 }
 
-/** JSON by default; SSE on `Accept: text/event-stream`. */
 export function handleCrashesRequest(
   req: SimReq,
   res: SimRes,
@@ -1750,8 +1744,6 @@ export async function handleCrashReportRequest(
   );
 }
 
-// Dup of the /exec gate minus the Content-Type check (no body on a GET); fold into the
-// shared session-auth helper when the network-capture stack lands.
 function requireSessionToken(req: SimReq, res: SimRes, token: string): boolean {
   const origin = req.headers.origin;
   if (origin) {
@@ -1791,8 +1783,7 @@ function requireSessionToken(req: SimReq, res: SimRes, token: string): boolean {
  * Routes handled under `basePath` (default `/.sim`):
  *   GET  {basePath}         — the preview HTML page
  *   GET  {basePath}/api     — serve-sim state JSON
- *   GET  {basePath}/logs    — simctl logs (JSON snapshot, or SSE)
- *   GET  {basePath}/crashes — crash reports (bearer token)
+ *   GET  {basePath}/logs    — SSE stream of simctl logs
  *   GET  {basePath}/ax      — SSE stream of normalized accessibility snapshots
  */
 export function handleMetricsRequest(
@@ -1847,8 +1838,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const execToken = options?.execToken ?? randomBytes(32).toString("base64url");
   const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
 
-  // The watch starts on the first `/crashes` read, so building a middleware never touches the
-  // host's crash directory.
   crashRuntime.arm();
 
   // Simulator-settings requests run in-process (just the underlying simctl /
@@ -2601,7 +2590,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       const live = states.map((s) => s.device);
       crashRuntime.prune(live);
       logBufferCache.prune(live);
-      // The tail can only hold lines the buffer already had, and `/logs` may never be opened.
       if (state) logBufferCache.ensure(state.device);
       handleCrashesRequest(req, res, state);
       return;

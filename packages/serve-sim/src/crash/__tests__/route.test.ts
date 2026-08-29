@@ -88,7 +88,6 @@ function fakeRes(): FakeRes {
 
 const state = inProcessServeSimState(UDID, 4000);
 
-/** A runtime with one crash already collected. Every fs call is faked. */
 async function runtimeWithCrash(): Promise<CrashRuntime> {
   let emit: (eventType: string, filename: string | null) => void = () => {};
   const runtime = createCrashRuntime({
@@ -109,7 +108,6 @@ async function runtimeWithCrash(): Promise<CrashRuntime> {
   return runtime;
 }
 
-/** Two crashes that share a signature, so they collapse into one record. */
 async function runtimeWithRepeat(): Promise<CrashRuntime> {
   let emit: (eventType: string, filename: string | null) => void = () => {};
   const runtime = createCrashRuntime({

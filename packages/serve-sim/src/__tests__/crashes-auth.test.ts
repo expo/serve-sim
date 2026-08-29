@@ -21,7 +21,6 @@ async function withMiddleware<T>(
 
 const authorized = { Authorization: `Bearer ${TOKEN}` };
 
-/** No simulator is registered in this harness, so passing the gate lands on 404. */
 const PAST_THE_GATE = 404;
 
 describe("/crashes auth", () => {

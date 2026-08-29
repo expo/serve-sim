@@ -62,7 +62,6 @@ export function useResizableWidth(
   return { width: effectiveWidth, onPointerDown };
 }
 
-// Bottom drawers grow as the handle is dragged upwards (delta = startY - clientY).
 export function useResizableHeight(
   storageKey: string,
   defaultHeight: number,

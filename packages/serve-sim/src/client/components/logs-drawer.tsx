@@ -107,6 +107,7 @@ export function LogsDrawer({
     return startLogsPoll(path, {
       getSince: () => lastSeqRef.current,
       setSince: (seq) => {
+        if (pausedRef.current) return;
         lastSeqRef.current = seq;
       },
       onBatch: (batch) => {

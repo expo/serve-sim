@@ -24,7 +24,6 @@ function report(overrides: Partial<CrashReport> = {}): CrashReport {
     signature: "com.example.demo|EXC_CRASH|SIGABRT|Demo AppDelegate.boot()",
   };
   const merged = { ...base, ...overrides };
-  // Keep the signature consistent with the culprit unless a test sets it directly.
   if (overrides.culpritFrame !== undefined && overrides.signature === undefined) {
     merged.signature = `com.example.demo|EXC_CRASH|SIGABRT|${overrides.culpritFrame}`;
   }
@@ -111,7 +110,6 @@ describe("CrashStore", () => {
     }
     expect(store.list()).toHaveLength(MAX_CRASHES);
 
-    // Re-seeing the oldest signature makes it recent, so the next eviction spares it.
     clock = 9_000;
     store.record(report({ culpritFrame: "Demo F0()" }), "/tmp/again.ips");
     clock = 9_100;
@@ -207,7 +205,6 @@ describe("CrashStore", () => {
     const [record] = store.list();
     expect(record?.count).toBe(MAX_OCCURRENCES + 3);
     expect(record?.occurrences).toHaveLength(MAX_OCCURRENCES);
-    // The oldest are dropped, not the newest.
     expect(record?.occurrences.at(-1)?.pid).toBe(MAX_OCCURRENCES + 2);
   });
 

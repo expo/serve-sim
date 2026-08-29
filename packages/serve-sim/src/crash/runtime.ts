@@ -12,14 +12,9 @@ import { CrashStore, type CrashEvent, type CrashRecord, type LogTailSource } fro
 const DEFAULT_REPORTS_DIR = join(homedir(), "Library", "Logs", "DiagnosticReports");
 
 const CRASH_SCHEMA_VERSION = 1;
-
-/** Padded bound on the delay before an `.ips` lands (~4s observed). */
 const REPORT_DELAY_SECONDS = 5;
-
-/** Bounds `ingested`, which sees every host crash, not only this device's. */
 const MAX_INGESTED = 500;
 const RETRY_DELAY_MS = 1000;
-// 60 app-scoped lines, not 60 raw lines: unfiltered the log runs ~317 lines/sec.
 const LOG_TAIL_LINES = 60;
 const LOG_TAIL_MAX_BYTES = 64 * 1024;
 
@@ -28,7 +23,6 @@ type CrashWatchStatus = "idle" | "watching" | "unavailable";
 export interface CrashMeta {
   schemaVersion: number;
   status: CrashWatchStatus;
-  /** Non-null only when `status` is `unavailable`. */
   statusError: string | null;
   reportsDir: string;
   reportDelaySeconds: number;
@@ -49,7 +43,6 @@ export interface CrashRuntimeOptions {
   readReport?: (path: string) => Promise<string>;
   readDir?: (dir: string) => Promise<string[]>;
   statFile?: (path: string) => Promise<{ mtimeMs: number }>;
-  /** Epoch ms; compared against file mtimes. */
   now?: () => number;
   onError?: (message: string, error: unknown) => void;
   retryDelayMs?: number;
@@ -101,7 +94,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   let running = false;
   let statusError: string | null = null;
   let startedAt: number | null = null;
-  // An in-flight back-scan bails when this changes.
   let generation = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -132,10 +124,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     return store;
   };
 
-  /**
-   * Windowed on the crash's own `captureTime`, not on now: the report lands seconds later,
-   * by which point the ring holds teardown chatter instead of the cause.
-   */
   const logTailFor = (
     report: Pick<CrashReport, "deviceUdid" | "capturedAtMs" | "procName">
   ): { logTail: string[]; logTailSource: LogTailSource } => {
@@ -147,8 +135,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     const crashedAt = report.capturedAtMs;
     if (crashedAt === null) return none;
 
-    // Without a process name the filter would match every daemon and still claim the tail
-    // was app-scoped, so report nothing instead.
     if (!report.procName) return none;
 
     const tail = buffer.tailBefore({
@@ -186,7 +172,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     storeFor(report.deviceUdid).record(report, path, tail.logTail, tail.logTailSource);
   };
 
-  /** Claims a filename so the watcher and the back-scan cannot both read it. */
   const claim = (filename: string): boolean => {
     if (!running || !isFinalCrashReportName(filename) || ingested.has(filename)) return false;
     if (ingested.size >= MAX_INGESTED) {
@@ -197,7 +182,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     return true;
   };
 
-  /** Reports at or after `startedAt`. */
   const backfillAsync = async (): Promise<void> => {
     const cutoff = startedAt;
     if (cutoff === null) return;
@@ -219,7 +203,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       try {
         mtimeMs = (await statFile(join(reportsDir, filename))).mtimeMs;
       } catch {
-        // Retired or deleted between the listing and the stat.
         continue;
       }
       if (mtimeMs < cutoff) continue;
@@ -248,7 +231,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
         },
         markUnavailable
       );
-      // A synchronous onWatchError already ran markUnavailable; do not resurrect the handle.
       if (running) watcher = handle;
       else handle.close();
     } catch (error) {
@@ -259,12 +241,10 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   }
 
   return {
-    /** Fix the back-scan cutoff without touching the filesystem. */
     arm(): void {
       startedAt ??= clock();
     },
 
-    /** The watch is live before this resolves; the back-scan finishes with it. */
     start,
 
     stop(): void {
@@ -279,11 +259,9 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     },
 
     prune(liveUdids: readonly string[]): void {
-      // An empty list usually means the state read failed, not that every device went away.
       if (liveUdids.length === 0) return;
       const live = new Set(liveUdids);
       for (const [udid, store] of byUdid) {
-        // Identity-guard so a stale prune cannot drop a replacement store.
         if (live.has(udid) || byUdid.get(udid) !== store) continue;
         store.close();
         byUdid.delete(udid);

@@ -29,13 +29,12 @@ export interface CrashReport {
   deviceUdid: string | null;
   bundleId: string | null;
   appName: string | null;
-  /** Executable name; matches the emitter in device-log lines. */
   procName: string | null;
   appVersion: string | null;
   buildVersion: string | null;
   pid: number | null;
   capturedAt: string | null;
-  /** `capturedAt` as epoch ms. Apple's format is not ISO-8601, so parse it once here. */
+  /** Apple's `captureTime` is not ISO-8601. */
   capturedAtMs: number | null;
   exceptionType: string | null;
   signal: string | null;
@@ -177,7 +176,6 @@ export function parseCrashReport(raw: string): CrashReport | null {
   const allFrames = readFrames(body);
   const culprit = allFrames.find((frame) => frame.appOwned) ?? allFrames[0];
   const culpritFrame = culprit ? describeFrame(culprit) : null;
-  // An unsymbolicated offset moves every rebuild, so it must not key the signature.
   const culpritKey = culprit?.symbol ? `${culprit.image} ${culprit.symbol}` : "";
 
   const exceptionType = readString(exception, "type");

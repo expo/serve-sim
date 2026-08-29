@@ -137,17 +137,11 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     report: Pick<CrashReport, "deviceUdid" | "capturedAtMs" | "procName">
   ): { logTail: string[]; logTailSource: LogTailSource } => {
     const none = { logTail: [], logTailSource: "none" as const };
-    if (!report.deviceUdid) return none;
+    if (!report.deviceUdid || report.capturedAtMs === null || !report.procName) return none;
     const buffer = logBuffers.peek(report.deviceUdid);
     if (!buffer) return none;
-
-    const crashedAt = report.capturedAtMs;
-    if (crashedAt === null) return none;
-
-    if (!report.procName) return none;
-
     const tail = buffer.tailBefore({
-      at: crashedAt,
+      at: report.capturedAtMs,
       count: LOG_TAIL_LINES,
       processName: report.procName,
       maxBytes: LOG_TAIL_MAX_BYTES,
@@ -245,7 +239,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       retryTimer = null;
     }
     try {
-      // ReportCrash only creates this directory on the first crash — the one we'd miss.
       ensureDir(reportsDir);
       running = true;
       statusError = null;

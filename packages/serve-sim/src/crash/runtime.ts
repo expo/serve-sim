@@ -101,8 +101,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     const reason = error instanceof Error ? error.message : String(error);
     generation += 1;
     statusError =
-      `Crash reports are not being collected: serve-sim could not watch ${reportsDir} (${reason}). ` +
-      "Check that the directory is readable and that macOS crash reporting is enabled on this host.";
+      `Could not watch crash reports in ${reportsDir} (${reason}).`;
     running = false;
     watcher?.close();
     watcher = null;
@@ -128,17 +127,11 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     report: Pick<CrashReport, "deviceUdid" | "capturedAtMs" | "procName">
   ): { logTail: string[]; logTailSource: LogTailSource } => {
     const none = { logTail: [], logTailSource: "none" as const };
-    if (!report.deviceUdid) return none;
+    if (!report.deviceUdid || report.capturedAtMs === null || !report.procName) return none;
     const buffer = logBuffers.peek(report.deviceUdid);
     if (!buffer) return none;
-
-    const crashedAt = report.capturedAtMs;
-    if (crashedAt === null) return none;
-
-    if (!report.procName) return none;
-
     const tail = buffer.tailBefore({
-      at: crashedAt,
+      at: report.capturedAtMs,
       count: LOG_TAIL_LINES,
       processName: report.procName,
       maxBytes: LOG_TAIL_MAX_BYTES,
@@ -152,7 +145,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     try {
       raw = await readReport(path);
     } catch (error) {
-      // Reports age into `Retired/`, so ENOENT here is routine.
       if (!isMissingFile(error)) reportError(`could not read ${filename}`, error);
       ingested.delete(filename);
       return;
@@ -215,7 +207,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   async function start(): Promise<void> {
     if (watcher) return;
     try {
-      // ReportCrash only creates this directory on the first crash — the one we'd miss.
       ensureDir(reportsDir);
       running = true;
       statusError = null;

@@ -1498,13 +1498,6 @@ function isJsonContentType(value: string | undefined): boolean {
   return mediaType === "application/json";
 }
 
-function nonNegativeIntParam(params: URLSearchParams, name: string): number | undefined {
-  const raw = params.get(name)?.trim();
-  if (!raw) return undefined;
-  const value = Number(raw);
-  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
-}
-
 function booleanParam(params: URLSearchParams, name: string): boolean {
   const raw = params.get(name);
   if (raw === null) return false;
@@ -1526,8 +1519,13 @@ export function handleLogsRequest(
   }
 
   const params = new URL(rawUrl, "http://127.0.0.1").searchParams;
-  const since = nonNegativeIntParam(params, "since");
-  const limit = nonNegativeIntParam(params, "limit");
+  const intQuery = (name: string): number | undefined => {
+    const raw = params.get(name)?.trim();
+    const n = Number(raw);
+    return raw && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+  };
+  const since = intQuery("since");
+  const limit = intQuery("limit");
   const wantsJson =
     booleanParam(params, "snapshot") || (req.headers.accept ?? "").includes("application/json");
   const wantsEnvelope = booleanParam(params, "envelope");
@@ -1539,30 +1537,15 @@ export function handleLogsRequest(
   if (wantsJson) {
     const buffer = wantsFollow ? cache.ensure(state.device) : cache.peek(state.device);
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-    if (!buffer) {
-      res.end(
-        JSON.stringify({
-          device: state.device,
-          latestSeq: 0,
-          oldestSeq: 0,
-          bufferedBytes: 0,
-          status: "stopped",
-          streamError: null,
-          lines: [],
-        })
-      );
-      return;
-    }
-    const lines = buffer.read({ since, limit });
     res.end(
       JSON.stringify({
         device: state.device,
-        latestSeq: buffer.latestSeq,
-        oldestSeq: buffer.oldestSeq,
-        bufferedBytes: buffer.byteLength,
-        status: buffer.status,
-        streamError: buffer.error,
-        lines,
+        latestSeq: buffer?.latestSeq ?? 0,
+        oldestSeq: buffer?.oldestSeq ?? 0,
+        bufferedBytes: buffer?.byteLength ?? 0,
+        status: buffer?.status ?? "stopped",
+        streamError: buffer?.error ?? null,
+        lines: buffer?.read({ since, limit }) ?? [],
       })
     );
     return;
@@ -1583,8 +1566,6 @@ export function handleLogsRequest(
     (wantsEnvelope ? JSON.stringify({ seq: line.seq, at: line.at, raw: line.raw }) : line.raw) +
     "\n\n";
 
-  // Must stay synchronous between read and subscribe: lines arrive on a separate macrotask,
-  // so an await here would drop whatever landed in the gap.
   let lastSent = since ?? 0;
   for (const line of buffer.read({ since, limit })) {
     if (!logsOpen()) break;
@@ -1719,7 +1700,7 @@ export async function handleCrashReportRequest(
   const total = record.occurrences.length;
   const requested = occurrenceParam === null ? total - 1 : Number(occurrenceParam);
   if (!Number.isInteger(requested) || requested < 0 || requested >= total) {
-    return fail(400, `Occurrence must be 0-${total - 1} for this crash.`);
+    return fail(400, `occurrence must be 0-${total - 1}`);
   }
   const occurrence = record.occurrences[requested]!;
 
@@ -1728,9 +1709,7 @@ export async function handleCrashReportRequest(
   try {
     report = await readReport(occurrence.rawPath);
   } catch {
-    reportError =
-      `The crash report file is gone (${occurrence.rawPath}); macOS moves older reports into ` +
-      "Retired/ and eventually deletes them. The summary is all that is left.";
+    reportError = `The .ips file is gone (${occurrence.rawPath}). macOS moved it to Retired/.`;
   }
 
   res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -2605,9 +2584,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
-            error:
-              `Malformed percent-escape in the crash id (${rawId}). Copy the id verbatim from ` +
-              `GET ${base}/crashes.`,
+            error: `Invalid crash id (${rawId}).`,
           })
         );
         return;

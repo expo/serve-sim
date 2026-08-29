@@ -142,7 +142,7 @@ describe("CrashStore", () => {
     expect(broken.list()).toHaveLength(MAX_CRASHES);
   });
 
-  test("hands out snapshots, not the stored record", () => {
+  test("returns copies, not the stored record", () => {
     const source = report();
     const returned = store.record(source, "/tmp/a.ips");
 
@@ -208,7 +208,7 @@ describe("CrashStore", () => {
     expect(record?.occurrences.at(-1)?.pid).toBe(MAX_OCCURRENCES + 2);
   });
 
-  test("hands out occurrence snapshots, not the stored arrays", () => {
+  test("returns copies of occurrences, not the stored arrays", () => {
     const returned = store.record(
       report({ frames: [{ image: "Demo", symbol: "boot()", imageOffset: 0, appOwned: true }] }),
       "/tmp/a.ips",

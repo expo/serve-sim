@@ -13,8 +13,6 @@ export interface LogLine {
   raw: string;
 }
 
-// A SpringBoard line naming the app is not an app line, so read the emitter field rather
-// than matching the raw text.
 function emittedBy(raw: string, processName: string): boolean {
   try {
     const path = (JSON.parse(raw) as { processImagePath?: unknown }).processImagePath;
@@ -133,7 +131,7 @@ export class DeviceLogBuffer {
   }
 
   private releaseIfIdle(): void {
-    if (this.listeners.size + this.batchListeners.size > 0) return;
+    if (this.listenerCount > 0) return;
     this.stopped = true;
     this.clearIdle();
     if (this.restartTimer) {

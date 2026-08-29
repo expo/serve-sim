@@ -1,9 +1,9 @@
 import { parseDeviceLogJson, type DeviceLogFields } from "./device-log-format";
 import { startExclusivePoll } from "./exclusive-poll";
 
-export const LOGS_POLL_MS = 2000;
-export const LOGS_POLL_LIMIT = 800;
-export const LOGS_REPLAY_LIMIT = 400;
+const LOGS_POLL_MS = 2000;
+const LOGS_POLL_LIMIT = 800;
+const LOGS_REPLAY_LIMIT = 400;
 
 export type LogSnapshotLine = { seq: number; fields: DeviceLogFields };
 
@@ -44,7 +44,7 @@ export function startLogsPoll(
     getSince: () => number;
     setSince: (seq: number) => void;
     onBatch: (lines: LogSnapshotLine[]) => void;
-    onError: (errored: boolean) => void;
+    onError?: (errored: boolean) => void;
   }
 ): () => void {
   const sample = async (): Promise<void> => {
@@ -58,16 +58,16 @@ export function startLogsPoll(
         signal: AbortSignal.timeout(LOGS_POLL_MS * 3),
       });
       if (!response.ok) {
-        opts.onError(true);
+        opts.onError?.(true);
         return;
       }
       const parsed = parseLogSnapshot(await response.json());
-      opts.onError(false);
+      opts.onError?.(false);
       const fresh = parsed.lines.filter((line) => line.seq > since);
       if (parsed.latestSeq > since) opts.setSince(parsed.latestSeq);
       if (fresh.length > 0) opts.onBatch(fresh);
     } catch {
-      opts.onError(true);
+      opts.onError?.(true);
     }
   };
   return startExclusivePoll(sample, LOGS_POLL_MS);

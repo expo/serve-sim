@@ -39,14 +39,6 @@ const DEFAULT_LEVELS: LevelEnabled = {
   fault: true,
 };
 
-const LEVEL_META: Record<DeviceLogLevel, { label: string }> = {
-  debug: { label: "Debug" },
-  info: { label: "Info" },
-  default: { label: "Default" },
-  error: { label: "Error" },
-  fault: { label: "Fault" },
-};
-
 export function LogsDrawer({
   open,
   onClose,
@@ -187,7 +179,7 @@ export function LogsDrawer({
   const emptyLabel = errored
     ? "Disconnected"
     : scope === "app" && !appScopeAvailable
-      ? "No current app pid"
+      ? "No current app"
       : filteredOut
         ? "No matches"
         : "No log lines yet";
@@ -481,7 +473,7 @@ function LevelButton({
   last: boolean;
   onClick: () => void;
 }) {
-  const label = LEVEL_META[level].label;
+  const label = level[0]!.toUpperCase() + level.slice(1);
   return (
     <button
       type="button"

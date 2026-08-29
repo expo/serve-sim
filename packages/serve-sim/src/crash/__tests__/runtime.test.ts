@@ -125,7 +125,7 @@ beforeEach(() => {
 });
 
 describe("createCrashRuntime", () => {
-  test("ingests a final-named report into the store for its device", async () => {
+  test("records a finished .ips for its device", async () => {
     const runtime = makeRuntime();
     runtime.start();
     files.set("Demo-1.ips", ips());
@@ -699,7 +699,7 @@ describe("createCrashRuntime meta", () => {
     expect(meta.status).toBe("unavailable");
     expect(meta.statusError).toContain("/reports");
     expect(meta.statusError).toContain("EPERM");
-    expect(meta.statusError).toContain("crash reporting is enabled");
+    expect(meta.statusError).toContain("Could not watch");
   });
 
   test("goes unavailable when the watcher errors after starting", () => {

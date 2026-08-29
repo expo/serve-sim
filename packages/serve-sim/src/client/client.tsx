@@ -335,7 +335,6 @@ function App() {
       setSince: (seq) => {
         since = seq;
       },
-      onError: () => {},
       onBatch: (batch) => {
         for (const { fields } of batch) {
           const { process: proc, subsystem, category, message: msg, level } = fields;

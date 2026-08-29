@@ -182,7 +182,7 @@ describe("handleCrashesRequest", () => {
     const payload = JSON.parse(res.body_);
     expect(payload.crashes).toEqual([]);
     expect(payload.meta.status).toBe("unavailable");
-    expect(payload.meta.statusError).toContain("not being collected");
+    expect(payload.meta.statusError).toContain("Could not watch");
   });
 
   test("streams SSE with meta before the replayed backlog", async () => {
@@ -276,7 +276,7 @@ describe("handleCrashReportRequest", () => {
     expect(payload.report).toBe("/reports/Demo-1.ips");
   });
 
-  test("rejects an occurrence outside the retained window", async () => {
+  test("rejects an occurrence index that is out of range", async () => {
     const runtime = await runtimeWithRepeat();
     const res = fakeRes();
     await handleCrashReportRequest(fakeReq(), res, state, "INC-1", "7", runtime);

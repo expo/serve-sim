@@ -12,7 +12,6 @@ export interface CrashOccurrence {
   frames: CrashFrame[];
   logTail: string[];
   logTailSource: LogTailSource;
-  seenAt: number;
 }
 
 export interface CrashRecord extends CrashReport {
@@ -89,7 +88,6 @@ export class CrashStore {
       frames: [...report.frames],
       logTail: [...logTail],
       logTailSource,
-      seenAt: at,
     };
 
     if (existing) {

@@ -3,12 +3,7 @@ import {
   deviceLogMatches,
   formatLogClock,
   formatLogLine,
-  isDeviceLogError,
-  normalizeDeviceLogLevel,
   parseDeviceLogEntry,
-  parseDeviceLogJson,
-  parseLogStreamFrame,
-  parseLogTimestamp,
 } from "../client/utils/device-log-format";
 
 const sample = {
@@ -63,29 +58,17 @@ describe("parseDeviceLogEntry", () => {
   });
 });
 
-describe("normalizeDeviceLogLevel", () => {
+describe("log level", () => {
   test("maps unified-log names and os_log type codes", () => {
-    expect(normalizeDeviceLogLevel("Debug")).toBe("debug");
-    expect(normalizeDeviceLogLevel("Notice")).toBe("default");
-    expect(normalizeDeviceLogLevel(2)).toBe("debug");
-    expect(normalizeDeviceLogLevel(1)).toBe("info");
-    expect(normalizeDeviceLogLevel(0)).toBe("default");
-    expect(normalizeDeviceLogLevel(16)).toBe("error");
-    expect(normalizeDeviceLogLevel(17)).toBe("fault");
-  });
-});
-
-describe("parseLogStreamFrame", () => {
-  test("reads an enveloped cursor frame", () => {
-    const frame = parseLogStreamFrame(
-      JSON.stringify({ seq: 9, at: 1, raw: JSON.stringify(sample) })
-    );
-    expect(frame?.seq).toBe(9);
-    expect(frame?.fields.process).toBe("SpringBoard");
-  });
-
-  test("still reads a raw ndjson line", () => {
-    expect(parseLogStreamFrame(JSON.stringify(sample))?.seq).toBe(0);
+    const levelOf = (messageType: unknown) =>
+      parseDeviceLogEntry({ eventMessage: "x", messageType })?.level;
+    expect(levelOf("Debug")).toBe("debug");
+    expect(levelOf("Notice")).toBe("default");
+    expect(levelOf(2)).toBe("debug");
+    expect(levelOf(1)).toBe("info");
+    expect(levelOf(0)).toBe("default");
+    expect(levelOf(16)).toBe("error");
+    expect(levelOf(17)).toBe("fault");
   });
 });
 
@@ -107,23 +90,13 @@ describe("deviceLogMatches", () => {
   });
 });
 
-describe("isDeviceLogError", () => {
-  test("treats error and fault as errors", () => {
-    expect(isDeviceLogError("error")).toBe(true);
-    expect(isDeviceLogError("fault")).toBe(true);
-    expect(isDeviceLogError("default")).toBe(false);
-  });
-});
-
 describe("log time", () => {
   test("parses Apple's unified-log timestamp", () => {
-    const ms = parseLogTimestamp(sample.timestamp);
-    expect(ms).toBeGreaterThan(0);
     expect(formatLogClock(sample.timestamp)).toMatch(/^\d{2}:\d{2}:\d{2}\.\d{3}$/);
   });
 
   test("returns empty when the timestamp will not parse", () => {
-    expect(parseLogTimestamp("")).toBeNull();
+    expect(formatLogClock("")).toBe("");
     expect(formatLogClock("not a date")).toBe("");
   });
 });

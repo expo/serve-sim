@@ -21,8 +21,6 @@ async function withMiddleware<T>(
 
 const authorized = { Authorization: `Bearer ${TOKEN}` };
 
-const PAST_THE_GATE = 404;
-
 describe("/crashes auth", () => {
   test("rejects a request with no token", async () => {
     await withMiddleware(async (_origin, request) => {
@@ -57,13 +55,13 @@ describe("/crashes auth", () => {
   test("lets a same-origin read with the token through", async () => {
     await withMiddleware(async (origin, request) => {
       const response = await request("/crashes", { headers: { ...authorized, Origin: origin } });
-      expect(response.status).toBe(PAST_THE_GATE);
+      expect(response.status).toBe(404);
     });
   });
 
   test("lets a read with no Origin header through", async () => {
     await withMiddleware(async (_origin, request) => {
-      expect((await request("/crashes", { headers: authorized })).status).toBe(PAST_THE_GATE);
+      expect((await request("/crashes", { headers: authorized })).status).toBe(404);
     });
   });
 
@@ -73,18 +71,18 @@ describe("/crashes auth", () => {
     });
   });
 
-  test("answers 400 for a malformed percent-escape in the id", async () => {
+  test("answers 400 for a bad percent-encoded id", async () => {
     await withMiddleware(async (_origin, request) => {
       const response = await request("/crashes/%", { headers: authorized });
       expect(response.status).toBe(400);
-      expect((await response.json()).error).toContain("Malformed");
+      expect((await response.json()).error).toContain("Invalid crash id");
     });
   });
 
   test("treats a trailing slash as the list route, not an empty id", async () => {
     await withMiddleware(async (_origin, request) => {
       const response = await request("/crashes/", { headers: authorized });
-      expect(response.status).toBe(PAST_THE_GATE);
+      expect(response.status).toBe(404);
       expect((await response.json()).error).toContain("No serve-sim device");
     });
   });

@@ -1,6 +1,7 @@
 // One shared `simctl log stream` tail per device, feeding a bounded ring that `/logs` reads.
-// Not ref-counted, unlike the foreground tracker: the ring must keep filling with no reader
-// so a crash has preceding context.
+// The simctl child runs while someone is subscribed or a poller is calling ensure()
+// (the preview drawer, every 2s). An always-on info stream stalls `/exec-ws`
+// (Home, metrics) and fights the capture process for CPU.
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
@@ -11,6 +12,9 @@ const DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
 const LINE_BUFFER_LIMIT = 1024 * 1024; // drop a pathological unbroken line
 const RESTART_DELAY_MS = 1000;
 const MAX_RESTART_DELAY_MS = 30_000;
+// Pollers call ensure() every ~2s. A missed tick must not kill the child, but
+// closing the drawer must not leave simctl running.
+const POLL_IDLE_MS = 8_000;
 
 export interface LogLine {
   // Cursor for `since`: log timestamps are strings and not reliably ordered.
@@ -42,6 +46,7 @@ export interface LogBufferDeps {
   spawnLogStream?: (udid: string) => ChildProcess;
   maxBytes?: number;
   restartDelayMs?: number;
+  idleAfterMs?: number;
   now?: () => number;
 }
 
@@ -55,10 +60,13 @@ export class DeviceLogBuffer {
   private consecutiveFailures = 0;
   private lastError: string | null = null;
   private lines: LogLine[] = [];
+  private head = 0;
   private bytes = 0;
   private seq = 0;
   private stopped = false;
+  private readonly batchListeners = new Set<(lines: readonly LogLine[]) => void>();
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly listeners = new Set<Listener>();
   private readonly closeListeners = new Set<() => void>();
 
@@ -81,26 +89,42 @@ export class DeviceLogBuffer {
   }
 
   get listenerCount(): number {
-    return this.listeners.size;
+    return this.listeners.size + this.batchListeners.size;
   }
 
   subscribe(listener: Listener, onClosed?: () => void): () => void {
     this.listeners.add(listener);
     if (onClosed) this.closeListeners.add(onClosed);
+    this.clearIdle();
     return () => {
       this.listeners.delete(listener);
       if (onClosed) this.closeListeners.delete(onClosed);
+      this.releaseIfIdle();
+    };
+  }
+
+  /** One callback per stdout burst so a reader can write a single SSE/WS frame. */
+  subscribeBatch(listener: (lines: readonly LogLine[]) => void, onClosed?: () => void): () => void {
+    this.batchListeners.add(listener);
+    if (onClosed) this.closeListeners.add(onClosed);
+    this.clearIdle();
+    return () => {
+      this.batchListeners.delete(listener);
+      if (onClosed) this.closeListeners.delete(onClosed);
+      this.releaseIfIdle();
     };
   }
 
   start(): void {
-    if (this.child) return;
     this.stopped = false;
-    this.spawn();
+    if (!this.child) this.spawn();
+    if (this.listenerCount === 0) this.armIdle();
+    else this.clearIdle();
   }
 
   stop(): void {
     this.stopped = true;
+    this.clearIdle();
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
@@ -121,9 +145,27 @@ export class DeviceLogBuffer {
     this.closeListeners.clear();
   }
 
+  /** Drop the simctl child when nobody is reading. The ring stays for a later `/logs`. */
+  private releaseIfIdle(): void {
+    if (this.listeners.size + this.batchListeners.size > 0) return;
+    this.stopped = true;
+    this.clearIdle();
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+    this.child?.removeAllListeners();
+    this.child?.stdout?.destroy();
+    this.child?.kill();
+    this.child = null;
+    this.partial = "";
+    this.dropping = false;
+  }
+
   /** Oldest first. */
   read({ since, limit }: { since?: number; limit?: number } = {}): LogLine[] {
-    let selected = since === undefined ? this.lines : this.lines.filter((l) => l.seq > since);
+    const live = this.head === 0 ? this.lines : this.lines.slice(this.head);
+    let selected = since === undefined ? live : live.filter((l) => l.seq > since);
     if (limit !== undefined && selected.length > limit) {
       selected = selected.slice(selected.length - limit);
     }
@@ -147,7 +189,7 @@ export class DeviceLogBuffer {
   }): { lines: LogLine[]; reason: "app-windowed" | "buffer-rolled-past" | "no-app-lines" } {
     const selected: LogLine[] = [];
     let reachedBack = false;
-    for (let i = this.lines.length - 1; i >= 0 && selected.length < count; i -= 1) {
+    for (let i = this.lines.length - 1; i >= this.head && selected.length < count; i -= 1) {
       const line = this.lines[i]!;
       if (line.at > at) continue;
       reachedBack = true;
@@ -173,7 +215,27 @@ export class DeviceLogBuffer {
 
   /** Lets a `since` reader detect that eviction dropped the range it asked for. */
   get oldestSeq(): number {
-    return this.lines[0]?.seq ?? this.seq;
+    return this.lines[this.head]?.seq ?? this.seq;
+  }
+
+  private armIdle(): void {
+    this.clearIdle();
+    if (this.deps.idleAfterMs <= 0) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.restartTimer) {
+        this.armIdle();
+        return;
+      }
+      this.releaseIfIdle();
+    }, this.deps.idleAfterMs);
+    this.idleTimer.unref?.();
+  }
+
+  private clearIdle(): void {
+    if (!this.idleTimer) return;
+    clearTimeout(this.idleTimer);
+    this.idleTimer = null;
   }
 
   private spawn(): void {
@@ -206,6 +268,7 @@ export class DeviceLogBuffer {
     });
     child.on("error", (error: Error) => gone(error.message));
     child.on("exit", (code, signal) => gone(`log stream exited (code ${code}, signal ${signal})`));
+    if (this.listenerCount === 0) this.armIdle();
   }
 
   private onChildGone(): void {
@@ -229,6 +292,7 @@ export class DeviceLogBuffer {
 
   private consume(text: string): void {
     this.partial += text;
+    const batch: LogLine[] = [];
     let nl: number;
     while ((nl = this.partial.indexOf("\n")) !== -1) {
       const raw = this.partial.slice(0, nl).trim();
@@ -237,31 +301,47 @@ export class DeviceLogBuffer {
         this.dropping = false;
         continue;
       }
-      if (raw) this.append(raw);
+      if (raw) batch.push(this.append(raw));
     }
     if (this.partial.length > LINE_BUFFER_LIMIT) {
       this.partial = "";
       this.dropping = true;
     }
-  }
-
-  private append(raw: string): void {
-    const line: LogLine = { seq: ++this.seq, at: this.deps.now(), raw };
-    this.lines.push(line);
-    this.bytes += raw.length;
-    this.evictOverflow();
+    if (batch.length === 0) return;
     for (const listener of this.listeners) {
+      for (const line of batch) {
+        try {
+          listener(line);
+        } catch {
+          // A closed SSE socket must not stop the ring or the other listeners.
+        }
+      }
+    }
+    for (const listener of this.batchListeners) {
       try {
-        listener(line);
+        listener(batch);
       } catch {
         // A closed SSE socket must not stop the ring or the other listeners.
       }
     }
   }
 
+  private append(raw: string): LogLine {
+    const line: LogLine = { seq: ++this.seq, at: this.deps.now(), raw };
+    this.lines.push(line);
+    this.bytes += raw.length;
+    this.evictOverflow();
+    return line;
+  }
+
   private evictOverflow(): void {
-    while (this.bytes > this.deps.maxBytes && this.lines.length > 1) {
-      this.bytes -= this.lines.shift()!.raw.length;
+    while (this.bytes > this.deps.maxBytes && this.lines.length - this.head > 1) {
+      this.bytes -= this.lines[this.head]!.raw.length;
+      this.head += 1;
+    }
+    if (this.head > 0 && (this.head > 2048 || this.head * 2 >= this.lines.length)) {
+      this.lines = this.lines.slice(this.head);
+      this.head = 0;
     }
   }
 }
@@ -273,6 +353,7 @@ export function createLogBufferCache(deps: LogBufferDeps = {}) {
     spawnLogStream: deps.spawnLogStream ?? spawnDeviceLogStream,
     maxBytes: deps.maxBytes ?? DEFAULT_MAX_BYTES,
     restartDelayMs: deps.restartDelayMs ?? RESTART_DELAY_MS,
+    idleAfterMs: deps.idleAfterMs ?? POLL_IDLE_MS,
     now: deps.now ?? (() => Date.now()),
   };
   const byUdid = new Map<string, DeviceLogBuffer>();
@@ -280,7 +361,10 @@ export function createLogBufferCache(deps: LogBufferDeps = {}) {
   return {
     ensure(udid: string): DeviceLogBuffer {
       const existing = byUdid.get(udid);
-      if (existing) return existing;
+      if (existing) {
+        existing.start();
+        return existing;
+      }
       const buffer = new DeviceLogBuffer(udid, resolved);
       byUdid.set(udid, buffer);
       buffer.start();

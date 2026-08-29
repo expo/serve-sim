@@ -1509,7 +1509,7 @@ function booleanParam(params: URLSearchParams, name: string): boolean {
   return value !== "0" && value !== "false" && value !== "no";
 }
 
-/** SSE by default (the preview UI); JSON on `Accept: application/json` or `?snapshot`. */
+/** SSE by default; JSON on `Accept: application/json` or `?snapshot`. `follow` starts simctl for pollers. */
 export function handleLogsRequest(
   req: SimReq,
   res: SimRes,
@@ -1530,14 +1530,31 @@ export function handleLogsRequest(
     booleanParam(params, "snapshot") || (req.headers.accept ?? "").includes("application/json");
   // The raw line is already JSON, so default frames are unwrapped.
   const wantsEnvelope = booleanParam(params, "envelope");
+  const wantsFollow = booleanParam(params, "follow");
 
   // `writableEnded` never fires on this path; an aborted client shows up as `destroyed`.
   const logsOpen = (): boolean => !res.writableEnded && !res.destroyed;
-  const buffer = cache.ensure(state.device);
 
   if (wantsJson) {
-    const lines = buffer.read({ since, limit });
+    // Peek leaves simctl off. `follow` is the 2s UI poll: start the child, then
+    // idle-timeout kills it if the drawer stops asking.
+    const buffer = wantsFollow ? cache.ensure(state.device) : cache.peek(state.device);
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    if (!buffer) {
+      res.end(
+        JSON.stringify({
+          device: state.device,
+          latestSeq: 0,
+          oldestSeq: 0,
+          bufferedBytes: 0,
+          status: "stopped",
+          streamError: null,
+          lines: [],
+        })
+      );
+      return;
+    }
+    const lines = buffer.read({ since, limit });
     res.end(
       JSON.stringify({
         device: state.device,
@@ -1551,6 +1568,8 @@ export function handleLogsRequest(
     );
     return;
   }
+
+  const buffer = cache.ensure(state.device);
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -1574,11 +1593,16 @@ export function handleLogsRequest(
     lastSent = line.seq;
   }
 
-  const unsubscribe = buffer.subscribe(
-    (line) => {
-      if (!logsOpen() || line.seq <= lastSent) return;
-      lastSent = line.seq;
-      res.write(frame(line));
+  const unsubscribe = buffer.subscribeBatch(
+    (lines) => {
+      if (!logsOpen()) return;
+      let chunk = "";
+      for (const line of lines) {
+        if (line.seq <= lastSent) continue;
+        lastSent = line.seq;
+        chunk += frame(line);
+      }
+      if (chunk) res.write(chunk);
     },
     () => {
       if (logsOpen()) res.end();
@@ -1600,7 +1624,7 @@ export function handleLogsRequest(
  * Routes handled under `basePath` (default `/.sim`):
  *   GET  {basePath}         — the preview HTML page
  *   GET  {basePath}/api     — serve-sim state JSON
- *   GET  {basePath}/logs    — SSE stream of simctl logs
+ *   GET  {basePath}/logs    — simctl logs (JSON snapshot, or SSE)
  *   GET  {basePath}/ax      — SSE stream of normalized accessibility snapshots
  */
 export function handleMetricsRequest(

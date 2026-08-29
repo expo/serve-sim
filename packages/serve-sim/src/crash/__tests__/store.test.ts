@@ -24,7 +24,6 @@ function report(overrides: Partial<CrashReport> = {}): CrashReport {
     signature: "com.example.demo|EXC_CRASH|SIGABRT|Demo AppDelegate.boot()",
   };
   const merged = { ...base, ...overrides };
-  // Keep the signature consistent with the culprit unless a test sets it directly.
   if (overrides.culpritFrame !== undefined && overrides.signature === undefined) {
     merged.signature = `com.example.demo|EXC_CRASH|SIGABRT|${overrides.culpritFrame}`;
   }
@@ -111,7 +110,6 @@ describe("CrashStore", () => {
     }
     expect(store.list()).toHaveLength(MAX_CRASHES);
 
-    // Re-seeing the oldest signature makes it recent, so the next eviction spares it.
     clock = 9_000;
     store.record(report({ culpritFrame: "Demo F0()" }), "/tmp/again.ips");
     clock = 9_100;
@@ -144,7 +142,7 @@ describe("CrashStore", () => {
     expect(broken.list()).toHaveLength(MAX_CRASHES);
   });
 
-  test("hands out snapshots, not the stored record", () => {
+  test("returns copies, not the stored record", () => {
     const source = report();
     const returned = store.record(source, "/tmp/a.ips");
 
@@ -179,15 +177,23 @@ describe("CrashStore", () => {
   });
 
   test("keeps each repeat as its own occurrence, newest last", () => {
-    store.record(report({ pid: 1 }), "/tmp/a.ips", ["first tail"], "app-windowed");
+    const firstFrames = [{ image: "Demo", symbol: "old()", imageOffset: 1, appOwned: true }];
+    const secondFrames = [
+      { image: "libsystem_kernel.dylib", symbol: "__pthread_kill", imageOffset: 2, appOwned: false },
+      { image: "Demo", symbol: "old()", imageOffset: 1, appOwned: true },
+    ];
+    store.record(report({ pid: 1, frames: firstFrames }), "/tmp/a.ips", ["first tail"], "app-windowed");
     clock = 2_000;
-    store.record(report({ pid: 2 }), "/tmp/b.ips", ["second tail"], "app-windowed");
+    store.record(report({ pid: 2, frames: secondFrames }), "/tmp/b.ips", ["second tail"], "app-windowed");
 
     const [record] = store.list();
     expect(record?.count).toBe(2);
     expect(record?.occurrences.map((o) => o.pid)).toEqual([1, 2]);
     expect(record?.occurrences.map((o) => o.logTail)).toEqual([["first tail"], ["second tail"]]);
     expect(record?.occurrences.map((o) => o.rawPath)).toEqual(["/tmp/a.ips", "/tmp/b.ips"]);
+    expect(record?.occurrences[0]?.frames).toEqual(firstFrames);
+    expect(record?.occurrences[1]?.frames).toEqual(secondFrames);
+    expect(record?.frames).toEqual(secondFrames);
   });
 
   test("caps retained occurrences while count keeps the true total", () => {
@@ -199,15 +205,28 @@ describe("CrashStore", () => {
     const [record] = store.list();
     expect(record?.count).toBe(MAX_OCCURRENCES + 3);
     expect(record?.occurrences).toHaveLength(MAX_OCCURRENCES);
-    // The oldest are dropped, not the newest.
     expect(record?.occurrences.at(-1)?.pid).toBe(MAX_OCCURRENCES + 2);
   });
 
-  test("hands out occurrence snapshots, not the stored arrays", () => {
-    const returned = store.record(report(), "/tmp/a.ips", ["line"], "app-windowed");
+  test("returns copies of occurrences, not the stored arrays", () => {
+    const returned = store.record(
+      report({ frames: [{ image: "Demo", symbol: "boot()", imageOffset: 0, appOwned: true }] }),
+      "/tmp/a.ips",
+      ["line"],
+      "app-windowed"
+    );
     returned.occurrences[0]!.logTail.push("injected");
+    returned.occurrences[0]!.frames.push({
+      image: "late",
+      symbol: "late()",
+      imageOffset: 1,
+      appOwned: false,
+    });
 
     expect(store.list()[0]?.occurrences[0]?.logTail).toEqual(["line"]);
+    expect(store.list()[0]?.occurrences[0]?.frames).toEqual([
+      { image: "Demo", symbol: "boot()", imageOffset: 0, appOwned: true },
+    ]);
   });
 
   test("keeps recording when a listener throws", () => {

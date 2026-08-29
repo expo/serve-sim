@@ -1,38 +1,40 @@
-import type { CrashReport } from "./report";
+import type { CrashFrame, CrashReport } from "./report";
 
 export const MAX_CRASHES = 20;
-/** Retained per signature so a reader can page through repeats, as Sentry pages events. */
 export const MAX_OCCURRENCES = 5;
 
-/** One crash. Repeats share a signature but differ in time, pid, and what preceded them. */
 export interface CrashOccurrence {
   incidentId: string | null;
   pid: number | null;
   capturedAt: string | null;
   capturedAtMs: number | null;
   rawPath: string;
+  frames: CrashFrame[];
   logTail: string[];
   logTailSource: LogTailSource;
-  seenAt: number;
 }
 
 export interface CrashRecord extends CrashReport {
   id: string;
-  /** Newest occurrence; older `.ips` files age out into `Retired/`. */
   rawPath: string;
-  /** Device-log lines from the crashed app, at or before the crash time. */
   logTail: string[];
   logTailSource: LogTailSource;
-  /** Newest last, capped at {@link MAX_OCCURRENCES}. `count` is the true total. */
   occurrences: CrashOccurrence[];
   count: number;
   firstSeen: number;
   lastSeen: number;
 }
 
+export type OccurrenceStamp = {
+  capturedAtMs: number | null;
+  capturedAt: string | null;
+  rawPath: string;
+};
+
 export type CrashSummary = Omit<CrashRecord, "logTail" | "occurrences"> & {
   logTailLines: number;
   occurrenceCount: number;
+  occurrenceTimes: OccurrenceStamp[];
 };
 
 export type LogTailSource = "none" | "buffer-rolled-past" | "no-app-lines" | "app-windowed";
@@ -41,7 +43,6 @@ export type CrashEvent = { type: "crash" | "recurred"; record: CrashRecord };
 
 type Listener = (event: CrashEvent) => void;
 
-/** Deliberately has no `clear()`: two independent readers share this window. */
 export class CrashStore {
   private readonly bySignature = new Map<string, CrashRecord>();
   private readonly listeners = new Set<Listener>();
@@ -59,14 +60,11 @@ export class CrashStore {
     };
   }
 
-  /** Tells readers the window is gone, rather than leaving them on an orphaned store. */
   close(): void {
     for (const onClosed of [...this.closeListeners]) {
       try {
         onClosed();
-      } catch {
-        // A reader that throws on teardown must not stop the others.
-      }
+      } catch {}
     }
     this.closeListeners.clear();
     this.listeners.clear();
@@ -87,9 +85,9 @@ export class CrashStore {
       capturedAt: report.capturedAt,
       capturedAtMs: report.capturedAtMs,
       rawPath,
+      frames: [...report.frames],
       logTail: [...logTail],
       logTailSource,
-      seenAt: at,
     };
 
     if (existing) {
@@ -98,7 +96,6 @@ export class CrashStore {
         frames: [...report.frames],
         id: existing.id,
         rawPath,
-        // An empty tail must not erase the one we had.
         logTail: hasNewTail ? [...logTail] : existing.logTail,
         logTailSource: hasNewTail ? logTailSource : existing.logTailSource,
         occurrences: [...existing.occurrences, occurrence].slice(-MAX_OCCURRENCES),
@@ -114,7 +111,6 @@ export class CrashStore {
     const record: CrashRecord = {
       ...report,
       frames: [...report.frames],
-      // Prefixed so it cannot collide with an Apple incident id.
       id: report.incidentId ?? `no-incident-${++this.seq}`,
       rawPath,
       logTail: [...logTail],
@@ -143,7 +139,6 @@ export class CrashStore {
 
   private evictOverflow(): void {
     if (this.bySignature.size <= MAX_CRASHES) return;
-    // Seeded from the first entry so a non-finite clock still evicts.
     let oldest = [...this.bySignature][0]!;
     for (const entry of this.bySignature) {
       if (entry[1].lastSeen < oldest[1].lastSeen) oldest = entry;
@@ -156,9 +151,7 @@ export class CrashStore {
     for (const listener of this.listeners) {
       try {
         listener(delivered);
-      } catch {
-        // A closed SSE socket must not stop the other listeners.
-      }
+      } catch {}
     }
   }
 }
@@ -168,6 +161,10 @@ function snapshot(record: CrashRecord): CrashRecord {
     ...record,
     frames: [...record.frames],
     logTail: [...record.logTail],
-    occurrences: record.occurrences.map((o) => ({ ...o, logTail: [...o.logTail] })),
+    occurrences: record.occurrences.map((o) => ({
+      ...o,
+      frames: [...o.frames],
+      logTail: [...o.logTail],
+    })),
   };
 }

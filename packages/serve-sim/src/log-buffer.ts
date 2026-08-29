@@ -1,30 +1,18 @@
-// One shared `simctl log stream` tail per device, feeding a bounded ring that `/logs` reads.
-// The simctl child runs while someone is subscribed or a poller is calling ensure()
-// (the preview drawer, every 2s). An always-on info stream stalls `/exec-ws`
-// (Home, metrics) and fights the capture process for CPU.
-
 import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 
-// ~317 lines/sec at `--level info`, so a line cap is a poor proxy for depth.
 const DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
-
-const LINE_BUFFER_LIMIT = 1024 * 1024; // drop a pathological unbroken line
+const LINE_BUFFER_LIMIT = 1024 * 1024;
 const RESTART_DELAY_MS = 1000;
 const MAX_RESTART_DELAY_MS = 30_000;
-// Pollers call ensure() every ~2s. A missed tick must not kill the child, but
-// closing the drawer must not leave simctl running.
 const POLL_IDLE_MS = 8_000;
 
 export interface LogLine {
-  // Cursor for `since`: log timestamps are strings and not reliably ordered.
   seq: number;
   at: number;
   raw: string;
 }
 
-// A SpringBoard line naming the app is not an app line, so read the emitter field rather
-// than matching the raw text.
 function emittedBy(raw: string, processName: string): boolean {
   try {
     const path = (JSON.parse(raw) as { processImagePath?: unknown }).processImagePath;
@@ -103,7 +91,6 @@ export class DeviceLogBuffer {
     };
   }
 
-  /** One callback per stdout burst so a reader can write a single SSE/WS frame. */
   subscribeBatch(listener: (lines: readonly LogLine[]) => void, onClosed?: () => void): () => void {
     this.batchListeners.add(listener);
     if (onClosed) this.closeListeners.add(onClosed);
@@ -138,16 +125,13 @@ export class DeviceLogBuffer {
     for (const onClosed of [...this.closeListeners]) {
       try {
         onClosed();
-      } catch {
-        // A reader that throws on teardown must not stop the others.
-      }
+      } catch {}
     }
     this.closeListeners.clear();
   }
 
-  /** Drop the simctl child when nobody is reading. The ring stays for a later `/logs`. */
   private releaseIfIdle(): void {
-    if (this.listeners.size + this.batchListeners.size > 0) return;
+    if (this.listenerCount > 0) return;
     this.stopped = true;
     this.clearIdle();
     if (this.restartTimer) {
@@ -162,7 +146,6 @@ export class DeviceLogBuffer {
     this.dropping = false;
   }
 
-  /** Oldest first. */
   read({ since, limit }: { since?: number; limit?: number } = {}): LogLine[] {
     const live = this.head === 0 ? this.lines : this.lines.slice(this.head);
     let selected = since === undefined ? live : live.filter((l) => l.seq > since);
@@ -172,10 +155,6 @@ export class DeviceLogBuffer {
     return selected === this.lines ? [...selected] : selected;
   }
 
-  /**
-   * Newest-last lines from `processName`, at or before `at`. `reason` separates "the buffer
-   * does not reach back that far" from "it does, but that process logged nothing".
-   */
   tailBefore({
     at,
     count,
@@ -213,7 +192,6 @@ export class DeviceLogBuffer {
     return this.seq;
   }
 
-  /** Lets a `since` reader detect that eviction dropped the range it asked for. */
   get oldestSeq(): number {
     return this.lines[this.head]?.seq ?? this.seq;
   }
@@ -312,17 +290,13 @@ export class DeviceLogBuffer {
       for (const line of batch) {
         try {
           listener(line);
-        } catch {
-          // A closed SSE socket must not stop the ring or the other listeners.
-        }
+        } catch {}
       }
     }
     for (const listener of this.batchListeners) {
       try {
         listener(batch);
-      } catch {
-        // A closed SSE socket must not stop the ring or the other listeners.
-      }
+      } catch {}
     }
   }
 
@@ -376,11 +350,9 @@ export function createLogBufferCache(deps: LogBufferDeps = {}) {
     },
 
     prune(liveUdids: readonly string[]): void {
-      // An empty list usually means the state read failed, not that every device went away.
       if (liveUdids.length === 0) return;
       const live = new Set(liveUdids);
       for (const [udid, buffer] of byUdid) {
-        // Identity-guard so a stale prune cannot stop a replacement buffer.
         if (live.has(udid) || byUdid.get(udid) !== buffer) continue;
         buffer.stop();
         byUdid.delete(udid);

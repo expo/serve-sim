@@ -4,7 +4,6 @@ import type { ChildProcess } from "child_process";
 import { createLogBufferCache, DeviceLogBuffer } from "../log-buffer";
 import type { LogLine } from "../log-buffer";
 
-/** A fake `log stream` child whose stdout the test drives directly. */
 class FakeChild extends EventEmitter {
   readonly stdout = new EventEmitter() as EventEmitter & { destroy: () => void };
   readonly stderr = new EventEmitter();
@@ -109,7 +108,6 @@ describe("DeviceLogBuffer", () => {
     expect(buffer.byteLength).toBeLessThanOrEqual(60);
     const lines = buffer.read();
     expect(lines.length).toBeGreaterThan(0);
-    // The survivors are the newest, and cursors keep counting past the evicted ones.
     expect(lines[lines.length - 1]!.seq).toBe(20);
     expect(lines[0]!.seq).toBeGreaterThan(1);
     buffer.stop();
@@ -206,7 +204,6 @@ describe("DeviceLogBuffer", () => {
     const named = { count: 10, processName: "Demo" };
     expect(buffer.tailBefore({ ...named, at: 2_000 }).lines.map((l) => l.seq)).toEqual([1, 2]);
     expect(buffer.tailBefore({ at: 3_000, count: 1, processName: "Demo" }).lines).toHaveLength(1);
-    // The three "nothing" cases need different actions from the reader.
     expect(buffer.tailBefore({ ...named, at: 500 }).reason).toBe("buffer-rolled-past");
     expect(buffer.tailBefore({ at: 3_000, count: 10, processName: "Other" }).reason).toBe(
       "no-app-lines"
@@ -275,7 +272,6 @@ describe("DeviceLogBuffer", () => {
     const buffer = makeBuffer();
     buffer.start();
     spawned[0]!.emitLines("x".repeat(2 * 1024 * 1024));
-    // The surviving tail of the dropped line must not be stored as if it were a line.
     spawned[0]!.emitLines("tail-of-runaway\n" + line(1) + "\n");
 
     expect(buffer.read().map((l) => l.raw)).toEqual([line(1)]);
@@ -302,7 +298,6 @@ describe("DeviceLogBuffer", () => {
       spawned[spawned.length - 1]!.emit("exit");
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    // With a flat 5ms delay all six would have respawned; backoff outruns the test window.
     expect(spawned.length).toBeLessThan(7);
     buffer.stop();
   });
@@ -315,7 +310,6 @@ describe("DeviceLogBuffer", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(spawned).toHaveLength(2);
 
-    // A late event from the dead child must not null out the live one.
     first.emit("error", new Error("late"));
     await new Promise((resolve) => setTimeout(resolve, 20));
 

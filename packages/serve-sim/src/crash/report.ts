@@ -1,12 +1,10 @@
-// An `.ips` is two documents concatenated: a one-line JSON header, then a JSON body.
+// An `.ips` is a one-line JSON header, then a JSON body.
 
-/** Simulator binaries report platform 7. */
 const IPS_SIMULATOR_PLATFORM = 7;
-/** bug_type 309 is a process crash; other values are spins, jetsams, and analytics. */
 const IPS_CRASH_BUG_TYPE = "309";
 const MAX_FRAMES = 24;
 
-export interface CrashHeader {
+interface CrashHeader {
   appName: string | null;
   bundleId: string | null;
   appVersion: string | null;
@@ -17,7 +15,7 @@ export interface CrashHeader {
   incidentId: string | null;
 }
 
-interface CrashFrame {
+export interface CrashFrame {
   image: string;
   symbol: string | null;
   imageOffset: number | null;
@@ -29,13 +27,11 @@ export interface CrashReport {
   deviceUdid: string | null;
   bundleId: string | null;
   appName: string | null;
-  /** Executable name; matches the emitter in device-log lines. */
   procName: string | null;
   appVersion: string | null;
   buildVersion: string | null;
   pid: number | null;
   capturedAt: string | null;
-  /** `capturedAt` as epoch ms. Apple's format is not ISO-8601, so parse it once here. */
   capturedAtMs: number | null;
   exceptionType: string | null;
   signal: string | null;
@@ -148,7 +144,6 @@ function readFrames(body: Record<string, unknown>): CrashFrame[] {
       image: readString(image, "name") ?? "unknown",
       symbol: readString(frame, "symbol"),
       imageOffset: readNumber(frame, "imageOffset"),
-      // Both paths carry the same `/Users/USER` redaction, so a prefix match holds.
       appOwned: Boolean(bundleRoot && imagePath?.startsWith(bundleRoot)),
     });
   }
@@ -177,11 +172,11 @@ export function parseCrashReport(raw: string): CrashReport | null {
   const allFrames = readFrames(body);
   const culprit = allFrames.find((frame) => frame.appOwned) ?? allFrames[0];
   const culpritFrame = culprit ? describeFrame(culprit) : null;
-  // An unsymbolicated offset moves every rebuild, so it must not key the signature.
   const culpritKey = culprit?.symbol ? `${culprit.image} ${culprit.symbol}` : "";
 
   const exceptionType = readString(exception, "type");
   const signal = readString(exception, "signal");
+  const terminationIndicator = readString(termination, "indicator");
   const capturedAt = readString(body, "captureTime") ?? header.timestamp;
   const capturedAtMs = capturedAt ? Date.parse(capturedAt) : Number.NaN;
 
@@ -198,7 +193,7 @@ export function parseCrashReport(raw: string): CrashReport | null {
     capturedAtMs: Number.isNaN(capturedAtMs) ? null : capturedAtMs,
     exceptionType,
     signal,
-    terminationIndicator: readString(termination, "indicator"),
+    terminationIndicator,
     faultingQueue: readString(threadTriggered, "queue"),
     culpritFrame,
     frames: allFrames.slice(0, MAX_FRAMES),
@@ -206,7 +201,7 @@ export function parseCrashReport(raw: string): CrashReport | null {
       header.bundleId ?? "",
       exceptionType ?? "",
       signal ?? "",
-      readString(termination, "indicator") ?? "",
+      terminationIndicator ?? "",
       culpritKey,
     ].join("|"),
   };

@@ -943,6 +943,7 @@ export function previewConfigForState(
 ): ServeSimState & {
   basePath: string;
   logsEndpoint: string;
+  crashesEndpoint: string;
   appStateEndpoint: string;
   eventLogEndpoint: string;
   eventLogEventsEndpoint: string;
@@ -975,6 +976,7 @@ export function previewConfigForState(
     ...state,
     basePath: base,
     logsEndpoint: endpoint(base, "/logs", state.device),
+    crashesEndpoint: endpoint(base, "/crashes", state.device),
     appStateEndpoint: endpoint(base, "/appstate", state.device),
     eventLogEndpoint: endpoint(base, "/api/event-log", state.device),
     eventLogEventsEndpoint: endpoint(base, "/api/event-log/events", state.device),
@@ -1496,14 +1498,6 @@ function isJsonContentType(value: string | undefined): boolean {
   return mediaType === "application/json";
 }
 
-function nonNegativeIntParam(params: URLSearchParams, name: string): number | undefined {
-  const raw = params.get(name)?.trim();
-  if (!raw) return undefined;
-  const value = Number(raw);
-  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
-}
-
-/** `?flag=0` and `?flag=false` mean off, not "present so on". */
 function booleanParam(params: URLSearchParams, name: string): boolean {
   const raw = params.get(name);
   if (raw === null) return false;
@@ -1511,7 +1505,6 @@ function booleanParam(params: URLSearchParams, name: string): boolean {
   return value !== "0" && value !== "false" && value !== "no";
 }
 
-/** SSE by default; JSON on `Accept: application/json` or `?snapshot`. `follow` starts simctl for pollers. */
 export function handleLogsRequest(
   req: SimReq,
   res: SimRes,
@@ -1526,11 +1519,15 @@ export function handleLogsRequest(
   }
 
   const params = new URL(rawUrl, "http://127.0.0.1").searchParams;
-  const since = nonNegativeIntParam(params, "since");
-  const limit = nonNegativeIntParam(params, "limit");
+  const intQuery = (name: string): number | undefined => {
+    const raw = params.get(name)?.trim();
+    const n = Number(raw);
+    return raw && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+  };
+  const since = intQuery("since");
+  const limit = intQuery("limit");
   const wantsJson =
     booleanParam(params, "snapshot") || (req.headers.accept ?? "").includes("application/json");
-  // The raw line is already JSON, so default frames are unwrapped.
   const wantsEnvelope = booleanParam(params, "envelope");
   const wantsFollow = booleanParam(params, "follow");
 
@@ -1538,34 +1535,17 @@ export function handleLogsRequest(
   const logsOpen = (): boolean => !res.writableEnded && !res.destroyed;
 
   if (wantsJson) {
-    // Peek leaves simctl off. `follow` is the 2s UI poll: start the child, then
-    // idle-timeout kills it if the drawer stops asking.
     const buffer = wantsFollow ? cache.ensure(state.device) : cache.peek(state.device);
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-    if (!buffer) {
-      res.end(
-        JSON.stringify({
-          device: state.device,
-          latestSeq: 0,
-          oldestSeq: 0,
-          bufferedBytes: 0,
-          status: "stopped",
-          streamError: null,
-          lines: [],
-        })
-      );
-      return;
-    }
-    const lines = buffer.read({ since, limit });
     res.end(
       JSON.stringify({
         device: state.device,
-        latestSeq: buffer.latestSeq,
-        oldestSeq: buffer.oldestSeq,
-        bufferedBytes: buffer.byteLength,
-        status: buffer.status,
-        streamError: buffer.error,
-        lines,
+        latestSeq: buffer?.latestSeq ?? 0,
+        oldestSeq: buffer?.oldestSeq ?? 0,
+        bufferedBytes: buffer?.byteLength ?? 0,
+        status: buffer?.status ?? "stopped",
+        streamError: buffer?.error ?? null,
+        lines: buffer?.read({ since, limit }) ?? [],
       })
     );
     return;
@@ -1586,8 +1566,6 @@ export function handleLogsRequest(
     (wantsEnvelope ? JSON.stringify({ seq: line.seq, at: line.at, raw: line.raw }) : line.raw) +
     "\n\n";
 
-  // Must stay synchronous between read and subscribe: lines arrive on a separate macrotask,
-  // so an await here would drop whatever landed in the gap.
   let lastSent = since ?? 0;
   for (const line of buffer.read({ since, limit })) {
     if (!logsOpen()) break;
@@ -1620,13 +1598,20 @@ export function handleLogsRequest(
   });
 }
 
-/** The list carries the line count; `/crashes/<id>` carries the lines. */
 function summarize(record: CrashRecord): CrashSummary {
   const { logTail, occurrences, ...rest } = record;
-  return { ...rest, logTailLines: logTail.length, occurrenceCount: occurrences.length };
+  return {
+    ...rest,
+    logTailLines: logTail.length,
+    occurrenceCount: occurrences.length,
+    occurrenceTimes: occurrences.map((item) => ({
+      capturedAtMs: item.capturedAtMs,
+      capturedAt: item.capturedAt,
+      rawPath: item.rawPath,
+    })),
+  };
 }
 
-/** JSON by default; SSE on `Accept: text/event-stream`. */
 export function handleCrashesRequest(
   req: SimReq,
   res: SimRes,
@@ -1715,7 +1700,7 @@ export async function handleCrashReportRequest(
   const total = record.occurrences.length;
   const requested = occurrenceParam === null ? total - 1 : Number(occurrenceParam);
   if (!Number.isInteger(requested) || requested < 0 || requested >= total) {
-    return fail(400, `Occurrence must be 0-${total - 1} for this crash.`);
+    return fail(400, `occurrence must be 0-${total - 1}`);
   }
   const occurrence = record.occurrences[requested]!;
 
@@ -1724,9 +1709,7 @@ export async function handleCrashReportRequest(
   try {
     report = await readReport(occurrence.rawPath);
   } catch {
-    reportError =
-      `The crash report file is gone (${occurrence.rawPath}); macOS moves older reports into ` +
-      "Retired/ and eventually deletes them. The summary is all that is left.";
+    reportError = `The .ips file is gone (${occurrence.rawPath}). macOS moved it to Retired/.`;
   }
 
   res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -1740,8 +1723,6 @@ export async function handleCrashReportRequest(
   );
 }
 
-// Dup of the /exec gate minus the Content-Type check (no body on a GET); fold into the
-// shared session-auth helper when the network-capture stack lands.
 function requireSessionToken(req: SimReq, res: SimRes, token: string): boolean {
   const origin = req.headers.origin;
   if (origin) {
@@ -1781,8 +1762,7 @@ function requireSessionToken(req: SimReq, res: SimRes, token: string): boolean {
  * Routes handled under `basePath` (default `/.sim`):
  *   GET  {basePath}         — the preview HTML page
  *   GET  {basePath}/api     — serve-sim state JSON
- *   GET  {basePath}/logs    — simctl logs (JSON snapshot, or SSE)
- *   GET  {basePath}/crashes — crash reports (bearer token)
+ *   GET  {basePath}/logs    — SSE stream of simctl logs
  *   GET  {basePath}/ax      — SSE stream of normalized accessibility snapshots
  */
 export function handleMetricsRequest(
@@ -1837,8 +1817,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const execToken = options?.execToken ?? randomBytes(32).toString("base64url");
   const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
 
-  // The watch starts on the first `/crashes` read, so building a middleware never touches the
-  // host's crash directory.
   crashRuntime.arm();
 
   // Simulator-settings requests run in-process (just the underlying simctl /
@@ -2591,7 +2569,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       const live = states.map((s) => s.device);
       crashRuntime.prune(live);
       logBufferCache.prune(live);
-      // The tail can only hold lines the buffer already had, and `/logs` may never be opened.
       if (state) logBufferCache.ensure(state.device);
       handleCrashesRequest(req, res, state);
       return;
@@ -2607,9 +2584,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
-            error:
-              `Malformed percent-escape in the crash id (${rawId}). Copy the id verbatim from ` +
-              `GET ${base}/crashes.`,
+            error: `Invalid crash id (${rawId}).`,
           })
         );
         return;

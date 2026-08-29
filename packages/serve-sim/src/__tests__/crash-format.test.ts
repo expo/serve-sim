@@ -4,23 +4,11 @@ import {
   collapseSystemFrames,
   crashDetailUrl,
   formatCrashAgo,
-  remapOccurrenceIndex,
 } from "../client/utils/crash-format";
 
 function frame(appOwned: boolean, symbol = "sym"): CrashFrame {
   return { image: appOwned ? "Demo" : "libsystem", symbol, imageOffset: 0, appOwned };
 }
-
-describe("remapOccurrenceIndex", () => {
-  test("finds the stamp whose path matches", () => {
-    const times = [{ rawPath: "/a.ips" }, { rawPath: "/b.ips" }, { rawPath: "/c.ips" }];
-    expect(remapOccurrenceIndex(times, "/b.ips")).toBe(1);
-  });
-
-  test("returns null when the occurrence has aged out of the window", () => {
-    expect(remapOccurrenceIndex([{ rawPath: "/b.ips" }], "/a.ips")).toBeNull();
-  });
-});
 
 describe("crashDetailUrl", () => {
   test("keeps the list query when fetching a record", () => {

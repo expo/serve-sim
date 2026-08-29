@@ -8,14 +8,6 @@ export function formatCrashAgo(ms: number | null, now: number): string {
   return `${Math.floor(seconds / 3600)}h ago`;
 }
 
-export function remapOccurrenceIndex(
-  times: { rawPath: string }[],
-  rawPath: string
-): number | null {
-  const index = times.findIndex((stamp) => stamp.rawPath === rawPath);
-  return index === -1 ? null : index;
-}
-
 export function crashDetailUrl(listPath: string, id: string, occurrence?: number): string {
   const [pathname, search] = listPath.split("?");
   const params = new URLSearchParams(search);

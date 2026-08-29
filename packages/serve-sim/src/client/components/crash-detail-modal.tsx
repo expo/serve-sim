@@ -3,14 +3,10 @@ import { createPortal } from "react-dom";
 import type { CrashFrame } from "../../crash/report";
 import type { CrashOccurrence, CrashSummary } from "../../crash/store";
 import { collapseSystemFrames, formatCrashAgo } from "../utils/crash-format";
+import { parseDeviceLogJson } from "../utils/device-log-format";
 
 function messageOf(raw: string): string {
-  try {
-    const entry = JSON.parse(raw) as { eventMessage?: unknown };
-    return typeof entry.eventMessage === "string" ? entry.eventMessage : raw;
-  } catch {
-    return raw;
-  }
+  return parseDeviceLogJson(raw)?.message ?? raw;
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -65,7 +61,7 @@ function StackTrace({ frames }: { frames: CrashFrame[] }) {
   };
 
   if (frames.length === 0) {
-    return <p className="text-[11px] text-white/35">No symbolicated frames in this report.</p>;
+    return <p className="text-[11px] text-white/35">No stack frames in this report.</p>;
   }
 
   return (
@@ -247,7 +243,7 @@ export function CrashDetailModal({
               </button>
               <div
                 role="group"
-                aria-label="Occurrences"
+                aria-label="Earlier crashes"
                 aria-busy={pendingIndex !== occurrence.index}
                 className="flex flex-1 items-center justify-center gap-1"
               >
@@ -261,7 +257,7 @@ export function CrashDetailModal({
                       key={index}
                       type="button"
                       aria-current={current ? "true" : undefined}
-                      aria-label={`Occurrence ${index + 1} of ${occurrence.total}`}
+                      aria-label={`Crash ${index + 1} of ${occurrence.total}`}
                       title={formatOccurrenceClock(
                         record.occurrenceTimes[index]?.capturedAtMs ?? null,
                         record.occurrenceTimes[index]?.capturedAt ?? ""
@@ -354,7 +350,7 @@ export function CrashDetailModal({
             <StackTrace frames={frames} />
           ) : occurrence.logTail.length === 0 ? (
             <p className="text-[11px] text-white/35">
-              No log lines were captured for this crash ({occurrence.logTailSource}).
+              No device logs for this crash.
             </p>
           ) : (
             <ol className="font-mono text-[10px] leading-relaxed">

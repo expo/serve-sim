@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CrashSummary } from "../../crash/store";
-import { crashDetailUrl, formatCrashAgo, remapOccurrenceIndex } from "../utils/crash-format";
+import { crashDetailUrl, formatCrashAgo } from "../utils/crash-format";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
 import { CrashDetailModal, type SelectedOccurrence } from "./crash-detail-modal";
@@ -11,6 +11,12 @@ type CrashListPayload = {
 };
 
 const POLL_INTERVAL_MS = 5_000;
+
+function authorized(url: string): Promise<Response> {
+  return fetch(url, {
+    headers: { Authorization: `Bearer ${window.__SIM_PREVIEW__?.execToken ?? ""}` },
+  });
+}
 
 type CrashDetail = {
   record: CrashSummary;
@@ -35,20 +41,12 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
     [crashesEndpoint, udid]
   );
 
-  // `/crashes` needs the bearer token, which EventSource cannot send, so poll instead.
-  const authorized = useCallback(
-    (url: string) =>
-      fetch(url, {
-        headers: { Authorization: `Bearer ${window.__SIM_PREVIEW__?.execToken ?? ""}` },
-      }),
-    []
-  );
-
   useEffect(() => {
     const tick = setInterval(() => setNow(Date.now()), 10_000);
     return () => clearInterval(tick);
   }, []);
 
+  // `/crashes` needs the bearer token, which EventSource cannot send, so poll instead.
   useEffect(() => {
     let cancelled = false;
     let gen = 0;
@@ -68,19 +66,17 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
       cancelled = true;
       clearInterval(timer);
     };
-  }, [path, authorized]);
+  }, [path]);
 
   const loadDetail = useCallback(
     async (id: string, occurrence?: number): Promise<void> => {
       const gen = ++fetchGen.current;
       setLoadError(null);
-      const failMessage =
-        confirmed.current === null ? "Could not load that crash." : "Could not load that occurrence.";
       const revert = (): void => {
         if (gen !== fetchGen.current) return;
         requested.current = confirmed.current;
         setPendingIndex(confirmed.current);
-        setLoadError(failMessage);
+        setLoadError("Could not load that crash.");
       };
       try {
         const response = await authorized(crashDetailUrl(path, id, occurrence));
@@ -98,15 +94,17 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
         revert();
       }
     },
-    [authorized, path]
+    [path]
   );
 
   useEffect(() => {
     if (!detail || !payload) return;
     const listed = payload.crashes.find((crash) => crash.id === detail.record.id);
     if (!listed) return;
-    const remapped = remapOccurrenceIndex(listed.occurrenceTimes, detail.occurrence.rawPath);
-    const index = remapped ?? detail.occurrence.index;
+    const remapped = listed.occurrenceTimes.findIndex(
+      (stamp) => stamp.rawPath === detail.occurrence.rawPath
+    );
+    const index = remapped === -1 ? detail.occurrence.index : remapped;
     const total = listed.occurrenceCount;
     if (
       listed.count === detail.record.count &&
@@ -115,7 +113,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
     ) {
       return;
     }
-    if (remapped !== null) {
+    if (remapped !== -1) {
       if (requested.current === detail.occurrence.index) requested.current = remapped;
       if (confirmed.current === detail.occurrence.index) confirmed.current = remapped;
       setPendingIndex((pending) => (pending === detail.occurrence.index ? remapped : pending));
@@ -183,7 +181,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
         <p className="text-[11px] leading-relaxed text-amber-300/80">{payload?.meta.statusError}</p>
       ) : crashes.length === 0 ? (
         <p className="text-[11px] text-white/40">
-          No crashes. A report appears a few seconds after the app dies.
+          No crashes. A report shows up a few seconds after a crash.
         </p>
       ) : (
         <ul className="flex flex-col gap-1.5">
@@ -219,7 +217,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
                   </span>
                 </span>
                 <span className="mt-0.5 block truncate font-mono text-[10px] text-white/40">
-                  {crash.culpritFrame ?? crash.terminationIndicator ?? "no symbolicated frame"}
+                  {crash.culpritFrame ?? crash.terminationIndicator ?? "no stack frame"}
                 </span>
               </button>
             </li>

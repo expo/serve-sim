@@ -66,8 +66,7 @@ export class CrashStore {
     for (const onClosed of [...this.closeListeners]) {
       try {
         onClosed();
-      } catch {
-      }
+      } catch {}
     }
     this.closeListeners.clear();
     this.listeners.clear();
@@ -137,8 +136,7 @@ export class CrashStore {
     for (const listener of this.listeners) {
       try {
         listener(delivered);
-      } catch {
-      }
+      } catch {}
     }
   }
 }

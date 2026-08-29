@@ -1703,8 +1703,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const frameAncestors = options?.frameAncestors ?? [];
   const shareUrl = options?.shareUrl;
 
-  // The watch starts on the first `/crashes` read, so building a middleware never touches the
-  // host's crash directory.
   crashRuntime.arm();
 
   // Simulator-settings requests run in-process (just the underlying simctl /

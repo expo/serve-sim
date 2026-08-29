@@ -26,7 +26,7 @@ import {
   injectedAppEnvironment,
   locateCameraDylib,
 } from "./app-injection";
-import { startFpsProbeManager } from "./fps-probe-manager";
+import { ensureFpsProbeManager, stopFpsProbeManager } from "./fps-probe-manager";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
 import { permissions } from "./permissions";
 import { uiSettings } from "./ui-settings";
@@ -1657,9 +1657,9 @@ async function serve(
   for (const udid of targetDevices) {
     writeState(inProcessServeSimState(udid, boundPort, "/", host, options.stream));
   }
-  const fpsManagers = targetDevices.map((udid) => startFpsProbeManager(udid));
+  for (const udid of targetDevices) ensureFpsProbeManager(udid);
   const clearAll = () => {
-    for (const manager of fpsManagers) manager.stop();
+    for (const udid of targetDevices) stopFpsProbeManager(udid);
     for (const udid of targetDevices) {
       try { clearState(udid); } catch {}
     }

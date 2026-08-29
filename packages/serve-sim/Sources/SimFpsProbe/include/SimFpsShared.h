@@ -1,6 +1,3 @@
-// Host and injected dylib share this POSIX shm header. seq is odd during a
-// write; even and equal to seqCopy when the payload is stable.
-
 #ifndef SIM_FPS_SHARED_H
 #define SIM_FPS_SHARED_H
 

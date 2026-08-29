@@ -28,11 +28,21 @@ const DEFAULT_VERIFY_MS = 1250;
 const DEFAULT_RETRY_MS = 30_000;
 const MAX_FAILURES = 3;
 
+type RunSimctl = (
+  args: string[],
+  options: { timeout: number; env?: NodeJS.ProcessEnv },
+) => Promise<{ stdout: string }>;
+
 export interface FpsProbeManagerDeps {
   tracker?: ForegroundTrackerCache;
   readFps?: (udid: string, bundleId: string) => FpsSample | null;
   isInstalledApp?: (udid: string, bundleId: string) => Promise<boolean>;
-  launch?: (udid: string, bundleId: string, env: NodeJS.ProcessEnv) => Promise<number | null>;
+  launch?: (
+    udid: string,
+    bundleId: string,
+    env: NodeJS.ProcessEnv,
+    stopped: () => boolean,
+  ) => Promise<number | null>;
   launchEnvironment?: (udid: string, bundleId: string) => NodeJS.ProcessEnv;
   resetShm?: (udid: string) => boolean;
   now?: () => number;
@@ -62,15 +72,18 @@ async function isInstalledApp(udid: string, bundleId: string): Promise<boolean> 
   }
 }
 
-async function launchWithProbe(
+export async function launchWithProbe(
   udid: string,
   bundleId: string,
   env: NodeJS.ProcessEnv,
+  stopped: () => boolean,
+  runSimctl: RunSimctl = (args, options) => execFileAsync("xcrun", args, options),
 ): Promise<number | null> {
-  await execFileAsync("xcrun", ["simctl", "terminate", udid, bundleId], {
+  await runSimctl(["simctl", "terminate", udid, bundleId], {
     timeout: 3000,
   }).catch(() => {});
-  const { stdout } = await execFileAsync("xcrun", ["simctl", "launch", udid, bundleId], {
+  if (stopped()) return null;
+  const { stdout } = await runSimctl(["simctl", "launch", udid, bundleId], {
     timeout: 5000,
     env,
   });
@@ -162,11 +175,17 @@ export function startFpsProbeManager(
         schedule(app, observedAt, failure.retryAt - now());
         return;
       }
-      if (!(await checkInstalled(udid, app.bundleId)) || !currentMatches(app)) return;
+      const installed = await checkInstalled(udid, app.bundleId);
+      if (stopped || !installed || !currentMatches(app)) return;
 
       const launchedAt = now();
       resetShm(udid);
-      await launch(udid, app.bundleId, environment(udid, app.bundleId));
+      const launchedPid = await launch(
+        udid,
+        app.bundleId,
+        environment(udid, app.bundleId),
+        () => stopped,
+      );
       await delay(verifyMs);
       if (stopped) return;
       if (isFreshForProcess(readFps(udid, app.bundleId), launchedAt)) {
@@ -175,10 +194,15 @@ export function startFpsProbeManager(
       }
 
       const current = tracker.peek(udid);
-      const failedPid = current?.bundleId === app.bundleId ? current.pid : app.pid;
+      const failedPid =
+        launchedPid ?? (current?.bundleId === app.bundleId ? current.pid : app.pid);
       const count = (failure?.count ?? 0) + 1;
       failures.set(app.bundleId, { pid: failedPid, count, retryAt: now() + retryMs });
-      if (current?.bundleId === app.bundleId && count < MAX_FAILURES) {
+      if (
+        current?.bundleId === app.bundleId &&
+        current.pid === failedPid &&
+        count < MAX_FAILURES
+      ) {
         schedule(current, now(), retryMs);
       }
     } catch (error) {
@@ -211,4 +235,20 @@ export function startFpsProbeManager(
       subscription.unsubscribe();
     },
   };
+}
+
+const managers = new Map<string, FpsProbeManager>();
+
+export function ensureFpsProbeManager(udid: string): FpsProbeManager {
+  let manager = managers.get(udid);
+  if (!manager) {
+    manager = startFpsProbeManager(udid);
+    managers.set(udid, manager);
+  }
+  return manager;
+}
+
+export function stopFpsProbeManager(udid: string): void {
+  managers.get(udid)?.stop();
+  managers.delete(udid);
 }

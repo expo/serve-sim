@@ -19,7 +19,6 @@ export type FpsSample = {
 };
 
 export function fpsShmName(udid: string): string {
-  // POSIX shm names on macOS have a 31-char limit. Hash the UDID short.
   const short = createHash("sha1").update(udid).digest("hex").slice(0, 8);
   return `/serve-sim-fps-${short}`;
 }

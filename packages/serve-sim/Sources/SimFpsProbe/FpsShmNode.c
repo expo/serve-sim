@@ -4,6 +4,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "SimFpsShared.h"
@@ -11,6 +12,11 @@
 static int simfps_shm_copy(const char *name, void *out) {
     int fd = shm_open(name, O_RDWR, 0);
     if (fd < 0) return -1;
+    struct stat info;
+    if (fstat(fd, &info) != 0 || info.st_size < SIMFPS_SHM_SIZE) {
+        close(fd);
+        return -1;
+    }
     void *map = mmap(NULL, SIMFPS_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
     if (map == MAP_FAILED) return -1;

@@ -5,7 +5,7 @@ import type {
   ForegroundApp,
   ForegroundTrackerCache,
 } from "../foreground-tracker";
-import { startFpsProbeManager } from "../fps-probe-manager";
+import { launchWithProbe, startFpsProbeManager } from "../fps-probe-manager";
 import type { FpsSample } from "../fps-shm";
 
 function fakeTracker(initial: ForegroundApp | null = null) {
@@ -181,6 +181,76 @@ describe("startFpsProbeManager", () => {
     await wait();
     expect(launches).toBe(2);
     manager.stop();
+  });
+
+  test("backs off when the injected process does not publish a sample", async () => {
+    const foreground = fakeTracker({ bundleId: "dev.expo.A", pid: 11 });
+    let launches = 0;
+    const manager = startFpsProbeManager("DEVICE-A", {
+      tracker: foreground.tracker,
+      readFps: () => null,
+      isInstalledApp: async () => true,
+      launchEnvironment: () => ({}),
+      resetShm: () => true,
+      launch: async () => {
+        launches++;
+        foreground.emit({ bundleId: "dev.expo.A", pid: 22 });
+        return 22;
+      },
+      graceMs: 1,
+      verifyMs: 1,
+      retryMs: 100,
+    });
+
+    await wait();
+    expect(launches).toBe(1);
+    manager.stop();
+  });
+
+  test("does not launch after it stops during the app check", async () => {
+    const foreground = fakeTracker({ bundleId: "dev.expo.A", pid: 11 });
+    let finishCheck!: (installed: boolean) => void;
+    let launches = 0;
+    const manager = startFpsProbeManager("DEVICE-A", {
+      tracker: foreground.tracker,
+      readFps: () => null,
+      isInstalledApp: () => new Promise((resolve) => {
+        finishCheck = resolve;
+      }),
+      launch: async () => {
+        launches++;
+        return 22;
+      },
+      graceMs: 1,
+      verifyMs: 1,
+    });
+
+    await wait(10);
+    manager.stop();
+    finishCheck(true);
+    await wait(10);
+    expect(launches).toBe(0);
+  });
+
+  test("cancels between termination and launch", async () => {
+    let stopped = false;
+    let finishTermination!: () => void;
+    const calls: string[][] = [];
+    const launch = launchWithProbe("DEVICE-A", "dev.expo.A", {}, () => stopped, async (args) => {
+      calls.push(args);
+      if (args[1] === "terminate") {
+        await new Promise<void>((resolve) => {
+          finishTermination = resolve;
+        });
+      }
+      return { stdout: "dev.expo.A: 22" };
+    });
+
+    await wait();
+    stopped = true;
+    finishTermination();
+    expect(await launch).toBeNull();
+    expect(calls).toEqual([["simctl", "terminate", "DEVICE-A", "dev.expo.A"]]);
   });
 });
 

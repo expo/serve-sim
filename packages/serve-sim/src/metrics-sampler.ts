@@ -4,8 +4,6 @@
 // ~1-minute average. Scopes to the foreground app via the foreground tracker, tagging each sample
 // with its bundleId (null when nothing user-facing is foreground, in which case the numbers cover
 // every user app). Memory is phys_footprint, RSS fallback. Network rates come from a nettop poller.
-// FPS is published by the in-app dylib into POSIX shm; the sampler copies that slot on each tick.
-
 import { execFile } from "node:child_process";
 import { cpus } from "node:os";
 import { promisify } from "node:util";

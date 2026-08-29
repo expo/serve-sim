@@ -16,6 +16,7 @@ import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
 import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./metrics-sampler";
 import { foregroundTracker, type ForegroundApp, type ForegroundTrackerCache } from "./foreground-tracker";
+import { ensureFpsProbeManager } from "./fps-probe-manager";
 import { corsAllowOriginHeaders } from "./middleware-utils";
 import {
   closeDeviceSession,
@@ -854,6 +855,7 @@ export async function startDeviceInProcess(
     if (!booted) return `Device ${udid} failed to reach booted state`;
   }
   writeServeSimState(inProcessServeSimState(udid, port, base, "127.0.0.1", streamSettings));
+  ensureFpsProbeManager(udid);
   return null;
 }
 

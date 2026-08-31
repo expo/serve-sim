@@ -20,7 +20,7 @@ export interface CrashRecord extends CrashReport {
   id: string;
   /** Newest occurrence; older `.ips` files age out into `Retired/`. */
   rawPath: string;
-  /** Device-log lines from the crashed app, at or before the crash time. */
+  /** The newest occurrence's tail, repeated here for a stream reader that only sees records. */
   logTail: string[];
   logTailSource: LogTailSource;
   /** Newest last, capped at {@link MAX_OCCURRENCES}. `count` is the true total. */
@@ -79,7 +79,6 @@ export class CrashStore {
     logTailSource: LogTailSource = "none"
   ): CrashRecord {
     const at = this.now();
-    const hasNewTail = logTail.length > 0;
     const existing = this.bySignature.get(report.signature);
     const occurrence: CrashOccurrence = {
       incidentId: report.incidentId,
@@ -98,9 +97,8 @@ export class CrashStore {
         frames: [...report.frames],
         id: existing.id,
         rawPath,
-        // An empty tail must not erase the one we had.
-        logTail: hasNewTail ? [...logTail] : existing.logTail,
-        logTailSource: hasNewTail ? logTailSource : existing.logTailSource,
+        logTail: [...logTail],
+        logTailSource,
         occurrences: [...existing.occurrences, occurrence].slice(-MAX_OCCURRENCES),
         count: existing.count + 1,
         firstSeen: existing.firstSeen,

@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { EventEmitter } from "events";
 import type { ChildProcess } from "child_process";
-import { createCrashRuntime } from "../runtime";
-import { createLogBufferCache } from "../../log-buffer";
-import type { CrashEvent } from "../store";
+import { createCrashRuntime } from "../crash/runtime";
+import { createLogBufferCache } from "../log-buffer";
+import type { CrashEvent } from "../crash/store";
 
 const UDID_A = "CD26E7DF-F2CE-4DCB-B950-2F062DE3FBB3";
 const UDID_B = "11111111-2222-3333-4444-555555555555";
@@ -488,10 +488,8 @@ describe("createCrashRuntime back-scan", () => {
 });
 
 describe("createCrashRuntime cancellation", () => {
-  const dirEntries: string[] = [];
-
   /** A runtime whose first report read is held open until the test releases it. */
-  function gatedRuntime() {
+  function gatedRuntime(dirEntries: string[] = []) {
     let release: (() => void) | null = null;
     let gated = true;
     const runtime = createCrashRuntime({
@@ -518,13 +516,10 @@ describe("createCrashRuntime cancellation", () => {
     return { runtime, release: () => release?.() };
   }
 
-  beforeEach(() => {
-    dirEntries.length = 0;
-  });
-
   test("re-scans a report whose read was dropped by stop", async () => {
     files.set("Demo-1.ips", ips());
-    const { runtime, release } = gatedRuntime();
+    const dirEntries: string[] = [];
+    const { runtime, release } = gatedRuntime(dirEntries);
     await runtime.start();
 
     emit("rename", "Demo-1.ips");
@@ -744,6 +739,32 @@ describe("createCrashRuntime meta", () => {
 
     expect(runtime.meta().status).toBe("unavailable");
     expect(runtime.listFor(UDID_A)).toHaveLength(1);
+  });
+
+  test("gives up after repeated watch failures instead of retrying forever", async () => {
+    let attempts = 0;
+    const runtime = createCrashRuntime({
+      reportsDir: "/reports",
+      retryDelayMs: 1,
+      ensureDir: () => {},
+      watchDir: () => {
+        attempts += 1;
+        throw new Error("EPERM");
+      },
+      readReport: async () => "",
+      readDir: async () => [],
+      statFile: async () => ({ mtimeMs: 0 }),
+      now: () => clock,
+      onError: () => {},
+    });
+
+    await runtime.start();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(attempts).toBe(7);
+    expect(runtime.meta().status).toBe("unavailable");
+    expect(runtime.meta().statusError).toContain("Retries are exhausted");
+    runtime.stop();
   });
 
   test("recovers on a restart after a failure", () => {

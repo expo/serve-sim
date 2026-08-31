@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isSimulatorAppCrash, parseCrashReport, parseIpsHeader } from "../report";
+import { isSimulatorAppCrash, parseCrashReport, parseIpsHeader } from "../crash/report";
 
 const UDID = "CD26E7DF-F2CE-4DCB-B950-2F062DE3FBB3";
 const BUNDLE_ROOT =

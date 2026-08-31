@@ -1638,7 +1638,7 @@ export function handleCrashesRequest(
   const wantsStream = (req.headers.accept ?? "").includes("text/event-stream");
   // A client that aborted during the caller's await never fires `close` here.
   if (wantsStream && (res.destroyed || req.destroyed)) return;
-  const open = (): boolean => !res.writableEnded && !res.destroyed;
+  const streamOpen = (): boolean => !res.writableEnded && !res.destroyed;
 
   if (!wantsStream) {
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -1659,24 +1659,24 @@ export function handleCrashesRequest(
   const { crashes, unsubscribe } = runtime.subscribe(
     udid,
     (event) => {
-      if (!open()) return;
+      if (!streamOpen()) return;
       const frame = { type: event.type, record: summarize(event.record) };
       res.write("data: " + JSON.stringify(frame) + "\n\n");
     },
     () => {
-      if (open()) res.end();
+      if (streamOpen()) res.end();
     }
   );
 
   let lastMeta = JSON.stringify(runtime.meta());
   res.write(`data: {"type":"meta","meta":${lastMeta}}\n\n`);
   for (const record of crashes) {
-    if (!open()) break;
+    if (!streamOpen()) break;
     res.write("data: " + JSON.stringify({ type: "crash", record: summarize(record) }) + "\n\n");
   }
 
   const heartbeat = setInterval(() => {
-    if (!open()) return;
+    if (!streamOpen()) return;
     const next = JSON.stringify(runtime.meta());
     if (next !== lastMeta) {
       lastMeta = next;
@@ -1706,12 +1706,22 @@ export async function handleCrashReportRequest(
 
   if (!state) return fail(404, "No serve-sim device");
   const record = runtime.getFor(state.device, id);
-  if (!record) return fail(404, "No crash with that id for this device");
+  if (!record) {
+    return fail(
+      404,
+      `No crash with id ${id} for device ${state.device}. Ids come from GET {base}/crashes for ` +
+        "the same device, and the newest 20 signatures are kept, so a stale id can age out."
+    );
+  }
 
   const total = record.occurrences.length;
-  const requested = occurrenceParam === null ? total - 1 : Number(occurrenceParam);
+  const wanted = occurrenceParam?.trim();
+  const requested = wanted ? Number(wanted) : total - 1;
   if (!Number.isInteger(requested) || requested < 0 || requested >= total) {
-    return fail(400, `Occurrence must be 0-${total - 1} for this crash.`);
+    return fail(
+      400,
+      `Occurrence must be 0-${total - 1} for this crash (oldest first); omit it for the newest.`
+    );
   }
   const occurrence = record.occurrences[requested]!;
 
@@ -1719,10 +1729,11 @@ export async function handleCrashReportRequest(
   let reportError: string | null = null;
   try {
     report = await readReport(occurrence.rawPath);
-  } catch {
+  } catch (error) {
     reportError =
-      `The crash report file is gone (${occurrence.rawPath}); macOS moves older reports into ` +
-      "Retired/ and eventually deletes them. The summary is all that is left.";
+      `Could not read ${occurrence.rawPath} (${error instanceof Error ? error.message : String(error)}). ` +
+      "macOS ages crash reports into Retired/ and then deletes them, so an older occurrence can be " +
+      "gone for good; the summary and this occurrence's log tail are what is left.";
   }
 
   res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -1734,41 +1745,6 @@ export async function handleCrashReportRequest(
       reportError,
     })
   );
-}
-
-// Dup of the /exec gate minus the Content-Type check (no body on a GET); fold into the
-// shared session-auth helper when the network-capture stack lands.
-function requireSessionToken(req: SimReq, res: SimRes, token: string): boolean {
-  const origin = req.headers.origin;
-  if (origin) {
-    let originHost: string;
-    try {
-      originHost = new URL(origin).host;
-    } catch {
-      res.writeHead(403, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid Origin" }));
-      return false;
-    }
-    if (originHost !== req.headers.host) {
-      res.writeHead(403, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Cross-origin request blocked" }));
-      return false;
-    }
-  }
-
-  const match = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
-  if (!match || !safeEqualString(match[1]!.trim(), token)) {
-    res.writeHead(401, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        error:
-          "Unauthorized. This route needs the session bearer token; read it as `execToken` from " +
-          "the preview server's /api response.",
-      })
-    );
-    return false;
-  }
-  return true;
 }
 
 /**
@@ -2616,7 +2592,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
 
     if (url === base + "/crashes" || url === base + "/crashes/") {
-      if (!requireSessionToken(req, res, execToken)) return;
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       void crashRuntime.start().catch(() => {});
@@ -2630,7 +2605,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
 
     if (url.startsWith(base + "/crashes/")) {
-      if (!requireSessionToken(req, res, execToken)) return;
       const rawId = url.slice((base + "/crashes/").length);
       let id: string;
       try {

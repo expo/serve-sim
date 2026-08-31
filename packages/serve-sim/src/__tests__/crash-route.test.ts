@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "events";
 import type { IncomingMessage, ServerResponse } from "http";
-import { handleCrashReportRequest, handleCrashesRequest } from "../../middleware";
-import { inProcessServeSimState } from "../../state";
-import { createCrashRuntime } from "../runtime";
-import type { CrashRuntime } from "../runtime";
+import { handleCrashReportRequest, handleCrashesRequest } from "../middleware";
+import { inProcessServeSimState } from "../state";
+import { createCrashRuntime } from "../crash/runtime";
+import type { CrashRuntime } from "../crash/runtime";
 
 const UDID = "CD26E7DF-F2CE-4DCB-B950-2F062DE3FBB3";
 
@@ -198,7 +198,7 @@ describe("handleCrashReportRequest", () => {
     const res = fakeRes();
     await handleCrashReportRequest(fakeReq(), res, state, "nope", null, runtime);
     expect(res.statusCode_).toBe(404);
-    expect(JSON.parse(res.body_).error).toContain("No crash with that id");
+    expect(JSON.parse(res.body_).error).toContain("No crash with id nope");
   });
 
   test("404s when there is no device, and says so", async () => {
@@ -242,6 +242,15 @@ describe("handleCrashReportRequest", () => {
     const payload = JSON.parse(res.body_);
     expect(payload.occurrence).toMatchObject({ index: 0, total: 2 });
     expect(payload.report).toBe("/reports/Demo-1.ips");
+  });
+
+  test("treats an empty occurrence param as the newest occurrence", async () => {
+    const runtime = await runtimeWithRepeat();
+    const res = fakeRes();
+    await handleCrashReportRequest(fakeReq(), res, state, "INC-1", "", runtime, async (path) => path);
+
+    expect(res.statusCode_).toBe(200);
+    expect(JSON.parse(res.body_).occurrence).toMatchObject({ index: 1, total: 2 });
   });
 
   test("rejects an occurrence outside the retained window", async () => {

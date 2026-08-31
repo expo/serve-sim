@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import {
+  getPresentationFrameWidth,
   getSimulatorFrameMaxWidth,
+  snapContainBox,
   RESIZE_MAIN_STROKE_W,
   restoredSimulatorFrameWidth,
   SIMULATOR_RESIZE_ABSOLUTE_MIN_WIDTH,
   SIMULATOR_RESIZE_HANDLE_DUR_HOT,
   SIMULATOR_RESIZE_HANDLE_DUR_IDLE,
+  SIMULATOR_RESIZE_MAX_SCALE,
   SIMULATOR_RESIZE_MIN_WIDTH,
+  SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION,
 } from "../client/utils/simulator-resize";
 
 describe("simulator resize visual tuning", () => {
@@ -32,5 +36,34 @@ describe("simulator resize visual tuning", () => {
 
   test("falls back to the default frame width for invalid persisted scale", () => {
     expect(restoredSimulatorFrameWidth(320, 1280, 900, 1179 / 2556, Number.NaN)).toBe(320);
+  });
+
+  test("presentation fills the viewport instead of the chrome 3x cap", () => {
+    const aspect = 1179 / 2556;
+    const viewportWidth = 2000;
+    const viewportHeight = 2400;
+    const inset = SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION;
+    const withChrome = getSimulatorFrameMaxWidth(320, viewportWidth, viewportHeight, aspect);
+    const presentation = getPresentationFrameWidth(viewportWidth, viewportHeight, aspect);
+
+    expect(withChrome).toBe(320 * SIMULATOR_RESIZE_MAX_SCALE);
+    expect(presentation).toBeGreaterThan(withChrome);
+    expect(presentation).toBe(
+      Math.round((viewportHeight - inset * 2) * aspect),
+    );
+  });
+
+  test("presentation is width-capped on a short wide viewport", () => {
+    const inset = SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION;
+    const presentation = getPresentationFrameWidth(400, 2000, 1179 / 2556);
+    expect(presentation).toBe(400 - inset * 2);
+  });
+
+  test("contain-fit boxes snap onto the device-pixel grid", () => {
+    expect(snapContainBox(320.4, 693.2, 320, 693).fillsViewport).toBe(true);
+    const letterboxed = snapContainBox(300, 650, 320, 693);
+    expect(letterboxed.fillsViewport).toBe(false);
+    expect(letterboxed.width).toBe(300);
+    expect(letterboxed.height).toBe(650);
   });
 });

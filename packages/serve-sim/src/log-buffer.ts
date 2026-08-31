@@ -6,7 +6,7 @@ const DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
 const LINE_BUFFER_LIMIT = 1024 * 1024;
 const RESTART_DELAY_MS = 1000;
 const MAX_RESTART_DELAY_MS = 30_000;
-const POLL_IDLE_MS = 8_000;
+export const POLL_IDLE_MS = 8_000;
 
 export interface LogLine {
   seq: number;

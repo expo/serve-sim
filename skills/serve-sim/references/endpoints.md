@@ -96,7 +96,7 @@ history rather than only what happens next.
 | Param | Effect |
 |---|---|
 | `?snapshot` | Return JSON instead of SSE. `?snapshot=0` keeps SSE even when the request accepts JSON. |
-| `?since=<seq>` | Only lines after that cursor. Compare against `oldestSeq` to detect a gap. |
+| `?since=<seq>` | Only lines after that cursor. Compare against `oldestSeq` to detect a gap. Without it a stream replays the whole ring, up to 4 MB, before the first live line. |
 | `?limit=<n>` | At most `n` lines, keeping the newest. |
 | `?envelope` | Wrap each SSE frame as `{seq, at, raw}` so a stream reader can track its cursor. Default frames are the bare line, which is already JSON. |
 | `?follow` | Start the device tail if it is not already running, and keep it running between polls. Without it a snapshot reads whatever is buffered and reports `status: "stopped"` when nothing is. |
@@ -117,6 +117,12 @@ Without that flag a loopback server is ungated, on the grounds that it is
 already reachable by whoever is on the machine. Expose serve-sim on a network
 only with the flag, or behind an authenticated proxy.
 
+`EventSource` cannot send an `Authorization` header, so the SSE forms of `/logs`
+and `/crashes` need a client that can, such as `curl` or `fetch`.
+
+Every route takes `?device=<udid>` and falls back to the first registered
+simulator without it, which is the wrong one as soon as two are running.
+
 A crash report lands a few seconds after the process dies, so an empty
 `crashes` array shortly after a crash means "not yet", not "nothing happened".
 The `meta.reportDelaySeconds` field carries that bound, and `meta.status` says
@@ -132,7 +138,8 @@ A tail holds the crashed app's own device-log lines from at or before the crash,
 and `logTailSource` says how it was chosen: `app-windowed` (lines found),
 `buffer-rolled-past` (the buffer no longer reached back that far, or the tail was
 not running when the crash happened), `no-app-lines` (the window was there but
-that process logged nothing), or `none` (nothing buffered for that device).
+that process logged nothing), or `none` (nothing buffered for that device, or the
+report carried no device, process name, or parsable crash time).
 
 Prefer `npx @expo/serve-sim --list -q` over reading state files directly. The state
 format is internal and may also contain short-lived TURN credentials.

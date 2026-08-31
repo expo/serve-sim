@@ -1618,8 +1618,27 @@ export function handleLogsRequest(
 
 /** The list carries the line count; `/crashes/<id>` carries the lines. */
 function summarize(record: CrashRecord): CrashSummary {
-  const { logTail, occurrences, ...rest } = record;
-  return { ...rest, logTailLines: logTail.length, occurrenceCount: occurrences.length };
+  const { frames: _frames, occurrences, ...rest } = record;
+  const newest = occurrences[occurrences.length - 1];
+  return {
+    ...rest,
+    logTailLines: newest?.logTail.length ?? 0,
+    occurrenceCount: occurrences.length,
+  };
+}
+
+/** Arms collection for the selected device and reaps the caches of devices that went away. */
+async function collectCrashesFor(selectedDevice: string | null): Promise<ServeSimState | null> {
+  const states = await readServeSimStates();
+  const state = selectServeSimState(states, selectedDevice);
+  if (!state) return null;
+  const live = states.map((s) => s.device);
+  crashRuntime.prune(live);
+  logBufferCache.prune(live);
+  void crashRuntime.start().catch(() => {});
+  // The tail can only hold lines the buffer already had, and `/logs` may never be opened.
+  logBufferCache.ensure(state.device);
+  return state;
 }
 
 /** JSON by default; SSE on `Accept: text/event-stream`. */
@@ -1636,7 +1655,6 @@ export function handleCrashesRequest(
   }
   const udid = state.device;
   const wantsStream = (req.headers.accept ?? "").includes("text/event-stream");
-  // A client that aborted during the caller's await never fires `close` here.
   if (wantsStream && (res.destroyed || req.destroyed)) return;
   const streamOpen = (): boolean => !res.writableEnded && !res.destroyed;
 
@@ -1753,7 +1771,7 @@ export async function handleCrashReportRequest(
  * Routes handled under `basePath` (default `/.sim`):
  *   GET  {basePath}         — the preview HTML page
  *   GET  {basePath}/api     — serve-sim state JSON
- *   GET  {basePath}/logs    — simctl logs (JSON snapshot, or SSE)
+ *   GET  {basePath}/logs    — simctl logs, JSON snapshot or SSE (bearer token)
  *   GET  {basePath}/crashes — crash reports (bearer token)
  *   GET  {basePath}/ax      — SSE stream of normalized accessibility snapshots
  */
@@ -2592,14 +2610,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
 
     if (url === base + "/crashes" || url === base + "/crashes/") {
-      const states = await readServeSimStates();
-      const state = selectServeSimState(states, selectedDevice);
-      void crashRuntime.start().catch(() => {});
-      const live = states.map((s) => s.device);
-      crashRuntime.prune(live);
-      logBufferCache.prune(live);
-      // The tail can only hold lines the buffer already had, and `/logs` may never be opened.
-      if (state) logBufferCache.ensure(state.device);
+      const state = await collectCrashesFor(selectedDevice);
       handleCrashesRequest(req, res, state);
       return;
     }
@@ -2620,8 +2631,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         );
         return;
       }
-      const states = await readServeSimStates();
-      const state = selectServeSimState(states, selectedDevice);
+      const state = await collectCrashesFor(selectedDevice);
       const occurrenceParam = new URL(rawUrl, "http://127.0.0.1").searchParams.get("occurrence");
       await handleCrashReportRequest(req, res, state, id, occurrenceParam);
       return;

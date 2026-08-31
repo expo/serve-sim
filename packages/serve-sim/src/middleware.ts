@@ -37,6 +37,7 @@ import {
   resolveDeviceKitChrome,
   serveDeviceKitChromeAsset,
   serveDevicePlaceholderAsset,
+  type DeviceKitChromeDescriptor,
 } from "./devicekit-chrome";
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
 import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware-utils";
@@ -102,7 +103,10 @@ type CdpHttpListEntry = {
 type CdpHttpVersion = { Browser?: string };
 
 type SimctlBootedList = {
-  devices: Record<string, Array<{ udid: string; state: string; name: string }>>;
+  devices: Record<
+    string,
+    Array<{ udid: string; state: string; name: string; deviceTypeIdentifier?: string }>
+  >;
 };
 
 type SimctlAllList = {
@@ -253,10 +257,16 @@ export function matchInstalledAppByDisplayName(
 // Cache simctl's booted-device set briefly so per-request cost stays bounded.
 // The middleware runs inside the user's dev server (Metro etc.) and
 // readServeSimStates() is called on every /api and every page load.
-let bootedSnapshot: { at: number; booted: Set<string> | null; names: Map<string, string> } = {
+let bootedSnapshot: {
+  at: number;
+  booted: Set<string> | null;
+  names: Map<string, string>;
+  deviceTypes: Map<string, string>;
+} = {
   at: 0,
   booted: null,
   names: new Map(),
+  deviceTypes: new Map(),
 };
 async function getBootedUdids(): Promise<Set<string> | null> {
   const now = Date.now();
@@ -281,6 +291,7 @@ async function getBootedUdids(): Promise<Set<string> | null> {
     const data = JSON.parse(stdout) as SimctlBootedList;
     const booted = new Set<string>();
     const names = new Map<string, string>();
+    const deviceTypes = new Map<string, string>();
     for (const runtime of Object.values(data.devices)) {
       for (const device of runtime) {
         if (device.state === "Booted") {
@@ -288,10 +299,11 @@ async function getBootedUdids(): Promise<Set<string> | null> {
           const udid = device.udid.toUpperCase();
           booted.add(udid);
           names.set(udid, device.name);
+          if (device.deviceTypeIdentifier) deviceTypes.set(udid, device.deviceTypeIdentifier);
         }
       }
     }
-    bootedSnapshot = { at: now, booted, names };
+    bootedSnapshot = { at: now, booted, names, deviceTypes };
     return booted;
   } catch {
     return null;
@@ -310,6 +322,15 @@ export function deviceNameFromBootedNames(
 // Undefined until the first snapshot lands or if the device isn't booted.
 function bootedDeviceName(udid: string): string | undefined {
   return deviceNameFromBootedNames(bootedSnapshot.names, udid);
+}
+
+function bootedDeviceChrome(udid: string): DeviceKitChromeDescriptor | null {
+  const name = bootedDeviceName(udid);
+  if (!name) return null;
+  return resolveDeviceKitChrome({
+    name,
+    deviceTypeIdentifier: bootedSnapshot.deviceTypes.get(udid.toUpperCase()),
+  });
 }
 
 // The device the user most recently opened in Simulator.app, regardless of
@@ -962,6 +983,8 @@ export function previewConfigForState(
   gridMemoryEndpoint: string;
   previewEndpoint: string;
   execToken: string;
+  /** Inlined so the first paint has the bezel instead of reflowing into it. */
+  chrome: DeviceKitChromeDescriptor | null;
   /** @deprecated Use streamSettings. */
   codec?: string;
   streamSettings?: StreamSettings;
@@ -994,6 +1017,7 @@ export function previewConfigForState(
     gridMemoryEndpoint: gridApiBase + "/memory",
     previewEndpoint: base === "" ? "/" : base,
     execToken,
+    chrome: bootedDeviceChrome(state.device),
     ...(legacyCodec ? { codec: legacyCodec } : {}),
     ...(streamSettings ? { streamSettings } : {}),
     ...(proxyHelpers ? { proxyHelpers: true } : {}),
@@ -1876,7 +1900,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         closeDeviceSession(udid);
         // Drop the snapshot so the next status sample re-queries simctl
         // and prunes any helper bound to this now-shutdown device.
-        bootedSnapshot = { at: 0, booted: null, names: new Map() };
+        bootedSnapshot = { at: 0, booted: null, names: new Map(), deviceTypes: new Map() };
         execFile("xcrun", ["simctl", "shutdown", udid], { timeout: 30_000 }, (err, _stdout, stderr) => {
           if (err) {
             res.writeHead(500, { "Content-Type": "application/json" });

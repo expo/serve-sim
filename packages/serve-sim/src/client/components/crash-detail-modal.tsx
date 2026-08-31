@@ -90,6 +90,12 @@ function StackTrace({ frames }: { frames: CrashFrame[] }) {
 
 export type SelectedOccurrence = CrashOccurrence & { index: number; total: number };
 
+function emptyTailReason(source: CrashOccurrence["logTailSource"]): string {
+  if (source === "buffer-rolled-past") return "Device logs were not being read when this crash happened.";
+  if (source === "no-app-lines") return "The app logged nothing in the lines before this crash.";
+  return "No device logs for this crash.";
+}
+
 export function CrashDetailModal({
   record,
   occurrence,
@@ -334,9 +340,7 @@ export function CrashDetailModal({
           {tab === "stack" ? (
             <StackTrace frames={frames} />
           ) : occurrence.logTail.length === 0 ? (
-            <p className="text-[11px] text-white/35">
-              No device logs for this crash.
-            </p>
+            <p className="text-[11px] text-white/35">{emptyTailReason(occurrence.logTailSource)}</p>
           ) : (
             <ol className="font-mono text-[10px] leading-relaxed">
               {occurrence.logTail.map((raw, index) => {

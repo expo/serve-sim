@@ -56,6 +56,13 @@ export function guestPkgPath(config: TartConfig): string {
   return `/Volumes/My Shared Files/${config.shareName}/packages/serve-sim`;
 }
 
+export function assertHostModules(config: TartConfig): void {
+  const modules = join(config.pkgDir, "node_modules");
+  if (!existsSync(modules)) {
+    throw new Error(`${modules} is missing. Run bun install.`);
+  }
+}
+
 async function run(cmd: string[], opts?: { stdin?: string; allowFail?: boolean }): Promise<string> {
   const proc = spawn(cmd, {
     stdin: opts?.stdin != null ? Buffer.from(opts.stdin) : "ignore",

@@ -335,6 +335,35 @@ bun run --filter @expo/serve-sim tart -- ssh                 # shell as expo
 
 Env (all optional): `TART_VM=tahoe-xcode`, `TART_USER=expo`, `TART_SHARE_NAME=serve-sim`, `PORT=3200`.
 
+### EAS preview of a CI package
+
+`--package-version` only pins serve-sim on `--type web-preview-only`. It does not change the package on `agent-device`.
+
+CI uploads `serve-sim-npm-package` (`serve-sim.tgz`). Copy that artifact's download URL from the workflow run, then pass it as `--package-version`. Run this from an Expo project directory.
+
+```sh
+npx --yes eas-cli@latest workflow:view <workflow-run-id>
+```
+
+The job lists `serve-sim-npm-package` with a Download URL. You can also open the printed Log URL and copy it from the Expo dashboard.
+
+```sh
+npx --yes eas-cli@latest simulator:start --platform ios --type web-preview-only --non-interactive \
+  --name "serve-sim preview" \
+  --package-version '<download-url>'
+```
+
+Install and launch an app at start with one of `--build-id`, `--application-archive-url`, or `--expo-go`. `--launch-arg` and `--open-url` need one of those.
+
+```sh
+npx --yes eas-cli@latest simulator:start --platform ios --type web-preview-only --non-interactive \
+  --name "serve-sim preview" \
+  --package-version '<download-url>' \
+  --expo-go
+```
+
+EAS installs and launches the app before serve-sim starts. After the preview is up, drop an `.app` or `.ipa` on the page to add another app. Stop with `npx --yes eas-cli@latest simulator:stop`.
+
 ## Origin and attribution
 
 `serve-sim` was created and open-sourced by [Evan Bacon](https://github.com/EvanBacon) in the [original serve-sim project](https://github.com/EvanBacon/serve-sim). This repository is an Expo-maintained fork. We are grateful to Evan for creating the project and making it available to the community.

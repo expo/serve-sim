@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { isSimulatorAppCrash, parseCrashReport, parseIpsHeader, type CrashReport } from "./report";
-import { logBufferCache, type LogBufferCache } from "../log-buffer";
+import { logBufferCache, POLL_IDLE_MS, type LogBufferCache } from "../log-buffer";
 import { CrashStore, type CrashEvent, type CrashRecord, type LogTailSource } from "./store";
 
 const DEFAULT_REPORTS_DIR = join(homedir(), "Library", "Logs", "DiagnosticReports");
@@ -21,8 +21,7 @@ const MAX_INGESTED = 500;
 const RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30_000;
 const MAX_WATCH_RETRIES = 6;
-/** A tail whose newest line predates the crash by this much was not recording when it happened. */
-const MAX_TAIL_GAP_MS = 30_000;
+const MAX_TAIL_GAP_MS = POLL_IDLE_MS + 2_000;
 // 60 app-scoped lines, not 60 raw lines: unfiltered the log runs ~317 lines/sec.
 const LOG_TAIL_LINES = 60;
 const LOG_TAIL_MAX_BYTES = 64 * 1024;
@@ -109,19 +108,22 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   let generation = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let retries = 0;
+  let gaveUp = false;
 
   const markUnavailable = (error: unknown): void => {
     const reason = error instanceof Error ? error.message : String(error);
     generation += 1;
+    if (!retryTimer && retries >= MAX_WATCH_RETRIES) gaveUp = true;
     statusError =
       `Crash reports are not being collected: serve-sim could not watch ${reportsDir} (${reason}). ` +
-      "Check that the directory is readable and that macOS crash reporting is enabled on this host." +
-      (retries >= MAX_WATCH_RETRIES ? " Retries are exhausted; restart serve-sim to try again." : "");
+      "Check that the directory is readable and writable and that macOS crash reporting is enabled " +
+      "on this host." +
+      (gaveUp ? " Retries are exhausted; restart serve-sim to try again." : "");
     running = false;
     watcher?.close();
     watcher = null;
-    reportError(`could not watch ${reportsDir}`, error);
-    if (retryTimer || retries >= MAX_WATCH_RETRIES) return;
+    if (!gaveUp) reportError(`could not watch ${reportsDir}`, error);
+    if (retryTimer || gaveUp) return;
     const delay = Math.min(retryDelayMs * 2 ** retries, MAX_RETRY_DELAY_MS);
     retries += 1;
     retryTimer = setTimeout(() => {
@@ -238,7 +240,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   };
 
   async function start(): Promise<void> {
-    if (watcher) return;
+    if (watcher || gaveUp) return;
     try {
       // ReportCrash only creates this directory on the first crash — the one we'd miss.
       ensureDir(reportsDir);
@@ -248,6 +250,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       const handle = watchDir(
         reportsDir,
         (_eventType, filename) => {
+          retries = 0;
           if (filename && claim(filename)) {
             void ingest(filename).catch((error) =>
               reportError(`could not ingest ${filename}`, error)
@@ -256,11 +259,8 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
         },
         markUnavailable
       );
-      // A synchronous onWatchError already ran markUnavailable; do not resurrect the handle.
-      if (running) {
-        watcher = handle;
-        retries = 0;
-      } else handle.close();
+      if (running) watcher = handle;
+      else handle.close();
     } catch (error) {
       markUnavailable(error);
       return;
@@ -280,12 +280,16 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     stop(): void {
       generation += 1;
       running = false;
+      retries = 0;
+      gaveUp = false;
       if (retryTimer) {
         clearTimeout(retryTimer);
         retryTimer = null;
       }
       watcher?.close();
       watcher = null;
+      for (const store of byUdid.values()) store.close();
+      byUdid.clear();
     },
 
     prune(liveUdids: readonly string[]): void {

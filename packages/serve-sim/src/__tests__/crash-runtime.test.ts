@@ -488,7 +488,6 @@ describe("createCrashRuntime back-scan", () => {
 });
 
 describe("createCrashRuntime cancellation", () => {
-  /** A runtime whose first report read is held open until the test releases it. */
   function gatedRuntime(dirEntries: string[] = []) {
     let release: (() => void) | null = null;
     let gated = true;
@@ -894,7 +893,7 @@ describe("createCrashRuntime log tail", () => {
 
     const record = runtime.listFor(UDID_A)[0];
     expect(record?.logTailSource).toBe("app-windowed");
-    expect(record?.logTail).toEqual([
+    expect(record?.occurrences.at(-1)?.logTail).toEqual([
       appLine("hermes bytecode mismatch"),
       appLine("about to abort"),
     ]);
@@ -912,7 +911,7 @@ describe("createCrashRuntime log tail", () => {
     await flush();
 
     const record = runtime.listFor(UDID_A)[0];
-    expect(record?.logTail).toEqual([]);
+    expect(record?.occurrences.at(-1)?.logTail).toEqual([]);
     expect(record?.logTailSource).toBe("buffer-rolled-past");
     runtime.stop();
     cache.stopAll();
@@ -927,7 +926,7 @@ describe("createCrashRuntime log tail", () => {
     emit("rename", "Demo-1.ips");
     await flush();
 
-    expect(runtime.listFor(UDID_A)[0]?.logTail).toEqual([]);
+    expect(runtime.listFor(UDID_A)[0]?.occurrences.at(-1)?.logTail).toEqual([]);
     expect(runtime.listFor(UDID_A)[0]?.logTailSource).toBe("none");
     runtime.stop();
     cache.stopAll();

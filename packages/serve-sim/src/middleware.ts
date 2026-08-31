@@ -256,7 +256,9 @@ export function matchInstalledAppByDisplayName(
 
 // Cache simctl's booted-device set briefly so per-request cost stays bounded.
 // The middleware runs inside the user's dev server (Metro etc.) and
-// readServeSimStates() is called on every /api and every page load.
+// readServeSimStates() is called on every /api, every page load, and every
+// poll from the logs drawer, so the window has to outlast the poll interval.
+const BOOTED_CACHE_TTL_MS = 5_000;
 let bootedSnapshot: {
   at: number;
   booted: Set<string> | null;
@@ -270,7 +272,7 @@ let bootedSnapshot: {
 };
 async function getBootedUdids(): Promise<Set<string> | null> {
   const now = Date.now();
-  if (bootedSnapshot.booted && now - bootedSnapshot.at < 1500) {
+  if (bootedSnapshot.booted && now - bootedSnapshot.at < BOOTED_CACHE_TTL_MS) {
     return bootedSnapshot.booted;
   }
   try {

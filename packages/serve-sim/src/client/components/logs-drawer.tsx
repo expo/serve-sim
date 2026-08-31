@@ -25,6 +25,10 @@ import { PanelTitle } from "../Panel";
 import { PANEL_BACKGROUND } from "./panel-colors";
 
 const MAX_LOG_ROWS = 2000;
+
+function capRows(rows: DisplayLine[]): DisplayLine[] {
+  return rows.length > MAX_LOG_ROWS ? rows.slice(rows.length - MAX_LOG_ROWS) : rows;
+}
 const NEAR_BOTTOM_PX = 48;
 
 type DisplayLine = DeviceLogFields & { id: number };
@@ -87,6 +91,7 @@ export function LogsDrawer({
   const nextIdRef = useRef(1);
   const lastSeqRef = useRef(0);
   const pausedRef = useRef(paused);
+  const heldRef = useRef<DisplayLine[]>([]);
   const erroredRef = useRef(false);
   pausedRef.current = paused;
 
@@ -98,24 +103,25 @@ export function LogsDrawer({
     setExpandedId(null);
     nextIdRef.current = 1;
     lastSeqRef.current = 0;
+    heldRef.current = [];
     stickRef.current = true;
     setFollowing(true);
   }, [open, path]);
 
   useEffect(() => {
-    if (!open || paused) return;
+    if (!open) return;
     return startLogsPoll(path, {
       getSince: () => lastSeqRef.current,
       setSince: (seq) => {
         lastSeqRef.current = seq;
       },
       onBatch: (batch) => {
-        if (pausedRef.current) return;
-        setLines((prev) => {
-          const mapped = batch.map((line) => ({ ...line.fields, id: nextIdRef.current++ }));
-          const merged = prev.length === 0 ? mapped : prev.concat(mapped);
-          return merged.length > MAX_LOG_ROWS ? merged.slice(merged.length - MAX_LOG_ROWS) : merged;
-        });
+        const mapped = batch.map((line) => ({ ...line.fields, id: nextIdRef.current++ }));
+        if (pausedRef.current) {
+          heldRef.current = capRows(heldRef.current.concat(mapped));
+          return;
+        }
+        setLines((prev) => capRows(prev.length === 0 ? mapped : prev.concat(mapped)));
       },
       onError: (next) => {
         if (erroredRef.current === next) return;
@@ -123,7 +129,14 @@ export function LogsDrawer({
         setErrored(next);
       },
     });
-  }, [open, paused, path]);
+  }, [open, path]);
+
+  useEffect(() => {
+    if (paused || heldRef.current.length === 0) return;
+    const held = heldRef.current;
+    heldRef.current = [];
+    setLines((prev) => capRows(prev.concat(held)));
+  }, [paused]);
 
   useEffect(() => {
     if (!open) setPaused(false);

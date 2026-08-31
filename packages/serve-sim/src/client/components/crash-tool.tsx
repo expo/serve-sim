@@ -36,6 +36,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
   const fetchGen = useRef(0);
   const requested = useRef<number | null>(null);
   const confirmed = useRef<number | null>(null);
+  const reloadedFor = useRef<string | null>(null);
 
   const path = useMemo(
     () => crashesEndpoint ?? `${simEndpoint("crashes")}?device=${encodeURIComponent(udid)}`,
@@ -95,7 +96,10 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
       (stamp) => stamp.rawPath === detail.occurrence.rawPath
     );
     // The occurrence being read aged out of the retained window; show the newest one instead.
+    // A list payload older than the open detail can miss it too, so reload once per report.
     if (remapped === -1) {
+      if (reloadedFor.current === detail.occurrence.rawPath) return;
+      reloadedFor.current = detail.occurrence.rawPath;
       void loadDetail(detail.record.id, listed.occurrenceCount - 1);
       return;
     }

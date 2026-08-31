@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { CrashStore, MAX_CRASHES, MAX_OCCURRENCES } from "../store";
-import type { CrashEvent } from "../store";
-import type { CrashReport } from "../report";
+import { CrashStore, MAX_CRASHES, MAX_OCCURRENCES } from "../crash/store";
+import type { CrashEvent } from "../crash/store";
+import type { CrashReport } from "../crash/report";
 
 function report(overrides: Partial<CrashReport> = {}): CrashReport {
   const base: CrashReport = {
@@ -172,10 +172,13 @@ describe("CrashStore", () => {
     expect(store.record(report(), "/tmp/b.ips", ["new"]).logTail).toEqual(["new"]);
   });
 
-  test("keeps the earlier log tail when a recurrence has none", () => {
+  test("mirrors the newest occurrence's tail, keeping the earlier one on its occurrence", () => {
     store.record(report(), "/tmp/a.ips", ["old"]);
     clock = 2_000;
-    expect(store.record(report(), "/tmp/b.ips", []).logTail).toEqual(["old"]);
+    const updated = store.record(report(), "/tmp/b.ips", []);
+
+    expect(updated.logTail).toEqual([]);
+    expect(updated.occurrences.map((o) => o.logTail)).toEqual([["old"], []]);
   });
 
   test("keeps each repeat as its own occurrence, newest last", () => {

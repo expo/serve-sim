@@ -157,14 +157,14 @@ export function assertPreviewAccess(
   if (fromQuery && safeEqualString(fromQuery, sessionToken)) {
     // A top-level page load trades the token for a cookie so it never lingers in the address bar. A
     // cross-origin API/SSE caller (e.g. the dashboard's metrics EventSource) cannot send a header or a
-    // SameSite=Strict cookie, so it must be served directly with the query token instead of redirected.
+    // cookie at all, so it must be served directly with the query token instead of redirected.
     if (!isDocumentNavigation(req.headers)) {
       return true;
     }
     url.searchParams.delete("token");
     res.writeHead(302, {
       Location: `${url.pathname}${url.search}`,
-      "Set-Cookie": `${ACCESS_COOKIE}=${encodeURIComponent(sessionToken)}; HttpOnly; SameSite=Strict; Path=${opts.basePath}`,
+      "Set-Cookie": `${ACCESS_COOKIE}=${encodeURIComponent(sessionToken)}; HttpOnly; SameSite=Lax; Path=${opts.basePath}`,
       "Cache-Control": "no-store, private",
     });
     res.end();

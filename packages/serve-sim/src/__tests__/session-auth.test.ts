@@ -160,6 +160,9 @@ describe("assertPreviewAccess", () => {
     expect(sent.headers?.Location).toBe("/?device=abc");
     expect(sent.headers?.["Set-Cookie"]).toContain(`${ACCESS_COOKIE}=${encodeURIComponent(TOKEN)}`);
     expect(sent.headers?.["Set-Cookie"]).toContain("HttpOnly");
+    // Lax, not Strict: the dashboard link is a cross-site top-level navigation, and a Strict cookie
+    // would be withheld on the redirect that follows the token swap.
+    expect(sent.headers?.["Set-Cookie"]).toContain("SameSite=Lax");
   });
 
   test("serves a cross-origin SSE/API query token directly, without a cookie redirect", () => {

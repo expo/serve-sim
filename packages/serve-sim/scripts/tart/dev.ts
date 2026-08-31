@@ -10,16 +10,20 @@ export function guestPreviewScript(share: string, port: number): string {
   return `${GUEST_PATH}
 set -euo pipefail
 cd ${JSON.stringify(share)}
-if [[ ! -d node_modules ]]; then
-  bun install
-fi
 export PORT=${port}
 exec bun run dev.ts
 `;
 }
 
-async function waitOk(url: string, serve: Subprocess, tunnel: Subprocess, tries = 240): Promise<void> {
+async function waitOk(
+  url: string,
+  serve: Subprocess,
+  tunnel: Subprocess,
+  stopped: () => boolean,
+  tries = 240,
+): Promise<void> {
   for (let i = 0; i < tries; i++) {
+    if (stopped()) throw new Error("interrupted");
     if (tunnel.exitCode != null) throw new Error(`ssh tunnel exited ${tunnel.exitCode}`);
     if (serve.exitCode != null) throw new Error(`guest serve-sim exited ${serve.exitCode}`);
     try {
@@ -43,10 +47,18 @@ async function startDevice(url: string, udid: string): Promise<void> {
   }
 }
 
-function stop(proc: Subprocess): void {
+function stop(proc: Subprocess, signal: NodeJS.Signals = "SIGTERM"): void {
   try {
-    proc.kill("SIGTERM");
+    proc.kill(signal);
   } catch {}
+}
+
+async function waitGone(serve: Subprocess, tunnel: Subprocess, ms = 2000): Promise<void> {
+  const done = Promise.allSettled([serve.exited, tunnel.exited]);
+  await Promise.race([done, Bun.sleep(ms)]);
+  if (serve.exitCode == null) stop(serve, "SIGKILL");
+  if (tunnel.exitCode == null) stop(tunnel, "SIGKILL");
+  await Promise.allSettled([serve.exited, tunnel.exited]);
 }
 
 export function assertPortFree(port: number): Promise<void> {
@@ -70,6 +82,10 @@ export async function runDev(guest: TartGuest, udid: string): Promise<void> {
   if (!existsSync(native)) {
     throw new Error(`${native} is missing. Run bun run build.`);
   }
+  const modules = join(guest.config.pkgDir, "node_modules");
+  if (!existsSync(modules)) {
+    throw new Error(`${modules} is missing. Run bun install.`);
+  }
   await assertPortFree(port);
   await guest.ssh(`lsof -ti tcp:${port} | xargs kill -TERM 2>/dev/null || true`);
 
@@ -89,7 +105,7 @@ export async function runDev(guest: TartGuest, udid: string): Promise<void> {
   }
 
   try {
-    await waitOk(url + "/healthz", serve, tunnel);
+    await waitOk(url + "/healthz", serve, tunnel, () => interrupted);
     await startDevice(url, udid);
     console.log(`\n  ${url}\n`);
     const code = await Promise.race([serve.exited, tunnel.exited]);
@@ -98,6 +114,6 @@ export async function runDev(guest: TartGuest, udid: string): Promise<void> {
     if (!interrupted) throw error;
   } finally {
     shutdown();
-    await Promise.allSettled([serve.exited, tunnel.exited]);
+    await waitGone(serve, tunnel);
   }
 }

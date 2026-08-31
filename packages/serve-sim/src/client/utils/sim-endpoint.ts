@@ -1,3 +1,4 @@
+import type { DeviceKitChromeDescriptor } from "../../devicekit-chrome";
 import type { StreamSettings } from "../../state";
 
 declare global {
@@ -27,6 +28,8 @@ declare global {
       gridMemoryEndpoint?: string;
       previewEndpoint?: string;
       streamSettingsEndpoint?: string;
+      /** Bezel geometry for `device`; the grid catalog carries it too, a fetch later. */
+      chrome?: DeviceKitChromeDescriptor | null;
       // Absolute path of the running serve-sim entry script. The camera tool
       // shells out via `node <bin> camera ...` so it doesn't depend on the
       // `serve-sim` binary being on the user's PATH.

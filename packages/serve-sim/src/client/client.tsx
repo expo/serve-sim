@@ -358,6 +358,12 @@ function App() {
   // has arrived, otherwise a placeholder (connecting / boot-and-start).
   const effectiveUdid = selectedUdid ?? config?.device ?? null;
   const selectedDevice = gridDevices?.find((d) => d.device === effectiveUdid) ?? null;
+  // The catalog is a fetch behind the inlined config, so until it lands the
+  // device would lay out at the bare screen aspect and then reflow into its bezel.
+  const inlineChrome =
+    window.__SIM_PREVIEW__?.device === effectiveUdid
+      ? window.__SIM_PREVIEW__?.chrome ?? null
+      : null;
   const isStreaming = !!config && config.device === effectiveUdid;
 
   let mainView: ReactNode;
@@ -367,7 +373,7 @@ function App() {
         config={config}
         deviceName={selectedDevice?.name ?? null}
         deviceRuntime={selectedDevice?.runtime ?? null}
-        chrome={selectedDevice?.chrome ?? null}
+        chrome={selectedDevice?.chrome ?? inlineChrome}
         axOverlayEnabled={axOverlayEnabled}
         setAxOverlayEnabled={setAxOverlayEnabled}
         devtoolsOpen={devtoolsOpen}

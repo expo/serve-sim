@@ -57,6 +57,7 @@ describe("previewConfigForState", () => {
       cameraStatusEndpoint: "/preview/helper/DEVICE-B/camera/status",
       devtoolsEndpoint: "/preview/devtools?device=DEVICE-B",
       streamSettingsEndpoint: "http://127.0.0.1:3101/stream-settings",
+      chrome: null,
       serveSimBin: "/bin/serve-sim",
       gridApiEndpoint: "/preview/grid/api",
       gridCatalogEndpoint: "/preview/grid/api/catalog",

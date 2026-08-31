@@ -32,7 +32,7 @@ class FakeChild extends EventEmitter {
 let spawned: FakeChild[] = [];
 let clock = 0;
 
-function makeBuffer(maxBytes = 1024): DeviceLogBuffer {
+function makeBuffer(maxBytes = 1024, idleAfterMs = 0): DeviceLogBuffer {
   return new DeviceLogBuffer("UDID-1", {
     spawnLogStream: () => {
       const child = new FakeChild();
@@ -42,7 +42,7 @@ function makeBuffer(maxBytes = 1024): DeviceLogBuffer {
     maxBytes,
     restartDelayMs: 5,
     now: () => clock,
-    idleAfterMs: 0,
+    idleAfterMs,
   });
 }
 
@@ -154,7 +154,7 @@ describe("DeviceLogBuffer", () => {
     const buffer = makeBuffer();
     buffer.start();
     const seen: LogLine[] = [];
-    const unsubscribe = buffer.subscribe((l) => seen.push(l));
+    const unsubscribe = buffer.subscribeBatch((batch) => seen.push(...batch));
 
     spawned[0]!.emitLines(line(1) + "\n");
     unsubscribe();
@@ -164,12 +164,13 @@ describe("DeviceLogBuffer", () => {
     buffer.stop();
   });
 
-  test("stops the simctl child when the last reader unsubscribes", () => {
-    const buffer = makeBuffer();
+  test("stops the simctl child an idle window after the last reader unsubscribes", async () => {
+    const buffer = makeBuffer(1024, 15);
     buffer.start();
-    const unsubscribe = buffer.subscribe(() => {});
+    buffer.subscribeBatch(() => {})();
     expect(buffer.status).toBe("streaming");
-    unsubscribe();
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
     expect(spawned[0]!.killed).toBe(true);
     expect(buffer.status).toBe("stopped");
     buffer.stop();
@@ -178,11 +179,11 @@ describe("DeviceLogBuffer", () => {
   test("keeps buffering when a subscriber throws", () => {
     const buffer = makeBuffer();
     buffer.start();
-    buffer.subscribe(() => {
+    buffer.subscribeBatch(() => {
       throw new Error("closed socket");
     });
     const seen: LogLine[] = [];
-    buffer.subscribe((l) => seen.push(l));
+    buffer.subscribeBatch((batch) => seen.push(...batch));
 
     spawned[0]!.emitLines(line(1) + "\n");
     expect(seen).toHaveLength(1);
@@ -362,7 +363,7 @@ describe("DeviceLogBuffer", () => {
 });
 
 describe("createLogBufferCache", () => {
-  function makeCache() {
+  function makeCache(idleAfterMs = 0) {
     return createLogBufferCache({
       spawnLogStream: () => {
         const child = new FakeChild();
@@ -372,7 +373,7 @@ describe("createLogBufferCache", () => {
       maxBytes: 1024,
       restartDelayMs: 5,
       now: () => clock,
-      idleAfterMs: 0,
+      idleAfterMs,
     });
   }
 
@@ -386,16 +387,32 @@ describe("createLogBufferCache", () => {
     cache.stopAll();
   });
 
-  test("ensure restarts a stream that went idle after the last reader left", () => {
-    const cache = makeCache();
+  test("ensure restarts a stream that went idle after the last reader left", async () => {
+    const cache = makeCache(15);
     const buffer = cache.ensure("UDID-1");
-    const unsubscribe = buffer.subscribe(() => {});
-    unsubscribe();
+    buffer.subscribeBatch(() => {})();
+    expect(spawned[0]!.killed).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
     expect(spawned[0]!.killed).toBe(true);
 
     cache.ensure("UDID-1");
     expect(spawned).toHaveLength(2);
     expect(buffer.status).toBe("streaming");
+    cache.stopAll();
+  });
+
+  test("a leaving stream reader does not cut a snapshot poller off mid-poll", async () => {
+    const cache = makeCache(30);
+    const buffer = cache.ensure("UDID-1");
+    const unsubscribe = buffer.subscribeBatch(() => {});
+    unsubscribe();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    cache.ensure("UDID-1");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]!.killed).toBe(false);
     cache.stopAll();
   });
 
@@ -450,17 +467,7 @@ describe("createLogBufferCache", () => {
   });
 
   test("idles the simctl child when nobody polls or subscribes", async () => {
-    const cache = createLogBufferCache({
-      spawnLogStream: () => {
-        const child = new FakeChild();
-        spawned.push(child);
-        return child as unknown as ChildProcess;
-      },
-      maxBytes: 1024,
-      restartDelayMs: 5,
-      now: () => clock,
-      idleAfterMs: 15,
-    });
+    const cache = makeCache(15);
     cache.ensure("UDID-1");
     expect(spawned[0]!.killed).toBe(false);
 
@@ -471,17 +478,7 @@ describe("createLogBufferCache", () => {
   });
 
   test("a later ensure keeps a poll-only stream from idling", async () => {
-    const cache = createLogBufferCache({
-      spawnLogStream: () => {
-        const child = new FakeChild();
-        spawned.push(child);
-        return child as unknown as ChildProcess;
-      },
-      maxBytes: 1024,
-      restartDelayMs: 5,
-      now: () => clock,
-      idleAfterMs: 30,
-    });
+    const cache = makeCache(30);
     cache.ensure("UDID-1");
     await new Promise((resolve) => setTimeout(resolve, 15));
     cache.ensure("UDID-1");
@@ -493,19 +490,9 @@ describe("createLogBufferCache", () => {
   });
 
   test("does not idle while a subscriber is still reading", async () => {
-    const cache = createLogBufferCache({
-      spawnLogStream: () => {
-        const child = new FakeChild();
-        spawned.push(child);
-        return child as unknown as ChildProcess;
-      },
-      maxBytes: 1024,
-      restartDelayMs: 5,
-      now: () => clock,
-      idleAfterMs: 15,
-    });
+    const cache = makeCache(15);
     const buffer = cache.ensure("UDID-1");
-    const unsubscribe = buffer.subscribe(() => {});
+    const unsubscribe = buffer.subscribeBatch(() => {});
     await new Promise((resolve) => setTimeout(resolve, 40));
 
     expect(spawned[0]!.killed).toBe(false);

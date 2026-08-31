@@ -253,7 +253,7 @@ describe("handleLogsRequest", () => {
     expect(cache.peek(UDID)).not.toBeNull();
   });
 
-  test("stops writing to a closed stream and unsubscribes", () => {
+  test("stops writing to a closed stream, leaving the shared tail warm", () => {
     cache.ensure(UDID);
     const req = fakeReq();
     const res = fakeRes();
@@ -264,6 +264,6 @@ describe("handleLogsRequest", () => {
     spawned[0]!.emitLines('{"m":"after close"}\n');
 
     expect(res.body_).not.toContain("after close");
-    expect(spawned[0]!.killed).toBe(true);
+    expect(spawned[0]!.killed).toBe(false);
   });
 });

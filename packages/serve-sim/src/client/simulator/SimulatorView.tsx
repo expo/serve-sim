@@ -23,6 +23,7 @@ import {
 } from "./screen-config-state.js";
 import { resolveSimulatorStreamRouting } from "./simulator-stream-routing.js";
 import { useAvccStream } from "./use-avcc-stream.js";
+import { roundToDevicePixel, snapContainBox } from "../utils/simulator-resize";
 import { observeVideoDimensions } from "./video-dimensions.js";
 import { isAvccSupported } from "../avcc-codec.js";
 
@@ -168,7 +169,12 @@ export function SimulatorView({
     if (!el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
-      if (rect) setViewportSize({ width: rect.width, height: rect.height });
+      if (rect) {
+        setViewportSize({
+          width: roundToDevicePixel(rect.width),
+          height: roundToDevicePixel(rect.height),
+        });
+      }
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -881,23 +887,35 @@ export function SimulatorView({
       viewportSize.width / displayScreenSize.width,
       viewportSize.height / displayScreenSize.height,
     );
-    return {
-      width: displayScreenSize.width * scale,
-      height: displayScreenSize.height * scale,
-    };
+    return snapContainBox(
+      displayScreenSize.width * scale,
+      displayScreenSize.height * scale,
+      viewportSize.width,
+      viewportSize.height,
+    );
   })();
   const rotationDegrees = streamGeometry.rotationDegrees;
   const rotatesSideways = streamGeometry.needsCssRotation && Math.abs(rotationDegrees) === 90;
   const clipStyle = imageStyle as (CSSProperties & { cornerShape?: string }) | undefined;
+  const fillStream = !rotatesSideways;
+  const rotationTransform =
+    rotationDegrees === 0 ? "" : ` rotate(${rotationDegrees}deg)`;
   const streamImageStyle = {
     position: "absolute",
-    top: "50%",
-    left: "50%",
-    width: rotatesSideways && fittedBox ? `${fittedBox.height}px` : "100%",
-    height: rotatesSideways && fittedBox ? `${fittedBox.width}px` : "100%",
-    transform: `translate(-50%, -50%)${
-      rotationDegrees === 0 ? "" : ` rotate(${rotationDegrees}deg)`
-    }`,
+    ...(fillStream
+      ? {
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          transform: rotationDegrees === 0 ? undefined : `rotate(${rotationDegrees}deg)`,
+        }
+      : {
+          top: "50%",
+          left: "50%",
+          width: fittedBox ? `${fittedBox.height}px` : "100%",
+          height: fittedBox ? `${fittedBox.width}px` : "100%",
+          transform: `translate(-50%, -50%)${rotationTransform}`,
+        }),
     transformOrigin: "center center",
     cursor: FINGER_CURSOR,
     display: "block",
@@ -953,8 +971,8 @@ export function SimulatorView({
           ref={surfaceRef}
           style={{
             position: "relative",
-            width: fittedBox ? `${fittedBox.width}px` : "100%",
-            height: fittedBox ? `${fittedBox.height}px` : "100%",
+            width: fittedBox && !fittedBox.fillsViewport ? `${fittedBox.width}px` : "100%",
+            height: fittedBox && !fittedBox.fillsViewport ? `${fittedBox.height}px` : "100%",
             overflow: "hidden",
             borderRadius: clipStyle?.borderRadius,
             cornerShape: clipStyle?.cornerShape,

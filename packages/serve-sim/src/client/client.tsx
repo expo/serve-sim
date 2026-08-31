@@ -26,13 +26,14 @@ import {
   type StreamConfig,
 } from "./simulator";
 
-import { Globe, PanelRight, Upload } from "lucide-react";
+import { Globe, Maximize2, PanelRight, Upload } from "lucide-react";
 import { ReloadIcon } from "./icons";
 import { AxDomOverlay } from "./components/ax-dom-overlay";
 import { AxStateProvider } from "./components/ax-state-provider";
 import { AxToolbarButton } from "./components/ax-toolbar-button";
 import { DeviceSidebarToggle } from "./components/device-sidebar-toggle";
 import { DevicePlaceholder } from "./components/device-placeholder";
+import { PresentationExitButton } from "./components/presentation-exit-button";
 import { DeviceKitChrome, type ChromeButtonPress } from "./components/device-chrome-frame";
 import { GridPanel } from "./components/grid-panel";
 import { ResizeHandle } from "./components/resize-handle";
@@ -71,9 +72,20 @@ import { proxyPreviewConfigForBrowser } from "./utils/preview-config";
 import { mjpegStreamUrlFrom, simEndpoint, streamConfigFrom, webrtcCloseUrlFrom, webrtcOfferUrlFrom, webrtcStatsUrlFrom } from "./utils/sim-endpoint";
 import { shouldStreamSimulatorLogs } from "./utils/simulator-logs";
 import {
+  escapeKeyOutcome,
+  presentationExitOffset,
+  presentationModeFromSearch,
+  writeFullscreenSearchParam,
+} from "./utils/presentation";
+import {
+  getPresentationFrameWidth,
+  roundToDevicePixel,
   SIMULATOR_RESIZE_DRAG_TRANSITION,
   SIMULATOR_RESIZE_LAYOUT_TRANSITION,
   SIMULATOR_RESIZE_PAGE_TRANSITION,
+  SIMULATOR_RESIZE_PRESENTATION_TRANSITION,
+  SIMULATOR_RESIZE_PRESENTATION_TRANSITION_MS,
+  SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION,
 } from "./utils/simulator-resize";
 import {
   flushWsMessageQueue,
@@ -110,10 +122,33 @@ function App() {
   });
   const [axOverlayEnabled, setAxOverlayEnabled] = useState(false);
   const [devtoolsOpen, setDevtoolsOpen] = useState(false);
+  const [presentationBoot] = useState(() =>
+    typeof window === "undefined"
+      ? { initial: false, embedLocked: false }
+      : presentationModeFromSearch(window.location.search),
+  );
+  const embedLocked = presentationBoot.embedLocked;
+  const [presentation, setPresentation] = useState(presentationBoot.initial);
+  const presentationRef = useRef(presentation);
+  presentationRef.current = presentation;
+  const swallowEscapeRef = useRef(false);
+  const [presentationGutters, setPresentationGutters] = useState<{
+    side: number;
+    top: number;
+  } | null>(null);
+  const [chromeGone, setChromeGone] = useState(presentationBoot.initial);
+  useEffect(() => {
+    if (!presentation) {
+      setChromeGone(false);
+      return;
+    }
+    const id = setTimeout(() => setChromeGone(true), SIMULATOR_RESIZE_PRESENTATION_TRANSITION_MS);
+    return () => clearTimeout(id);
+  }, [presentation]);
   // Open the sidebar by default when the viewport has room for it beside the
   // simulator; narrow windows keep it collapsed so the device isn't squeezed.
   const [gridOpen, setGridOpen] = useState(() => {
-    if (typeof window === "undefined") return false;
+    if (typeof window === "undefined" || presentationBoot.initial) return false;
     return window.innerWidth >= DEVICE_SIDEBAR_WIDTH + 520;
   });
   const { width: gridPanelWidth, onPointerDown: onGridResize } = useResizableWidth(
@@ -165,6 +200,47 @@ function App() {
       window.history.replaceState(null, "", u.toString());
     } catch {}
   }, []);
+
+  const enterPresentation = useCallback(() => {
+    setPresentation(true);
+    setGridOpen(false);
+    if (!embedLocked) writeFullscreenSearchParam(true);
+  }, [embedLocked]);
+
+  const exitPresentation = useCallback(() => {
+    if (embedLocked) return;
+    setPresentation(false);
+    writeFullscreenSearchParam(false);
+  }, [embedLocked]);
+
+  useEffect(() => {
+    if (embedLocked) return;
+    const onKey = (e: KeyboardEvent) => {
+      // `key`, not `code`: synthetic input often omits `code`.
+      if (e.key !== "Escape") return;
+      const outcome = escapeKeyOutcome(
+        { type: e.type === "keyup" ? "keyup" : "keydown", repeat: e.repeat },
+        { presentation: presentationRef.current, swallowing: swallowEscapeRef.current },
+      );
+      swallowEscapeRef.current = outcome.swallowing;
+      if (!outcome.swallow) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (outcome.exit) exitPresentation();
+    };
+    // A blur mid-press never delivers the keyup.
+    const onBlur = () => {
+      swallowEscapeRef.current = false;
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("keyup", onKey, true);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keyup", onKey, true);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [embedLocked, exitPresentation]);
 
   const waitForHelper = useCallback(
     async (udid: string, timeoutMs = 20_000): Promise<boolean> => {
@@ -385,13 +461,16 @@ function App() {
         setSelectedDevtoolsTargetId={setSelectedDevtoolsTargetId}
         streaming={streaming}
         setStreaming={setStreaming}
+        presentation={presentation}
+        onEnterPresentation={enterPresentation}
+        onPresentationGutters={setPresentationGutters}
       />
     );
   } else {
     const leftPad = gridOpen ? gridPanelWidth + 36 : 24;
     mainView = (
       <div
-        className="h-screen flex flex-col items-center justify-center gap-3 bg-page font-system box-border [transition:padding_0.25s_ease]"
+        className="h-dvh flex flex-col items-center justify-center gap-3 bg-page font-system box-border [transition:padding_0.25s_ease]"
         style={{ paddingLeft: leftPad, paddingRight: 24 }}
       >
         {selectedDevice ? (
@@ -405,7 +484,7 @@ function App() {
             error={actionErrors[selectedDevice.device] ?? null}
             onStart={() => startDevice(selectedDevice.device)}
           />
-        ) : (
+        ) : gridDevices ? (
           <div className="flex flex-col items-center gap-3 text-center">
             <h1 className="text-[18px] m-0 text-white/90">No simulators available</h1>
             <p className="text-white/55 text-[14px] max-w-120">
@@ -413,7 +492,7 @@ function App() {
               <code className="bg-[#222] px-1.5 py-0.5 rounded text-[13px]">bunx @expo/serve-sim --detach</code>.
             </p>
           </div>
-        )}
+        ) : null}
       </div>
     );
   }
@@ -422,33 +501,51 @@ function App() {
     <>
       {mainView}
       <ServeSimToaster />
+      {presentation && !embedLocked && (
+        <PresentationExitButton
+          onClick={exitPresentation}
+          offset={presentationGutters ? presentationExitOffset(presentationGutters) : undefined}
+        />
+      )}
       {/* Persistent left device sidebar — overlays every main view so swapping
           streams never remounts (and refetches) the picker. */}
-      <GridPanel
-        open={gridOpen}
-        onClose={() => setGridOpen(false)}
-        width={gridPanelWidth}
-        side="left"
-        devices={gridDevices}
-        total={gridTotal}
-        hasMore={gridHasMore}
-        onLoadMore={loadMoreGrid}
-        onLoadAll={loadAllGrid}
-        onResetPage={resetGridPage}
-        selectedUdid={effectiveUdid}
-        onSelect={selectDevice}
-        starting={starting}
-        shuttingDown={shuttingDown}
-        onShutdown={shutdownDevice}
-      />
-      <ResizeHandle
-        panelWidth={gridPanelWidth}
-        visible={gridOpen}
-        onPointerDown={onGridResize}
-        ariaLabel="Resize simulators sidebar"
-        side="left"
-      />
-      <DeviceSidebarToggle open={gridOpen} onClick={() => setGridOpen(true)} />
+      <div
+        aria-hidden={presentation}
+        style={{
+          opacity: presentation ? 0 : 1,
+          // `visibility`, not `hidden`: an unrendered element has no opacity to
+          // fade back in from. Still keeps it out of the tab order.
+          visibility: chromeGone ? "hidden" : "visible",
+          pointerEvents: presentation ? "none" : undefined,
+          transition: `opacity ${SIMULATOR_RESIZE_PRESENTATION_TRANSITION_MS}ms ease`,
+        }}
+      >
+        <GridPanel
+          open={gridOpen}
+          onClose={() => setGridOpen(false)}
+          width={gridPanelWidth}
+          side="left"
+          devices={gridDevices}
+          total={gridTotal}
+          hasMore={gridHasMore}
+          onLoadMore={loadMoreGrid}
+          onLoadAll={loadAllGrid}
+          onResetPage={resetGridPage}
+          selectedUdid={effectiveUdid}
+          onSelect={selectDevice}
+          starting={starting}
+          shuttingDown={shuttingDown}
+          onShutdown={shutdownDevice}
+        />
+        <ResizeHandle
+          panelWidth={gridPanelWidth}
+          visible={gridOpen}
+          onPointerDown={onGridResize}
+          ariaLabel="Resize simulators sidebar"
+          side="left"
+        />
+        <DeviceSidebarToggle open={gridOpen} onClick={() => setGridOpen(true)} />
+      </div>
     </>
   );
 }
@@ -469,6 +566,9 @@ interface AppWithConfigProps {
   setSelectedDevtoolsTargetId: React.Dispatch<React.SetStateAction<string | null>>;
   streaming: boolean;
   setStreaming: (v: boolean) => void;
+  presentation: boolean;
+  onEnterPresentation: () => void;
+  onPresentationGutters: (gutters: { side: number; top: number }) => void;
 }
 
 function AppWithConfig({
@@ -487,6 +587,9 @@ function AppWithConfig({
   setSelectedDevtoolsTargetId,
   streaming,
   setStreaming,
+  presentation,
+  onEnterPresentation,
+  onPresentationGutters,
 }: AppWithConfigProps) {
   useEffect(() => {
     document.title = deviceName ? `Simulator - ${deviceName}` : "Simulator Preview";
@@ -784,11 +887,27 @@ function AppWithConfig({
   // the simulator (typical device frame ≈ 420px plus page/panel gutters);
   // smaller windows keep it closed so the device isn't squeezed on load.
   const [panelOpen, setPanelOpen] = useState(() => {
-    if (typeof window === "undefined") return false;
+    if (typeof window === "undefined" || presentation) return false;
     const stored = Number(window.localStorage.getItem("serve-sim:tools-panel-width"));
     const panelWidth = Number.isFinite(stored) && stored > 0 ? stored : PANEL_WIDTH;
     return window.innerWidth >= panelWidth + 480;
   });
+  const openPanelsRef = useRef({ panel: false, devtools: false });
+  openPanelsRef.current = { panel: panelOpen, devtools: devtoolsOpen };
+  const panelsBeforePresentationRef = useRef<{ panel: boolean; devtools: boolean } | null>(null);
+  useEffect(() => {
+    if (presentation) {
+      panelsBeforePresentationRef.current ??= openPanelsRef.current;
+      setPanelOpen(false);
+      setDevtoolsOpen(false);
+      return;
+    }
+    const restored = panelsBeforePresentationRef.current;
+    if (!restored) return;
+    panelsBeforePresentationRef.current = null;
+    setPanelOpen(restored.panel);
+    setDevtoolsOpen(restored.devtools);
+  }, [presentation, setDevtoolsOpen]);
   const { width: toolsPanelWidth, onPointerDown: onToolsResize } = useResizableWidth(
     "serve-sim:tools-panel-width",
     PANEL_WIDTH,
@@ -860,13 +979,19 @@ function AppWithConfig({
   const pressedKeysRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
+    // The device is the page, so clicking the exit control isn't a focus change;
+    // treating it as one would force-release every held key.
+    if (presentation) {
+      setSimFocused(true);
+      return;
+    }
     const onPointerDown = (e: PointerEvent) => {
       const inside = !!simContainerRef.current?.contains(e.target as Node);
       setSimFocused(inside);
     };
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => document.removeEventListener("pointerdown", onPointerDown, true);
-  }, []);
+  }, [presentation]);
 
   useEffect(() => {
     if (simFocused) return;
@@ -975,30 +1100,80 @@ function AppWithConfig({
     : panelOpen
     ? toolsPanelWidth
     : 0;
-  const shiftForRightPanel = shiftToClear(rightPanelWidthPx);
-  const shiftForLeftPanel = shiftToClear(gridOpen ? gridPanelWidth : 0);
+  const shiftForRightPanel = presentation ? 0 : shiftToClear(rightPanelWidthPx);
+  const shiftForLeftPanel = presentation ? 0 : shiftToClear(gridOpen ? gridPanelWidth : 0);
+  const presentationInset = SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION;
+  const layoutWidth = simulatorResize.width;
+  const layoutHeight =
+    containerAspectRatioValue > 0
+      ? roundToDevicePixel(layoutWidth / containerAspectRatioValue)
+      : 0;
+  const frameWidth = presentation
+    ? getPresentationFrameWidth(
+        viewportWidth,
+        viewportHeight,
+        containerAspectRatioValue,
+        presentationInset,
+      )
+    : layoutWidth;
+  const layoutScale =
+    layoutWidth > 0 && frameWidth > 0 ? frameWidth / layoutWidth : 1;
+  const resizing = simulatorResize.isResizing || simulatorResize.isInertia;
+  // `scale(1)` is not `none`: it would make this the containing block for every
+  // fixed descendant. The state only holds the transform past the exit so the
+  // device eases back down; entering reads `presentation` directly, in the same
+  // commit that strips the chrome.
+  const [exitScaling, setExitScaling] = useState(false);
+  useEffect(() => {
+    if (presentation) {
+      setExitScaling(true);
+      return;
+    }
+    if (!exitScaling) return;
+    const id = setTimeout(() => setExitScaling(false), SIMULATOR_RESIZE_PRESENTATION_TRANSITION_MS);
+    return () => clearTimeout(id);
+  }, [presentation, exitScaling]);
+  const scaling = presentation || exitScaling;
+  const presentationFrameHeight =
+    containerAspectRatioValue > 0 ? frameWidth / containerAspectRatioValue : 0;
+  useEffect(() => {
+    if (!presentation) return;
+    onPresentationGutters({
+      side: Math.max(0, (viewportWidth - frameWidth) / 2),
+      top: Math.max(0, (viewportHeight - presentationFrameHeight) / 2),
+    });
+  }, [
+    presentation,
+    viewportWidth,
+    viewportHeight,
+    frameWidth,
+    presentationFrameHeight,
+    onPresentationGutters,
+  ]);
+  const layoutTransition = resizing
+    ? SIMULATOR_RESIZE_DRAG_TRANSITION
+    : SIMULATOR_RESIZE_LAYOUT_TRANSITION;
 
   return (
     <AxStateProvider endpoint={axOverlayEnabled ? config?.axEndpoint : undefined}>
     <div
-      className="flex flex-col items-center justify-center h-screen bg-page py-6 gap-3 font-system box-border"
+      className={`flex flex-col items-center justify-center h-dvh bg-page font-system box-border ${presentation ? "gap-0" : "py-6 gap-3"}`}
       style={{
-        paddingLeft: 24 + shiftForLeftPanel,
-        paddingRight: 24 + shiftForRightPanel,
-        transition:
-          simulatorResize.isResizing || simulatorResize.isInertia ? "none" : SIMULATOR_RESIZE_PAGE_TRANSITION,
+        paddingTop: presentation ? presentationInset : undefined,
+        paddingBottom: presentation ? presentationInset : undefined,
+        paddingLeft: presentation ? presentationInset : 24 + shiftForLeftPanel,
+        paddingRight: presentation ? presentationInset : 24 + shiftForRightPanel,
+        transition: resizing ? "none" : SIMULATOR_RESIZE_PAGE_TRANSITION,
       }}
     >
       <div
-        className="flex flex-col items-center gap-3 min-w-0"
+        className={`flex flex-col items-center min-w-0 ${presentation ? "gap-0" : "gap-3"}`}
         style={{
-          width: simulatorResize.width,
-          transition:
-            simulatorResize.isResizing || simulatorResize.isInertia
-              ? SIMULATOR_RESIZE_DRAG_TRANSITION
-              : SIMULATOR_RESIZE_LAYOUT_TRANSITION,
+          width: layoutWidth,
+          transition: layoutTransition,
         }}
       >
+        {!presentation && (
         <SimulatorToolbar
           exec={execOnHost}
           onRotate={rotateDevice}
@@ -1033,18 +1208,20 @@ function AppWithConfig({
           />
           <StreamStatusPill streaming={streaming} />
         </SimulatorToolbar>
+        )}
         <div
           ref={simContainerRef}
           className="relative max-h-full"
           style={{
-            width: simulatorResize.width,
+            width: layoutWidth,
+            height: layoutHeight > 0 ? layoutHeight : undefined,
             aspectRatio: containerAspectRatio,
-            transition:
-              simulatorResize.isResizing || simulatorResize.isInertia
-                ? SIMULATOR_RESIZE_DRAG_TRANSITION
-                : SIMULATOR_RESIZE_LAYOUT_TRANSITION,
-            willChange:
-              simulatorResize.isResizing || simulatorResize.isInertia ? "width" : undefined,
+            transform: scaling ? `scale(${layoutScale})` : undefined,
+            transformOrigin: "center center",
+            transition: resizing
+              ? SIMULATOR_RESIZE_DRAG_TRANSITION
+              : `${SIMULATOR_RESIZE_LAYOUT_TRANSITION}, ${SIMULATOR_RESIZE_PRESENTATION_TRANSITION}`,
+            willChange: resizing ? "width" : scaling ? "transform" : undefined,
           }}
           {...mediaDrop.dropZoneProps}
         >
@@ -1097,7 +1274,7 @@ function AppWithConfig({
             const screenContent = (
               <>
                 {streamView}
-                {axOverlayEnabled && <AxDomOverlay />}
+                {axOverlayEnabled && !presentation && <AxDomOverlay />}
               </>
             );
             if (!useChrome) return screenContent;
@@ -1110,6 +1287,13 @@ function AppWithConfig({
               <DeviceKitChrome
                 chrome={chrome!}
                 interactive
+                containerSize={
+                  // Measured, not computed: pixel rects can't self-correct the
+                  // way the percentage layout did.
+                  deviceRenderedWidth > 0 && deviceRenderedHeight > 0
+                    ? { width: deviceRenderedWidth, height: deviceRenderedHeight }
+                    : undefined
+                }
                 onButton={handleChromeButton}
                 onCrownWheel={(deltaY, deltaMode) => {
                   const delta = digitalCrownDeltaFromWheel(
@@ -1135,25 +1319,28 @@ function AppWithConfig({
               <span className="text-[13px] font-medium">Drop media or .ipa</span>
             </div>
           )}
-          <SimulatorResizeCornerHandle
-            simulatorResize={simulatorResize}
-            deviceType={deviceType}
-            streamConfig={activeStreamConfig}
-            containerWidth={deviceRenderedWidth || simulatorResize.width}
-            containerHeight={
-              deviceRenderedHeight ||
-              (containerAspectRatioValue > 0 ? simulatorResize.width / containerAspectRatioValue : 0)
-            }
-          />
+          {!presentation && (
+            <SimulatorResizeCornerHandle
+              simulatorResize={simulatorResize}
+              deviceType={deviceType}
+              streamConfig={activeStreamConfig}
+              containerWidth={deviceRenderedWidth || simulatorResize.width}
+              containerHeight={
+                deviceRenderedHeight ||
+                (containerAspectRatioValue > 0 ? simulatorResize.width / containerAspectRatioValue : 0)
+              }
+            />
+          )}
           <SimulatorResizeSizeBadge
             width={deviceRenderedWidth || simulatorResize.width}
             height={
               deviceRenderedHeight ||
               (containerAspectRatioValue > 0 ? simulatorResize.width / containerAspectRatioValue : 0)
             }
-            visible={simulatorResize.isResizing || simulatorResize.isInertia}
+            visible={!presentation && (simulatorResize.isResizing || simulatorResize.isInertia)}
           />
         </div>
+        {!presentation && (
         <div className="inline-flex items-center justify-center gap-2 max-w-full">
           <SimulatorToolbar
             exec={execOnHost}
@@ -1216,15 +1403,26 @@ function AppWithConfig({
             />
           </SimulatorToolbar>
         </div>
+        )}
       </div>
 
       {/* The left device sidebar + its rail live in App so they persist across
           stream swaps; AppWithConfig only renders the streaming-specific UI. */}
 
       {/* Right-edge rail: tools + WebKit DevTools. */}
+      {!presentation && (
+      <>
       <div
         className={`fixed top-3 right-3 flex flex-col gap-1 p-1 bg-panel-bg border border-white/8 rounded-[10px] backdrop-blur-[12px] [-webkit-backdrop-filter:blur(12px)] [transition:opacity_0.18s_ease] z-40 ${(panelOpen || devtoolsOpen) ? "opacity-0 pointer-events-none" : "opacity-100 pointer-events-auto"}`}
       >
+        <button
+          onClick={onEnterPresentation}
+          className="w-[30px] h-[30px] flex items-center justify-center bg-transparent border-none rounded-md text-[#8e8e93] cursor-pointer [transition:background_0.15s_ease,color_0.15s_ease] hover:bg-white/8 hover:text-white"
+          aria-label="Full screen"
+          title="Full screen"
+        >
+          <Maximize2 size={18} strokeWidth={1.75} />
+        </button>
         <button
           onClick={() => {
             setDevtoolsOpen(false);
@@ -1300,6 +1498,8 @@ function AppWithConfig({
         onPointerDown={onDevtoolsResize}
         ariaLabel="Resize WebKit DevTools panel"
       />
+      </>
+      )}
     </div>
     </AxStateProvider>
   );

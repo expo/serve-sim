@@ -13,12 +13,12 @@ import type {
   GridRect,
 } from "../utils/grid";
 import { simEndpoint } from "../utils/sim-endpoint";
+import { currentDevicePixelRatio, roundToDevicePixel } from "../utils/simulator-resize";
 
-// Shared DeviceKit chrome renderer. Lays everything out in the chrome's own
-// frame coordinate space (every piece positioned as a percentage of
-// `chrome.frame`), so the bezel, screen, and hardware buttons stay aligned at
-// any rendered size. Used by both the offline placeholder (static) and the live
-// stream view (interactive buttons + a real stream in the screen slot).
+// Shared DeviceKit chrome renderer. Positions the bezel, screen, and hardware
+// buttons in the chrome's own frame coordinate space. Live views pass a
+// rendered `containerSize` so those rects snap to device pixels; placeholders
+// keep percentage layout.
 
 export type ChromeButtonPress = {
   /** "down" on press, "up" on release. Lets the caller hold power / side
@@ -33,6 +33,7 @@ export function DeviceKitChrome({
   interactive = false,
   onButton,
   onCrownWheel,
+  containerSize,
 }: {
   chrome: DeviceKitChromeDescriptor;
   /** Rendered inside the screen cutout (the live stream, or a black fill). */
@@ -41,6 +42,7 @@ export function DeviceKitChrome({
   onButton?: (press: ChromeButtonPress) => void;
   /** Wheel over the Digital Crown — forwards rotation to scroll the watch. */
   onCrownWheel?: (deltaY: number, deltaMode: number) => void;
+  containerSize?: { width: number; height: number };
 }) {
   // Apple's composite pictures only the bezel — the hardware buttons are
   // separate sprites that poke out past the metal edge (the part overshooting
@@ -58,6 +60,7 @@ export function DeviceKitChrome({
           onWheel={
             interactive && button.name === "digital-crown" ? onCrownWheel : undefined
           }
+          containerSize={containerSize}
         />
       ))}
 
@@ -70,9 +73,10 @@ export function DeviceKitChrome({
           image={chrome.compositeImage}
           rect={chrome.body}
           zIndex={1}
+          containerSize={containerSize}
         />
       ) : chrome.slice && chrome.corner ? (
-        <NineSliceChrome chrome={chrome} />
+        <NineSliceChrome chrome={chrome} containerSize={containerSize} />
       ) : null}
 
       {/* Stream ON TOP of the bezel (z2), clipped to the active screen rect with
@@ -81,7 +85,7 @@ export function DeviceKitChrome({
       <div
         className="absolute overflow-hidden bg-black"
         style={{
-          ...rectStyle(chrome, chrome.screen, 2),
+          ...rectStyle(chrome, chrome.screen, 2, containerSize),
           borderRadius: deviceKitScreenRadius(chrome),
         }}
       >
@@ -104,6 +108,7 @@ function ChromeButton({
   interactive,
   onButton,
   onWheel,
+  containerSize,
 }: {
   chrome: DeviceKitChromeDescriptor;
   button: DeviceKitChromeButton;
@@ -111,6 +116,7 @@ function ChromeButton({
   onButton?: (press: ChromeButtonPress) => void;
   /** Wheel over this cap (the Digital Crown) → (deltaY, deltaMode). */
   onWheel?: (deltaY: number, deltaMode: number) => void;
+  containerSize?: { width: number; height: number };
 }) {
   const [hovered, setHovered] = useState(false);
   const [pressed, setPressed] = useState(false);
@@ -197,7 +203,7 @@ function ChromeButton({
       title={pressable ? buttonLabel(button.name) : undefined}
       className="absolute select-none"
       style={{
-        ...rectStyle(chrome, button.frame, zIndex),
+        ...rectStyle(chrome, button.frame, zIndex, containerSize),
         transform: tx || ty ? `translate(${tx}%, ${ty}%)` : undefined,
         transition: "transform 0.12s ease",
         cursor: pressable ? "pointer" : undefined,
@@ -234,7 +240,13 @@ function buttonLabel(name: string): string {
     .join(" ");
 }
 
-export function NineSliceChrome({ chrome }: { chrome: DeviceKitChromeDescriptor }) {
+export function NineSliceChrome({
+  chrome,
+  containerSize,
+}: {
+  chrome: DeviceKitChromeDescriptor;
+  containerSize?: { width: number; height: number };
+}) {
   if (!chrome.slice || !chrome.corner) return null;
   const { body, corner, slice } = chrome;
   const midWidth = Math.max(body.width - corner.width * 2, 0);
@@ -318,6 +330,7 @@ export function NineSliceChrome({ chrome }: { chrome: DeviceKitChromeDescriptor 
             image={piece.image}
             rect={piece.rect}
             zIndex={1}
+            containerSize={containerSize}
           />
         ))}
     </>
@@ -329,11 +342,13 @@ export function ChromeImage({
   image,
   rect,
   zIndex,
+  containerSize,
 }: {
   chrome: DeviceKitChromeDescriptor;
   image: string;
   rect: GridRect;
   zIndex: number;
+  containerSize?: { width: number; height: number };
 }) {
   return (
     <img
@@ -343,7 +358,7 @@ export function ChromeImage({
       src={chromeAssetUrl(chrome.identifier, image)}
       className="absolute select-none"
       style={{
-        ...rectStyle(chrome, rect, zIndex),
+        ...rectStyle(chrome, rect, zIndex, containerSize),
         objectFit: "fill",
         // The bezel must never swallow taps meant for the screen / buttons.
         pointerEvents: "none",
@@ -358,11 +373,48 @@ export function chromeAssetUrl(identifier: string, image: string): string {
   return typeof window === "undefined" ? `/${path}` : simEndpoint(path);
 }
 
+// Neighbours derive their shared edge from the same number, so no hairline
+// seams open between adjacent nine-slice pieces.
+export function snapChromeRect(
+  chrome: DeviceKitChromeDescriptor,
+  rect: GridRect,
+  container: { width: number; height: number },
+  dpr = currentDevicePixelRatio(),
+): { left: number; top: number; width: number; height: number } {
+  const left = roundToDevicePixel((rect.x / chrome.frame.width) * container.width, dpr);
+  const right = roundToDevicePixel(
+    ((rect.x + rect.width) / chrome.frame.width) * container.width,
+    dpr,
+  );
+  const top = roundToDevicePixel((rect.y / chrome.frame.height) * container.height, dpr);
+  const bottom = roundToDevicePixel(
+    ((rect.y + rect.height) / chrome.frame.height) * container.height,
+    dpr,
+  );
+  return {
+    left,
+    top,
+    width: Math.max(0, right - left),
+    height: Math.max(0, bottom - top),
+  };
+}
+
 function rectStyle(
   chrome: DeviceKitChromeDescriptor,
   rect: GridRect,
   zIndex: number,
+  containerSize?: { width: number; height: number },
 ): CSSProperties {
+  if (containerSize && containerSize.width > 0 && containerSize.height > 0) {
+    const snapped = snapChromeRect(chrome, rect, containerSize);
+    return {
+      left: snapped.left,
+      top: snapped.top,
+      width: snapped.width,
+      height: snapped.height,
+      zIndex,
+    };
+  }
   return {
     left: pct(rect.x, chrome.frame.width),
     top: pct(rect.y, chrome.frame.height),

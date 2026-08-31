@@ -95,7 +95,7 @@ const html = `<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Simulator Preview</title>
 ${faviconTag}
-<style>*,*::before,*::after{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden}</style>
+<style>*,*::before,*::after{box-sizing:border-box}html,body{margin:0;height:100dvh;overflow:hidden}</style>
 <style>${tailwindCss}</style>
 </head><body>
 <div id="root"></div>

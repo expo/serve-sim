@@ -20,8 +20,6 @@ export interface CrashRecord extends CrashReport {
   id: string;
   /** Newest occurrence; older `.ips` files age out into `Retired/`. */
   rawPath: string;
-  /** The newest occurrence's tail, repeated here for a stream reader that only sees records. */
-  logTail: string[];
   logTailSource: LogTailSource;
   /** Newest last, capped at {@link MAX_OCCURRENCES}. `count` is the true total. */
   occurrences: CrashOccurrence[];
@@ -30,7 +28,7 @@ export interface CrashRecord extends CrashReport {
   lastSeen: number;
 }
 
-export type CrashSummary = Omit<CrashRecord, "logTail" | "occurrences"> & {
+export type CrashSummary = Omit<CrashRecord, "frames" | "occurrences"> & {
   logTailLines: number;
   occurrenceCount: number;
 };
@@ -97,7 +95,6 @@ export class CrashStore {
         frames: [...report.frames],
         id: existing.id,
         rawPath,
-        logTail: [...logTail],
         logTailSource,
         occurrences: [...existing.occurrences, occurrence].slice(-MAX_OCCURRENCES),
         count: existing.count + 1,
@@ -115,7 +112,6 @@ export class CrashStore {
       // Prefixed so it cannot collide with an Apple incident id.
       id: report.incidentId ?? `no-incident-${++this.seq}`,
       rawPath,
-      logTail: [...logTail],
       logTailSource,
       occurrences: [occurrence],
       count: 1,
@@ -165,7 +161,6 @@ function snapshot(record: CrashRecord): CrashRecord {
   return {
     ...record,
     frames: [...record.frames],
-    logTail: [...record.logTail],
     occurrences: record.occurrences.map((o) => ({ ...o, logTail: [...o.logTail] })),
   };
 }

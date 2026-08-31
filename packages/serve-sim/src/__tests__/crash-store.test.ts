@@ -157,27 +157,21 @@ describe("CrashStore", () => {
     expect(store.list()[0]?.count).toBe(1);
   });
 
-  test("keeps the log tail it was given", () => {
+  test("keeps the log tail it was given on the occurrence", () => {
     const record = store.record(report(), "/tmp/a.ips", ['{"m":"before crash"}']);
-    expect(record.logTail).toEqual(['{"m":"before crash"}']);
+    expect(record.occurrences.at(-1)?.logTail).toEqual(['{"m":"before crash"}']);
   });
 
   test("defaults the log tail to empty when none is available", () => {
-    expect(store.record(report(), "/tmp/a.ips").logTail).toEqual([]);
+    expect(store.record(report(), "/tmp/a.ips").occurrences.at(-1)?.logTail).toEqual([]);
   });
 
-  test("replaces the log tail on a recurrence with the newer context", () => {
-    store.record(report(), "/tmp/a.ips", ["old"]);
-    clock = 2_000;
-    expect(store.record(report(), "/tmp/b.ips", ["new"]).logTail).toEqual(["new"]);
-  });
-
-  test("mirrors the newest occurrence's tail, keeping the earlier one on its occurrence", () => {
+  test("keeps each repeat's own tail, newest last", () => {
     store.record(report(), "/tmp/a.ips", ["old"]);
     clock = 2_000;
     const updated = store.record(report(), "/tmp/b.ips", []);
 
-    expect(updated.logTail).toEqual([]);
+    expect(updated.logTailSource).toBe("none");
     expect(updated.occurrences.map((o) => o.logTail)).toEqual([["old"], []]);
   });
 

@@ -11,6 +11,7 @@ describe("tart-dev", () => {
     expect(script).toContain("export PORT=3200");
     expect(script).not.toContain("simpb");
     expect(script).not.toContain("ln -sfn");
+    expect(script).not.toContain("bun install");
   });
 
   test("tunnels guest loopback onto the host port", () => {

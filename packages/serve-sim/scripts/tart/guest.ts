@@ -220,20 +220,19 @@ export class TartGuest {
     writeFileSync(stamp, token);
     try {
       const remote = `${share}/dist/.tart-share`;
-      let sawSrc = false;
+      let present = false;
       for (let i = 0; i < 15; i++) {
-        const present = (await this.ssh(`if test -d ${srcQuoted}; then echo ok; fi`)).trim() === "ok";
-        if (!present) {
-          await Bun.sleep(400);
-          continue;
-        }
-        sawSrc = true;
+        present = (await this.ssh(`if test -d ${srcQuoted}; then echo ok; fi`)).trim() === "ok";
+        if (present) break;
+        await Bun.sleep(400);
+      }
+      if (!present) {
+        throw new Error(`VM share is missing (${share}). ${stopHint}`);
+      }
+      for (let i = 0; i < 15; i++) {
         const seen = (await this.ssh(`cat ${JSON.stringify(remote)} 2>/dev/null || true`)).trim();
         if (seen === token) return;
         await Bun.sleep(400);
-      }
-      if (!sawSrc) {
-        throw new Error(`VM share is missing (${share}). ${stopHint}`);
       }
       throw new Error(`VM share is not this checkout (${this.config.repoDir}). ${stopHint}`);
     } finally {

@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CrashFrame } from "../../crash/report";
 import type { CrashOccurrence, CrashSummary } from "../../crash/store";
-import { collapseSystemFrames, formatCrashAgo } from "../utils/crash-format";
+import { collapseSystemFrames, formatCrashAgo, formatOccurrenceClock } from "../utils/crash-format";
+import { useCopy } from "../hooks/use-copy";
 import { parseDeviceLogJson } from "../utils/device-log-format";
 
 function messageOf(raw: string): string {
@@ -16,17 +17,6 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="font-mono text-[11px] break-all text-white/70">{value}</span>
     </div>
   );
-}
-
-function useCopy(): [boolean, (text: string) => void] {
-  const [copied, setCopied] = useState(false);
-  const copy = (text: string): void => {
-    void navigator.clipboard?.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    });
-  };
-  return [copied, copy];
 }
 
 function FrameRow({ index, frame }: { index: number; frame: CrashFrame }) {
@@ -99,11 +89,6 @@ function StackTrace({ frames }: { frames: CrashFrame[] }) {
 }
 
 export type SelectedOccurrence = CrashOccurrence & { index: number; total: number };
-
-function formatOccurrenceClock(ms: number | null, fallback: string): string {
-  if (ms === null) return fallback;
-  return new Date(ms).toLocaleString();
-}
 
 export function CrashDetailModal({
   record,

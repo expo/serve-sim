@@ -183,7 +183,7 @@ describe("handleCrashesRequest", () => {
     const payload = JSON.parse(res.body_);
     expect(payload.crashes).toEqual([]);
     expect(payload.meta.status).toBe("unavailable");
-    expect(payload.meta.statusError).toContain("Could not watch");
+    expect(payload.meta.statusError).toContain("not being collected");
   });
 
   test("streams SSE with meta before the authoritative list", async () => {

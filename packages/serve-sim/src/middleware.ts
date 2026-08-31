@@ -2485,7 +2485,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
-            error: `Invalid crash id (${rawId}).`,
+            error:
+              `Malformed percent-escape in the crash id (${rawId}). Copy the id verbatim from ` +
+              "GET {base}/crashes.",
           })
         );
         return;

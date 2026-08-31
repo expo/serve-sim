@@ -165,7 +165,7 @@ export function CrashDetailModal({
     link.href = url;
     link.download = occurrence.rawPath.split("/").pop() ?? `${record.id}.ips`;
     link.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
   return createPortal(

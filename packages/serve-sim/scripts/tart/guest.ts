@@ -210,8 +210,8 @@ export class TartGuest {
 
   async assertShare(): Promise<void> {
     const share = guestPkgPath(this.config);
-    const present = (await this.ssh(`test -d ${JSON.stringify(`${share}/src`)} && echo ok`)).trim() === "ok";
-    if (!present) return;
+    const srcQuoted = JSON.stringify(`${share}/src`);
+    const stopHint = `Stop the VM with \`tart stop ${this.config.vm}\` and rerun bun run tart up.`;
 
     const stampDir = join(this.config.pkgDir, "dist");
     mkdirSync(stampDir, { recursive: true });
@@ -220,14 +220,22 @@ export class TartGuest {
     writeFileSync(stamp, token);
     try {
       const remote = `${share}/dist/.tart-share`;
-      for (let i = 0; i < 10; i++) {
+      let sawSrc = false;
+      for (let i = 0; i < 15; i++) {
+        const present = (await this.ssh(`if test -d ${srcQuoted}; then echo ok; fi`)).trim() === "ok";
+        if (!present) {
+          await Bun.sleep(400);
+          continue;
+        }
+        sawSrc = true;
         const seen = (await this.ssh(`cat ${JSON.stringify(remote)} 2>/dev/null || true`)).trim();
         if (seen === token) return;
-        await Bun.sleep(200);
+        await Bun.sleep(400);
       }
-      throw new Error(
-        `VM share is not this checkout (${this.config.repoDir}). Stop the VM and rerun bun run tart up.`,
-      );
+      if (!sawSrc) {
+        throw new Error(`VM share is missing (${share}). ${stopHint}`);
+      }
+      throw new Error(`VM share is not this checkout (${this.config.repoDir}). ${stopHint}`);
     } finally {
       try {
         unlinkSync(stamp);

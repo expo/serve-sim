@@ -19,7 +19,7 @@ function simpbFiles(pkgDir: string): string[] {
 
 export async function stageGuest(guest: TartGuest): Promise<void> {
   const { pkgDir } = guest.config;
-  await guest.ssh(`mkdir -p ${GUEST_SIMPB} ${GUEST_PKG}`);
+  await guest.ssh(`rm -rf ${GUEST_PKG}/src && mkdir -p ${GUEST_SIMPB} ${GUEST_PKG}`);
 
   const binaries = simpbFiles(pkgDir);
   if (binaries.length) await guest.scp(binaries, `${GUEST_SIMPB}/`);

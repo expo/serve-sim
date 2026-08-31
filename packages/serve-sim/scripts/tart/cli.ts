@@ -7,7 +7,7 @@ import { runDev } from "./dev";
 const USAGE = `bun run tart <command>
 
   setup   create the guest user and copy bun (once per VM)
-  up      start the VM (no-op if already running)
+  up      start the VM and check this checkout is mounted
   boot    boot an iPhone 17 on the guest
   stage   pack host src onto the guest
   test    run bun test on the guest
@@ -50,6 +50,7 @@ async function main(): Promise<void> {
     case "up":
       await guest.ensureRunning();
       await guest.waitSsh();
+      await guest.assertShare();
       console.log(`${config.user}@${guest.ip}`);
       return;
     case "boot":

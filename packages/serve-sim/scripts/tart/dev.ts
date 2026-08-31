@@ -3,23 +3,15 @@ import { createServer } from "net";
 import { join } from "path";
 import type { Subprocess } from "bun";
 import { GUEST_PATH, guestPkgPath, type TartGuest } from "./guest";
-import { GUEST_PKG, stageGuest } from "./stage";
 
 const PREVIEW_PORT = Number(process.env.PORT) || 3200;
 
-export function guestPreviewScript(root: string, share: string, port: number): string {
+export function guestPreviewScript(share: string, port: number): string {
   return `${GUEST_PATH}
 set -euo pipefail
-cd ${JSON.stringify(root)}
-SHARE=${JSON.stringify(share)}
-if [[ ! -d node_modules && -d "$SHARE/node_modules" ]]; then
-  ln -sfn "$SHARE/node_modules" node_modules
-fi
+cd ${JSON.stringify(share)}
 if [[ ! -d node_modules ]]; then
   bun install
-fi
-if [[ -d "$SHARE/dist" && ! -e dist ]]; then
-  ln -sfn "$SHARE/dist" dist
 fi
 export PORT=${port}
 exec bun run dev.ts
@@ -79,13 +71,9 @@ export async function runDev(guest: TartGuest, udid: string): Promise<void> {
     throw new Error(`${native} is missing. Run bun run build.`);
   }
   await assertPortFree(port);
-
-  const shareReady = (await guest.ssh(`test -d ${JSON.stringify(`${share}/src`)} && echo ok`)).trim() === "ok";
-  if (!shareReady) await stageGuest(guest);
-  const root = shareReady ? share : GUEST_PKG;
   await guest.ssh(`lsof -ti tcp:${port} | xargs kill -TERM 2>/dev/null || true`);
 
-  const serve = guest.sshSpawn(guestPreviewScript(root, share, port));
+  const serve = guest.sshSpawn(guestPreviewScript(share, port));
   const tunnel = guest.tunnel(port, port);
   const shutdown = () => {
     stop(serve);
@@ -103,8 +91,9 @@ export async function runDev(guest: TartGuest, udid: string): Promise<void> {
     await startDevice(url, udid);
     console.log(`\n  ${url}\n`);
     const code = await Promise.race([serve.exited, tunnel.exited]);
-    process.exit(code ?? 1);
+    process.exitCode = code ?? 1;
   } finally {
     shutdown();
+    await Promise.allSettled([serve.exited, tunnel.exited]);
   }
 }

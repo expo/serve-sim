@@ -297,9 +297,9 @@ The npm package ships the native capture addon and LiveKit WebRTC framework alon
 bun install
 bun run packages/serve-sim/build.ts                    # full production build
 packages/serve-sim/Sources/SimNative/build.sh           # native addon only
-bun run --filter serve-sim dev                          # watch mode
-bun run --filter serve-sim tart-dev                     # guest preview at localhost:3200
-bun run --filter serve-sim tart-test -- <files>       # bun test on the guest
+bun run --filter @expo/serve-sim dev                          # watch mode
+bun run --filter @expo/serve-sim tart-dev                     # guest preview at localhost:3200
+bun run --filter @expo/serve-sim tart-test -- <files>       # bun test on the guest
 ```
 
 ### Tart guest
@@ -310,7 +310,7 @@ Needs the `tart` CLI, a VM with Xcode (default name `tahoe-xcode`), and a built 
 
 ```sh
 bun run packages/serve-sim/build.ts
-bun run --filter serve-sim tart-dev
+bun run --filter @expo/serve-sim tart-dev
 # → Preview at http://localhost:3200
 ```
 
@@ -319,16 +319,16 @@ bun run --filter serve-sim tart-dev
 `tart-test` uses the same guest, but runs `bun test` there. It stages package src onto the VM, boots an iPhone, and executes the files you pass over SSH as `expo`. Pass the files; with none it exits instead of running the whole guest suite.
 
 ```sh
-bun run --filter serve-sim tart-test -- src/__tests__/foo.test.ts
-bun run --filter serve-sim tart -- test src/__tests__/foo.test.ts
+bun run --filter @expo/serve-sim tart-test -- src/__tests__/foo.test.ts
+bun run --filter @expo/serve-sim tart -- test src/__tests__/foo.test.ts
 ```
 
-First run creates the `expo` user and copies bun onto the guest (`bun run --filter serve-sim tart -- setup` if you want that step alone).
+First run creates the `expo` user and copies bun onto the guest (`bun run --filter @expo/serve-sim tart -- setup` if you want that step alone).
 
 The VM mounts this checkout at `/Volumes/My Shared Files/serve-sim`. If the VM was started from a different worktree, stop it and rerun from this one.
 
 ```sh
-bun run --filter serve-sim tart -- ssh                 # shell as expo
+bun run --filter @expo/serve-sim tart -- ssh                 # shell as expo
 ```
 
 `tart` also has `up`, `boot`, and `stage` if you need the pieces separately.

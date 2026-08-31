@@ -19,6 +19,10 @@ const REPORT_DELAY_SECONDS = 5;
 /** Bounds `ingested`, which sees every host crash, not only this device's. */
 const MAX_INGESTED = 500;
 const RETRY_DELAY_MS = 1000;
+const MAX_RETRY_DELAY_MS = 30_000;
+const MAX_WATCH_RETRIES = 6;
+/** A tail whose newest line predates the crash by this much was not recording when it happened. */
+const MAX_TAIL_GAP_MS = 30_000;
 // 60 app-scoped lines, not 60 raw lines: unfiltered the log runs ~317 lines/sec.
 const LOG_TAIL_LINES = 60;
 const LOG_TAIL_MAX_BYTES = 64 * 1024;
@@ -104,24 +108,27 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   // An in-flight back-scan bails when this changes.
   let generation = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retries = 0;
 
   const markUnavailable = (error: unknown): void => {
     const reason = error instanceof Error ? error.message : String(error);
     generation += 1;
     statusError =
       `Crash reports are not being collected: serve-sim could not watch ${reportsDir} (${reason}). ` +
-      "Check that the directory is readable and that macOS crash reporting is enabled on this host.";
+      "Check that the directory is readable and that macOS crash reporting is enabled on this host." +
+      (retries >= MAX_WATCH_RETRIES ? " Retries are exhausted; restart serve-sim to try again." : "");
     running = false;
     watcher?.close();
     watcher = null;
     reportError(`could not watch ${reportsDir}`, error);
-    if (!retryTimer) {
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        if (!running) void start().catch(() => {});
-      }, retryDelayMs);
-      retryTimer.unref?.();
-    }
+    if (retryTimer || retries >= MAX_WATCH_RETRIES) return;
+    const delay = Math.min(retryDelayMs * 2 ** retries, MAX_RETRY_DELAY_MS);
+    retries += 1;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (!running) void start().catch(() => {});
+    }, delay);
+    retryTimer.unref?.();
   };
 
   const storeFor = (udid: string): CrashStore => {
@@ -156,6 +163,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       count: LOG_TAIL_LINES,
       processName: report.procName,
       maxBytes: LOG_TAIL_MAX_BYTES,
+      maxGapMs: MAX_TAIL_GAP_MS,
     });
     return { logTail: tail.lines.map((line) => line.raw), logTailSource: tail.reason };
   };
@@ -249,8 +257,10 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
         markUnavailable
       );
       // A synchronous onWatchError already ran markUnavailable; do not resurrect the handle.
-      if (running) watcher = handle;
-      else handle.close();
+      if (running) {
+        watcher = handle;
+        retries = 0;
+      } else handle.close();
     } catch (error) {
       markUnavailable(error);
       return;

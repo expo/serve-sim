@@ -41,8 +41,6 @@ export interface LogBufferDeps {
   now?: () => number;
 }
 
-type Listener = (line: LogLine) => void;
-
 export class DeviceLogBuffer {
   private child: ChildProcess | null = null;
   private decoder = new StringDecoder("utf8");
@@ -58,7 +56,6 @@ export class DeviceLogBuffer {
   private readonly batchListeners = new Set<(lines: readonly LogLine[]) => void>();
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly listeners = new Set<Listener>();
   private readonly closeListeners = new Set<() => void>();
 
   constructor(
@@ -80,18 +77,7 @@ export class DeviceLogBuffer {
   }
 
   get listenerCount(): number {
-    return this.listeners.size + this.batchListeners.size;
-  }
-
-  subscribe(listener: Listener, onClosed?: () => void): () => void {
-    this.listeners.add(listener);
-    if (onClosed) this.closeListeners.add(onClosed);
-    this.clearIdle();
-    return () => {
-      this.listeners.delete(listener);
-      if (onClosed) this.closeListeners.delete(onClosed);
-      this.releaseIfIdle();
-    };
+    return this.batchListeners.size;
   }
 
   /** One callback per stdout burst so a reader can write a single SSE/WS frame. */
@@ -102,7 +88,7 @@ export class DeviceLogBuffer {
     return () => {
       this.batchListeners.delete(listener);
       if (onClosed) this.closeListeners.delete(onClosed);
-      this.releaseIfIdle();
+      if (this.listenerCount === 0) this.armIdle();
     };
   }
 
@@ -136,7 +122,7 @@ export class DeviceLogBuffer {
   }
 
   private releaseIfIdle(): void {
-    if (this.listeners.size + this.batchListeners.size > 0) return;
+    if (this.listenerCount > 0) return;
     this.stopped = true;
     this.clearIdle();
     if (this.restartTimer) {
@@ -297,15 +283,6 @@ export class DeviceLogBuffer {
       this.dropping = true;
     }
     if (batch.length === 0) return;
-    for (const listener of this.listeners) {
-      for (const line of batch) {
-        try {
-          listener(line);
-        } catch {
-          // A closed SSE socket must not stop the ring or the other listeners.
-        }
-      }
-    }
     for (const listener of this.batchListeners) {
       try {
         listener(batch);

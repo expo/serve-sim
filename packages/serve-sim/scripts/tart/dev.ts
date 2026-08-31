@@ -79,10 +79,12 @@ export async function runDev(guest: TartGuest, udid: string): Promise<void> {
     stop(serve);
     stop(tunnel);
   };
+  let interrupted = false;
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
+      interrupted = true;
+      process.exitCode = 0;
       shutdown();
-      process.exit(0);
     });
   }
 
@@ -91,7 +93,9 @@ export async function runDev(guest: TartGuest, udid: string): Promise<void> {
     await startDevice(url, udid);
     console.log(`\n  ${url}\n`);
     const code = await Promise.race([serve.exited, tunnel.exited]);
-    process.exitCode = code ?? 1;
+    if (!interrupted) process.exitCode = code ?? 1;
+  } catch (error) {
+    if (!interrupted) throw error;
   } finally {
     shutdown();
     await Promise.allSettled([serve.exited, tunnel.exited]);

@@ -64,3 +64,8 @@ export function collapseSystemFrames(frames: CrashFrame[]): StackRow[] {
   }
   return rows;
 }
+
+export function formatOccurrenceClock(ms: number | null, fallback: string): string {
+  if (ms === null) return fallback;
+  return new Date(ms).toLocaleString();
+}

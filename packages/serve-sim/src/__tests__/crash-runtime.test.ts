@@ -696,7 +696,7 @@ describe("createCrashRuntime meta", () => {
     expect(meta.status).toBe("unavailable");
     expect(meta.statusError).toContain("/reports");
     expect(meta.statusError).toContain("EPERM");
-    expect(meta.statusError).toContain("Could not watch");
+    expect(meta.statusError).toContain("crash reporting is enabled");
   });
 
   test("goes unavailable when the watcher errors after starting", () => {

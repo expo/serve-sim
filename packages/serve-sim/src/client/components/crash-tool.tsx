@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CrashSummary } from "../../crash/store";
 import { crashDetailUrl, formatCrashAgo } from "../utils/crash-format";
+import { startExclusivePoll } from "../utils/exclusive-poll";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
 import { CrashDetailModal, type SelectedOccurrence } from "./crash-detail-modal";
@@ -12,7 +13,7 @@ type CrashListPayload = {
 
 const POLL_INTERVAL_MS = 5_000;
 
-function authorized(url: string): Promise<Response> {
+function authorizedFetch(url: string): Promise<Response> {
   return fetch(url, {
     headers: { Authorization: `Bearer ${window.__SIM_PREVIEW__?.execToken ?? ""}` },
   });
@@ -48,24 +49,13 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
 
   // `/crashes` needs the bearer token, which EventSource cannot send, so poll instead.
   useEffect(() => {
-    let cancelled = false;
-    let gen = 0;
-    const load = async (): Promise<void> => {
-      const thisGen = ++gen;
+    return startExclusivePoll(async () => {
       try {
-        const response = await authorized(path);
+        const response = await authorizedFetch(path);
         if (!response.ok) return;
-        const next = (await response.json()) as CrashListPayload;
-        if (cancelled || thisGen !== gen) return;
-        setPayload(next);
+        setPayload((await response.json()) as CrashListPayload);
       } catch {}
-    };
-    void load();
-    const timer = setInterval(() => void load(), POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
+    }, POLL_INTERVAL_MS);
   }, [path]);
 
   const loadDetail = useCallback(
@@ -79,7 +69,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
         setLoadError("Could not load that crash.");
       };
       try {
-        const response = await authorized(crashDetailUrl(path, id, occurrence));
+        const response = await authorizedFetch(crashDetailUrl(path, id, occurrence));
         if (!response.ok) {
           revert();
           return;
@@ -104,30 +94,32 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
     const remapped = listed.occurrenceTimes.findIndex(
       (stamp) => stamp.rawPath === detail.occurrence.rawPath
     );
-    const index = remapped === -1 ? detail.occurrence.index : remapped;
+    // The occurrence being read aged out of the retained window; show the newest one instead.
+    if (remapped === -1) {
+      void loadDetail(detail.record.id, listed.occurrenceCount - 1);
+      return;
+    }
     const total = listed.occurrenceCount;
     if (
       listed.count === detail.record.count &&
       total === detail.occurrence.total &&
-      index === detail.occurrence.index
+      remapped === detail.occurrence.index
     ) {
       return;
     }
-    if (remapped !== -1) {
-      if (requested.current === detail.occurrence.index) requested.current = remapped;
-      if (confirmed.current === detail.occurrence.index) confirmed.current = remapped;
-      setPendingIndex((pending) => (pending === detail.occurrence.index ? remapped : pending));
-    }
+    if (requested.current === detail.occurrence.index) requested.current = remapped;
+    if (confirmed.current === detail.occurrence.index) confirmed.current = remapped;
+    setPendingIndex((pending) => (pending === detail.occurrence.index ? remapped : pending));
     setDetail((prev) =>
       prev && prev.record.id === listed.id
         ? {
             ...prev,
             record: listed,
-            occurrence: { ...prev.occurrence, index, total },
+            occurrence: { ...prev.occurrence, index: remapped, total },
           }
         : prev
     );
-  }, [payload, detail]);
+  }, [payload, detail, loadDetail]);
 
   const selectOccurrence = (index: number): void => {
     if (!detail) return;

@@ -206,6 +206,14 @@ describe("handleLogsRequest", () => {
     expect(snapshotOff.headers_["Content-Type"]).toBe("text/event-stream");
   });
 
+  test("lets snapshot=0 keep SSE for a caller that also accepts JSON", () => {
+    warmWith(['{"m":1}']);
+    const res = fakeRes();
+    handleLogsRequest(fakeReq({ accept: "application/json" }), res, state, "/logs?snapshot=0", cache);
+    expect(res.headers_["Content-Type"]).toBe("text/event-stream");
+    expect(dataFrames(res.body_)).toEqual(['{"m":1}']);
+  });
+
   test("ignores a nonsense cursor rather than failing", () => {
     warmWith(['{"m":1}']);
     const res = fakeRes();

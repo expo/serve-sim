@@ -48,9 +48,9 @@ describe("simulator resize visual tuning", () => {
 
     expect(withChrome).toBe(320 * SIMULATOR_RESIZE_MAX_SCALE);
     expect(presentation).toBeGreaterThan(withChrome);
-    expect(presentation).toBe(
-      Math.round((viewportHeight - inset * 2) * aspect),
-    );
+    // Floored: rounding up overflows the viewport at full height.
+    expect(presentation).toBe(Math.floor((viewportHeight - inset * 2) * aspect));
+    expect(presentation / aspect).toBeLessThanOrEqual(viewportHeight - inset * 2);
   });
 
   test("presentation is width-capped on a short wide viewport", () => {
@@ -60,10 +60,29 @@ describe("simulator resize visual tuning", () => {
   });
 
   test("contain-fit boxes snap onto the device-pixel grid", () => {
-    expect(snapContainBox(320.4, 693.2, 320, 693).fillsViewport).toBe(true);
-    const letterboxed = snapContainBox(300, 650, 320, 693);
+    for (const dpr of [1, 2, 3]) {
+      const box = snapContainBox(320.37, 693.21, 320, 693, dpr);
+
+      expect(Number.isInteger(box.width * dpr)).toBe(true);
+      expect(Number.isInteger(box.height * dpr)).toBe(true);
+    }
+  });
+
+  test("reports a viewport-filling box only when both axes match", () => {
+    expect(snapContainBox(320.4, 693.2, 320, 693, 1).fillsViewport).toBe(true);
+    expect(snapContainBox(320.4, 693.2, 320, 693, 2).fillsViewport).toBe(false);
+
+    const letterboxed = snapContainBox(300, 650, 320, 693, 2);
     expect(letterboxed.fillsViewport).toBe(false);
     expect(letterboxed.width).toBe(300);
     expect(letterboxed.height).toBe(650);
+  });
+
+  test("presentation width lands on the device-pixel grid at every ratio", () => {
+    for (const dpr of [1, 2, 3]) {
+      const width = getPresentationFrameWidth(1710, 1107, 1179 / 2556, undefined, dpr);
+
+      expect(Number.isInteger(width * dpr)).toBe(true);
+    }
   });
 });

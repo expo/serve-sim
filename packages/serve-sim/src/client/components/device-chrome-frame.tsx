@@ -13,7 +13,7 @@ import type {
   GridRect,
 } from "../utils/grid";
 import { simEndpoint } from "../utils/sim-endpoint";
-import { roundToDevicePixel } from "../utils/simulator-resize";
+import { currentDevicePixelRatio, roundToDevicePixel } from "../utils/simulator-resize";
 
 // Shared DeviceKit chrome renderer. Positions the bezel, screen, and hardware
 // buttons in the chrome's own frame coordinate space. Live views pass a
@@ -373,18 +373,23 @@ export function chromeAssetUrl(identifier: string, image: string): string {
   return typeof window === "undefined" ? `/${path}` : simEndpoint(path);
 }
 
+// Neighbours derive their shared edge from the same number, so no hairline
+// seams open between adjacent nine-slice pieces.
 export function snapChromeRect(
   chrome: DeviceKitChromeDescriptor,
   rect: GridRect,
   container: { width: number; height: number },
+  dpr = currentDevicePixelRatio(),
 ): { left: number; top: number; width: number; height: number } {
-  const left = roundToDevicePixel((rect.x / chrome.frame.width) * container.width);
+  const left = roundToDevicePixel((rect.x / chrome.frame.width) * container.width, dpr);
   const right = roundToDevicePixel(
     ((rect.x + rect.width) / chrome.frame.width) * container.width,
+    dpr,
   );
-  const top = roundToDevicePixel((rect.y / chrome.frame.height) * container.height);
+  const top = roundToDevicePixel((rect.y / chrome.frame.height) * container.height, dpr);
   const bottom = roundToDevicePixel(
     ((rect.y + rect.height) / chrome.frame.height) * container.height,
+    dpr,
   );
   return {
     left,

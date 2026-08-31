@@ -235,7 +235,6 @@ function Actions({ style, ...rest }: HTMLAttributes<HTMLDivElement>) {
 export interface ToolbarButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /** Force disabled even if the toolbar is ready. */
   forceDisabled?: boolean;
-  ignoreDisabled?: boolean;
   /** Override the hover/focus tooltip label. Defaults to title or aria-label. */
   tooltip?: ReactNode;
 }
@@ -258,7 +257,6 @@ const buttonStyle: CSSProperties = {
 const ToolbarButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function ToolbarButton(
   {
     forceDisabled,
-    ignoreDisabled,
     tooltip,
     style,
     disabled,
@@ -276,7 +274,7 @@ const ToolbarButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function
   ref,
 ) {
   const ctx = useContext(ToolbarContext);
-  const effectiveDisabled = disabled || forceDisabled || (!ignoreDisabled && ctx?.disabled);
+  const effectiveDisabled = disabled || forceDisabled || ctx?.disabled;
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
   const pointerFocusedRef = useRef(false);

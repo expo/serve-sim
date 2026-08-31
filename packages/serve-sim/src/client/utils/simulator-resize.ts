@@ -2,12 +2,16 @@ export const SIMULATOR_RESIZE_MIN_WIDTH = 280;
 export const SIMULATOR_RESIZE_ABSOLUTE_MIN_WIDTH = 180;
 export const SIMULATOR_RESIZE_MAX_SCALE = 3;
 export const SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME = 136;
-export const SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION = 8;
+export const SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION = 0;
 export const SIMULATOR_RESIZE_DRAG_TRANSITION = "width 70ms linear";
 export const SIMULATOR_RESIZE_LAYOUT_TRANSITION = "width 0.24s cubic-bezier(0.22, 1, 0.36, 1)";
+// A mode change, not a drag release: the resize curve is 96% done at the
+// halfway point, which reads as a jump rather than growth.
+export const SIMULATOR_RESIZE_PRESENTATION_TRANSITION_MS = 280;
 export const SIMULATOR_RESIZE_PRESENTATION_TRANSITION =
-  "transform 0.24s cubic-bezier(0.22, 1, 0.36, 1)";
-export const SIMULATOR_RESIZE_PAGE_TRANSITION = "padding-right 0.24s cubic-bezier(0.22, 1, 0.36, 1)";
+  "transform 0.28s cubic-bezier(0.4, 0, 0.2, 1)";
+// All sides: presentation drops every gutter at once.
+export const SIMULATOR_RESIZE_PAGE_TRANSITION = "padding 0.24s cubic-bezier(0.22, 1, 0.36, 1)";
 
 // ─── Visual constants for the curved-arc corner handle ────────────────────
 export const SIMULATOR_RESIZE_EASE = "cubic-bezier(0.2, 0.82, 0.22, 1)";
@@ -101,23 +105,27 @@ export function getPresentationFrameWidth(
   viewportHeight: number,
   aspectRatio: number,
   inset = SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION,
+  dpr = currentDevicePixelRatio(),
 ) {
   const maxWidth = viewportWidth > 0 ? Math.max(0, viewportWidth - inset * 2) : 0;
   const widthFromHeight =
     viewportHeight > 0 && Number.isFinite(aspectRatio) && aspectRatio > 0
       ? Math.max(0, viewportHeight - inset * 2) * aspectRatio
       : maxWidth;
-  return roundToDevicePixel(Math.max(0, Math.min(maxWidth, widthFromHeight)));
+  return floorToDevicePixel(Math.max(0, Math.min(maxWidth, widthFromHeight)), dpr);
 }
 
+// `fillsViewport` lets the caller use `100%`, which keeps tracking its parent
+// mid-resize where these pixel values would lag by a ResizeObserver tick.
 export function snapContainBox(
   boxWidth: number,
   boxHeight: number,
   viewportWidth: number,
   viewportHeight: number,
+  dpr = currentDevicePixelRatio(),
 ): { width: number; height: number; fillsViewport: boolean } {
-  const width = roundToDevicePixel(boxWidth);
-  const height = roundToDevicePixel(boxHeight);
+  const width = roundToDevicePixel(boxWidth, dpr);
+  const height = roundToDevicePixel(boxHeight, dpr);
   return {
     width,
     height,
@@ -156,10 +164,19 @@ export function restoredSimulatorFrameWidth(
   );
 }
 
-/** Round to whole device pixels so the frame / stream don't shimmer at sub-pixel widths. */
-export function roundToDevicePixel(value: number): number {
+export function currentDevicePixelRatio(): number {
+  return typeof window !== "undefined" ? Math.max(1, window.devicePixelRatio || 1) : 1;
+}
+
+/** For sizes that must never exceed their box. */
+export function floorToDevicePixel(value: number, dpr = currentDevicePixelRatio()): number {
   if (!Number.isFinite(value)) return value;
-  const dpr = typeof window !== "undefined" ? Math.max(1, window.devicePixelRatio || 1) : 1;
+  return Math.floor(value * dpr) / dpr;
+}
+
+/** Round to whole device pixels so the frame / stream don't shimmer at sub-pixel widths. */
+export function roundToDevicePixel(value: number, dpr = currentDevicePixelRatio()): number {
+  if (!Number.isFinite(value)) return value;
   return Math.round(value * dpr) / dpr;
 }
 

@@ -3,12 +3,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { PresentationExitButton } from "../client/components/presentation-exit-button";
 
 describe("PresentationExitButton", () => {
-  test("renders an exit control pinned to the top-right", () => {
-    const html = renderToStaticMarkup(<PresentationExitButton onClick={() => {}} />);
+  const html = renderToStaticMarkup(<PresentationExitButton onClick={() => {}} />);
 
-    expect(html).toContain("top-3");
-    expect(html).toContain("right-3");
-    expect(html).toContain("z-50");
+  test("is a real button, not a clickable div", () => {
+    expect(html).toContain('<button type="button"');
+  });
+
+  test("names the action and its keyboard shortcut", () => {
     expect(html).toContain('aria-label="Exit full screen"');
+    expect(html).toContain('title="Exit full screen (Esc)"');
   });
 });

@@ -2,7 +2,7 @@ import { existsSync } from "fs";
 import { createServer } from "net";
 import { join } from "path";
 import type { Subprocess } from "bun";
-import { GUEST_PATH, guestPkgPath, type TartGuest } from "./guest";
+import { assertHostModules, GUEST_PATH, guestPkgPath, type TartGuest } from "./guest";
 
 const PREVIEW_PORT = Number(process.env.PORT) || 3200;
 
@@ -24,8 +24,8 @@ async function waitOk(
 ): Promise<void> {
   for (let i = 0; i < tries; i++) {
     if (stopped()) throw new Error("interrupted");
-    if (tunnel.exitCode != null) throw new Error(`ssh tunnel exited ${tunnel.exitCode}`);
-    if (serve.exitCode != null) throw new Error(`guest serve-sim exited ${serve.exitCode}`);
+    if (!running(tunnel)) throw new Error(`ssh tunnel exited (${exitReason(tunnel)})`);
+    if (!running(serve)) throw new Error(`guest serve-sim exited (${exitReason(serve)})`);
     try {
       const res = await fetch(url);
       if (res.ok) return;
@@ -47,18 +47,31 @@ async function startDevice(url: string, udid: string): Promise<void> {
   }
 }
 
+function running(proc: Subprocess): boolean {
+  return proc.exitCode == null && proc.signalCode == null;
+}
+
+function exitReason(proc: Subprocess): string {
+  return proc.signalCode ?? `code ${proc.exitCode}`;
+}
+
 function stop(proc: Subprocess, signal: NodeJS.Signals = "SIGTERM"): void {
   try {
     proc.kill(signal);
   } catch {}
 }
 
-async function waitGone(serve: Subprocess, tunnel: Subprocess, ms = 2000): Promise<void> {
+export async function waitGone(serve: Subprocess, tunnel: Subprocess, ms = 2000): Promise<void> {
   const done = Promise.allSettled([serve.exited, tunnel.exited]);
-  await Promise.race([done, Bun.sleep(ms)]);
-  if (serve.exitCode == null) stop(serve, "SIGKILL");
-  if (tunnel.exitCode == null) stop(tunnel, "SIGKILL");
-  await Promise.allSettled([serve.exited, tunnel.exited]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const grace = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  await Promise.race([done, grace]);
+  clearTimeout(timer);
+  if (running(serve)) stop(serve, "SIGKILL");
+  if (running(tunnel)) stop(tunnel, "SIGKILL");
+  await done;
 }
 
 export function assertPortFree(port: number): Promise<void> {
@@ -82,10 +95,7 @@ export async function runDev(guest: TartGuest, udid: string): Promise<void> {
   if (!existsSync(native)) {
     throw new Error(`${native} is missing. Run bun run build.`);
   }
-  const modules = join(guest.config.pkgDir, "node_modules");
-  if (!existsSync(modules)) {
-    throw new Error(`${modules} is missing. Run bun install.`);
-  }
+  assertHostModules(guest.config);
   await assertPortFree(port);
   await guest.ssh(`lsof -ti tcp:${port} | xargs kill -TERM 2>/dev/null || true`);
 

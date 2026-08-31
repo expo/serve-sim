@@ -3,13 +3,14 @@ import { guestPreviewScript } from "../dev";
 import { SSH_OPTS, sshTunnelArgs } from "../guest";
 
 describe("tart-dev", () => {
-  test("guest preview cds to the given root and runs bun dev.ts", () => {
+  test("guest preview cds to the share and runs bun dev.ts", () => {
     const share = "/Volumes/My Shared Files/serve-sim/packages/serve-sim";
-    const script = guestPreviewScript(share, share, 3200);
+    const script = guestPreviewScript(share, 3200);
     expect(script).toContain(`cd ${JSON.stringify(share)}`);
     expect(script).toContain("exec bun run dev.ts");
     expect(script).toContain("export PORT=3200");
     expect(script).not.toContain("simpb");
+    expect(script).not.toContain("ln -sfn");
   });
 
   test("tunnels guest loopback onto the host port", () => {

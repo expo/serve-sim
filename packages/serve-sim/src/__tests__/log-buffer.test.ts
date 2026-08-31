@@ -146,7 +146,7 @@ describe("DeviceLogBuffer", () => {
     const seen: LogLine[] = [];
     buffer.subscribe((l) => seen.push(l));
 
-    expect(() => spawned[0]!.emitLines(line(1) + "\n")).not.toThrow();
+    spawned[0]!.emitLines(line(1) + "\n");
     expect(seen).toHaveLength(1);
     expect(buffer.read()).toHaveLength(1);
     buffer.stop();
@@ -173,6 +173,21 @@ describe("DeviceLogBuffer", () => {
     expect(buffer.tailBefore({ at: 3_000, count: 10, processName: "Other" }).reason).toBe(
       "no-app-lines"
     );
+    buffer.stop();
+  });
+
+  test("reports a rolled-past tail when the stream was not running near the crash", () => {
+    const buffer = makeBuffer();
+    buffer.start();
+    const child = spawned[0]!;
+    clock = 1_000;
+    child.emitLines(JSON.stringify({ processImagePath: "/x/Demo", m: "before the gap" }) + "\n");
+
+    const named = { count: 10, processName: "Demo", maxGapMs: 10_000 };
+    expect(buffer.tailBefore({ ...named, at: 5_000 }).reason).toBe("app-windowed");
+    const stale = buffer.tailBefore({ ...named, at: 40_000 });
+    expect(stale.reason).toBe("buffer-rolled-past");
+    expect(stale.lines).toEqual([]);
     buffer.stop();
   });
 

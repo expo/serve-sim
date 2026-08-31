@@ -1555,8 +1555,11 @@ export function handleLogsRequest(
   const params = new URL(rawUrl, "http://127.0.0.1").searchParams;
   const since = nonNegativeIntParam(params, "since");
   const limit = nonNegativeIntParam(params, "limit");
+  const snapshot = params.get("snapshot");
   const wantsJson =
-    booleanParam(params, "snapshot") || (req.headers.accept ?? "").includes("application/json");
+    snapshot === null
+      ? (req.headers.accept ?? "").includes("application/json")
+      : booleanParam(params, "snapshot");
   // The raw line is already JSON, so default frames are unwrapped.
   const wantsEnvelope = booleanParam(params, "envelope");
 

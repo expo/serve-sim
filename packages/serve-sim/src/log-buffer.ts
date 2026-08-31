@@ -132,19 +132,26 @@ export class DeviceLogBuffer {
 
   /**
    * Newest-last lines from `processName`, at or before `at`. `reason` separates "the buffer
-   * does not reach back that far" from "it does, but that process logged nothing".
+   * does not reach back that far" from "it does, but that process logged nothing". A ring whose
+   * newest line predates `at` by more than `maxGapMs` was not recording when `at` happened.
    */
   tailBefore({
     at,
     count,
     processName,
     maxBytes,
+    maxGapMs,
   }: {
     at: number;
     count: number;
     processName: string;
     maxBytes?: number;
+    maxGapMs?: number;
   }): { lines: LogLine[]; reason: "app-windowed" | "buffer-rolled-past" | "no-app-lines" } {
+    const newest = this.lines[this.lines.length - 1];
+    if (maxGapMs !== undefined && (newest === undefined || newest.at < at - maxGapMs)) {
+      return { lines: [], reason: "buffer-rolled-past" };
+    }
     const selected: LogLine[] = [];
     let reachedBack = false;
     for (let i = this.lines.length - 1; i >= 0 && selected.length < count; i -= 1) {

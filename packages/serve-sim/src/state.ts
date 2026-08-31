@@ -1,6 +1,6 @@
 import { tmpdir } from "os";
 import { join } from "path";
-import { readdirSync, mkdirSync, writeFileSync, renameSync } from "fs";
+import { readdirSync, mkdirSync, writeFileSync, renameSync, readFileSync, unlinkSync } from "fs";
 import type { StreamSettings } from "./stream-settings";
 export type {
   HttpStreamCodec,
@@ -72,6 +72,18 @@ export function writeServeSimState(state: ServeSimDeviceState): void {
   // readable only by the account running serve-sim.
   writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
   renameSync(tmp, file);
+}
+
+export function clearServeSimState(udid: string, ownerPid: number): void {
+  const file = stateFileForDevice(udid);
+  let state: ServeSimDeviceState;
+  try {
+    state = JSON.parse(readFileSync(file, "utf-8")) as ServeSimDeviceState;
+  } catch {
+    return;
+  }
+  if (state.pid !== ownerPid) return;
+  try { unlinkSync(file); } catch {}
 }
 
 /** List all per-device state files in the state directory. */

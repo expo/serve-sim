@@ -3,6 +3,7 @@ import { execSync, spawnSync } from "child_process";
 import { readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { parseDetachState } from "./detach-state";
 
 /**
  * Native e2e for `serve-sim type`.
@@ -45,9 +46,10 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
   let logFile: string;
 
   beforeAll(() => {
-    try { execSync(`bun run ${CLI_PATH} --kill`, { stdio: "pipe" }); } catch {}
+    try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe" }); } catch {}
 
-    const detach = spawnSync("bun", ["run", CLI_PATH, "--detach", bootedUdid!], {
+    const startPort = 40_000 + Math.floor(Math.random() * 20_000);
+    const detach = spawnSync("bun", ["run", CLI_PATH, "--detach", "-p", String(startPort), bootedUdid!], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "inherit"],
       timeout: 45_000,
@@ -60,11 +62,12 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
         `serve-sim --detach failed (exit=${detach.status} signal=${detach.signal})\nstdout: ${detach.stdout}`,
       );
     }
-    logFile = join(STATE_DIR, `server-${bootedUdid!}.log`);
+    const state = parseDetachState<{ device: string }>(detach.stdout);
+    logFile = join(STATE_DIR, `server-${state.device}.log`);
   }, 60_000);
 
   afterAll(() => {
-    try { execSync(`bun run ${CLI_PATH} --kill`, { stdio: "pipe" }); } catch {}
+    try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe" }); } catch {}
   });
 
   test("`serve-sim type` injects HID key events into the booted simulator", async () => {
@@ -80,7 +83,11 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 15_000,
     });
-    expect(result.status).toBe(0);
+    if (result.status !== 0) {
+      throw new Error(
+        `serve-sim type failed (exit=${result.status} signal=${result.signal})\nstderr: ${result.stderr}`,
+      );
+    }
 
     const logAfter = await waitForKeyLines(logFile, beforeCount + 10, 5_000);
     const newLines = logAfter.slice(logBefore.length);

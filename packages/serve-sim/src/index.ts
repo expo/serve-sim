@@ -11,6 +11,7 @@ import {
   listStateFiles,
   inProcessServeSimState,
   writeServeSimState,
+  clearServeSimState,
   type ServeSimDeviceState,
   type StreamSettings,
   type WebRtcIceServer,
@@ -1688,7 +1689,7 @@ async function serve(
   }
   const clearAll = () => {
     for (const udid of targetDevices) {
-      try { clearState(udid); } catch {}
+      try { clearServeSimState(udid, process.pid); } catch {}
     }
   };
   process.on("exit", clearAll);

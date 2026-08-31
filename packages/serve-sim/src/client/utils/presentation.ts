@@ -50,24 +50,6 @@ export function escapeKeyOutcome(
   };
 }
 
-// Best-effort: unavailable on iPhone Safari, and an iframe host can withhold it.
-export function requestNativeFullscreen(): Promise<boolean> {
-  const el = document.documentElement;
-  if (!el.requestFullscreen) return Promise.resolve(false);
-  try {
-    return el.requestFullscreen().then(() => true, () => false);
-  } catch {
-    return Promise.resolve(false);
-  }
-}
-
-export function exitNativeFullscreen(): void {
-  if (!document.fullscreenElement) return;
-  try {
-    void document.exitFullscreen().catch(() => {});
-  } catch {}
-}
-
 export const PRESENTATION_EXIT_BUTTON_SIZE = 30;
 export const PRESENTATION_EXIT_WRAPPER_PADDING = 4;
 export const PRESENTATION_EXIT_MARGIN = 12;

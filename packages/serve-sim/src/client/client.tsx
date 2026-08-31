@@ -73,10 +73,8 @@ import { mjpegStreamUrlFrom, simEndpoint, streamConfigFrom, webrtcCloseUrlFrom, 
 import { shouldStreamSimulatorLogs } from "./utils/simulator-logs";
 import {
   escapeKeyOutcome,
-  exitNativeFullscreen,
   presentationExitOffset,
   presentationModeFromSearch,
-  requestNativeFullscreen,
   writeFullscreenSearchParam,
 } from "./utils/presentation";
 import {
@@ -134,7 +132,6 @@ function App() {
   const presentationRef = useRef(presentation);
   presentationRef.current = presentation;
   const swallowEscapeRef = useRef(false);
-  const nativeFullscreenRef = useRef(false);
   const [presentationGutters, setPresentationGutters] = useState<{
     side: number;
     top: number;
@@ -208,40 +205,13 @@ function App() {
     setPresentation(true);
     setGridOpen(false);
     if (!embedLocked) writeFullscreenSearchParam(true);
-    // Best-effort; presentation works without it.
-    void requestNativeFullscreen().then((ok) => {
-      if (!ok) return;
-      // Resolves a tick later, so the user may already have left.
-      if (!presentationRef.current) {
-        exitNativeFullscreen();
-        return;
-      }
-      nativeFullscreenRef.current = true;
-    });
   }, [embedLocked]);
 
   const exitPresentation = useCallback(() => {
     if (embedLocked) return;
     setPresentation(false);
     writeFullscreenSearchParam(false);
-    if (nativeFullscreenRef.current) {
-      nativeFullscreenRef.current = false;
-      exitNativeFullscreen();
-    }
   }, [embedLocked]);
-
-  // Leaving native fullscreen by any route leaves presentation too.
-  useEffect(() => {
-    if (embedLocked) return;
-    const onChange = () => {
-      if (document.fullscreenElement) return;
-      if (!nativeFullscreenRef.current) return;
-      nativeFullscreenRef.current = false;
-      if (presentationRef.current) exitPresentation();
-    };
-    document.addEventListener("fullscreenchange", onChange);
-    return () => document.removeEventListener("fullscreenchange", onChange);
-  }, [embedLocked, exitPresentation]);
 
   useEffect(() => {
     if (embedLocked) return;

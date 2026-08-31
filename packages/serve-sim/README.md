@@ -337,15 +337,20 @@ Env (all optional): `TART_VM=tahoe-xcode`, `TART_USER=expo`, `TART_SHARE_NAME=se
 
 ### EAS preview of a CI package
 
-`--package-version` only pins serve-sim on `--type web-preview-only`. It does not change the package on `agent-device`.
+`--package-version` pins serve-sim only on `--type web-preview-only`. The other session types use the flag for their own package (`agent-device`, `appium`, `argent`) and always run serve-sim at `latest`, so a serve-sim tarball URL breaks them.
 
-CI uploads `serve-sim-npm-package` (`serve-sim.tgz`). Copy that artifact's download URL from the workflow run, then pass it as `--package-version`. Run this from an Expo project directory.
+The `serve-sim tests` workflow packs `serve-sim.tgz` on every pull request and uploads it as `serve-sim-npm-package`. It packs before the tests run, so the tarball exists even when they fail. `Build @expo/serve-sim release` uploads the same artifact on demand. Copy the download URL from the run, then pass it as `--package-version`. Run these commands from an Expo project directory.
 
 ```sh
-npx --yes eas-cli@latest workflow:view <workflow-run-id>
+npx --yes eas-cli@latest workflow:runs --workflow sim-test.yml --limit 5
+
+npx --yes eas-cli@latest workflow:view <workflow-run-id> --non-interactive --json \
+  | jq -er '.jobs[].artifacts[]? | select(.name == "serve-sim-npm-package") | .downloadUrl'
 ```
 
-The job lists `serve-sim-npm-package` with a Download URL. You can also open the printed Log URL and copy it from the Expo dashboard.
+`--non-interactive` requires the run ID as an argument. Without it, `workflow:view` prompts for a run. Without `--json`, it prints a Log URL for the run on the Expo dashboard, and each job lists its artifacts with a Download URL.
+
+The download URL is signed and expires one hour after `workflow:view` returns it. The worker installs the package minutes after the session starts, so copy a fresh URL for each session. An expired URL fails in the job log, not in your terminal. The URL also appears in that log, so anyone who can read the run can download the artifact until the URL expires.
 
 ```sh
 npx --yes eas-cli@latest simulator:start --platform ios --type web-preview-only --non-interactive \
@@ -353,7 +358,9 @@ npx --yes eas-cli@latest simulator:start --platform ios --type web-preview-only 
   --package-version '<download-url>'
 ```
 
-Install and launch an app at start with one of `--build-id`, `--application-archive-url`, or `--expo-go`. `--launch-arg` and `--open-url` need one of those.
+EAS runs `npx @expo/serve-sim@<value>`, so the flag takes any npm spec: a version, a tag, or a tarball URL. Quote the URL.
+
+Install and launch an app at start with one of `--build-id`, `--application-archive-url`, or `--expo-go`. `--launch-arg` and `--open-url` need one of those. `--sdk-version` needs `--expo-go`.
 
 ```sh
 npx --yes eas-cli@latest simulator:start --platform ios --type web-preview-only --non-interactive \
@@ -362,7 +369,7 @@ npx --yes eas-cli@latest simulator:start --platform ios --type web-preview-only 
   --expo-go
 ```
 
-EAS installs and launches the app before serve-sim starts. After the preview is up, drop an `.app` or `.ipa` on the page to add another app. Stop with `npx --yes eas-cli@latest simulator:stop`.
+EAS installs and launches the app before serve-sim starts. After the preview is up, drop an `.ipa` on the page to install another app. The page takes an `.ipa` or media, not an `.app` bundle or a build archive, so pass `--build-id` or `--application-archive-url` for those. Stop with `npx --yes eas-cli@latest simulator:stop`.
 
 ## Origin and attribution
 

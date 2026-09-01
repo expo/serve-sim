@@ -1413,7 +1413,15 @@ function AppWithConfig({
       {!presentation && (
       <>
       <div
-        className={`fixed top-3 right-3 flex flex-col gap-1 p-1 bg-panel-bg border border-white/8 rounded-[10px] backdrop-blur-[12px] [-webkit-backdrop-filter:blur(12px)] [transition:opacity_0.18s_ease] z-40 ${(panelOpen || devtoolsOpen) ? "opacity-0 pointer-events-none" : "opacity-100 pointer-events-auto"}`}
+        className="fixed top-3 flex flex-col gap-1 p-1 bg-panel-bg border border-white/8 rounded-[10px] backdrop-blur-[12px] [-webkit-backdrop-filter:blur(12px)] [transition:right_0.24s_cubic-bezier(0.22,1,0.36,1)] z-40"
+        // Slide clear of an open panel rather than fading out. The rail used to
+        // hide, which also hid the only way into full screen on any window wide
+        // enough to open the tools panel by default.
+        style={{
+          right:
+            PANEL_EDGE_OFFSET +
+            (panelOpen || devtoolsOpen ? rightPanelWidthPx + PANEL_GAP : 0),
+        }}
       >
         <button
           onClick={onEnterPresentation}

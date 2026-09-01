@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
+import { type RefObject, useEffect, useRef } from "react";
 import { Keyboard, KeyboardOff } from "lucide-react";
+import { IconButton } from "./icon-button";
 import {
   KEYBOARD_CAPTURE_ATTRIBUTES,
   keyEventsForInputType,
@@ -16,11 +17,14 @@ import type { KeyEvent } from "../../text-to-keys";
 export function KeyboardCapture({
   open,
   onKeys,
+  inputRef,
 }: {
   open: boolean;
   onKeys: (events: KeyEvent[]) => void;
+  inputRef?: RefObject<HTMLInputElement | null>;
 }) {
-  const ref = useRef<HTMLInputElement | null>(null);
+  const ownRef = useRef<HTMLInputElement | null>(null);
+  const ref = inputRef ?? ownRef;
   const onKeysRef = useRef(onKeys);
   onKeysRef.current = onKeys;
   const openRef = useRef(open);
@@ -85,15 +89,14 @@ export function KeyboardToggleButton({
   onClick: () => void;
 }) {
   return (
-    <button
+    <IconButton
       onClick={onClick}
-      className="w-[30px] h-[30px] flex items-center justify-center bg-transparent border-none rounded-md text-[#8e8e93] cursor-pointer [transition:background_0.15s_ease,color_0.15s_ease] hover:bg-white/8 hover:text-white"
       aria-label="Keyboard"
       aria-pressed={open}
       title="Keyboard"
     >
       <Keyboard size={18} strokeWidth={1.75} />
-    </button>
+    </IconButton>
   );
 }
 
@@ -105,13 +108,12 @@ export function KeyboardToggleButton({
  */
 export function SimKeyboardToggleButton({ onClick }: { onClick: () => void }) {
   return (
-    <button
+    <IconButton
       onClick={onClick}
-      className="w-[30px] h-[30px] flex items-center justify-center bg-transparent border-none rounded-md text-[#8e8e93] cursor-pointer [transition:background_0.15s_ease,color_0.15s_ease] hover:bg-white/8 hover:text-white"
       aria-label="Toggle simulator keyboard"
       title="Toggle simulator keyboard"
     >
       <KeyboardOff size={18} strokeWidth={1.75} />
-    </button>
+    </IconButton>
   );
 }

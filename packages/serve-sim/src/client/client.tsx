@@ -34,14 +34,13 @@ import { AxToolbarButton } from "./components/ax-toolbar-button";
 import { DeviceSidebarToggle } from "./components/device-sidebar-toggle";
 import { DevicePlaceholder } from "./components/device-placeholder";
 import { PresentationControls } from "./components/presentation-controls";
-import { IconButton } from "./components/icon-button";
 import {
   KeyboardCapture,
   KeyboardToggleButton,
-  SimKeyboardToggleButton,
 } from "./components/keyboard-capture";
 import { DeviceKitChrome, type ChromeButtonPress } from "./components/device-chrome-frame";
 import { GridPanel } from "./components/grid-panel";
+import { IconButton } from "./components/icon-button";
 import { ResizeHandle } from "./components/resize-handle";
 import { SimulatorResizeCornerHandle } from "./components/simulator-resize-corner-handle";
 import { ServeSimToaster } from "./components/app-toasts";
@@ -56,6 +55,7 @@ import { useWebRtcStream } from "./hooks/use-webrtc-stream";
 import { useResizableWidth } from "./hooks/use-resizable-width";
 import { useScreenshotToast } from "./hooks/use-screenshot-toast";
 import { useSimulatorResize } from "./hooks/use-simulator-resize";
+import { useFlipLayout } from "./hooks/use-flip-layout";
 import { useUploadToasts } from "./hooks/use-upload-toasts";
 import { useWebKitDevtools } from "./hooks/use-webkit-devtools";
 import { useGridDevices } from "./hooks/use-grid-devices";
@@ -88,10 +88,12 @@ import {
   getPresentationFrameWidth,
   roundToDevicePixel,
   SIMULATOR_RESIZE_DRAG_TRANSITION,
-  SIMULATOR_RESIZE_LAYOUT_TRANSITION,
   SIMULATOR_RESIZE_PAGE_TRANSITION,
   SIMULATOR_RESIZE_PRESENTATION_TRANSITION,
   SIMULATOR_RESIZE_PRESENTATION_TRANSITION_MS,
+  SIMULATOR_RESIZE_KEYBOARD_VIEWPORT_SHRINK_PX,
+  SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
+  SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD,
   SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION,
 } from "./utils/simulator-resize";
 import {
@@ -603,8 +605,6 @@ function AppWithConfig({
   useEffect(() => {
     document.title = deviceName ? `Simulator - ${deviceName}` : "Simulator Preview";
   }, [deviceName]);
-  const coarsePointer = useCoarsePointer();
-  useBlockPageZoom(coarsePointer);
 
   const deviceType: DeviceType = getDeviceType(deviceName);
   const devtools = useWebKitDevtools(config.devtoolsEndpoint ?? simEndpoint("devtools"), devtoolsOpen);
@@ -943,6 +943,9 @@ function AppWithConfig({
   const [viewportHeight, setViewportHeight] = useState(() =>
     typeof window === "undefined" ? 0 : window.visualViewport?.height ?? window.innerHeight,
   );
+  const [windowInnerHeight, setWindowInnerHeight] = useState(() =>
+    typeof window === "undefined" ? 0 : window.innerHeight,
+  );
   useEffect(() => {
     // `visualViewport`, not `innerHeight`: an on-screen keyboard shrinks the
     // visual viewport but leaves `innerHeight` (and `dvh`) at full height, which
@@ -950,6 +953,7 @@ function AppWithConfig({
     const vv = window.visualViewport;
     const onResize = () => {
       setViewportWidth(window.innerWidth);
+      setWindowInnerHeight(window.innerHeight);
       setViewportHeight(vv?.height ?? window.innerHeight);
     };
     window.addEventListener("resize", onResize);
@@ -985,6 +989,7 @@ function AppWithConfig({
   }, [sendKey]);
 
   const simContainerRef = useRef<HTMLDivElement | null>(null);
+  const flipRef = useRef<HTMLDivElement | null>(null);
   const [deviceRenderedWidth, setDeviceRenderedWidth] = useState(0);
   const [deviceRenderedHeight, setDeviceRenderedHeight] = useState(0);
   useEffect(() => {
@@ -1002,13 +1007,44 @@ function AppWithConfig({
   const simFocusedRef = useRef(true);
   simFocusedRef.current = simFocused;
   const pressedKeysRef = useRef<Set<number>>(new Set());
+  const coarsePointer = useCoarsePointer();
+  useBlockPageZoom(coarsePointer);
+  // On a touch device the phone's native keyboard is the input method, opened
+  // and closed only from the keyboard button. Opening also hides the
+  // simulator's own on-screen keyboard so the two do not stack; closing brings
+  // it back.
   const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const keyboardInputRef = useRef<HTMLInputElement | null>(null);
   const sendKeyEvents = useCallback(
     (events: { type: "down" | "up"; usage: number }[]) => {
       for (const e of events) sendWs(0x06, { type: e.type, usage: e.usage });
     },
     [sendWs],
   );
+
+  const toggleKeyboard = useCallback(() => {
+    const el = keyboardInputRef.current;
+    if (keyboardOpen) {
+      el?.blur();
+      setKeyboardOpen(false);
+      sendWs(0x0d, { visible: true });
+    } else {
+      // iOS raises its keyboard only for a focus() inside the tap, so this
+      // cannot wait for the state to land in an effect.
+      el?.focus();
+      setKeyboardOpen(true);
+      sendWs(0x0d, { visible: false });
+    }
+  }, [keyboardOpen, sendWs]);
+
+  // Size against the visual viewport step, not `keyboardOpen`. Opening sets
+  // that flag while height is still full, which would grow the device to the
+  // 280px min before the keyboard inset arrives.
+  const phoneKeyboardRaised =
+    coarsePointer &&
+    windowInnerHeight > 0 &&
+    viewportHeight > 0 &&
+    windowInnerHeight - viewportHeight >= SIMULATOR_RESIZE_KEYBOARD_VIEWPORT_SHRINK_PX;
 
   useEffect(() => {
     // The device is the page, so clicking the exit control isn't a focus change;
@@ -1105,6 +1141,9 @@ function AppWithConfig({
     viewportWidth,
     viewportHeight,
     aspectRatio: containerAspectRatioValue,
+    reservedForChrome: phoneKeyboardRaised
+      ? SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD
+      : SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
     onStart: () => setSimFocused(false),
   });
 
@@ -1134,6 +1173,21 @@ function AppWithConfig({
     : panelOpen
     ? toolsPanelWidth
     : 0;
+  // `scale(1)` is not `none`: it would make this the containing block for every
+  // fixed descendant. The state only holds the transform past the exit so the
+  // device eases back down; entering reads `presentation` directly, in the same
+  // commit that strips the chrome.
+  const [exitScaling, setExitScaling] = useState(false);
+  useEffect(() => {
+    if (presentation) {
+      setExitScaling(true);
+      return;
+    }
+    if (!exitScaling) return;
+    const id = setTimeout(() => setExitScaling(false), SIMULATOR_RESIZE_PRESENTATION_TRANSITION_MS);
+    return () => clearTimeout(id);
+  }, [presentation, exitScaling]);
+  const scaling = presentation || exitScaling;
   const shiftForRightPanel = presentation ? 0 : shiftToClear(rightPanelWidthPx);
   const shiftForLeftPanel = presentation ? 0 : shiftToClear(gridOpen ? gridPanelWidth : 0);
   const presentationInset = SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION;
@@ -1153,43 +1207,42 @@ function AppWithConfig({
   const layoutScale =
     layoutWidth > 0 && frameWidth > 0 ? frameWidth / layoutWidth : 1;
   const resizing = simulatorResize.isResizing || simulatorResize.isInertia;
-  // `scale(1)` is not `none`: it would make this the containing block for every
-  // fixed descendant. The state only holds the transform past the exit so the
-  // device eases back down; entering reads `presentation` directly, in the same
-  // commit that strips the chrome.
-  const [exitScaling, setExitScaling] = useState(false);
-  useEffect(() => {
-    if (presentation) {
-      setExitScaling(true);
-      return;
-    }
-    if (!exitScaling) return;
-    const id = setTimeout(() => setExitScaling(false), SIMULATOR_RESIZE_PRESENTATION_TRANSITION_MS);
-    return () => clearTimeout(id);
-  }, [presentation, exitScaling]);
-  const scaling = presentation || exitScaling;
-  const layoutTransition = resizing
-    ? SIMULATOR_RESIZE_DRAG_TRANSITION
-    : SIMULATOR_RESIZE_LAYOUT_TRANSITION;
+  useFlipLayout(
+    flipRef,
+    !resizing && !presentation,
+    layoutWidth,
+    layoutHeight,
+    viewportHeight,
+    phoneKeyboardRaised,
+    scaling,
+  );
+  const presentationFrameHeight =
+    containerAspectRatioValue > 0 ? frameWidth / containerAspectRatioValue : 0;
 
   return (
     <AxStateProvider endpoint={axOverlayEnabled ? config?.axEndpoint : undefined}>
     <div
-      className={`flex flex-col items-center justify-center h-dvh bg-page font-system box-border ${presentation ? "gap-0" : "pt-16 pb-6 sm:py-6 gap-3"}`}
+      className={`flex flex-col items-center justify-center h-dvh bg-page font-system box-border ${
+        presentation
+          ? "gap-0"
+          : phoneKeyboardRaised
+            ? "pt-2 pb-2 gap-0"
+            : "pt-16 pb-6 sm:py-6 gap-3"
+      }`}
       style={{
         height: viewportHeight > 0 ? viewportHeight : undefined,
         paddingTop: presentation ? presentationInset : undefined,
         paddingBottom: presentation ? presentationInset : undefined,
         paddingLeft: presentation ? presentationInset : 24 + shiftForLeftPanel,
         paddingRight: presentation ? presentationInset : 24 + shiftForRightPanel,
-        transition: resizing ? "none" : SIMULATOR_RESIZE_PAGE_TRANSITION,
+        transition: resizing || scaling ? "none" : SIMULATOR_RESIZE_PAGE_TRANSITION,
       }}
     >
       <div
-        className={`flex flex-col items-center min-w-0 ${presentation ? "gap-0" : "gap-3"}`}
+        className={`flex flex-col items-center min-w-0 ${presentation || phoneKeyboardRaised ? "gap-0" : "gap-3"}`}
         style={{
           width: layoutWidth,
-          transition: layoutTransition,
+          transition: resizing ? SIMULATOR_RESIZE_DRAG_TRANSITION : undefined,
         }}
       >
         {!presentation && (
@@ -1234,29 +1287,34 @@ function AppWithConfig({
         {presentation && !embedLocked && (
           <PresentationControls onExit={onExitPresentation}>
             {coarsePointer && (
-              <>
-                <KeyboardToggleButton
-                  open={keyboardOpen}
-                  onClick={() => setKeyboardOpen((o) => !o)}
-                />
-                <SimKeyboardToggleButton onClick={() => sendWs(0x0c, {})} />
-              </>
+              <KeyboardToggleButton
+                open={keyboardOpen}
+                onClick={toggleKeyboard}
+              />
             )}
           </PresentationControls>
         )}
-        <KeyboardCapture open={keyboardOpen} onKeys={sendKeyEvents} />
+        <KeyboardCapture open={keyboardOpen} onKeys={sendKeyEvents} inputRef={keyboardInputRef} />
         <div
-          ref={simContainerRef}
-          className="relative max-h-full"
+          ref={flipRef}
           style={{
             width: layoutWidth,
             height: layoutHeight > 0 ? layoutHeight : undefined,
+            transition: resizing ? SIMULATOR_RESIZE_DRAG_TRANSITION : undefined,
+          }}
+        >
+        <div
+          ref={simContainerRef}
+          className="relative w-full h-full"
+          style={{
             aspectRatio: containerAspectRatio,
             transform: scaling ? `scale(${layoutScale})` : undefined,
             transformOrigin: "center center",
             transition: resizing
-              ? SIMULATOR_RESIZE_DRAG_TRANSITION
-              : `${SIMULATOR_RESIZE_LAYOUT_TRANSITION}, ${SIMULATOR_RESIZE_PRESENTATION_TRANSITION}`,
+              ? undefined
+              : scaling
+                ? SIMULATOR_RESIZE_PRESENTATION_TRANSITION
+                : undefined,
             willChange: resizing ? "width" : scaling ? "transform" : undefined,
           }}
           {...mediaDrop.dropZoneProps}
@@ -1376,7 +1434,8 @@ function AppWithConfig({
             visible={!presentation && (simulatorResize.isResizing || simulatorResize.isInertia)}
           />
         </div>
-        {!presentation && (
+        </div>
+        {!presentation && !phoneKeyboardRaised && (
         <div className="inline-flex items-center justify-center gap-2 max-w-full pb-1 sm:pb-0">
           <SimulatorToolbar
             exec={execOnHost}
@@ -1455,13 +1514,10 @@ function AppWithConfig({
         }}
       >
         {coarsePointer && (
-          <>
-            <KeyboardToggleButton
-              open={keyboardOpen}
-              onClick={() => setKeyboardOpen((o) => !o)}
-            />
-            <SimKeyboardToggleButton onClick={() => sendWs(0x0c, {})} />
-          </>
+          <KeyboardToggleButton
+            open={keyboardOpen}
+            onClick={toggleKeyboard}
+          />
         )}
         <IconButton
           onClick={onEnterPresentation}

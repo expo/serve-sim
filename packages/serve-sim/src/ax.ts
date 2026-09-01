@@ -79,6 +79,29 @@ function normalizeAxTree(roots: RawAxeNode[]): AxSnapshot {
   };
 }
 
+// UIKit gives every on-screen keyboard the same accessibility identifiers for
+// its non-letter keys. Two of them together are enough to tell the keyboard
+// apart from an app that happens to ship a button called "delete".
+const SOFTWARE_KEYBOARD_KEY_IDS = ["delete", "shift", "space", "more", "dictation"];
+
+/** Whether the simulator is drawing its own on-screen keyboard right now. */
+export async function isSoftwareKeyboardVisible(udid: string): Promise<boolean | null> {
+  let roots: RawAxeNode[];
+  try {
+    roots = JSON.parse(await axDescribeAsync(udid)) as RawAxeNode[];
+  } catch {
+    return null;
+  }
+  const keys = new Set<string>();
+  const visit = (node: RawAxeNode) => {
+    const id = node.AXUniqueId;
+    if (id && SOFTWARE_KEYBOARD_KEY_IDS.includes(id)) keys.add(id);
+    for (const child of node.children ?? []) visit(child);
+  };
+  for (const root of roots) visit(root);
+  return keys.size >= 2;
+}
+
 async function snapshotFromNative(udid: string): Promise<AxSnapshot> {
   let raw: RawAxeNode[];
   try {

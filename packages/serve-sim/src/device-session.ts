@@ -25,6 +25,8 @@ import {
   type MjpegFrame,
   type NativeUnsubscribe,
 } from "./native";
+import { isSoftwareKeyboardVisible } from "./ax";
+import { debugKeyboard } from "./debug";
 import { eventLogEventForHidMessage, formatEventLogPoint, recordEventLogEvent, updateEventLogEvent } from "./event-log";
 import {
   MAX_WEBRTC_SIGNALING_BODY_BYTES,
@@ -237,6 +239,9 @@ export class DeviceSession {
   private readonly transport: StreamPlaybackSettings["transport"];
   private encoderSettings: StreamEncoderSettings;
   private streamSettingsUpdate: Promise<void> = Promise.resolve();
+  private softwareKeyboardHidden = false;
+  private softwareKeyboardSync: Promise<void> = Promise.resolve();
+  private softwareKeyboardSyncPending = false;
 
   constructor(public readonly udid: string, initialStreamSettings?: StreamSettings) {
     const streamSettings = streamControlSettingsFrom(initialStreamSettings);
@@ -679,8 +684,15 @@ export class DeviceSession {
     const cfg = this.configFrame();
     if (cfg) ws.send(cfg); // seed dimensions/orientation, replacing the old poll
     ws.on("message", (data: Buffer) => this.handleHidMessage(Buffer.isBuffer(data) ? data : Buffer.from(data)));
-    ws.on("close", () => this.hidSockets.delete(ws));
-    ws.on("error", () => this.hidSockets.delete(ws));
+    ws.on("close", () => this.detachHidSocket(ws));
+    ws.on("error", () => this.detachHidSocket(ws));
+  }
+
+  private detachHidSocket(ws: HidSocket): void {
+    this.hidSockets.delete(ws);
+    // A closed tab never sends its restore, and the simulator would keep the
+    // keyboard suppressed for whoever opens it next.
+    if (this.hidSockets.size === 0) this.queueSoftwareKeyboardSync(true);
   }
 
   private async handleHidMessage(data: Buffer): Promise<void> {
@@ -780,7 +792,60 @@ export class DeviceSession {
         this.recordHidEvent(tag, {});
         this.hid.softwareKeyboard();
         break;
+      case 0x0d: {
+        const m = json<{ visible: boolean }>();
+        if (m) {
+          this.recordHidEvent(tag, m);
+          this.queueSoftwareKeyboardSync(m.visible);
+        }
+        break;
+      }
     }
+  }
+
+  /**
+   * Serialize the keyboard sync. An accessibility read can outlast the browser's
+   * repeat interval, and two overlapping runs would each see a stale
+   * `softwareKeyboardHidden` and toggle, cancelling one another out. A queued
+   * hide is redundant with the one already running; a show happens once and has
+   * to land, so it always joins the chain.
+   */
+  private queueSoftwareKeyboardSync(visible: boolean): void {
+    if (!visible && this.softwareKeyboardSyncPending) return;
+    this.softwareKeyboardSyncPending = true;
+    this.softwareKeyboardSync = this.softwareKeyboardSync
+      .then(() => this.setSoftwareKeyboardVisible(visible))
+      .catch(() => {})
+      .then(() => {
+        this.softwareKeyboardSyncPending = false;
+      });
+  }
+
+  /**
+   * Drive the simulator's on-screen keyboard to `visible`. The underlying HID
+   * button is a blind toggle, so the current state is read from the
+   * accessibility tree first and the toggle only fires when it disagrees. That
+   * read is also what lets a session adopt, and later undo, a hardware-keyboard
+   * mode an earlier session left behind when it died.
+   */
+  private async setSoftwareKeyboardVisible(visible: boolean): Promise<void> {
+    if (visible) {
+      debugKeyboard("show requested, hidden=%s", this.softwareKeyboardHidden);
+      if (!this.softwareKeyboardHidden) return;
+      this.softwareKeyboardHidden = false;
+      this.hid.softwareKeyboard();
+      return;
+    }
+    const keyboardVisible = await isSoftwareKeyboardVisible(this.udid);
+    if (keyboardVisible === null) return;
+    debugKeyboard(
+      "hide requested, keyboard=%s hidden=%s",
+      keyboardVisible,
+      this.softwareKeyboardHidden,
+    );
+    if (this.softwareKeyboardHidden || !keyboardVisible) return;
+    this.softwareKeyboardHidden = true;
+    this.hid.softwareKeyboard();
   }
 
   private recordTouchEvent(payload: { type: string; x: number; y: number; edge?: number }): void {

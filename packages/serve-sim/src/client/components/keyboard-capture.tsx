@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Keyboard } from "lucide-react";
+import { Keyboard, KeyboardOff } from "lucide-react";
 import {
   KEYBOARD_CAPTURE_ATTRIBUTES,
   keyEventsForInputType,
@@ -16,20 +16,26 @@ import type { KeyEvent } from "../../text-to-keys";
 export function KeyboardCapture({
   open,
   onKeys,
-  onClose,
 }: {
   open: boolean;
   onKeys: (events: KeyEvent[]) => void;
-  onClose: () => void;
 }) {
   const ref = useRef<HTMLInputElement | null>(null);
   const onKeysRef = useRef(onKeys);
   onKeysRef.current = onKeys;
+  const openRef = useRef(open);
+  openRef.current = open;
 
   useEffect(() => {
     const el = ref.current;
-    if (!el || !open) return;
-    el.focus();
+    if (!el) return;
+    if (open) el.focus();
+    else el.blur();
+  }, [open]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
     // Native listener, not React's `onBeforeInput`: the synthetic event is not
     // the DOM one and does not carry `inputType`, which is the whole signal.
     const onBeforeInput = (event: Event) => {
@@ -38,12 +44,25 @@ export function KeyboardCapture({
       if (events.length) onKeysRef.current(events);
       e.preventDefault();
     };
+    // iOS drops focus for its own reasons while the keyboard animates and the
+    // viewport reflows. Losing it would tear the keyboard down mid-sentence, so
+    // focus follows the user's intent, not the browser's.
+    const onFocusOut = () => {
+      if (!openRef.current) return;
+      queueMicrotask(() => {
+        if (openRef.current && document.activeElement !== el) el.focus();
+      });
+    };
     el.addEventListener("beforeinput", onBeforeInput);
-    return () => el.removeEventListener("beforeinput", onBeforeInput);
-  }, [open]);
+    el.addEventListener("focusout", onFocusOut);
+    return () => {
+      el.removeEventListener("beforeinput", onBeforeInput);
+      el.removeEventListener("focusout", onFocusOut);
+    };
+  }, []);
 
-  if (!open) return null;
-
+  // Always mounted: unmounting it on close destroyed the focused element, which
+  // is what dismissed the keyboard after a single keystroke.
   return (
     <input
       ref={ref}
@@ -53,7 +72,6 @@ export function KeyboardCapture({
       aria-hidden
       tabIndex={-1}
       defaultValue=""
-      onBlur={onClose}
       {...KEYBOARD_CAPTURE_ATTRIBUTES}
     />
   );
@@ -75,6 +93,25 @@ export function KeyboardToggleButton({
       title="Keyboard"
     >
       <Keyboard size={18} strokeWidth={1.75} />
+    </button>
+  );
+}
+
+/**
+ * Toggles the simulator's own on-screen keyboard, which otherwise covers the
+ * device while you type on the host keyboard. The underlying HID press is a
+ * blind toggle with no readable state, so this is a manual control rather than
+ * something driven automatically.
+ */
+export function SimKeyboardToggleButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-[30px] h-[30px] flex items-center justify-center bg-transparent border-none rounded-md text-[#8e8e93] cursor-pointer [transition:background_0.15s_ease,color_0.15s_ease] hover:bg-white/8 hover:text-white"
+      aria-label="Toggle simulator keyboard"
+      title="Toggle simulator keyboard"
+    >
+      <KeyboardOff size={18} strokeWidth={1.75} />
     </button>
   );
 }

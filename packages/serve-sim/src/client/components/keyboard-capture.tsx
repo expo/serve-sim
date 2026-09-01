@@ -5,9 +5,9 @@ import {
   KEYBOARD_CAPTURE_ATTRIBUTES,
   keyEventsForInputType,
 } from "../utils/mobile-keyboard";
+import { readNativeKeyboardRaised } from "../utils/simulator-resize";
 import type { KeyEvent } from "../../text-to-keys";
 
-/** Invisible focused field so iOS raises its keyboard; we forward input as HID. */
 export function KeyboardCapture({
   open,
   onKeys,
@@ -32,18 +32,19 @@ export function KeyboardCapture({
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
-    // Native `beforeinput`: React's synthetic event does not carry `inputType`.
     const onBeforeInput = (event: Event) => {
       const e = event as InputEvent;
       const events = keyEventsForInputType(e.inputType, e.data);
       if (events.length) onKeysRef.current(events);
       e.preventDefault();
     };
-    // iOS steals focus while the keyboard animates; restore it or the keyboard drops.
     const onFocusOut = () => {
       if (!openRef.current) return;
-      queueMicrotask(() => {
-        if (openRef.current && document.activeElement !== el) el.focus();
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!openRef.current || document.activeElement === el) return;
+          if (readNativeKeyboardRaised()) el.focus();
+        });
       });
     };
     el.addEventListener("beforeinput", onBeforeInput);
@@ -54,7 +55,6 @@ export function KeyboardCapture({
     };
   }, [inputRef]);
 
-  // Stay mounted: unmounting on close destroyed the focused field and dismissed the keyboard.
   return (
     <input
       ref={inputRef}

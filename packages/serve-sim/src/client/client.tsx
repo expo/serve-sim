@@ -91,7 +91,8 @@ import {
   SIMULATOR_RESIZE_PAGE_TRANSITION,
   SIMULATOR_RESIZE_PRESENTATION_TRANSITION,
   SIMULATOR_RESIZE_PRESENTATION_TRANSITION_MS,
-  SIMULATOR_RESIZE_KEYBOARD_VIEWPORT_SHRINK_PX,
+  isVisualViewportKeyboardRaised,
+  readNativeKeyboardRaised,
   SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
   SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD,
   SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION,
@@ -947,7 +948,6 @@ function AppWithConfig({
     typeof window === "undefined" ? 0 : window.innerHeight,
   );
   useEffect(() => {
-    // `visualViewport`, not `innerHeight`: the keyboard shrinks the visual viewport only.
     const vv = window.visualViewport;
     const onResize = () => {
       setViewportWidth(window.innerWidth);
@@ -1007,34 +1007,51 @@ function AppWithConfig({
   const pressedKeysRef = useRef<Set<number>>(new Set());
   const coarsePointer = useCoarsePointer();
   useBlockPageZoom(coarsePointer);
-  // Phone keyboard toggles from the button; hide the simulator keyboard so they don't stack.
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const keyboardInputRef = useRef<HTMLInputElement | null>(null);
+  const phoneKeyboardWasRaisedRef = useRef(false);
+
+  const closePhoneKeyboard = useCallback(() => {
+    keyboardInputRef.current?.blur();
+    setKeyboardOpen(false);
+    sendWs(0x0d, { visible: true });
+  }, [sendWs]);
 
   const toggleKeyboard = useCallback(() => {
     const el = keyboardInputRef.current;
-    if (keyboardOpen) {
-      el?.blur();
-      setKeyboardOpen(false);
-      sendWs(0x0d, { visible: true });
+    const focused = document.activeElement === el;
+    const raised = readNativeKeyboardRaised();
+    if (keyboardOpen && (raised || focused)) {
+      closePhoneKeyboard();
     } else {
-      // focus() must run in the tap handler; an effect is too late on iOS.
       el?.focus();
       setKeyboardOpen(true);
       sendWs(0x0d, { visible: false });
     }
-  }, [keyboardOpen, sendWs]);
+  }, [keyboardOpen, closePhoneKeyboard, sendWs]);
 
-  // `keyboardOpen` flips while height is still full, so size from the visual-viewport inset.
   const phoneKeyboardRaised =
-    coarsePointer &&
-    windowInnerHeight > 0 &&
-    viewportHeight > 0 &&
-    windowInnerHeight - viewportHeight >= SIMULATOR_RESIZE_KEYBOARD_VIEWPORT_SHRINK_PX;
+    coarsePointer && isVisualViewportKeyboardRaised(windowInnerHeight, viewportHeight);
 
   useEffect(() => {
-    // The device is the page, so clicking the exit control isn't a focus change;
-    // treating it as one would force-release every held key.
+    if (!keyboardOpen) {
+      phoneKeyboardWasRaisedRef.current = false;
+      return;
+    }
+    if (phoneKeyboardRaised) {
+      phoneKeyboardWasRaisedRef.current = true;
+      return;
+    }
+    if (!phoneKeyboardWasRaisedRef.current) return;
+    const id = setTimeout(() => {
+      if (readNativeKeyboardRaised()) return;
+      phoneKeyboardWasRaisedRef.current = false;
+      closePhoneKeyboard();
+    }, 200);
+    return () => clearTimeout(id);
+  }, [keyboardOpen, phoneKeyboardRaised, closePhoneKeyboard]);
+
+  useEffect(() => {
     if (presentation) {
       setSimFocused(true);
       return;
@@ -1159,7 +1176,6 @@ function AppWithConfig({
     : panelOpen
     ? toolsPanelWidth
     : 0;
-  // Hold exit transform through fullscreen exit; enter reads `presentation` directly.
   const [exitScaling, setExitScaling] = useState(false);
   useEffect(() => {
     if (presentation) {

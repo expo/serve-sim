@@ -79,10 +79,8 @@ function normalizeAxTree(roots: RawAxeNode[]): AxSnapshot {
   };
 }
 
-// Two of UIKit's keyboard key ids together; one "delete" button in an app is not enough.
 const SOFTWARE_KEYBOARD_KEY_IDS = ["delete", "shift", "space", "more", "dictation"];
 
-/** Whether the simulator is drawing its own on-screen keyboard right now. */
 export async function isSoftwareKeyboardVisible(udid: string): Promise<boolean> {
   const snapshot = await snapshotFromNative(udid);
   if (snapshot.errors?.length) return false;

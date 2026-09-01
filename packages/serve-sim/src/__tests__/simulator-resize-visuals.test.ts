@@ -13,6 +13,7 @@ import {
   SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
   SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD,
   SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION,
+  isVisualViewportKeyboardRaised,
 } from "../client/utils/simulator-resize";
 
 describe("simulator resize visual tuning", () => {
@@ -134,5 +135,11 @@ describe("simulator resize visual tuning", () => {
     expect(maxWidth / aspect).toBeLessThanOrEqual(
       viewportHeight - SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD,
     );
+  });
+
+  test("detects when the visual viewport shrank for the soft keyboard", () => {
+    expect(isVisualViewportKeyboardRaised(645, 645)).toBe(false);
+    expect(isVisualViewportKeyboardRaised(645, 520)).toBe(true);
+    expect(isVisualViewportKeyboardRaised(0, 334)).toBe(false);
   });
 });

@@ -30,7 +30,6 @@ export function keyEventsForInputType(
   }
 }
 
-/** Attributes that stop iOS from autocapitalising and autocorrecting what goes to the device. */
 export const KEYBOARD_CAPTURE_ATTRIBUTES = {
   autoCapitalize: "none",
   autoCorrect: "off",

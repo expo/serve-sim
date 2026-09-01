@@ -95,8 +95,6 @@ export function useSimulatorResize({
   );
   const minWidth = Math.min(SIMULATOR_RESIZE_MIN_WIDTH, maxWidth);
 
-  // `width` is the displayed width (may include rubber-band overshoot during drag/inertia).
-  // `committedWidth` is the bound-clamped value used for aria, keyboard math, and persistence.
   const width = frameWidth ?? defaultWidth;
   const committedWidth = clampSimulatorFrameWidth(
     width,
@@ -427,7 +425,6 @@ export function useSimulatorResize({
 
   return {
     handleRef,
-    // Idle width is committed, not rubber-band overshoot, so chrome layout stays stable.
     width: isResizing || isInertia ? width : committedWidth,
     committedWidth,
     minWidth,

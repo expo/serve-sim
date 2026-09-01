@@ -61,5 +61,5 @@ export function useFlipLayout(
       el.removeEventListener("transitionend", onEnd);
       clear();
     };
-  }, [enabled, layoutHeight, layoutWidth, phoneKeyboardRaised, scaling, viewportHeight]);
+  }, [enabled, layoutHeight, layoutWidth, phoneKeyboardRaised, ref, scaling, viewportHeight]);
 }

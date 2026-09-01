@@ -58,7 +58,6 @@ export function KeyboardCapture({
   return (
     <input
       ref={inputRef}
-      // Stay in-viewport and transparent: offscreen focus scrolls the page.
       className="fixed top-0 left-0 w-px h-px opacity-0 border-none p-0 m-0 bg-transparent"
       aria-hidden
       tabIndex={-1}

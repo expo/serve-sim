@@ -829,12 +829,8 @@ export class DeviceSession {
       debugKeyboard("show requested, hidden=%s", this.softwareKeyboardHidden);
       if (!this.softwareKeyboardHidden) return;
       const keyboardVisible = await isSoftwareKeyboardVisible(this.udid);
-      if (keyboardVisible) {
-        this.softwareKeyboardHidden = false;
-        return;
-      }
       this.softwareKeyboardHidden = false;
-      this.hid.softwareKeyboard();
+      if (!keyboardVisible) this.hid.softwareKeyboard();
       return;
     }
     const keyboardVisible = await isSoftwareKeyboardVisible(this.udid);

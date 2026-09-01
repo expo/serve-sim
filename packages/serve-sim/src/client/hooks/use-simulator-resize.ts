@@ -427,6 +427,7 @@ export function useSimulatorResize({
 
   return {
     handleRef,
+    // Idle width is committed, not rubber-band overshoot, so chrome layout stays stable.
     width: isResizing || isInertia ? width : committedWidth,
     committedWidth,
     minWidth,

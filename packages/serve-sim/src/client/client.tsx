@@ -947,9 +947,7 @@ function AppWithConfig({
     typeof window === "undefined" ? 0 : window.innerHeight,
   );
   useEffect(() => {
-    // `visualViewport`, not `innerHeight`: an on-screen keyboard shrinks the
-    // visual viewport but leaves `innerHeight` (and `dvh`) at full height, which
-    // would lay the device out behind the keyboard.
+    // `visualViewport`, not `innerHeight`: the keyboard shrinks the visual viewport only.
     const vv = window.visualViewport;
     const onResize = () => {
       setViewportWidth(window.innerWidth);
@@ -1009,16 +1007,9 @@ function AppWithConfig({
   const pressedKeysRef = useRef<Set<number>>(new Set());
   const coarsePointer = useCoarsePointer();
   useBlockPageZoom(coarsePointer);
-  // Phone keyboard is toggled from the button. Hide the simulator's own
-  // keyboard while it's up so the two don't stack.
+  // Phone keyboard toggles from the button; hide the simulator keyboard so they don't stack.
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const keyboardInputRef = useRef<HTMLInputElement | null>(null);
-  const sendKeyEvents = useCallback(
-    (events: { type: "down" | "up"; usage: number }[]) => {
-      for (const e of events) sendWs(0x06, { type: e.type, usage: e.usage });
-    },
-    [sendWs],
-  );
 
   const toggleKeyboard = useCallback(() => {
     const el = keyboardInputRef.current;
@@ -1027,8 +1018,7 @@ function AppWithConfig({
       setKeyboardOpen(false);
       sendWs(0x0d, { visible: true });
     } else {
-      // iOS raises its keyboard only for a focus() inside the tap, so this
-      // cannot wait for the state to land in an effect.
+      // focus() must run in the tap handler; an effect is too late on iOS.
       el?.focus();
       setKeyboardOpen(true);
       sendWs(0x0d, { visible: false });
@@ -1169,8 +1159,7 @@ function AppWithConfig({
     : panelOpen
     ? toolsPanelWidth
     : 0;
-  // `scale(1)` becomes the containing block for fixed descendants. Hold the
-  // transform only through the exit so the device eases down; enter reads `presentation`.
+  // Hold exit transform through fullscreen exit; enter reads `presentation` directly.
   const [exitScaling, setExitScaling] = useState(false);
   useEffect(() => {
     if (presentation) {
@@ -1286,7 +1275,13 @@ function AppWithConfig({
             )}
           </PresentationControls>
         )}
-        <KeyboardCapture open={keyboardOpen} onKeys={sendKeyEvents} inputRef={keyboardInputRef} />
+        <KeyboardCapture
+          open={keyboardOpen}
+          onKeys={(events) => {
+            for (const e of events) sendWs(0x06, { type: e.type, usage: e.usage });
+          }}
+          inputRef={keyboardInputRef}
+        />
         <div
           ref={flipRef}
           style={{

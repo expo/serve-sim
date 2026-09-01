@@ -936,16 +936,24 @@ function AppWithConfig({
   const [viewportWidth, setViewportWidth] = useState(
     () => (typeof window !== "undefined" ? window.innerWidth : 0),
   );
-  const [viewportHeight, setViewportHeight] = useState(
-    () => (typeof window !== "undefined" ? window.innerHeight : 0),
+  const [viewportHeight, setViewportHeight] = useState(() =>
+    typeof window === "undefined" ? 0 : window.visualViewport?.height ?? window.innerHeight,
   );
   useEffect(() => {
+    // `visualViewport`, not `innerHeight`: an on-screen keyboard shrinks the
+    // visual viewport but leaves `innerHeight` (and `dvh`) at full height, which
+    // would lay the device out behind the keyboard.
+    const vv = window.visualViewport;
     const onResize = () => {
       setViewportWidth(window.innerWidth);
-      setViewportHeight(window.innerHeight);
+      setViewportHeight(vv?.height ?? window.innerHeight);
     };
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    vv?.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      vv?.removeEventListener("resize", onResize);
+    };
   }, []);
   useEffect(() => {
     const es = openHostEventStream(config.appStateEndpoint ?? simEndpoint("appstate"));
@@ -1165,6 +1173,7 @@ function AppWithConfig({
     <div
       className={`flex flex-col items-center justify-center h-dvh bg-page font-system box-border ${presentation ? "gap-0" : "pt-16 pb-6 sm:py-6 gap-3"}`}
       style={{
+        height: viewportHeight > 0 ? viewportHeight : undefined,
         paddingTop: presentation ? presentationInset : undefined,
         paddingBottom: presentation ? presentationInset : undefined,
         paddingLeft: presentation ? presentationInset : 24 + shiftForLeftPanel,

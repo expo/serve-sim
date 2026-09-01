@@ -35,6 +35,7 @@ import { DeviceSidebarToggle } from "./components/device-sidebar-toggle";
 import { DevicePlaceholder } from "./components/device-placeholder";
 import { PresentationControls } from "./components/presentation-controls";
 import { IconButton } from "./components/icon-button";
+import { KeyboardCapture, KeyboardToggleButton } from "./components/keyboard-capture";
 import { DeviceKitChrome, type ChromeButtonPress } from "./components/device-chrome-frame";
 import { GridPanel } from "./components/grid-panel";
 import { ResizeHandle } from "./components/resize-handle";
@@ -989,6 +990,13 @@ function AppWithConfig({
   const simFocusedRef = useRef(true);
   simFocusedRef.current = simFocused;
   const pressedKeysRef = useRef<Set<number>>(new Set());
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const sendKeyEvents = useCallback(
+    (events: { type: "down" | "up"; usage: number }[]) => {
+      for (const e of events) sendWs(0x06, { type: e.type, usage: e.usage });
+    },
+    [sendWs],
+  );
 
   useEffect(() => {
     // The device is the page, so clicking the exit control isn't a focus change;
@@ -1211,8 +1219,20 @@ function AppWithConfig({
         </div>
         )}
         {presentation && !embedLocked && (
-          <PresentationControls onExit={onExitPresentation} />
+          <PresentationControls onExit={onExitPresentation}>
+            {coarsePointer && (
+              <KeyboardToggleButton
+                open={keyboardOpen}
+                onClick={() => setKeyboardOpen((o) => !o)}
+              />
+            )}
+          </PresentationControls>
         )}
+        <KeyboardCapture
+          open={keyboardOpen}
+          onKeys={sendKeyEvents}
+          onClose={() => setKeyboardOpen(false)}
+        />
         <div
           ref={simContainerRef}
           className="relative max-h-full"
@@ -1422,6 +1442,12 @@ function AppWithConfig({
               : 0),
         }}
       >
+        {coarsePointer && (
+          <KeyboardToggleButton
+            open={keyboardOpen}
+            onClick={() => setKeyboardOpen((o) => !o)}
+          />
+        )}
         <IconButton
           onClick={onEnterPresentation}
           aria-label="Full screen"

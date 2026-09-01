@@ -17,6 +17,7 @@ import {
   SIMULATOR_RESIZE_SPRING_DAMPING,
   SIMULATOR_RESIZE_SPRING_STIFFNESS,
   SIMULATOR_RESIZE_VELOCITY_HISTORY_MS,
+  SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
   clampSimulatorFrameWidth,
   estimateReleaseVelocity,
   getSimulatorFrameMaxWidth,
@@ -41,12 +42,14 @@ export function useSimulatorResize({
   viewportWidth,
   viewportHeight,
   aspectRatio,
+  reservedForChrome = SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
   onStart,
 }: {
   defaultWidth: number;
   viewportWidth: number;
   viewportHeight: number;
   aspectRatio: number;
+  reservedForChrome?: number;
   onStart: () => void;
 }) {
   const reducedMotion = usePrefersReducedMotion();
@@ -75,14 +78,21 @@ export function useSimulatorResize({
       viewportHeight,
       aspectRatio,
       scale,
+      reservedForChrome,
     );
-  }, [aspectRatio, defaultWidth, viewportHeight, viewportWidth]);
+  }, [aspectRatio, defaultWidth, reservedForChrome, viewportHeight, viewportWidth]);
   const initialWidth = useMemo(() => readRestoredWidth(), [readRestoredWidth]);
   const [frameWidth, setFrameWidth] = useState<number | null>(initialWidth);
   const lastWidthRef = useRef<number | null>(initialWidth);
   const restoredDefaultWidthRef = useRef(defaultWidth);
 
-  const maxWidth = getSimulatorFrameMaxWidth(defaultWidth, viewportWidth, viewportHeight, aspectRatio);
+  const maxWidth = getSimulatorFrameMaxWidth(
+    defaultWidth,
+    viewportWidth,
+    viewportHeight,
+    aspectRatio,
+    reservedForChrome,
+  );
   const minWidth = Math.min(SIMULATOR_RESIZE_MIN_WIDTH, maxWidth);
 
   // `width` is the displayed width (may include rubber-band overshoot during drag/inertia).
@@ -94,6 +104,7 @@ export function useSimulatorResize({
     viewportWidth,
     viewportHeight,
     aspectRatio,
+    reservedForChrome,
   );
 
   const writeWidth = useCallback((next: number) => {
@@ -105,12 +116,19 @@ export function useSimulatorResize({
   const persistNow = useCallback(
     (value: number) => {
       if (typeof window === "undefined" || defaultWidth <= 0) return;
-      const clamped = clampSimulatorFrameWidth(value, defaultWidth, viewportWidth, viewportHeight, aspectRatio);
+      const clamped = clampSimulatorFrameWidth(
+        value,
+        defaultWidth,
+        viewportWidth,
+        viewportHeight,
+        aspectRatio,
+        reservedForChrome,
+      );
       try {
         window.localStorage.setItem(SIMULATOR_RESIZE_SCALE_STORAGE_KEY, String(clamped / defaultWidth));
       } catch {}
     },
-    [aspectRatio, defaultWidth, viewportHeight, viewportWidth],
+    [aspectRatio, defaultWidth, reservedForChrome, viewportHeight, viewportWidth],
   );
 
   const schedulePersist = useCallback(
@@ -130,9 +148,16 @@ export function useSimulatorResize({
     if (isResizing || isInertia) return;
     const current = lastWidthRef.current;
     if (current == null) return;
-    const next = clampSimulatorFrameWidth(current, defaultWidth, viewportWidth, viewportHeight, aspectRatio);
+    const next = clampSimulatorFrameWidth(
+      current,
+      defaultWidth,
+      viewportWidth,
+      viewportHeight,
+      aspectRatio,
+      reservedForChrome,
+    );
     if (next !== current) writeWidth(next);
-  }, [aspectRatio, defaultWidth, isInertia, isResizing, viewportHeight, viewportWidth, writeWidth]);
+  }, [aspectRatio, defaultWidth, isInertia, isResizing, reservedForChrome, viewportHeight, viewportWidth, writeWidth]);
 
   useEffect(() => {
     if (restoredDefaultWidthRef.current === defaultWidth) return;
@@ -252,6 +277,7 @@ export function useSimulatorResize({
       viewportWidth,
       viewportHeight,
       aspectRatio,
+      reservedForChrome,
     );
     const target = roundToDevicePixel(
       snapToDetent(projected, [defaultWidth], SIMULATOR_RESIZE_DETENT_RADIUS),
@@ -283,6 +309,7 @@ export function useSimulatorResize({
     aspectRatio,
     defaultWidth,
     reducedMotion,
+    reservedForChrome,
     schedulePersist,
     viewportHeight,
     viewportWidth,
@@ -379,6 +406,7 @@ export function useSimulatorResize({
           viewportWidth,
           viewportHeight,
           aspectRatio,
+          reservedForChrome,
         ),
       );
       writeWidth(next);
@@ -392,13 +420,14 @@ export function useSimulatorResize({
       schedulePersist,
       viewportHeight,
       viewportWidth,
+      reservedForChrome,
       writeWidth,
     ],
   );
 
   return {
     handleRef,
-    width,
+    width: isResizing || isInertia ? width : committedWidth,
     committedWidth,
     minWidth,
     maxWidth,

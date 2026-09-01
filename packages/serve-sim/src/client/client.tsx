@@ -121,6 +121,9 @@ function App() {
   });
   const [axOverlayEnabled, setAxOverlayEnabled] = useState(false);
   const [devtoolsOpen, setDevtoolsOpen] = useState(false);
+  const [chromeEnabled, setChromeEnabled] = useState(() =>
+    typeof window === "undefined" ? true : !window.matchMedia("(pointer: coarse)").matches,
+  );
   const [presentationBoot] = useState(() =>
     typeof window === "undefined"
       ? { initial: false, embedLocked: false }
@@ -131,10 +134,6 @@ function App() {
   const presentationRef = useRef(presentation);
   presentationRef.current = presentation;
   const swallowEscapeRef = useRef(false);
-  const [presentationGutters, setPresentationGutters] = useState<{
-    side: number;
-    top: number;
-  } | null>(null);
   const [chromeGone, setChromeGone] = useState(presentationBoot.initial);
   useEffect(() => {
     if (!presentation) {
@@ -148,7 +147,7 @@ function App() {
   // simulator; narrow windows keep it collapsed so the device isn't squeezed.
   const [gridOpen, setGridOpen] = useState(() => {
     if (typeof window === "undefined" || presentationBoot.initial) return false;
-    return window.innerWidth >= DEVICE_SIDEBAR_WIDTH + 520;
+    return window.innerWidth >= DEVICE_SIDEBAR_WIDTH + 640;
   });
   const { width: gridPanelWidth, onPointerDown: onGridResize } = useResizableWidth(
     "serve-sim:device-sidebar-width",
@@ -464,8 +463,8 @@ function App() {
         onEnterPresentation={enterPresentation}
         onExitPresentation={exitPresentation}
         embedLocked={embedLocked}
-        presentationGutters={presentationGutters}
-        onPresentationGutters={setPresentationGutters}
+        chromeEnabled={chromeEnabled}
+        setChromeEnabled={setChromeEnabled}
       />
     );
   } else {
@@ -566,8 +565,8 @@ interface AppWithConfigProps {
   onEnterPresentation: () => void;
   onExitPresentation: () => void;
   embedLocked: boolean;
-  presentationGutters: { side: number; top: number } | null;
-  onPresentationGutters: (gutters: { side: number; top: number }) => void;
+  chromeEnabled: boolean;
+  setChromeEnabled: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
 function AppWithConfig({
@@ -590,8 +589,8 @@ function AppWithConfig({
   onEnterPresentation,
   onExitPresentation,
   embedLocked,
-  presentationGutters,
-  onPresentationGutters,
+  chromeEnabled,
+  setChromeEnabled,
 }: AppWithConfigProps) {
   useEffect(() => {
     document.title = deviceName ? `Simulator - ${deviceName}` : "Simulator Preview";
@@ -732,7 +731,7 @@ function AppWithConfig({
   // *screen* at the same comfortable size — and resize / panel-collision math
   // all operate on the frame dimensions.
   const isLandscape = isLandscapeConfig(activeStreamConfig);
-  const useChrome = !!chrome && !isLandscape;
+  const useChrome = !!chrome && !isLandscape && chromeEnabled;
   const chromeScale = useChrome ? chrome!.frame.width / chrome!.screen.width : 1;
   const containerDefaultWidth = frameMaxWidth * chromeScale;
   const containerAspectRatioValue = useChrome
@@ -816,7 +815,13 @@ function AppWithConfig({
     );
   }, []);
 
-  const onStreamTouch = useCallback((data: any) => sendWs(0x03, data), [sendWs]);
+  const onStreamTouch = useCallback(
+    (data: { type: string; x: number; y: number; edge?: number }) => {
+      sendWs(0x03, data);
+    },
+    [sendWs],
+  );
+
   const onStreamMultiTouch = useCallback((data: any) => sendWs(0x05, data), [sendWs]);
   const onStreamButton = useCallback((button: string) => sendWs(0x04, { button }), [sendWs]);
   // A hardware button on the device chrome was pressed/released. Forward its HID
@@ -892,7 +897,7 @@ function AppWithConfig({
     if (typeof window === "undefined" || presentation) return false;
     const stored = Number(window.localStorage.getItem("serve-sim:tools-panel-width"));
     const panelWidth = Number.isFinite(stored) && stored > 0 ? stored : PANEL_WIDTH;
-    return window.innerWidth >= panelWidth + 480;
+    return window.innerWidth >= panelWidth + 640;
   });
   const openPanelsRef = useRef({ panel: false, devtools: false });
   openPanelsRef.current = { panel: panelOpen, devtools: devtoolsOpen };
@@ -1083,6 +1088,8 @@ function AppWithConfig({
   // each pushes the centered simulator the opposite way.
   const PANEL_EDGE_OFFSET = 12;
   const PANEL_GAP = 24;
+  const RAIL_PANEL_GAP = 8;
+  const SM_BREAKPOINT = 640;
   const deviceWidth = deviceRenderedWidth > 0
     ? Math.min(deviceRenderedWidth, simulatorResize.width)
     : simulatorResize.width;
@@ -1138,20 +1145,6 @@ function AppWithConfig({
   const scaling = presentation || exitScaling;
   const presentationFrameHeight =
     containerAspectRatioValue > 0 ? frameWidth / containerAspectRatioValue : 0;
-  useEffect(() => {
-    if (!presentation) return;
-    onPresentationGutters({
-      side: Math.max(0, (viewportWidth - frameWidth) / 2),
-      top: Math.max(0, (viewportHeight - presentationFrameHeight) / 2),
-    });
-  }, [
-    presentation,
-    viewportWidth,
-    viewportHeight,
-    frameWidth,
-    presentationFrameHeight,
-    onPresentationGutters,
-  ]);
   const layoutTransition = resizing
     ? SIMULATOR_RESIZE_DRAG_TRANSITION
     : SIMULATOR_RESIZE_LAYOUT_TRANSITION;
@@ -1176,46 +1169,46 @@ function AppWithConfig({
         }}
       >
         {!presentation && (
-        <SimulatorToolbar
-          exec={execOnHost}
-          onRotate={rotateDevice}
-          orientation={(activeStreamConfig as { orientation?: SimulatorOrientation }).orientation ?? null}
-          deviceUdid={config.device}
-          deviceName={deviceName}
-          deviceRuntime={deviceRuntime}
-          streaming={streaming}
-          aria-label="Simulator status"
-          style={{
-            alignSelf: "center",
-            width: "auto",
-            minWidth: 0,
-            maxWidth: "100%",
-            flexWrap: "nowrap",
-            justifyContent: "center",
-            gap: 10,
-            padding: "6px 10px",
-            borderRadius: 18,
-          }}
-        >
-          <SimulatorToolbar.Title
-            onClick={() => setGridOpen((o) => !o)}
-            aria-label="Toggle simulators sidebar"
-            aria-pressed={gridOpen}
-            title="Simulators"
-            hideSubtitle
-            hideChevron
+        <div className={`fixed sm:static top-[18px] sm:top-auto left-1/2 -translate-x-1/2 sm:translate-x-0 z-30 sm:z-auto self-center ${panelOpen || devtoolsOpen ? "max-sm:hidden" : ""}`}>
+          <SimulatorToolbar
+            exec={execOnHost}
+            onRotate={rotateDevice}
+            orientation={(activeStreamConfig as { orientation?: SimulatorOrientation }).orientation ?? null}
+            deviceUdid={config.device}
+            deviceName={deviceName}
+            deviceRuntime={deviceRuntime}
+            streaming={streaming}
+            aria-label="Simulator status"
             style={{
-              maxWidth: "min(230px, calc(100vw - 170px))",
+              width: "auto",
+              minWidth: 0,
+              maxWidth: "100%",
+              flexWrap: "nowrap",
+              justifyContent: "center",
+              gap: 10,
+              padding: "6px 10px",
+              borderRadius: 18,
             }}
-          />
-          <StreamStatusPill streaming={streaming} />
-        </SimulatorToolbar>
+          >
+            <span className="hidden sm:contents">
+              <SimulatorToolbar.Title
+                onClick={() => setGridOpen((o) => !o)}
+                aria-label="Toggle simulators sidebar"
+                aria-pressed={gridOpen}
+                title="Simulators"
+                hideSubtitle
+                hideChevron
+                style={{
+                  maxWidth: "min(230px, calc(100vw - 170px))",
+                }}
+              />
+            </span>
+            <StreamStatusPill streaming={streaming} />
+          </SimulatorToolbar>
+        </div>
         )}
-        {presentation && !embedLocked && presentationGutters && (
-          <PresentationControls
-            onExit={onExitPresentation}
-            gutters={presentationGutters}
-          />
+        {presentation && !embedLocked && (
+          <PresentationControls onExit={onExitPresentation} />
         )}
         <div
           ref={simContainerRef}
@@ -1349,7 +1342,7 @@ function AppWithConfig({
           />
         </div>
         {!presentation && (
-        <div className="inline-flex items-center justify-center gap-2 max-w-full">
+        <div className="inline-flex items-center justify-center gap-2 max-w-full pb-1 sm:pb-0">
           <SimulatorToolbar
             exec={execOnHost}
             onRotate={rotateDevice}
@@ -1423,14 +1416,15 @@ function AppWithConfig({
       <div
         // Row on narrow screens: stacked, it fights the device for the side
         // gutter, which on a phone is only a few points wide.
-        className="fixed top-3 flex flex-row sm:flex-col gap-1 p-1 bg-panel-bg border border-white/8 rounded-[10px] backdrop-blur-[12px] [-webkit-backdrop-filter:blur(12px)] [transition:right_0.24s_cubic-bezier(0.22,1,0.36,1)] z-40"
-        // Slide clear of an open panel rather than fading out. The rail used to
-        // hide, which also hid the only way into full screen on any window wide
-        // enough to open the tools panel by default.
+        className="fixed top-3 flex flex-row sm:flex-col gap-1 p-1 bg-panel-bg border border-white/8 rounded-[10px] backdrop-blur-[12px] [-webkit-backdrop-filter:blur(12px)] [transition:right_0.24s_cubic-bezier(0.22,1,0.36,1)] z-30"
+        // On desktop, slide clear of an open panel. On mobile the panel covers
+        // the viewport so the rail stays put.
         style={{
           right:
             PANEL_EDGE_OFFSET +
-            (panelOpen || devtoolsOpen ? rightPanelWidthPx + PANEL_GAP : 0),
+            ((panelOpen || devtoolsOpen) && viewportWidth >= SM_BREAKPOINT
+              ? rightPanelWidthPx + RAIL_PANEL_GAP
+              : 0),
         }}
       >
         <button
@@ -1491,6 +1485,9 @@ function AppWithConfig({
         }
         streamTransportLocked={streamTransportLocked}
         width={toolsPanelWidth}
+        chromeEnabled={chromeEnabled}
+        onChromeEnabledChange={setChromeEnabled}
+        hasChrome={!!chrome && !isLandscape}
       />
       <ResizeHandle
         panelWidth={toolsPanelWidth}

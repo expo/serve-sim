@@ -1,128 +1,105 @@
 import { GripVertical, Minimize2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
-  nearestCorner,
-  presentationCornerStyle,
-  isPresentationCorner,
-  PRESENTATION_CORNER_STORAGE_KEY,
   PRESENTATION_EXIT_BUTTON_SIZE,
-  PRESENTATION_EXIT_MARGIN,
   PRESENTATION_EXIT_WRAPPER_PADDING,
-  type PresentationCorner,
 } from "../utils/presentation";
 
-const SNAP_TRANSITION = "top 0.22s cubic-bezier(0.4,0,0.2,1), bottom 0.22s cubic-bezier(0.4,0,0.2,1), left 0.22s cubic-bezier(0.4,0,0.2,1), right 0.22s cubic-bezier(0.4,0,0.2,1)";
+const GRIP_WIDTH = 20;
+const MARGIN = 8;
 
-function storedCorner(): PresentationCorner {
-  try {
-    const raw = localStorage.getItem(PRESENTATION_CORNER_STORAGE_KEY);
-    if (isPresentationCorner(raw)) return raw;
-  } catch {}
-  return "top-right";
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(value, max));
 }
 
-function storeCorner(c: PresentationCorner) {
-  try {
-    localStorage.setItem(PRESENTATION_CORNER_STORAGE_KEY, c);
-  } catch {}
+function clampToViewport(x: number, y: number, w: number, h: number) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  // The grip is on the left side, so only allow tucking off the RIGHT edge
+  // (where the grip is the last thing visible). Left edge stays fully on screen.
+  const minVisible = GRIP_WIDTH + PRESENTATION_EXIT_WRAPPER_PADDING;
+  return {
+    x: clamp(x, 0, vw - minVisible),
+    y: clamp(y, MARGIN, vh - h),
+  };
 }
 
-export function PresentationControls({
-  onExit,
-  gutters,
-  children,
-}: {
-  onExit: () => void;
-  gutters: { side: number; top: number };
-  children?: ReactNode;
-}) {
-  const [corner, setCorner] = useState<PresentationCorner>(storedCorner);
-  const [dragging, setDragging] = useState(false);
-  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+export function PresentationControls({ onExit, children }: { onExit: () => void; children?: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ offsetX: number; offsetY: number } | null>(null);
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
 
-  const snapTo = useCallback(
-    (c: PresentationCorner) => {
-      setCorner(c);
-      storeCorner(c);
-    },
-    [],
-  );
-
+  // Set the initial position once the element has rendered so we know its width.
   useEffect(() => {
-    setCorner(storedCorner());
+    const el = ref.current;
+    if (!el) return;
+    const w = el.offsetWidth;
+    setPos({ x: window.innerWidth - w - MARGIN, y: MARGIN });
   }, []);
 
-  const onPointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      e.stopPropagation();
-      e.preventDefault();
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
-      setDragging(true);
-      const el = containerRef.current;
-      if (el) {
-        const rect = el.getBoundingClientRect();
-        setDragPos({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
-      }
-    },
-    [],
-  );
+  // Re-clamp when the viewport resizes so the control can't get stranded.
+  useEffect(() => {
+    const onResize = () => {
+      const el = ref.current;
+      if (!el || dragRef.current) return;
+      setPos((p) => p && clampToViewport(p.x, p.y, el.offsetWidth, el.offsetHeight));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
-  const onPointerMove = useCallback(
-    (e: React.PointerEvent) => {
-      if (!dragging) return;
-      e.stopPropagation();
-      setDragPos({ x: e.clientX, y: e.clientY });
-    },
-    [dragging],
-  );
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const el = ref.current;
+    if (!el) return;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    const rect = el.getBoundingClientRect();
+    dragRef.current = { offsetX: e.clientX - rect.left, offsetY: e.clientY - rect.top };
+  }, []);
 
-  const onPointerUp = useCallback(
-    (e: React.PointerEvent) => {
-      if (!dragging) return;
-      e.stopPropagation();
-      const target = nearestCorner(e.clientX, e.clientY, {
-        width: window.innerWidth,
-        height: window.innerHeight,
-      });
-      snapTo(target);
-      setDragging(false);
-      setDragPos(null);
-    },
-    [dragging, snapTo],
-  );
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    e.stopPropagation();
+    const el = ref.current;
+    const w = el ? el.offsetWidth : 80;
+    const h = el ? el.offsetHeight : 38;
+    const raw = { x: e.clientX - drag.offsetX, y: e.clientY - drag.offsetY };
+    setPos(clampToViewport(raw.x, raw.y, w, h));
+  }, []);
 
-  const positionStyle = dragging && dragPos
-    ? {
-        position: "fixed" as const,
-        left: dragPos.x,
-        top: dragPos.y,
-        right: undefined as undefined,
-        bottom: undefined as undefined,
-        transform: "translate(-50%, -50%)",
-        transition: undefined as undefined,
-      }
-    : {
-        position: "fixed" as const,
-        ...presentationCornerStyle(corner, gutters),
-        transform: undefined as undefined,
-        transition: SNAP_TRANSITION,
-      };
+  const finishDrag = useCallback(() => {
+    dragRef.current = null;
+  }, []);
+
+  const onPointerUp = useCallback((e: React.PointerEvent) => {
+    e.stopPropagation();
+    finishDrag();
+  }, [finishDrag]);
+
+  const onLostCapture = useCallback(() => {
+    finishDrag();
+  }, [finishDrag]);
 
   return (
     <div
-      ref={containerRef}
-      className="z-50 flex items-center gap-0.5 rounded-[10px] bg-black/40 backdrop-blur-[12px] [-webkit-backdrop-filter:blur(12px)] border border-white/10"
+      ref={ref}
+      className="z-50 flex items-center gap-0.5 rounded-[10px] bg-panel-bg border border-white/8 backdrop-blur-[12px] [-webkit-backdrop-filter:blur(12px)]"
       style={{
-        ...positionStyle,
+        position: "fixed",
+        left: pos?.x ?? 0,
+        top: pos?.y ?? MARGIN,
         padding: PRESENTATION_EXIT_WRAPPER_PADDING,
+        visibility: pos ? "visible" : "hidden",
       }}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onLostPointerCapture={onLostCapture}
     >
       <div
         className="flex items-center justify-center cursor-grab active:cursor-grabbing text-[#8e8e93] hover:text-white/70 select-none touch-none"
-        style={{ width: 20, height: PRESENTATION_EXIT_BUTTON_SIZE }}
+        style={{ width: GRIP_WIDTH, height: PRESENTATION_EXIT_BUTTON_SIZE }}
         onPointerDown={onPointerDown}
         aria-label="Drag to reposition"
         title="Drag to reposition"

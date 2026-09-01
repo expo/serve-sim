@@ -292,6 +292,10 @@ const devMiddlewareWithSockets = Object.assign(devMiddleware, {
   },
 });
 
-await servePreview({ port: PORT, middleware: devMiddlewareWithSockets });
+const HOST = process.env.SERVE_SIM_HOST;
+await servePreview({ port: PORT, middleware: devMiddlewareWithSockets, host: HOST });
 
 console.log(`\n  \x1b[36mserve-sim dev\x1b[0m  http://localhost:${PORT}\n`);
+if (HOST && HOST !== "127.0.0.1" && HOST !== "localhost") {
+  console.log(`  \x1b[33mbound to ${HOST}\x1b[0m\n`);
+}

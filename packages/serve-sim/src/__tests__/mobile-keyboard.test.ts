@@ -15,7 +15,7 @@ describe("textToKeyEventsLenient", () => {
 
 describe("keyEventsForInputType", () => {
   test("types inserted text", () => {
-    const { events } = keyEventsForInputType("insertText", "a");
+    const events = keyEventsForInputType("insertText", "a");
 
     expect(events).toEqual([
       { type: "down", usage: 0x04 },
@@ -24,8 +24,8 @@ describe("keyEventsForInputType", () => {
   });
 
   test("maps the editing intents a soft keyboard reports", () => {
-    const enter = keyEventsForInputType("insertLineBreak", null).events;
-    const back = keyEventsForInputType("deleteContentBackward", null).events;
+    const enter = keyEventsForInputType("insertLineBreak", null);
+    const back = keyEventsForInputType("deleteContentBackward", null);
 
     expect(enter).toEqual([
       { type: "down", usage: 0x28 },
@@ -38,7 +38,7 @@ describe("keyEventsForInputType", () => {
   });
 
   test("ignores intents that carry no keystroke", () => {
-    expect(keyEventsForInputType("historyUndo", null).events).toEqual([]);
-    expect(keyEventsForInputType("insertText", null).events).toEqual([]);
+    expect(keyEventsForInputType("historyUndo", null)).toEqual([]);
+    expect(keyEventsForInputType("insertText", null)).toEqual([]);
   });
 });

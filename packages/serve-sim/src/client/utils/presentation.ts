@@ -58,15 +58,6 @@ const EXIT_EXTENT = PRESENTATION_EXIT_WRAPPER_PADDING + PRESENTATION_EXIT_BUTTON
 
 // The device fills the viewport, so the control sits in whichever gutter its
 // aspect ratio leaves: beside it when wide, above it when tall.
-/** Slot immediately left of the exit control, for a second floating button. */
-export function presentationSecondaryOffset(gutters: {
-  side: number;
-  top: number;
-}): { top: number; right: number } {
-  const exit = presentationExitOffset(gutters);
-  return { top: exit.top, right: exit.right + EXIT_EXTENT + PRESENTATION_EXIT_WRAPPER_PADDING };
-}
-
 export function presentationExitOffset(gutters: {
   side: number;
   top: number;

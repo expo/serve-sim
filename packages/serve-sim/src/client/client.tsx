@@ -1009,10 +1009,8 @@ function AppWithConfig({
   const pressedKeysRef = useRef<Set<number>>(new Set());
   const coarsePointer = useCoarsePointer();
   useBlockPageZoom(coarsePointer);
-  // On a touch device the phone's native keyboard is the input method, opened
-  // and closed only from the keyboard button. Opening also hides the
-  // simulator's own on-screen keyboard so the two do not stack; closing brings
-  // it back.
+  // Phone keyboard is toggled from the button. Hide the simulator's own
+  // keyboard while it's up so the two don't stack.
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const keyboardInputRef = useRef<HTMLInputElement | null>(null);
   const sendKeyEvents = useCallback(
@@ -1037,9 +1035,7 @@ function AppWithConfig({
     }
   }, [keyboardOpen, sendWs]);
 
-  // Size against the visual viewport step, not `keyboardOpen`. Opening sets
-  // that flag while height is still full, which would grow the device to the
-  // 280px min before the keyboard inset arrives.
+  // `keyboardOpen` flips while height is still full, so size from the visual-viewport inset.
   const phoneKeyboardRaised =
     coarsePointer &&
     windowInnerHeight > 0 &&
@@ -1173,10 +1169,8 @@ function AppWithConfig({
     : panelOpen
     ? toolsPanelWidth
     : 0;
-  // `scale(1)` is not `none`: it would make this the containing block for every
-  // fixed descendant. The state only holds the transform past the exit so the
-  // device eases back down; entering reads `presentation` directly, in the same
-  // commit that strips the chrome.
+  // `scale(1)` becomes the containing block for fixed descendants. Hold the
+  // transform only through the exit so the device eases down; enter reads `presentation`.
   const [exitScaling, setExitScaling] = useState(false);
   useEffect(() => {
     if (presentation) {
@@ -1216,8 +1210,6 @@ function AppWithConfig({
     phoneKeyboardRaised,
     scaling,
   );
-  const presentationFrameHeight =
-    containerAspectRatioValue > 0 ? frameWidth / containerAspectRatioValue : 0;
 
   return (
     <AxStateProvider endpoint={axOverlayEnabled ? config?.axEndpoint : undefined}>

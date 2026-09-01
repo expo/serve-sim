@@ -101,13 +101,23 @@ export async function sendKeyEventsToWs(
   });
 }
 
-/** Returns the events needed to type `text`, or throws on unsupported chars.
- *  Each character emits (optional shift down) → key down → key up → (optional shift up). */
-/**
- * Like `textToKeyEvents`, but skips characters the US map can't reach instead of
- * throwing. Browser text input can carry emoji and accents mid-string; dropping
- * one character beats dropping everything the user typed.
- */
+/** Returns key events to type `text`, or throws on unsupported characters. */
+export function textToKeyEvents(text: string): KeyEvent[] {
+  const events: KeyEvent[] = [];
+  for (const ch of text) {
+    // Normalize CRLF / lone CR to a single Enter press.
+    if (ch === "\r") continue;
+    const spec = US_KEYBOARD_MAP[ch];
+    if (!spec) throw new UnsupportedCharacterError(ch);
+    if (spec.shift) events.push({ type: "down", usage: LEFT_SHIFT });
+    events.push({ type: "down", usage: spec.usage });
+    events.push({ type: "up", usage: spec.usage });
+    if (spec.shift) events.push({ type: "up", usage: LEFT_SHIFT });
+  }
+  return events;
+}
+
+/** Skips unmappable characters instead of throwing. */
 export function textToKeyEventsLenient(text: string): { events: KeyEvent[]; skipped: string[] } {
   const events: KeyEvent[] = [];
   const skipped: string[] = [];
@@ -124,19 +134,4 @@ export function textToKeyEventsLenient(text: string): { events: KeyEvent[]; skip
     if (spec.shift) events.push({ type: "up", usage: LEFT_SHIFT });
   }
   return { events, skipped };
-}
-
-export function textToKeyEvents(text: string): KeyEvent[] {
-  const events: KeyEvent[] = [];
-  for (const ch of text) {
-    // Normalize CRLF / lone CR to a single Enter press.
-    if (ch === "\r") continue;
-    const spec = US_KEYBOARD_MAP[ch];
-    if (!spec) throw new UnsupportedCharacterError(ch);
-    if (spec.shift) events.push({ type: "down", usage: LEFT_SHIFT });
-    events.push({ type: "down", usage: spec.usage });
-    events.push({ type: "up", usage: spec.usage });
-    if (spec.shift) events.push({ type: "up", usage: LEFT_SHIFT });
-  }
-  return events;
 }

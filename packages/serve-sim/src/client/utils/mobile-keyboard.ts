@@ -8,28 +8,25 @@ function press(usage: number): KeyEvent[] {
   return [{ type: "down", usage }, { type: "up", usage }];
 }
 
-export type KeyboardInputOutcome = { events: KeyEvent[]; skipped: string[] };
-
-// Soft keyboards are read through `beforeinput`, not `keydown`: iOS delivers
-// soft keys with an empty `code`, which the physical-key relay drops. The
-// inputType tells us what the key meant, which is what we forward.
 export function keyEventsForInputType(
   inputType: string,
   data: string | null,
-): KeyboardInputOutcome {
+): KeyEvent[] {
   switch (inputType) {
     case "insertText":
     case "insertCompositionText":
     case "insertFromPaste":
-      return data ? textToKeyEventsLenient(data) : { events: [], skipped: [] };
+      return data != null && data !== ""
+        ? textToKeyEventsLenient(data).events
+        : [];
     case "insertLineBreak":
     case "insertParagraph":
-      return { events: press(ENTER), skipped: [] };
+      return press(ENTER);
     case "deleteContentBackward":
     case "deleteWordBackward":
-      return { events: press(BACKSPACE), skipped: [] };
+      return press(BACKSPACE);
     default:
-      return { events: [], skipped: [] };
+      return [];
   }
 }
 

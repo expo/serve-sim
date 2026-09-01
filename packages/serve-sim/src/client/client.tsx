@@ -1320,7 +1320,9 @@ function AppWithConfig({
               <span className="text-[13px] font-medium">Drop media or .ipa</span>
             </div>
           )}
-          {!presentation && (
+          {/* A phone viewport clamps the frame to a single width, so the handle
+              can only ever snap back to where it started. */}
+          {!presentation && viewportWidth >= SM_BREAKPOINT && (
             <SimulatorResizeCornerHandle
               simulatorResize={simulatorResize}
               deviceType={deviceType}

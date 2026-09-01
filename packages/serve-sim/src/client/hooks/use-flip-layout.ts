@@ -1,9 +1,7 @@
 import { useLayoutEffect, useRef, type RefObject } from "react";
 import { SIMULATOR_RESIZE_PRESENTATION_TRANSITION } from "../utils/simulator-resize";
 
-// After a layout snap, invert the element's new box back onto its previous
-// on-screen rect and ease that invert to identity. First paint never shows
-// the target position, which is what a width/height CSS transition does.
+// Invert the new box onto the previous on-screen rect, then ease to identity.
 export function useFlipLayout(
   ref: RefObject<HTMLElement | null>,
   enabled: boolean,

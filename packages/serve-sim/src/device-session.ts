@@ -242,6 +242,7 @@ export class DeviceSession {
   private softwareKeyboardHidden = false;
   private softwareKeyboardSync: Promise<void> = Promise.resolve();
   private softwareKeyboardSyncPending = false;
+  private softwareKeyboardPendingVisible: boolean | undefined;
 
   constructor(public readonly udid: string, initialStreamSettings?: StreamSettings) {
     const streamSettings = streamControlSettingsFrom(initialStreamSettings);
@@ -690,8 +691,7 @@ export class DeviceSession {
 
   private detachHidSocket(ws: HidSocket): void {
     this.hidSockets.delete(ws);
-    // A closed tab never sends its restore, and the simulator would keep the
-    // keyboard suppressed for whoever opens it next.
+    // Last socket gone: restore the keyboard. A closed tab never sends show.
     if (this.hidSockets.size === 0) this.queueSoftwareKeyboardSync(true);
   }
 
@@ -803,41 +803,41 @@ export class DeviceSession {
     }
   }
 
-  /**
-   * Serialize the keyboard sync. An accessibility read can outlast the browser's
-   * repeat interval, and two overlapping runs would each see a stale
-   * `softwareKeyboardHidden` and toggle, cancelling one another out. A queued
-   * hide is redundant with the one already running; a show happens once and has
-   * to land, so it always joins the chain.
-   */
+  /** Latest intent wins; drain runs one AX read + toggle at a time. */
   private queueSoftwareKeyboardSync(visible: boolean): void {
-    if (!visible && this.softwareKeyboardSyncPending) return;
+    this.softwareKeyboardPendingVisible = visible;
+    if (this.softwareKeyboardSyncPending) return;
     this.softwareKeyboardSyncPending = true;
     this.softwareKeyboardSync = this.softwareKeyboardSync
-      .then(() => this.setSoftwareKeyboardVisible(visible))
-      .catch(() => {})
-      .then(() => {
+      .then(() => this.drainSoftwareKeyboardSync())
+      .finally(() => {
         this.softwareKeyboardSyncPending = false;
       });
   }
 
-  /**
-   * Drive the simulator's on-screen keyboard to `visible`. The underlying HID
-   * button is a blind toggle, so the current state is read from the
-   * accessibility tree first and the toggle only fires when it disagrees. That
-   * read is also what lets a session adopt, and later undo, a hardware-keyboard
-   * mode an earlier session left behind when it died.
-   */
+  private async drainSoftwareKeyboardSync(): Promise<void> {
+    while (this.softwareKeyboardPendingVisible !== undefined) {
+      const visible = this.softwareKeyboardPendingVisible;
+      this.softwareKeyboardPendingVisible = undefined;
+      await this.setSoftwareKeyboardVisible(visible);
+    }
+  }
+
+  /** HID software-keyboard is a toggle; read AX before firing it. */
   private async setSoftwareKeyboardVisible(visible: boolean): Promise<void> {
     if (visible) {
       debugKeyboard("show requested, hidden=%s", this.softwareKeyboardHidden);
       if (!this.softwareKeyboardHidden) return;
+      const keyboardVisible = await isSoftwareKeyboardVisible(this.udid);
+      if (keyboardVisible) {
+        this.softwareKeyboardHidden = false;
+        return;
+      }
       this.softwareKeyboardHidden = false;
       this.hid.softwareKeyboard();
       return;
     }
     const keyboardVisible = await isSoftwareKeyboardVisible(this.udid);
-    if (keyboardVisible === null) return;
     debugKeyboard(
       "hide requested, keyboard=%s hidden=%s",
       keyboardVisible,

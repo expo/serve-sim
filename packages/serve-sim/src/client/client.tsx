@@ -35,7 +35,11 @@ import { DeviceSidebarToggle } from "./components/device-sidebar-toggle";
 import { DevicePlaceholder } from "./components/device-placeholder";
 import { PresentationControls } from "./components/presentation-controls";
 import { IconButton } from "./components/icon-button";
-import { KeyboardCapture, KeyboardToggleButton } from "./components/keyboard-capture";
+import {
+  KeyboardCapture,
+  KeyboardToggleButton,
+  SimKeyboardToggleButton,
+} from "./components/keyboard-capture";
 import { DeviceKitChrome, type ChromeButtonPress } from "./components/device-chrome-frame";
 import { GridPanel } from "./components/grid-panel";
 import { ResizeHandle } from "./components/resize-handle";
@@ -1230,18 +1234,17 @@ function AppWithConfig({
         {presentation && !embedLocked && (
           <PresentationControls onExit={onExitPresentation}>
             {coarsePointer && (
-              <KeyboardToggleButton
-                open={keyboardOpen}
-                onClick={() => setKeyboardOpen((o) => !o)}
-              />
+              <>
+                <KeyboardToggleButton
+                  open={keyboardOpen}
+                  onClick={() => setKeyboardOpen((o) => !o)}
+                />
+                <SimKeyboardToggleButton onClick={() => sendWs(0x0c, {})} />
+              </>
             )}
           </PresentationControls>
         )}
-        <KeyboardCapture
-          open={keyboardOpen}
-          onKeys={sendKeyEvents}
-          onClose={() => setKeyboardOpen(false)}
-        />
+        <KeyboardCapture open={keyboardOpen} onKeys={sendKeyEvents} />
         <div
           ref={simContainerRef}
           className="relative max-h-full"
@@ -1452,10 +1455,13 @@ function AppWithConfig({
         }}
       >
         {coarsePointer && (
-          <KeyboardToggleButton
-            open={keyboardOpen}
-            onClick={() => setKeyboardOpen((o) => !o)}
-          />
+          <>
+            <KeyboardToggleButton
+              open={keyboardOpen}
+              onClick={() => setKeyboardOpen((o) => !o)}
+            />
+            <SimKeyboardToggleButton onClick={() => sendWs(0x0c, {})} />
+          </>
         )}
         <IconButton
           onClick={onEnterPresentation}

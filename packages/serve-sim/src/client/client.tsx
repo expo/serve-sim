@@ -1413,7 +1413,9 @@ function AppWithConfig({
       {!presentation && (
       <>
       <div
-        className="fixed top-3 flex flex-col gap-1 p-1 bg-panel-bg border border-white/8 rounded-[10px] backdrop-blur-[12px] [-webkit-backdrop-filter:blur(12px)] [transition:right_0.24s_cubic-bezier(0.22,1,0.36,1)] z-40"
+        // Row on narrow screens: stacked, it fights the device for the side
+        // gutter, which on a phone is only a few points wide.
+        className="fixed top-3 flex flex-row sm:flex-col gap-1 p-1 bg-panel-bg border border-white/8 rounded-[10px] backdrop-blur-[12px] [-webkit-backdrop-filter:blur(12px)] [transition:right_0.24s_cubic-bezier(0.22,1,0.36,1)] z-40"
         // Slide clear of an open panel rather than fading out. The rail used to
         // hide, which also hid the only way into full screen on any window wide
         // enough to open the tools panel by default.

@@ -1157,7 +1157,7 @@ function AppWithConfig({
   return (
     <AxStateProvider endpoint={axOverlayEnabled ? config?.axEndpoint : undefined}>
     <div
-      className={`flex flex-col items-center justify-center h-dvh bg-page font-system box-border ${presentation ? "gap-0" : "py-6 gap-3"}`}
+      className={`flex flex-col items-center justify-center h-dvh bg-page font-system box-border ${presentation ? "gap-0" : "pt-16 pb-6 sm:py-6 gap-3"}`}
       style={{
         paddingTop: presentation ? presentationInset : undefined,
         paddingBottom: presentation ? presentationInset : undefined,
@@ -1450,7 +1450,8 @@ function AppWithConfig({
             setPanelOpen(false);
             setDevtoolsOpen((o) => !o);
           }}
-          className="w-[30px] h-[30px] flex items-center justify-center bg-transparent border-none rounded-md text-[#8e8e93] cursor-pointer [transition:background_0.15s_ease,color_0.15s_ease] hover:bg-white/8 hover:text-white"
+          // Inspecting a page is a desktop job; the button only costs width on a phone.
+          className="hidden sm:flex w-[30px] h-[30px] items-center justify-center bg-transparent border-none rounded-md text-[#8e8e93] cursor-pointer [transition:background_0.15s_ease,color_0.15s_ease] hover:bg-white/8 hover:text-white"
           aria-label="Open WebKit DevTools"
           aria-pressed={devtoolsOpen}
           title="WebKit DevTools"

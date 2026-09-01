@@ -1323,8 +1323,6 @@ function AppWithConfig({
               <span className="text-[13px] font-medium">Drop media or .ipa</span>
             </div>
           )}
-          {/* A phone viewport clamps the frame to a single width, so the handle
-              can only ever snap back to where it started. */}
           {!presentation && viewportWidth >= SM_BREAKPOINT && (
             <SimulatorResizeCornerHandle
               simulatorResize={simulatorResize}
@@ -1412,18 +1410,10 @@ function AppWithConfig({
         )}
       </div>
 
-      {/* The left device sidebar + its rail live in App so they persist across
-          stream swaps; AppWithConfig only renders the streaming-specific UI. */}
-
-      {/* Right-edge rail: tools + WebKit DevTools. */}
       {!presentation && (
       <>
       <div
-        // Row on narrow screens: stacked, it fights the device for the side
-        // gutter, which on a phone is only a few points wide.
         className="fixed top-3 flex flex-row sm:flex-col gap-1 p-1 bg-panel-bg border border-white/8 rounded-[10px] backdrop-blur-[12px] [-webkit-backdrop-filter:blur(12px)] [transition:right_0.24s_cubic-bezier(0.22,1,0.36,1)] z-30"
-        // On desktop, slide clear of an open panel. On mobile the panel covers
-        // the viewport so the rail stays put.
         style={{
           right:
             PANEL_EDGE_OFFSET +
@@ -1455,7 +1445,6 @@ function AppWithConfig({
             setPanelOpen(false);
             setDevtoolsOpen((o) => !o);
           }}
-          // Inspecting a page is a desktop job; the button only costs width on a phone.
           className="max-sm:hidden"
           aria-label="Open WebKit DevTools"
           aria-pressed={devtoolsOpen}

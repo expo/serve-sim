@@ -2,11 +2,6 @@ import { useEffect } from "react";
 
 const GESTURE_EVENTS = ["gesturestart", "gesturechange", "gestureend"] as const;
 
-/**
- * iOS Safari ignores `user-scalable=no`, so pinching the page still zooms the
- * whole preview. Only the page-level gesture events are cancelled; touch events
- * are left alone because the simulator needs them.
- */
 export function useBlockPageZoom(enabled: boolean): void {
   useEffect(() => {
     if (!enabled) return;

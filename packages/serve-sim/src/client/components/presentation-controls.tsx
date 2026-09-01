@@ -13,8 +13,6 @@ function clamp(value: number, min: number, max: number) {
 function clampToViewport(x: number, y: number, w: number, h: number) {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  // The grip is on the left side, so only allow tucking off the RIGHT edge
-  // (where the grip is the last thing visible). Left edge stays fully on screen.
   const minVisible = GRIP_WIDTH + PRESENTATION_EXIT_WRAPPER_PADDING;
   return {
     x: clamp(x, 0, vw - minVisible),
@@ -27,7 +25,6 @@ export function PresentationControls({ onExit, children }: { onExit: () => void;
   const dragRef = useRef<{ offsetX: number; offsetY: number } | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
 
-  // Set the initial position once the element has rendered so we know its width.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -35,7 +32,6 @@ export function PresentationControls({ onExit, children }: { onExit: () => void;
     setPos({ x: window.innerWidth - w - MARGIN, y: MARGIN });
   }, []);
 
-  // Re-clamp when the viewport resizes so the control can't get stranded.
   useEffect(() => {
     const onResize = () => {
       const el = ref.current;

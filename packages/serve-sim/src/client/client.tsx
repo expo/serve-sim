@@ -33,7 +33,7 @@ import { AxStateProvider } from "./components/ax-state-provider";
 import { AxToolbarButton } from "./components/ax-toolbar-button";
 import { DeviceSidebarToggle } from "./components/device-sidebar-toggle";
 import { DevicePlaceholder } from "./components/device-placeholder";
-import { PresentationExitButton } from "./components/presentation-exit-button";
+import { PresentationControls } from "./components/presentation-controls";
 import { DeviceKitChrome, type ChromeButtonPress } from "./components/device-chrome-frame";
 import { GridPanel } from "./components/grid-panel";
 import { ResizeHandle } from "./components/resize-handle";
@@ -73,7 +73,6 @@ import { mjpegStreamUrlFrom, simEndpoint, streamConfigFrom, webrtcCloseUrlFrom, 
 import { shouldStreamSimulatorLogs } from "./utils/simulator-logs";
 import {
   escapeKeyOutcome,
-  presentationExitOffset,
   presentationModeFromSearch,
   writeFullscreenSearchParam,
 } from "./utils/presentation";
@@ -463,6 +462,9 @@ function App() {
         setStreaming={setStreaming}
         presentation={presentation}
         onEnterPresentation={enterPresentation}
+        onExitPresentation={exitPresentation}
+        embedLocked={embedLocked}
+        presentationGutters={presentationGutters}
         onPresentationGutters={setPresentationGutters}
       />
     );
@@ -501,12 +503,6 @@ function App() {
     <>
       {mainView}
       <ServeSimToaster />
-      {presentation && !embedLocked && (
-        <PresentationExitButton
-          onClick={exitPresentation}
-          offset={presentationGutters ? presentationExitOffset(presentationGutters) : undefined}
-        />
-      )}
       {/* Persistent left device sidebar — overlays every main view so swapping
           streams never remounts (and refetches) the picker. */}
       <div
@@ -568,6 +564,9 @@ interface AppWithConfigProps {
   setStreaming: (v: boolean) => void;
   presentation: boolean;
   onEnterPresentation: () => void;
+  onExitPresentation: () => void;
+  embedLocked: boolean;
+  presentationGutters: { side: number; top: number } | null;
   onPresentationGutters: (gutters: { side: number; top: number }) => void;
 }
 
@@ -589,6 +588,9 @@ function AppWithConfig({
   setStreaming,
   presentation,
   onEnterPresentation,
+  onExitPresentation,
+  embedLocked,
+  presentationGutters,
   onPresentationGutters,
 }: AppWithConfigProps) {
   useEffect(() => {
@@ -1208,6 +1210,12 @@ function AppWithConfig({
           />
           <StreamStatusPill streaming={streaming} />
         </SimulatorToolbar>
+        )}
+        {presentation && !embedLocked && presentationGutters && (
+          <PresentationControls
+            onExit={onExitPresentation}
+            gutters={presentationGutters}
+          />
         )}
         <div
           ref={simContainerRef}

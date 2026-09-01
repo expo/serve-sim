@@ -691,7 +691,6 @@ export class DeviceSession {
 
   private detachHidSocket(ws: HidSocket): void {
     this.hidSockets.delete(ws);
-    // Last socket gone: restore the keyboard. A closed tab never sends show.
     if (this.hidSockets.size === 0) this.queueSoftwareKeyboardSync(true);
   }
 
@@ -803,7 +802,6 @@ export class DeviceSession {
     }
   }
 
-  /** Latest intent wins; drain runs one AX read + toggle at a time. */
   private queueSoftwareKeyboardSync(visible: boolean): void {
     this.softwareKeyboardPendingVisible = visible;
     if (this.softwareKeyboardSyncPending) return;
@@ -823,14 +821,12 @@ export class DeviceSession {
     }
   }
 
-  /** HID software-keyboard is a toggle; read AX before firing it. */
   private async setSoftwareKeyboardVisible(visible: boolean): Promise<void> {
     if (visible) {
       debugKeyboard("show requested, hidden=%s", this.softwareKeyboardHidden);
       if (!this.softwareKeyboardHidden) return;
-      const keyboardVisible = await isSoftwareKeyboardVisible(this.udid);
       this.softwareKeyboardHidden = false;
-      if (!keyboardVisible) this.hid.softwareKeyboard();
+      this.hid.softwareKeyboard();
       return;
     }
     const keyboardVisible = await isSoftwareKeyboardVisible(this.udid);

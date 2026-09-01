@@ -4,6 +4,26 @@ export const SIMULATOR_RESIZE_MAX_SCALE = 3;
 export const SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME = 136;
 export const SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD = 24;
 export const SIMULATOR_RESIZE_KEYBOARD_VIEWPORT_SHRINK_PX = 120;
+
+export function isVisualViewportKeyboardRaised(
+  windowInnerHeight: number,
+  visualViewportHeight: number,
+): boolean {
+  return (
+    windowInnerHeight > 0 &&
+    visualViewportHeight > 0 &&
+    windowInnerHeight - visualViewportHeight >= SIMULATOR_RESIZE_KEYBOARD_VIEWPORT_SHRINK_PX
+  );
+}
+
+export function readNativeKeyboardRaised(): boolean {
+  if (typeof window === "undefined") return false;
+  const vv = window.visualViewport;
+  return isVisualViewportKeyboardRaised(
+    window.innerHeight,
+    vv?.height ?? window.innerHeight,
+  );
+}
 export const SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION = 0;
 export const SIMULATOR_RESIZE_DRAG_TRANSITION = "width 70ms linear";
 export const SIMULATOR_RESIZE_LAYOUT_TRANSITION = "width 0.24s cubic-bezier(0.22, 1, 0.36, 1)";

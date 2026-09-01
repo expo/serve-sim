@@ -1,7 +1,6 @@
 import { useLayoutEffect, useRef, type RefObject } from "react";
 import { SIMULATOR_RESIZE_PRESENTATION_TRANSITION } from "../utils/simulator-resize";
 
-// Invert the new box onto the previous on-screen rect, then ease to identity.
 export function useFlipLayout(
   ref: RefObject<HTMLElement | null>,
   enabled: boolean,

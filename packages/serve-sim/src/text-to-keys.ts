@@ -68,8 +68,6 @@ export class UnsupportedCharacterError extends Error {
 export async function sendKeyEventsToWs(
   wsUrl: string,
   events: ReadonlyArray<KeyEvent>,
-  // iOS coalesces events that arrive in the same tick, so a small gap keeps
-  // long strings reliable without making the command noticeably slow.
   perEventDelayMs = 4,
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -101,7 +99,6 @@ export async function sendKeyEventsToWs(
   });
 }
 
-/** Returns key events to type `text`, or throws on unsupported characters. */
 export function textToKeyEvents(text: string): KeyEvent[] {
   const events: KeyEvent[] = [];
   for (const ch of text) {
@@ -117,7 +114,6 @@ export function textToKeyEvents(text: string): KeyEvent[] {
   return events;
 }
 
-/** Skips unmappable characters instead of throwing. */
 export function textToKeyEventsLenient(text: string): { events: KeyEvent[]; skipped: string[] } {
   const events: KeyEvent[] = [];
   const skipped: string[] = [];

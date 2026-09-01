@@ -92,10 +92,10 @@ console.log(`favicon           ${kb(faviconBytes.length)}`);
 const html = `<!doctype html>
 <html><head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Simulator Preview</title>
 ${faviconTag}
-<style>*,*::before,*::after{box-sizing:border-box}html,body{margin:0;height:100dvh;overflow:hidden}</style>
+<style>*,*::before,*::after{box-sizing:border-box}html,body{margin:0;height:100dvh;overflow:hidden;touch-action:pan-x pan-y}</style>
 <style>${tailwindCss}</style>
 </head><body>
 <div id="root"></div>

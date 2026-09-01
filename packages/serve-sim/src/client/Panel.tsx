@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 import { X } from "lucide-react";
+import { IconButton } from "./components/icon-button";
 
 export function Panel({
   open,
@@ -64,14 +65,8 @@ export function PanelCloseButton({
   iconSize?: number;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex h-[30px] w-[30px] shrink-0 cursor-pointer items-center justify-center rounded-md border-none bg-transparent p-0 text-[#8e8e93] [transition:background_0.15s_ease,color_0.15s_ease] hover:bg-white/8 hover:text-white"
-      aria-label={ariaLabel}
-      title={title}
-    >
+    <IconButton onClick={onClick} aria-label={ariaLabel} title={title}>
       <X size={iconSize} strokeWidth={2} />
-    </button>
+    </IconButton>
   );
 }

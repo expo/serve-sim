@@ -214,9 +214,9 @@ async function buildHtml(selectedDevice?: string | null): Promise<string> {
   return `<!doctype html>
 <html><head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>serve-sim dev</title>
-<style>*,*::before,*::after{box-sizing:border-box}html,body{margin:0;height:100dvh;overflow:hidden}</style>
+<style>*,*::before,*::after{box-sizing:border-box}html,body{margin:0;height:100dvh;overflow:hidden;touch-action:pan-x pan-y}</style>
 <style>${tailwindCss}</style>
 </head><body>
 <div id="root"></div>

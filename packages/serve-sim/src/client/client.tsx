@@ -34,6 +34,7 @@ import { AxToolbarButton } from "./components/ax-toolbar-button";
 import { DeviceSidebarToggle } from "./components/device-sidebar-toggle";
 import { DevicePlaceholder } from "./components/device-placeholder";
 import { PresentationControls } from "./components/presentation-controls";
+import { IconButton } from "./components/icon-button";
 import { DeviceKitChrome, type ChromeButtonPress } from "./components/device-chrome-frame";
 import { GridPanel } from "./components/grid-panel";
 import { ResizeHandle } from "./components/resize-handle";
@@ -71,6 +72,8 @@ import {
 import { proxyPreviewConfigForBrowser } from "./utils/preview-config";
 import { mjpegStreamUrlFrom, simEndpoint, streamConfigFrom, webrtcCloseUrlFrom, webrtcOfferUrlFrom, webrtcStatsUrlFrom } from "./utils/sim-endpoint";
 import { shouldStreamSimulatorLogs } from "./utils/simulator-logs";
+import { useBlockPageZoom } from "./hooks/use-block-page-zoom";
+import { useCoarsePointer } from "./hooks/use-coarse-pointer";
 import {
   escapeKeyOutcome,
   presentationModeFromSearch,
@@ -595,6 +598,8 @@ function AppWithConfig({
   useEffect(() => {
     document.title = deviceName ? `Simulator - ${deviceName}` : "Simulator Preview";
   }, [deviceName]);
+  const coarsePointer = useCoarsePointer();
+  useBlockPageZoom(coarsePointer);
 
   const deviceType: DeviceType = getDeviceType(deviceName);
   const devtools = useWebKitDevtools(config.devtoolsEndpoint ?? simEndpoint("devtools"), devtoolsOpen);
@@ -1143,8 +1148,6 @@ function AppWithConfig({
     return () => clearTimeout(id);
   }, [presentation, exitScaling]);
   const scaling = presentation || exitScaling;
-  const presentationFrameHeight =
-    containerAspectRatioValue > 0 ? frameWidth / containerAspectRatioValue : 0;
   const layoutTransition = resizing
     ? SIMULATOR_RESIZE_DRAG_TRANSITION
     : SIMULATOR_RESIZE_LAYOUT_TRANSITION;
@@ -1429,39 +1432,37 @@ function AppWithConfig({
               : 0),
         }}
       >
-        <button
+        <IconButton
           onClick={onEnterPresentation}
-          className="w-[30px] h-[30px] flex items-center justify-center bg-transparent border-none rounded-md text-[#8e8e93] cursor-pointer [transition:background_0.15s_ease,color_0.15s_ease] hover:bg-white/8 hover:text-white"
           aria-label="Full screen"
           title="Full screen"
         >
           <Maximize2 size={18} strokeWidth={1.75} />
-        </button>
-        <button
+        </IconButton>
+        <IconButton
           onClick={() => {
             setDevtoolsOpen(false);
             setPanelOpen((o) => !o);
           }}
-          className="w-[30px] h-[30px] flex items-center justify-center bg-transparent border-none rounded-md text-[#8e8e93] cursor-pointer [transition:background_0.15s_ease,color_0.15s_ease] hover:bg-white/8 hover:text-white"
           aria-label="Open tools panel"
           aria-pressed={panelOpen}
           title="Tools"
         >
           <PanelRight size={18} strokeWidth={1.75} />
-        </button>
-        <button
+        </IconButton>
+        <IconButton
           onClick={() => {
             setPanelOpen(false);
             setDevtoolsOpen((o) => !o);
           }}
           // Inspecting a page is a desktop job; the button only costs width on a phone.
-          className="hidden sm:flex w-[30px] h-[30px] items-center justify-center bg-transparent border-none rounded-md text-[#8e8e93] cursor-pointer [transition:background_0.15s_ease,color_0.15s_ease] hover:bg-white/8 hover:text-white"
+          className="max-sm:hidden"
           aria-label="Open WebKit DevTools"
           aria-pressed={devtoolsOpen}
           title="WebKit DevTools"
         >
           <Globe size={18} strokeWidth={1.75} />
-        </button>
+        </IconButton>
       </div>
 
       <ToolsPanel

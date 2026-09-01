@@ -1,9 +1,7 @@
 import { GripVertical, Minimize2 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import {
-  PRESENTATION_EXIT_BUTTON_SIZE,
-  PRESENTATION_EXIT_WRAPPER_PADDING,
-} from "../utils/presentation";
+import { IconButton } from "./icon-button";
+import { PRESENTATION_EXIT_WRAPPER_PADDING } from "../utils/presentation";
 
 const GRIP_WIDTH = 20;
 const MARGIN = 8;
@@ -98,8 +96,8 @@ export function PresentationControls({ onExit, children }: { onExit: () => void;
       onLostPointerCapture={onLostCapture}
     >
       <div
-        className="flex items-center justify-center cursor-grab active:cursor-grabbing text-[#8e8e93] hover:text-white/70 select-none touch-none"
-        style={{ width: GRIP_WIDTH, height: PRESENTATION_EXIT_BUTTON_SIZE }}
+        className="h-9 sm:h-[30px] flex items-center justify-center cursor-grab active:cursor-grabbing text-[#8e8e93] hover:text-white/70 select-none touch-none"
+        style={{ width: GRIP_WIDTH }}
         onPointerDown={onPointerDown}
         aria-label="Drag to reposition"
         title="Drag to reposition"
@@ -107,16 +105,13 @@ export function PresentationControls({ onExit, children }: { onExit: () => void;
         <GripVertical size={14} strokeWidth={1.5} />
       </div>
       {children}
-      <button
-        type="button"
+      <IconButton
         onClick={onExit}
-        className="flex items-center justify-center bg-transparent border-none rounded-md text-[#8e8e93] cursor-pointer [transition:background_0.15s_ease,color_0.15s_ease] hover:bg-white/8 hover:text-white"
-        style={{ width: PRESENTATION_EXIT_BUTTON_SIZE, height: PRESENTATION_EXIT_BUTTON_SIZE }}
         aria-label="Exit full screen"
         title="Exit full screen (Esc)"
       >
         <Minimize2 size={18} strokeWidth={1.75} />
-      </button>
+      </IconButton>
     </div>
   );
 }

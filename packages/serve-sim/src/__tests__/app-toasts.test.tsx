@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { UploadToastContent } from "../client/components/app-toasts";
+import { ClipboardToastContent, UploadToastContent } from "../client/components/app-toasts";
 
 describe("UploadToastContent", () => {
   test("renders determinate upload progress", () => {
@@ -35,5 +35,32 @@ describe("UploadToastContent", () => {
 
     expect(media).toContain("Added photo.png to Photos");
     expect(ipa).toContain("Installed App.ipa");
+  });
+});
+
+describe("ClipboardToastContent", () => {
+  test("renders pending, copied, and error states", () => {
+    const pending = renderToStaticMarkup(
+      <ClipboardToastContent toast={{ status: "pending", message: "Reading simulator clipboard…" }} />,
+    );
+    const copied = renderToStaticMarkup(
+      <ClipboardToastContent toast={{ status: "copied", message: "Copied from simulator" }} />,
+    );
+    const error = renderToStaticMarkup(
+      <ClipboardToastContent toast={{ status: "error", message: "Copy failed" }} />,
+    );
+    expect(pending).toContain("Reading simulator clipboard…");
+    expect(copied).toContain("Copied from simulator");
+    expect(error).toContain("Copy failed");
+    expect(pending).not.toContain(">Copy</button>");
+    expect(copied).not.toContain(">Copy</button>");
+  });
+
+  test("shows a Copy button only in the manual state", () => {
+    const html = renderToStaticMarkup(
+      <ClipboardToastContent toast={{ status: "manual", message: "Ready — one click to copy" }} />,
+    );
+    expect(html).toContain("Ready — one click to copy");
+    expect(html).toContain(">Copy</button>");
   });
 });

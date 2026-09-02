@@ -395,8 +395,6 @@ function App() {
     return () => es.close();
   }, [selectedUdid, selectedHasHelper]);
 
-  // Opt-in dump of simctl logs into the browser console (`?logs=1`). Polls
-  // the JSON snapshot so it never shares the control socket with Home / HID.
   useEffect(() => {
     if (!config?.logsEndpoint || !shouldStreamSimulatorLogs(window.location)) return;
 
@@ -426,7 +424,6 @@ function App() {
       setSince: (seq) => {
         since = seq;
       },
-      onError: () => {},
       onBatch: (batch) => {
         for (const { fields } of batch) {
           const { process: proc, subsystem, category, message: msg, level } = fields;

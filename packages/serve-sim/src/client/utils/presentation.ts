@@ -68,3 +68,43 @@ export function presentationExitOffset(gutters: {
   const top = Math.max(0, Math.min(PRESENTATION_EXIT_MARGIN, gutters.top - EXIT_EXTENT));
   return { top, right: PRESENTATION_EXIT_MARGIN };
 }
+
+export const PRESENTATION_CORNERS = [
+  "top-right",
+  "top-left",
+  "bottom-right",
+  "bottom-left",
+] as const;
+export type PresentationCorner = (typeof PRESENTATION_CORNERS)[number];
+export const PRESENTATION_CORNER_STORAGE_KEY = "serve-sim:presentation-corner";
+
+export function isPresentationCorner(value: unknown): value is PresentationCorner {
+  return PRESENTATION_CORNERS.includes(value as PresentationCorner);
+}
+
+/** Corner the controls should snap to after being dragged to (x, y). */
+export function nearestCorner(
+  x: number,
+  y: number,
+  viewport: { width: number; height: number },
+): PresentationCorner {
+  const right = x >= viewport.width / 2;
+  const bottom = y >= viewport.height / 2;
+  if (bottom) return right ? "bottom-right" : "bottom-left";
+  return right ? "top-right" : "top-left";
+}
+
+/**
+ * Anchor the control cluster to a corner. Snapping beats free positioning: a
+ * stored x/y would have to be re-validated on every rotation, resize and
+ * keyboard, and can strand the controls off-screen or back over the device.
+ */
+export function presentationCornerStyle(
+  corner: PresentationCorner,
+  gutters: { side: number; top: number },
+): { top?: number; bottom?: number; left?: number; right?: number } {
+  const { top, right } = presentationExitOffset(gutters);
+  const vertical = corner.startsWith("top") ? { top } : { bottom: top };
+  const horizontal = corner.endsWith("right") ? { right } : { left: right };
+  return { ...vertical, ...horizontal };
+}

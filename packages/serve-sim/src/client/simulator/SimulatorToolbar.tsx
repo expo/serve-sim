@@ -11,6 +11,7 @@ import {
   type HTMLAttributes,
   type ReactNode,
 } from "react";
+import { useCoarsePointer } from "../hooks/use-coarse-pointer.js";
 import type { SimulatorOrientation } from "../types.js";
 import { getDeviceType, type DeviceType } from "./deviceFrames.js";
 import { ROTATE_LEFT_CYCLE } from "./orientation.js";
@@ -249,9 +250,10 @@ const buttonStyle: CSSProperties = {
   alignItems: "center",
   justifyContent: "center",
   color: "rgba(255,255,255,0.8)",
-  transition: "background-color 0.15s, color 0.15s",
+  transition: "background-color 0.15s, color 0.15s, opacity 0.1s",
   position: "relative",
   overflow: "visible",
+  touchAction: "manipulation",
 };
 
 const ToolbarButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function ToolbarButton(
@@ -264,6 +266,9 @@ const ToolbarButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function
     onMouseEnter,
     onMouseLeave,
     onPointerDown,
+    onPointerUp,
+    onPointerCancel,
+    onPointerLeave,
     onFocus,
     onBlur,
     onClick,
@@ -275,8 +280,10 @@ const ToolbarButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function
 ) {
   const ctx = useContext(ToolbarContext);
   const effectiveDisabled = disabled || forceDisabled || ctx?.disabled;
+  const coarsePointer = useCoarsePointer();
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
+  const [pressed, setPressed] = useState(false);
   const pointerFocusedRef = useRef(false);
   const tooltipId = useId();
   const tooltipLabel = tooltip ?? title ?? (typeof ariaLabel === "string" ? ariaLabel : null);
@@ -291,7 +298,20 @@ const ToolbarButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function
       aria-describedby={tooltipLabel ? tooltipId : undefined}
       onPointerDown={(e) => {
         pointerFocusedRef.current = true;
+        setPressed(true);
         onPointerDown?.(e);
+      }}
+      onPointerUp={(e) => {
+        setPressed(false);
+        onPointerUp?.(e);
+      }}
+      onPointerCancel={(e) => {
+        setPressed(false);
+        onPointerCancel?.(e);
+      }}
+      onPointerLeave={(e) => {
+        setPressed(false);
+        onPointerLeave?.(e);
       }}
       onMouseEnter={(e) => {
         setHover(true);
@@ -318,9 +338,17 @@ const ToolbarButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function
       }}
       style={{
         ...buttonStyle,
+        padding: coarsePointer ? 9 : 6,
         color: effectiveDisabled ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.8)",
         background:
-          hover && !effectiveDisabled ? "rgba(255,255,255,0.1)" : "transparent",
+          effectiveDisabled
+            ? "transparent"
+            : pressed
+              ? "rgba(255,255,255,0.14)"
+              : hover
+                ? "rgba(255,255,255,0.1)"
+                : "transparent",
+        opacity: pressed && !effectiveDisabled ? 0.6 : 1,
         cursor: effectiveDisabled ? "not-allowed" : "pointer",
         ...style,
       }}

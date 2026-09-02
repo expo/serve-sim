@@ -1,3 +1,7 @@
+import { useState } from "react";
+import { Smartphone } from "lucide-react";
+import { CollapsibleSection } from "./collapsible-section";
+import { SettingSwitch } from "./setting-switch";
 import { LocationEmulationTool } from "../location-emulation-tool";
 import { Panel, PanelCloseButton, PanelHeader, PanelTitle } from "../Panel";
 import { execOnHost } from "../utils/exec";
@@ -16,7 +20,6 @@ import type {
   StreamPlaybackSettings,
 } from "../../stream-settings";
 
-/** The preview's collapsible tools panel: app detection, metrics, camera, permissions, and settings. */
 export function ToolsPanel({
   open,
   onClose,
@@ -38,6 +41,9 @@ export function ToolsPanel({
   streamSettingsPending,
   streamTransportLocked = false,
   width,
+  chromeEnabled,
+  onChromeEnabledChange,
+  hasChrome = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -59,6 +65,9 @@ export function ToolsPanel({
   streamSettingsPending: boolean;
   streamTransportLocked?: boolean;
   width: number;
+  chromeEnabled?: boolean;
+  onChromeEnabledChange?: (enabled: boolean) => void;
+  hasChrome?: boolean;
 }) {
   return (
     <Panel open={open} width={width} style={{ backgroundColor: PANEL_BACKGROUND }}>
@@ -84,6 +93,9 @@ export function ToolsPanel({
           <CameraTool udid={udid} bundleId={currentApp?.bundleId ?? null} />
           <LocationEmulationTool udid={udid} exec={execOnHost} />
           <AppPermissionsTool udid={udid} bundleId={currentApp?.bundleId ?? null} />
+          {hasChrome && onChromeEnabledChange && (
+            <DisplayTool chromeEnabled={!!chromeEnabled} onChromeEnabledChange={onChromeEnabledChange} />
+          )}
           <StreamSettingsTool
             settings={streamSettings}
             onPlaybackSettingsChange={onStreamPlaybackSettingsChange}
@@ -99,5 +111,36 @@ export function ToolsPanel({
         </div>
       )}
     </Panel>
+  );
+}
+
+function DisplayTool({
+  chromeEnabled,
+  onChromeEnabledChange,
+}: {
+  chromeEnabled: boolean;
+  onChromeEnabledChange: (enabled: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <CollapsibleSection
+      open={open}
+      onOpenChange={setOpen}
+      summaryClassName="grid [grid-template-columns:auto_1fr_auto] items-center gap-2 text-left"
+      summary={
+        <>
+          <span className="text-[11px] font-semibold text-white/50 uppercase tracking-[0.08em] leading-none inline-flex items-center">
+            Display
+          </span>
+          <span />
+        </>
+      }
+    >
+      <div className="flex items-center gap-2.5 px-1">
+        <Smartphone size={14} strokeWidth={1.75} className="text-white/50 shrink-0" />
+        <span className="flex-1 text-[13px] text-white/80">Device frame</span>
+        <SettingSwitch label="Device frame" checked={chromeEnabled} onChange={onChromeEnabledChange} />
+      </div>
+    </CollapsibleSection>
   );
 }

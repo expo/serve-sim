@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   applyFullscreenSearch,
   escapeKeyOutcome,
+  isPresentationCorner,
+  nearestCorner,
+  presentationCornerStyle,
   presentationExitOffset,
   presentationModeFromSearch,
 } from "../client/utils/presentation";
@@ -104,5 +107,31 @@ describe("presentationExitOffset", () => {
 
   test("never leaves the viewport when neither gutter fits", () => {
     expect(presentationExitOffset({ side: 0, top: 10 })).toEqual({ top: 0, right: 12 });
+  });
+});
+
+describe("presentation corner placement", () => {
+  const viewport = { width: 400, height: 800 };
+
+  test("snaps to the corner the drag ended nearest", () => {
+    expect(nearestCorner(390, 10, viewport)).toBe("top-right");
+    expect(nearestCorner(10, 10, viewport)).toBe("top-left");
+    expect(nearestCorner(390, 790, viewport)).toBe("bottom-right");
+    expect(nearestCorner(10, 790, viewport)).toBe("bottom-left");
+  });
+
+  test("anchors to the dragged-to edges, reusing the gutter offsets", () => {
+    const gutters = { side: 412, top: 0 };
+    const topRight = presentationCornerStyle("top-right", gutters);
+    const bottomLeft = presentationCornerStyle("bottom-left", gutters);
+
+    expect(topRight).toEqual({ top: 12, right: 12 });
+    expect(bottomLeft).toEqual({ bottom: 12, left: 12 });
+  });
+
+  test("rejects anything that isn't a corner, so stored junk can't strand it", () => {
+    expect(isPresentationCorner("top-left")).toBe(true);
+    expect(isPresentationCorner("middle")).toBe(false);
+    expect(isPresentationCorner(null)).toBe(false);
   });
 });

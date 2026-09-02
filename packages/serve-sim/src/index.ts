@@ -18,6 +18,16 @@ import {
 import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from "./text-to-keys";
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
 import { launchAppAsync } from "./launch-app";
+import { registerBuiltinCapabilities } from "./capability-registrations";
+import {
+  applyDefaultCapabilities,
+  armTrampoline,
+  disarmStaleTrampoline,
+  clearLaunchState,
+  enableCapability,
+  removeTrampoline,
+  removeTrampolineSync,
+} from "./launch-manager";
 import { killPortHolder } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
@@ -347,6 +357,9 @@ async function ensureBooted(udid: string): Promise<void> {
       process.exit(1);
     }
   }
+
+  await disarmStaleTrampoline(udid);
+  await armTrampoline(udid);
 }
 
 // ─── Preview server lifecycle ───
@@ -512,6 +525,8 @@ async function follow(
       const pid = child.pid;
       if (pid) stopProcess(pid);
       clearState(udid);
+      clearLaunchState(udid);
+      removeTrampolineSync(udid);
     }
     children.clear();
     process.exit(exitCode);
@@ -648,7 +663,7 @@ function listStreams(deviceArg?: string) {
 }
 
 /** Kill running streams (--kill). */
-function killStreams(deviceArg?: string) {
+async function killStreams(deviceArg?: string): Promise<void> {
   if (deviceArg) {
     const udid = resolveDevice(deviceArg);
     const state = readState(udid);
@@ -658,6 +673,8 @@ function killStreams(deviceArg?: string) {
     }
     try { process.kill(state.pid, "SIGTERM"); } catch {}
     clearState(udid);
+    clearLaunchState(udid);
+    await removeTrampoline(udid);
     console.log(JSON.stringify({ disconnected: true, device: state.device }));
   } else {
     const states = readAllStates();
@@ -668,6 +685,8 @@ function killStreams(deviceArg?: string) {
     const devices: string[] = [];
     for (const state of states) {
       try { process.kill(state.pid, "SIGTERM"); } catch {}
+      clearLaunchState(state.device);
+      await removeTrampoline(state.device);
       devices.push(state.device);
     }
     clearState();
@@ -1542,41 +1561,27 @@ Examples:
     } catch {} // non-fatal; dylib falls back to env or default
   }
 
-  // Always (re)launch the named bundle with the dylib. The helper feeds a
-  // single shm region keyed by udid, so multiple apps on the same simulator
-  // can attach to the same camera stream — but each one has to be launched
-  // with DYLD_INSERT_LIBRARIES, which means a terminate+relaunch every time
-  // we want to bring a new app into the set. Source-only hot-swaps go
-  // through `camera switch`, not this path.
   try {
     execSync(`xcrun simctl privacy "${udid}" grant camera "${bundleId}"`, {
       stdio: "ignore",
     });
   } catch {}
-  try {
-    execSync(`xcrun simctl terminate "${udid}" "${bundleId}"`, { stdio: "ignore" });
-  } catch {}
 
-  const env = {
-    ...process.env,
-    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: dylib,
-    SIMCTL_CHILD_SIMCAM_SHM_NAME: shmName,
-    ...(mirror !== "auto" ? { SIMCTL_CHILD_SIMCAM_MIRROR_MODE: mirror } : {}),
-  };
-
-  let stdoutBuf = "";
+  let pid: number | null = null;
   try {
-    stdoutBuf = execSync(`xcrun simctl launch "${udid}" "${bundleId}"`, {
-      env,
-      encoding: "utf-8",
+    pid = await enableCapability(udid, bundleId, {
+      name: "camera",
+      dylib,
+      env: {
+        SIMCAM_SHM_NAME: shmName,
+        ...(mirror !== "auto" ? { SIMCAM_MIRROR_MODE: mirror } : {}),
+      },
     });
   } catch (e: any) {
-    console.error(`simctl launch failed: ${e?.stderr ?? e?.message ?? e}`);
+    console.error(e?.message ?? String(e));
     process.exit(1);
   }
 
-  const pidMatch = stdoutBuf.trim().match(/:\s*(\d+)\s*$/);
-  const pid = pidMatch ? Number(pidMatch[1]) : null;
 
   if (helperPid) recordInjectedBundle(udid, bundleId, helperPid);
 
@@ -1690,6 +1695,8 @@ async function serve(
   const clearAll = () => {
     for (const udid of targetDevices) {
       try { clearState(udid); } catch {}
+      try { clearLaunchState(udid); } catch {}
+      try { removeTrampolineSync(udid); } catch {}
     }
   };
   process.on("exit", clearAll);
@@ -1717,9 +1724,13 @@ async function serve(
   }
   console.log("");
 
-  // Exit cleanly on Ctrl+C
-  process.on("SIGINT", () => process.exit(0));
-  process.on("SIGTERM", () => process.exit(0));
+  const shutdown = () => {
+    clearAll();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  process.on("SIGHUP", shutdown);
   await new Promise(() => {});
 }
 
@@ -1772,6 +1783,16 @@ program
   .option(
     "--launch-arg <arg>",
     "Argument passed to the app when it launches. Repeat for multiple arguments.",
+    (value: string, previous: string[] = []) => [...previous, value],
+  )
+  .option(
+    "--enable <capability>",
+    "Turn on a capability that is off by default. Repeat for multiple.",
+    (value: string, previous: string[] = []) => [...previous, value],
+  )
+  .option(
+    "--disable <capability>",
+    "Turn off a capability that is on by default. Repeat for multiple.",
     (value: string, previous: string[] = []) => [...previous, value],
   )
   .option(
@@ -1885,7 +1906,7 @@ Examples:
       return;
     }
     if (opts.kill !== undefined) {
-      killStreams(typeof opts.kill === "string" ? opts.kill : undefined);
+      await killStreams(typeof opts.kill === "string" ? opts.kill : undefined);
       return;
     }
     if (opts.transport !== "http" && opts.transport !== "webrtc") {
@@ -1966,16 +1987,22 @@ Examples:
       );
       process.exit(1);
     }
+    const capabilities = { enable: opts.enable ?? [], disable: opts.disable ?? [] };
+
     let targets = devices;
-    if (bundleId) {
-      try {
-        targets = resolveTargetDevices(devices);
-        for (const udid of targets) await ensureBooted(udid);
-        for (const udid of targets) await launchAppAsync(udid, { bundleId, launchArgs, openUrl });
-      } catch (error) {
-        console.error(error instanceof Error ? error.message : error);
-        process.exit(1);
+    try {
+      targets = resolveTargetDevices(devices);
+      for (const udid of targets) await ensureBooted(udid);
+      for (const udid of targets) {
+        if (bundleId) {
+          await launchAppAsync(udid, { bundleId, launchArgs, openUrl, capabilities });
+        } else {
+          await applyDefaultCapabilities(udid, null, capabilities);
+        }
       }
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : error);
+      process.exit(1);
     }
     const startPort: number | undefined = opts.port;
     const streamOptionsProvided = wasProvided("transport")
@@ -2109,5 +2136,7 @@ program
   .helpOption(false)
   .argument("[args...]")
   .action((args: string[]) => uiSettings(args));
+
+registerBuiltinCapabilities();
 
 await program.parseAsync(process.argv);

@@ -41,6 +41,8 @@
     "dist/simcam/libSimCameraInjector.dylib",
     "dist/simcam/serve-sim-camera-helper",
     "dist/simax/serve-sim-ax-settings",
+    "dist/simpb/serve-sim-pasteboard",
+    "dist/simpb/libSimPasteboardReader.dylib",
     "src/ax-shared.ts",
     "src/ax.ts",
     "src/camera-helper.ts",
@@ -74,7 +76,10 @@
   },
   "scripts": {
     "build": "bun run build.ts",
-    "dev": "bun run dev.ts"
+    "dev": "bun run dev.ts",
+    "tart": "bun scripts/tart/cli.ts",
+    "tart-test": "bun scripts/tart/cli.ts test",
+    "tart-dev": "bun scripts/tart/cli.ts dev"
   },
   "devDependencies": {
     "@types/bun": "latest",

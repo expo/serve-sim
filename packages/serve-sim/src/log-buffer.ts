@@ -299,15 +299,7 @@ export function createLogBufferCache(deps: LogBufferDeps = {}) {
     },
 
     prune(liveUdids: readonly string[]): void {
-      // An empty list usually means the state read failed, not that every device went away.
-      if (liveUdids.length === 0) return;
-      const live = new Set(liveUdids);
-      for (const [udid, buffer] of byUdid) {
-        // Identity-guard so a stale prune cannot stop a replacement buffer.
-        if (live.has(udid) || byUdid.get(udid) !== buffer) continue;
-        buffer.stop();
-        byUdid.delete(udid);
-      }
+      pruneByUdid(byUdid, liveUdids, (buffer) => buffer.stop());
     },
 
     stopAll(): void {
@@ -315,6 +307,25 @@ export function createLogBufferCache(deps: LogBufferDeps = {}) {
       byUdid.clear();
     },
   };
+}
+
+/**
+ * Drops the entries for devices that are gone. An empty `liveUdids` usually means the state read
+ * failed rather than every device going away, and the identity guard keeps a stale prune from
+ * disposing a replacement that was created while it ran.
+ */
+export function pruneByUdid<T>(
+  byUdid: Map<string, T>,
+  liveUdids: readonly string[],
+  dispose: (entry: T) => void
+): void {
+  if (liveUdids.length === 0) return;
+  const live = new Set(liveUdids);
+  for (const [udid, entry] of byUdid) {
+    if (live.has(udid) || byUdid.get(udid) !== entry) continue;
+    dispose(entry);
+    byUdid.delete(udid);
+  }
 }
 
 export const logBufferCache = createLogBufferCache();

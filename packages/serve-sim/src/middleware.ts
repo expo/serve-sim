@@ -1,4 +1,4 @@
-import { execFile, execSync, spawn, type ChildProcess } from "child_process";
+import { execFile, execSync } from "child_process";
 import { readdirSync, readFileSync, existsSync, unlinkSync, watch, type FSWatcher } from "fs";
 import { readFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
@@ -1538,6 +1538,43 @@ function booleanParam(params: URLSearchParams, name: string): boolean {
   return value !== "0" && value !== "false" && value !== "no";
 }
 
+const SSE_HEARTBEAT_MS = 15_000;
+
+/**
+ * Opens an SSE response: headers, the priming comment, a heartbeat, and teardown on close.
+ * `isOpen` is the `writableEnded`/`destroyed` pair, since an aborted client only sets the latter.
+ */
+function openSseStream(
+  req: SimReq,
+  res: SimRes
+): { isOpen: () => boolean; write: (payload: string) => void; onClose: (teardown: () => void) => void } {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write(":\n\n");
+
+  const isOpen = (): boolean => !res.writableEnded && !res.destroyed;
+  const heartbeat = setInterval(() => {
+    if (isOpen()) res.write(":\n\n");
+  }, SSE_HEARTBEAT_MS);
+  const teardowns: (() => void)[] = [];
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    for (const teardown of teardowns) teardown();
+  });
+
+  return {
+    isOpen,
+    write: (payload) => {
+      if (isOpen()) res.write(payload);
+    },
+    onClose: (teardown) => teardowns.push(teardown),
+  };
+}
+
 /** SSE by default (the preview UI); JSON on `Accept: application/json` or `?snapshot`. */
 export function handleLogsRequest(
   req: SimReq,
@@ -1563,8 +1600,6 @@ export function handleLogsRequest(
   // The raw line is already JSON, so default frames are unwrapped.
   const wantsEnvelope = booleanParam(params, "envelope");
 
-  // `writableEnded` never fires on this path; an aborted client shows up as `destroyed`.
-  const logsOpen = (): boolean => !res.writableEnded && !res.destroyed;
   const buffer = cache.ensure(state.device);
 
   if (wantsJson) {
@@ -1584,13 +1619,7 @@ export function handleLogsRequest(
     return;
   }
 
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-    "X-Accel-Buffering": "no",
-  });
-  res.write(":\n\n");
+  const stream = openSseStream(req, res);
 
   const frame = (line: LogLine): string =>
     "data: " +
@@ -1601,29 +1630,23 @@ export function handleLogsRequest(
   // so an await here would drop whatever landed in the gap.
   let lastSent = since ?? 0;
   for (const line of buffer.read({ since, limit })) {
-    if (!logsOpen()) break;
-    res.write(frame(line));
+    if (!stream.isOpen()) break;
+    stream.write(frame(line));
     lastSent = line.seq;
   }
 
-  const unsubscribe = buffer.subscribe(
-    (line) => {
-      if (!logsOpen() || line.seq <= lastSent) return;
-      lastSent = line.seq;
-      res.write(frame(line));
-    },
-    () => {
-      if (logsOpen()) res.end();
-    }
+  stream.onClose(
+    buffer.subscribe(
+      (line) => {
+        if (line.seq <= lastSent) return;
+        lastSent = line.seq;
+        stream.write(frame(line));
+      },
+      () => {
+        if (stream.isOpen()) res.end();
+      }
+    )
   );
-
-  const heartbeat = setInterval(() => {
-    if (logsOpen()) res.write(":\n\n");
-  }, 15000);
-  req.on("close", () => {
-    clearInterval(heartbeat);
-    unsubscribe();
-  });
 }
 
 /**

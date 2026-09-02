@@ -771,17 +771,17 @@ async function handleCameraStatus(req: SimReq, res: SimRes, device: string): Pro
  * DeviceSession. Returns false for paths this function doesn't own or when a
  * session-backed route cannot open the requested simulator.
  */
-function serveHelperInProcess(
+async function serveHelperInProcess(
   req: SimReq,
   res: SimRes,
   device: string | null,
   upstreamPath: string,
   initialStreamSettings?: StreamSettings,
-): boolean {
+): Promise<boolean> {
   if (!device) return false;
   const endpoint = upstreamPath.split("?")[0];
   if (endpoint === "/camera/status") {
-    void handleCameraStatus(req, res, device);
+    await handleCameraStatus(req, res, device);
     return true;
   }
   if (
@@ -797,25 +797,26 @@ function serveHelperInProcess(
   if (endpoint === "/webrtc/stats") {
     const live = peekDeviceSession(device);
     if (!live) return false;
-    void live.handleWebRTCStats(req, res);
+    await live.handleWebRTCStats(req, res);
     return true;
   }
   let session;
   try {
     session = getDeviceSession(device, initialStreamSettings);
-  } catch {
-    return false; // not booted / capture unavailable → 404
+  } catch (err) {
+    console.error(`[serve-sim] device session ${device}:`, err);
+    return false;
   }
   switch (endpoint) {
     case "/stream.mjpeg": session.handleMjpeg(req, res); return true;
     case "/stream.avcc": session.handleAvcc(req, res); return true;
-    case "/stream-settings": void session.handleStreamSettings(req, res); return true;
+    case "/stream-settings": await session.handleStreamSettings(req, res); return true;
     case "/config": session.handleConfig(req, res); return true;
     case "/health": session.handleHealth(req, res); return true;
-    case "/webrtc/offer": void session.handleWebRTCOffer(req, res); return true;
-    case "/webrtc/close": void session.handleWebRTCClose(req, res); return true;
-    case "/ax": session.handleAx(req, res); return true;
-    case "/foreground": session.handleForeground(req, res); return true;
+    case "/webrtc/offer": await session.handleWebRTCOffer(req, res); return true;
+    case "/webrtc/close": await session.handleWebRTCClose(req, res); return true;
+    case "/ax": await session.handleAx(req, res); return true;
+    case "/foreground": await session.handleForeground(req, res); return true;
     default: return false;
   }
 }
@@ -1602,7 +1603,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       const device = helperTarget.device ?? selectedDevice;
       // The device's helper endpoints are served from an in-process
       // NativeCapture/NativeHid DeviceSession.
-      if (serveHelperInProcess(req, res, device, helperTarget.upstreamPath, streamSettings)) return;
+      if (await serveHelperInProcess(req, res, device, helperTarget.upstreamPath, streamSettings)) return;
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("No serve-sim device");
       return;

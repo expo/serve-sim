@@ -92,9 +92,11 @@ export class TartGuest {
   }
 
   async tartIp(): Promise<string | null> {
+    const fromEnv = process.env.TART_IP?.trim() ?? "";
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(fromEnv)) return fromEnv;
     const out = await run(["tart", "ip", this.config.vm], { allowFail: true });
     const ip = out.trim();
-    return ip || null;
+    return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(ip) ? ip : null;
   }
 
   async isRunning(): Promise<boolean> {
@@ -220,13 +222,14 @@ export class TartGuest {
     const srcQuoted = JSON.stringify(`${share}/src`);
     const stopHint = `Stop the VM with \`tart stop ${this.config.vm}\` and rerun bun run tart up.`;
 
-    const stampDir = join(this.config.pkgDir, "dist");
+    const stampDir = join(this.config.pkgDir, "src");
     mkdirSync(stampDir, { recursive: true });
-    const stamp = join(stampDir, ".tart-share");
+    const stampName = `.tart-share.${process.pid}.${Date.now()}`;
+    const stamp = join(stampDir, stampName);
     const token = `${this.config.repoDir}:${process.pid}:${Date.now()}`;
     writeFileSync(stamp, token);
     try {
-      const remote = `${share}/dist/.tart-share`;
+      const remote = `${share}/src/${stampName}`;
       let present = false;
       for (let i = 0; i < 15; i++) {
         present = (await this.ssh(`if test -d ${srcQuoted}; then echo ok; fi`)).trim() === "ok";

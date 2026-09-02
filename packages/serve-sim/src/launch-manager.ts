@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "child_process";
+import { execFileSync } from "child_process";
 import {
   closeSync,
   existsSync,
@@ -10,13 +10,11 @@ import {
   writeFileSync,
 } from "fs";
 import { join } from "path";
-import { promisify } from "util";
 
 import { capabilitiesToApply, type CapabilityOverrides } from "./capabilities";
 import { dirnameOf } from "./runtime";
+import { simctl as runSimctl } from "./simctl";
 import { STATE_DIR } from "./state";
-
-const execFileAsync = promisify(execFile);
 
 const CONFIG_NAME = "capabilities.conf";
 const TRAMPOLINE_NAME = "libServeSimTrampoline.dylib";
@@ -164,11 +162,7 @@ async function withLaunchStateLock<T>(udid: string, fn: () => Promise<T>): Promi
 }
 
 async function simctl(args: string[], timeout = 30_000): Promise<string> {
-  const { stdout } = await execFileAsync("xcrun", ["simctl", ...args], {
-    encoding: "utf8",
-    timeout,
-  });
-  return stdout.trim();
+  return (await runSimctl(args, { timeout })).trim();
 }
 
 async function containerForBundle(udid: string, bundleId: string): Promise<string> {

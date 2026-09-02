@@ -45,9 +45,10 @@ describe("selectServeSimState", () => {
 describe("previewConfigForState", () => {
   test("returns the full client config shape with device-scoped endpoints", () => {
     const state = states[1]!;
-    expect(previewConfigForState(state, "/preview", "/bin/serve-sim", "token-xyz")).toEqual({
+    expect(previewConfigForState(state, "/preview", "/bin/serve-sim", "token-xyz", undefined, false, "/pkg/serve-sim-pasteboard")).toEqual({
       ...state,
       basePath: "/preview",
+      pasteboardTool: "/pkg/serve-sim-pasteboard",
       logsEndpoint: "/preview/logs?device=DEVICE-B",
       appStateEndpoint: "/preview/appstate?device=DEVICE-B",
       eventLogEndpoint: "/preview/api/event-log?device=DEVICE-B",

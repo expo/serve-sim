@@ -1,4 +1,5 @@
 import { shellEscape, type ExecResult } from "./exec";
+import { randomId } from "./random-id";
 
 // ─── File drop (drag media/ipa onto the simulator) ───
 //
@@ -112,7 +113,7 @@ export async function uploadFileToTmp(
   if (file.size > DROP_MAX_FILE_SIZE) {
     throw new Error("File too large (max 500MB)");
   }
-  const tmpPath = `/tmp/${prefix}-${crypto.randomUUID()}.${ext}`;
+  const tmpPath = `/tmp/${prefix}-${randomId()}.${ext}`;
   await streamFileToHostPath(file, tmpPath, exec);
   return tmpPath;
 }
@@ -130,7 +131,7 @@ export async function uploadDroppedFile(
 
   const ext = kind === "ipa" ? "ipa" : fileExtension(file);
   const prefix = kind === "ipa" ? "serve-sim-install" : "serve-sim-upload";
-  const tmpPath = `/tmp/${prefix}-${crypto.randomUUID()}.${ext}`;
+  const tmpPath = `/tmp/${prefix}-${randomId()}.${ext}`;
 
   try {
     onProgress(0);

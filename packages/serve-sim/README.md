@@ -102,6 +102,11 @@ Options:
                       Argument passed to the app when it launches (repeatable)
       --open-url <url>
                       URL to open in the app after it launches
+      --enable <capability>
+                      Turn on a capability that is off by default (repeatable)
+      --disable <capability>
+                      Turn off a capability that is on by default (repeatable).
+                      Capabilities: clipboard (on), probe (off)
       --list [device] List running streams
       --kill [device] Kill running stream(s)
 
@@ -326,7 +331,7 @@ bun run packages/serve-sim/build.ts                    # full production build
 packages/serve-sim/Sources/SimNative/build.sh           # native addon only
 bun run --filter @expo/serve-sim dev                          # watch mode
 bun run --filter @expo/serve-sim tart-dev                     # guest preview at localhost:3200
-bun run --filter @expo/serve-sim tart-test -- <files>       # bun test on the guest
+bun run --filter @expo/serve-sim tart-test                    # pasteboard + clipboard tests on the guest
 ```
 
 ### Tart guest
@@ -343,11 +348,11 @@ bun run --filter @expo/serve-sim tart-dev
 
 `tart-dev` starts the VM if needed, boots an iPhone 17, runs `bun run dev.ts` on the guest, and tunnels guest `:3200` to the host. Host port `3200` must be free. Ctrl-C stops the tunnel and the guest server.
 
-`tart-test` uses the same guest, but runs `bun test` there. It stages package src onto the VM, boots an iPhone, and executes the files you pass over SSH as `expo`. Pass the files; with none it exits instead of running the whole guest suite.
+`tart-test` uses the same guest, but runs `bun test` there as `expo`. With no files it runs every pasteboard and clipboard test (Copy HID, inject, the endpoint, SpringBoard). Pass paths to run something else.
 
 ```sh
+bun run --filter @expo/serve-sim tart-test
 bun run --filter @expo/serve-sim tart-test -- src/__tests__/foo.test.ts
-bun run --filter @expo/serve-sim tart -- test src/__tests__/foo.test.ts
 ```
 
 First run creates the `expo` user and copies bun onto the guest (`bun run --filter @expo/serve-sim tart -- setup` if you want that step alone).

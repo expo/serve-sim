@@ -1,9 +1,13 @@
 import { spawn } from "bun";
 import { describe, expect, test } from "bun:test";
-import { guestPreviewScript, waitGone } from "../dev";
+import { guestNativeAddonPath, guestPreviewScript, waitGone } from "../dev";
 import { SSH_OPTS, sshTunnelArgs } from "../guest";
 
 describe("tart-dev", () => {
+  test("guest native keeps loader_path/../bin layout", () => {
+    expect(guestNativeAddonPath()).toBe("/tmp/serve-sim-dist/native/serve-sim-native.node");
+  });
+
   test("guest preview cds to the share and runs bun dev.ts", () => {
     const share = "/Volumes/My Shared Files/serve-sim/packages/serve-sim";
     const script = guestPreviewScript(share, 3200);
@@ -13,6 +17,29 @@ describe("tart-dev", () => {
     expect(script).not.toContain("simpb");
     expect(script).not.toContain("ln -sfn");
     expect(script).not.toContain("bun install");
+    expect(script).not.toContain("SERVE_SIM_HOST_ENCODER");
+  });
+
+  test("guest preview forwards host encoder address env", () => {
+    const prev = {
+      SERVE_SIM_HOST_ENCODER: process.env.SERVE_SIM_HOST_ENCODER,
+      SERVE_SIM_HOST_ENCODER_HOST: process.env.SERVE_SIM_HOST_ENCODER_HOST,
+      SERVE_SIM_HOST_ENCODER_PORT: process.env.SERVE_SIM_HOST_ENCODER_PORT,
+    };
+    process.env.SERVE_SIM_HOST_ENCODER = "1";
+    process.env.SERVE_SIM_HOST_ENCODER_HOST = "192.168.64.1";
+    process.env.SERVE_SIM_HOST_ENCODER_PORT = "9876";
+    try {
+      const script = guestPreviewScript("/share", 3200);
+      expect(script).toContain('export SERVE_SIM_HOST_ENCODER="1"');
+      expect(script).toContain('export SERVE_SIM_HOST_ENCODER_HOST="192.168.64.1"');
+      expect(script).toContain('export SERVE_SIM_HOST_ENCODER_PORT="9876"');
+    } finally {
+      for (const [key, value] of Object.entries(prev)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   test("tunnels guest loopback onto the host port", () => {

@@ -2,6 +2,8 @@ import { EventEmitter } from "events";
 import type { IncomingMessage, ServerResponse } from "http";
 import type { Socket } from "net";
 
+const unset = Symbol("unset");
+
 type Next = (error?: unknown) => void | Promise<void>;
 
 export type ConnectMiddleware = {
@@ -35,17 +37,55 @@ export function connectToFetch(
     abortController.abort();
     void requestBodyReader?.cancel().catch(() => {});
     request.signal.removeEventListener("abort", handleRequestAbort);
-    if (aborted) requestEvents.emit("aborted");
+    if (aborted) {
+      bodyAborted = true;
+      requestEvents.emit("aborted");
+    }
     requestEvents.emit("close");
   };
   const handleRequestAbort = () => closeRequest(true);
   const requestWasAlreadyAborted = request.signal.aborted;
   request.signal.addEventListener("abort", handleRequestAbort, { once: true });
+  const bodyChunks: Buffer[] = [];
+  let bodyEnded = false;
+  let bodyAborted = false;
+  let closeRequestAfterBody = false;
+  const originalOn = requestEvents.on.bind(requestEvents);
+  const originalOnce = requestEvents.once.bind(requestEvents);
+  const replayBodyEvent = (event: string, listener: (...args: unknown[]) => void) => {
+    if (event === "data") {
+      for (const chunk of bodyChunks) listener(chunk);
+    } else if (event === "end" && bodyEnded && !bodyAborted) {
+      queueMicrotask(() => listener());
+    } else if (event === "aborted" && bodyAborted) {
+      queueMicrotask(() => listener());
+    }
+  };
   const fakeReq = Object.assign(requestEvents, {
     method: request.method,
     url: `${requestUrl.pathname}${requestUrl.search}`,
     headers: headersFromRequest(request),
     socket: { localPort: Number(requestUrl.port) || undefined },
+    on(event: string, listener: (...args: unknown[]) => void) {
+      originalOn(event, listener);
+      replayBodyEvent(event, listener);
+      return fakeReq;
+    },
+    once(event: string, listener: (...args: unknown[]) => void) {
+      if (
+        (event === "end" && bodyEnded && !bodyAborted)
+        || (event === "aborted" && bodyAborted)
+      ) {
+        queueMicrotask(() => listener());
+        return fakeReq;
+      }
+      if (event === "data" && bodyChunks.length) {
+        queueMicrotask(() => listener(bodyChunks[0]));
+        return fakeReq;
+      }
+      originalOnce(event, listener);
+      return fakeReq;
+    },
     destroy() {
       closeRequest();
     },
@@ -63,7 +103,20 @@ export function connectToFetch(
   let resolveResponse!: (response: Response | undefined) => void;
   let rejectResponse!: (error: unknown) => void;
   let resolved = false;
+  let pendingResponse: Response | undefined | typeof unset = unset;
+  const hasRequestBody = request.method !== "GET" && request.method !== "HEAD" && request.body != null;
+  let requestBodyFinished = !hasRequestBody;
+  let startedStreaming = false;
   const encoder = new TextEncoder();
+  const flushResolve = () => {
+    if (resolved || pendingResponse === unset) return;
+    // Bun replaces a POST response with an empty 200 if we flush headers
+    // before the request body is drained. write() means a stream is live and
+    // must start immediately; writeHead+end waits until the body is consumed.
+    if (hasRequestBody && !requestBodyFinished && !startedStreaming) return;
+    resolved = true;
+    resolveResponse(pendingResponse);
+  };
 
   const emitResponseClose = () => {
     if (responseClosed) return;
@@ -88,9 +141,9 @@ export function connectToFetch(
   });
 
   const resolveOnce = (response: Response | undefined) => {
-    if (resolved) return;
-    resolved = true;
-    resolveResponse(response);
+    if (pendingResponse !== unset) return;
+    pendingResponse = response;
+    flushResolve();
   };
   const statusAllowsBody = () => status !== 101 && status !== 204 && status !== 205 && status !== 304;
   const ensureResponse = () => {
@@ -142,6 +195,8 @@ export function connectToFetch(
       callback?: (error?: Error | null) => void,
     ) {
       const accepted = writeChunk(chunk);
+      startedStreaming = true;
+      flushResolve();
       const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
       done?.();
       return accepted;
@@ -158,7 +213,8 @@ export function connectToFetch(
       }
       responseEvents.emit("finish");
       emitResponseClose();
-      closeRequest();
+      if (!hasRequestBody || requestBodyFinished) closeRequest();
+      else closeRequestAfterBody = true;
     },
     destroy(error?: Error) {
       if (responseDestroyed) return fakeRes;
@@ -203,11 +259,11 @@ export function connectToFetch(
   if (requestWasAlreadyAborted) handleRequestAbort();
   void handling
     .then(() => {
-      if (!resolved && writableEnded) {
+      if (pendingResponse === unset && writableEnded) {
         resolveOnce(new Response(null, { status, headers: responseHeaders }));
       }
     }, (error) => {
-      if (resolved) fakeRes.destroy(error instanceof Error ? error : undefined);
+      if (pendingResponse !== unset) fakeRes.destroy(error instanceof Error ? error : undefined);
       else rejectResponse(error);
     });
 
@@ -220,11 +276,17 @@ export function connectToFetch(
         while (!abortController.signal.aborted) {
           const { done, value } = await reader.read();
           if (done) break;
-          requestEvents.emit("data", Buffer.from(value));
+          const chunk = Buffer.from(value);
+          bodyChunks.push(chunk);
+          requestEvents.emit("data", chunk);
         }
       }
-      if (!abortController.signal.aborted) requestEvents.emit("end");
+      if (!abortController.signal.aborted) {
+        bodyEnded = true;
+        requestEvents.emit("end");
+      }
     } catch {
+      bodyAborted = true;
       closeRequest(true);
     } finally {
       if (requestBodyReader === reader) requestBodyReader = null;
@@ -232,6 +294,9 @@ export function connectToFetch(
         if (abortController.signal.aborted) await reader.cancel().catch(() => {});
         try { reader.releaseLock(); } catch {}
       }
+      requestBodyFinished = true;
+      if (closeRequestAfterBody && !requestClosed) closeRequest();
+      flushResolve();
     }
   })();
 

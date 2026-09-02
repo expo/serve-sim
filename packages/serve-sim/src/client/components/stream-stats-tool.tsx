@@ -149,6 +149,13 @@ export function summariseStream(stats: StreamStats): string | null {
   return `${fps(stats.fps)} · ${bitrate(stats.kbps)}`;
 }
 
+/** RTP mime from getStats, not the dropdown. `video/VP8` -> `webrtc/vp8`. */
+export function liveStreamCodecLabel(activeCodec: string, mimeType: string | null | undefined): string {
+  const name = mimeType?.split("/").pop()?.toLowerCase();
+  if (!name) return activeCodec;
+  return activeCodec.startsWith("webrtc/") ? `webrtc/${name}` : name;
+}
+
 /** Only faults, so a healthy stream stays quiet. */
 export function describeFaults(
   stats: StreamStats,

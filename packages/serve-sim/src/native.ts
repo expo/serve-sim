@@ -113,6 +113,7 @@ export const Orientation = {
 
 function resolveAddon(): string {
   const candidates = [
+    process.env.SERVE_SIM_NATIVE,
     // Beside the bun-compiled executable (dist/serve-sim → dist/native/…).
     // Arm64 macOS addon; loaded by path so it works under npx, the
     // compiled binary, and the dev server alike.
@@ -123,7 +124,7 @@ function resolveAddon(): string {
     join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "native", "serve-sim-native.node"),
   ];
   for (const p of candidates) {
-    if (existsSync(p)) return p;
+    if (p && existsSync(p)) return p;
   }
   throw new Error(
     `serve-sim-native.node not found. Looked in:\n  ${candidates.join("\n  ")}\n` +

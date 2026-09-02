@@ -16,7 +16,7 @@ const USAGE = `bun run tart <command>
 
 SSH as TART_USER (default expo), not tart exec as admin.
 
-Env: TART_VM=tahoe-xcode TART_USER=expo TART_SHARE_NAME=serve-sim PORT=3200
+Env: TART_VM=tahoe-xcode TART_USER=expo TART_SHARE_NAME=serve-sim PORT=3200 TART_IP=192.168.64.4
 `;
 
 async function prepare(guest: TartGuest): Promise<void> {

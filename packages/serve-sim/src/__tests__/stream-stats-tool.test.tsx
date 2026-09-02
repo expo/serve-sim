@@ -1,8 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { StreamStatsBody, describeFaults, statsToJson } from "../client/components/stream-stats-tool";
+import { StreamStatsBody, describeFaults, liveStreamCodecLabel, statsToJson } from "../client/components/stream-stats-tool";
 import type { StreamStats } from "../client/utils/webrtc-stats";
+
+describe("liveStreamCodecLabel", () => {
+  test("keeps the selected label until RTP stats name a codec", () => {
+    expect(liveStreamCodecLabel("webrtc/h264", null)).toBe("webrtc/h264");
+  });
+
+  test("uses the inbound RTP mime, not the dropdown", () => {
+    expect(liveStreamCodecLabel("webrtc/h264", "video/VP8")).toBe("webrtc/vp8");
+    expect(liveStreamCodecLabel("webrtc/vp8", "video/H264")).toBe("webrtc/h264");
+  });
+});
 
 function stats(overrides: Partial<StreamStats> = {}): StreamStats {
   return {

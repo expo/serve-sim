@@ -4,7 +4,8 @@ import type { CrashFrame } from "../../crash/report";
 import type { CrashOccurrence, CrashSummary } from "../../crash/store";
 import { collapseSystemFrames, formatCrashAgo, formatOccurrenceClock } from "../utils/crash-format";
 import { useCopy } from "../hooks/use-copy";
-import { parseDeviceLogJson } from "../utils/device-log-format";
+import { formatLogClock, parseDeviceLogJson } from "../utils/device-log-format";
+import { LevelGlyph } from "./level-glyph";
 
 function messageOf(raw: string): string {
   return parseDeviceLogJson(raw)?.message ?? raw;
@@ -345,17 +346,25 @@ export function CrashDetailModal({
             <ol className="font-mono text-[10px] leading-relaxed">
               {occurrence.logTail.map((raw, index) => {
                 const last = index === occurrence.logTail.length - 1;
+                const fields = parseDeviceLogJson(raw);
+                const time = fields ? formatLogClock(fields.timestamp) : "";
                 return (
                   <li
                     key={index}
-                    className={`grid grid-cols-[34px_1fr] gap-2 rounded px-1 ${
+                    className={`grid grid-cols-[34px_5.5rem_20px_1fr] items-start gap-2 rounded px-1 ${
                       last ? "bg-red-400/10 text-white/80" : "text-white/55"
                     }`}
                   >
                     <span className="select-none text-right text-white/25 tabular-nums">
                       {index + 1}
                     </span>
-                    <span className="whitespace-pre-wrap break-all">{messageOf(raw)}</span>
+                    <span className="tabular-nums text-white/30">{time || "\u00a0"}</span>
+                    <span className="flex justify-center pt-[1px]">
+                      {fields ? <LevelGlyph level={fields.level} className="size-3" /> : null}
+                    </span>
+                    <span className="whitespace-pre-wrap break-all">
+                      {fields?.message ?? raw}
+                    </span>
                   </li>
                 );
               })}

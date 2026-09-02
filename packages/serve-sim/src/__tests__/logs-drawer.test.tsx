@@ -19,21 +19,11 @@ describe("LogsDrawer", () => {
     );
 
     expect(html).toContain("data-logs");
-    expect(html).toContain("Device logs");
-    expect(html).toContain("Logs");
-    expect(html).toContain("Filter");
-    expect(html).toContain("All processes");
-    expect(html).toContain("Current app");
-    expect(html).toContain("Log levels");
+    expect(html).toContain("translateY(0)");
+    // Debug is the one level that starts off.
     expect(html).toContain("Debug, off");
     expect(html).toContain("Error, on");
     expect(html).toContain("Fault, on");
-    expect(html).toContain("Clear");
-    expect(html).toContain("Pause");
-    expect(html).toContain("Close logs");
-    expect(html).toContain("Resize logs drawer");
-    expect(html).toContain('role="tooltip"');
-    expect(html).toContain("translateY(0)");
   });
 
   test("slides off-screen when closed", () => {

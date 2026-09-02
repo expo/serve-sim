@@ -28,16 +28,12 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-function asPid(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-export function normalizeDeviceLogLevel(raw: unknown): DeviceLogLevel {
+function normalizeDeviceLogLevel(raw: unknown): DeviceLogLevel {
   if (typeof raw === "number") {
-    if (raw === 2 || raw === 0x02) return "debug";
-    if (raw === 1 || raw === 0x01) return "info";
-    if (raw === 16 || raw === 0x10) return "error";
-    if (raw === 17 || raw === 0x11) return "fault";
+    if (raw === 2) return "debug";
+    if (raw === 1) return "info";
+    if (raw === 16) return "error";
+    if (raw === 17) return "fault";
     return "default";
   }
   const value = String(raw).toLowerCase();
@@ -61,7 +57,9 @@ export function parseDeviceLogEntry(entry: unknown): DeviceLogFields | null {
     category: asString(record.category),
     message,
     level: normalizeDeviceLogLevel(record.messageType),
-    pid: asPid(record.processID),
+    pid: typeof record.processID === "number" && Number.isFinite(record.processID)
+      ? record.processID
+      : null,
     timestamp: asString(record.timestamp),
   };
 }
@@ -72,26 +70,6 @@ export function parseDeviceLogJson(raw: string): DeviceLogFields | null {
   } catch {
     return null;
   }
-}
-
-export function parseLogStreamFrame(
-  data: string
-): { seq: number; fields: DeviceLogFields } | null {
-  try {
-    const parsed = JSON.parse(data) as { seq?: unknown; raw?: unknown };
-    if (typeof parsed?.seq === "number" && typeof parsed.raw === "string") {
-      const fields = parseDeviceLogJson(parsed.raw);
-      return fields ? { seq: parsed.seq, fields } : null;
-    }
-    const fields = parseDeviceLogEntry(parsed);
-    return fields ? { seq: 0, fields } : null;
-  } catch {
-    return null;
-  }
-}
-
-export function isDeviceLogError(level: string): boolean {
-  return level === "error" || level === "fault";
 }
 
 export function deviceLogMatches(line: DeviceLogFields, query: string): boolean {
@@ -107,7 +85,7 @@ export function deviceLogMatches(line: DeviceLogFields, query: string): boolean 
   );
 }
 
-export function parseLogTimestamp(timestamp: string): number | null {
+function parseLogTimestamp(timestamp: string): number | null {
   if (!timestamp) return null;
   const trimmed = timestamp
     .replace(" ", "T")

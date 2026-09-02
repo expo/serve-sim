@@ -94,7 +94,6 @@ import {
   isVisualViewportKeyboardRaised,
   readNativeKeyboardRaised,
   SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
-  SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD,
   SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION,
 } from "./utils/simulator-resize";
 import {
@@ -1014,8 +1013,7 @@ function AppWithConfig({
   const closePhoneKeyboard = useCallback(() => {
     keyboardInputRef.current?.blur();
     setKeyboardOpen(false);
-    sendWs(0x0d, { visible: true });
-  }, [sendWs]);
+  }, []);
 
   const toggleKeyboard = useCallback(() => {
     const el = keyboardInputRef.current;
@@ -1026,12 +1024,12 @@ function AppWithConfig({
     } else {
       el?.focus();
       setKeyboardOpen(true);
-      sendWs(0x0d, { visible: false });
     }
-  }, [keyboardOpen, closePhoneKeyboard, sendWs]);
+  }, [keyboardOpen, closePhoneKeyboard]);
 
   const phoneKeyboardRaised =
     coarsePointer && isVisualViewportKeyboardRaised(windowInnerHeight, viewportHeight);
+  const stableViewportHeight = coarsePointer ? windowInnerHeight : viewportHeight;
 
   useEffect(() => {
     if (!keyboardOpen) {
@@ -1142,11 +1140,9 @@ function AppWithConfig({
   const simulatorResize = useSimulatorResize({
     defaultWidth: containerDefaultWidth,
     viewportWidth,
-    viewportHeight,
+    viewportHeight: stableViewportHeight,
     aspectRatio: containerAspectRatioValue,
-    reservedForChrome: phoneKeyboardRaised
-      ? SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD
-      : SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
+    reservedForChrome: SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
     onStart: () => setSimFocused(false),
   });
 
@@ -1198,7 +1194,7 @@ function AppWithConfig({
   const frameWidth = presentation
     ? getPresentationFrameWidth(
         viewportWidth,
-        viewportHeight,
+        stableViewportHeight,
         containerAspectRatioValue,
         presentationInset,
       )
@@ -1211,7 +1207,7 @@ function AppWithConfig({
     !resizing && !presentation,
     layoutWidth,
     layoutHeight,
-    viewportHeight,
+    stableViewportHeight,
     phoneKeyboardRaised,
     scaling,
   );
@@ -1220,14 +1216,10 @@ function AppWithConfig({
     <AxStateProvider endpoint={axOverlayEnabled ? config?.axEndpoint : undefined}>
     <div
       className={`flex flex-col items-center justify-center h-dvh bg-page font-system box-border ${
-        presentation
-          ? "gap-0"
-          : phoneKeyboardRaised
-            ? "pt-2 pb-2 gap-0"
-            : "pt-16 pb-6 sm:py-6 gap-3"
+        presentation ? "gap-0" : "pt-16 pb-6 sm:py-6 gap-3"
       }`}
       style={{
-        height: viewportHeight > 0 ? viewportHeight : undefined,
+        height: stableViewportHeight > 0 ? stableViewportHeight : undefined,
         paddingTop: presentation ? presentationInset : undefined,
         paddingBottom: presentation ? presentationInset : undefined,
         paddingLeft: presentation ? presentationInset : 24 + shiftForLeftPanel,
@@ -1236,7 +1228,7 @@ function AppWithConfig({
       }}
     >
       <div
-        className={`flex flex-col items-center min-w-0 ${presentation || phoneKeyboardRaised ? "gap-0" : "gap-3"}`}
+        className={`flex flex-col items-center min-w-0 ${presentation ? "gap-0" : "gap-3"}`}
         style={{
           width: layoutWidth,
           transition: resizing ? SIMULATOR_RESIZE_DRAG_TRANSITION : undefined,
@@ -1438,7 +1430,7 @@ function AppWithConfig({
           />
         </div>
         </div>
-        {!presentation && !phoneKeyboardRaised && (
+        {!presentation && (
         <div className="inline-flex items-center justify-center gap-2 max-w-full pb-1 sm:pb-0">
           <SimulatorToolbar
             exec={execOnHost}

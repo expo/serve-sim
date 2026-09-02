@@ -103,9 +103,14 @@ The JSON body carries `lines`, `latestSeq`, `oldestSeq`, `bufferedBytes`,
 
 ## Authentication and state
 
-The `/exec` route requires the per-process bearer token injected
-into the same-origin preview. Non-browser callers can read it as `execToken`
-from `GET {base}/api`. Stream, input,
-accessibility, and signaling routes are intentionally unauthenticated, so expose
-serve-sim only on trusted networks or behind an authenticated proxy.
+Started with `--require-token`, which is how EAS runs it on the network,
+serve-sim gates every route except `/healthz` and `/readyz`. The preview link
+carries `?token=`, which the first page load trades for a cookie; API and SSE
+callers send `Authorization: Bearer <token>` instead, and WebSocket upgrades
+take the bearer or the cookie but never a query token. An authenticated caller
+can read the token back as `execToken` from `GET {base}/api`.
+
+Without that flag a loopback server is ungated, on the grounds that it is
+already reachable by whoever is on the machine. Expose serve-sim on a network
+only with the flag, or behind an authenticated proxy.
 

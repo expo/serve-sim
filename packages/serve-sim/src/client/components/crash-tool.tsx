@@ -1,22 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CrashMeta } from "../../crash/runtime";
 import type { CrashSummary } from "../../crash/store";
 import { crashDetailUrl, formatCrashAgo } from "../utils/crash-format";
 import { startExclusivePoll } from "../utils/exclusive-poll";
-import { simEndpoint } from "../utils/sim-endpoint";
+import { simAuthHeaders, simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
 import { CrashDetailModal, type SelectedOccurrence } from "./crash-detail-modal";
 
-type CrashListPayload = {
-  meta: { status: "idle" | "watching" | "unavailable"; statusError: string | null };
-  crashes: CrashSummary[];
-};
+type CrashListPayload = { meta: CrashMeta; crashes: CrashSummary[] };
 
 const POLL_INTERVAL_MS = 5_000;
 
 function authorizedFetch(url: string): Promise<Response> {
-  return fetch(url, {
-    headers: { Authorization: `Bearer ${window.__SIM_PREVIEW__?.execToken ?? ""}` },
-  });
+  return fetch(url, { headers: simAuthHeaders() });
 }
 
 type CrashDetail = {
@@ -48,14 +44,19 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
     return () => clearInterval(tick);
   }, []);
 
-  // `/crashes` needs the bearer token, which EventSource cannot send, so poll instead.
   useEffect(() => {
     return startExclusivePoll(async () => {
       try {
         const response = await authorizedFetch(path);
-        if (!response.ok) return;
+        if (!response.ok) {
+          setLoadError(`The crash list request failed (${response.status}). Showing the last one read.`);
+          return;
+        }
         setPayload((await response.json()) as CrashListPayload);
-      } catch {}
+        setLoadError(null);
+      } catch {
+        setLoadError("Lost contact with serve-sim. Showing the last crash list read.");
+      }
     }, POLL_INTERVAL_MS);
   }, [path]);
 

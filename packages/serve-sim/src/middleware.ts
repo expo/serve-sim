@@ -1656,8 +1656,6 @@ export function handleCrashesRequest(
   const udid = state.device;
   const wantsStream = (req.headers.accept ?? "").includes("text/event-stream");
   if (wantsStream && (res.destroyed || req.destroyed)) return;
-  const streamOpen = (): boolean => !res.writableEnded && !res.destroyed;
-
   if (!wantsStream) {
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     res.end(
@@ -1666,46 +1664,34 @@ export function handleCrashesRequest(
     return;
   }
 
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-    "X-Accel-Buffering": "no",
+  let lastMeta = JSON.stringify(runtime.meta());
+  const stream = openSseStream(req, res, {
+    onHeartbeat: () => {
+      const next = JSON.stringify(runtime.meta());
+      if (next === lastMeta) return;
+      lastMeta = next;
+      stream.write(`data: {"type":"meta","meta":${next}}\n\n`);
+    },
   });
-  res.write(":\n\n");
 
   const { crashes, unsubscribe } = runtime.subscribe(
     udid,
     (event) => {
-      if (!streamOpen()) return;
-      const frame = { type: event.type, record: summarize(event.record) };
-      res.write("data: " + JSON.stringify(frame) + "\n\n");
+      stream.write(
+        "data: " + JSON.stringify({ type: event.type, record: summarize(event.record) }) + "\n\n"
+      );
     },
     () => {
-      if (streamOpen()) res.end();
+      if (stream.isOpen()) res.end();
     }
   );
+  stream.onClose(unsubscribe);
 
-  let lastMeta = JSON.stringify(runtime.meta());
-  res.write(`data: {"type":"meta","meta":${lastMeta}}\n\n`);
+  stream.write(`data: {"type":"meta","meta":${lastMeta}}\n\n`);
   for (const record of crashes) {
-    if (!streamOpen()) break;
-    res.write("data: " + JSON.stringify({ type: "crash", record: summarize(record) }) + "\n\n");
+    if (!stream.isOpen()) break;
+    stream.write("data: " + JSON.stringify({ type: "crash", record: summarize(record) }) + "\n\n");
   }
-
-  const heartbeat = setInterval(() => {
-    if (!streamOpen()) return;
-    const next = JSON.stringify(runtime.meta());
-    if (next !== lastMeta) {
-      lastMeta = next;
-      res.write(`data: {"type":"meta","meta":${next}}\n\n`);
-    }
-    res.write(":\n\n");
-  }, 15000);
-  req.on("close", () => {
-    clearInterval(heartbeat);
-    unsubscribe();
-  });
 }
 
 export async function handleCrashReportRequest(

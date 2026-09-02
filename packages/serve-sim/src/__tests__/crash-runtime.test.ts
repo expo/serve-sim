@@ -740,6 +740,19 @@ describe("createCrashRuntime meta", () => {
     expect(runtime.listFor(UDID_A)).toHaveLength(1);
   });
 
+  test("says so when a simulator crash report will not parse", async () => {
+    const runtime = makeRuntime();
+    runtime.start();
+    files.set("Demo-1.ips", `${JSON.stringify({ app_name: "Demo", platform: 7, bundleID: "com.example.demo", bug_type: "309" })}\nnot json\n`);
+
+    emit("rename", "Demo-1.ips");
+    await flush();
+
+    expect(runtime.listFor(UDID_A)).toHaveLength(0);
+    expect(errors.join(" ")).toContain("could not read the crash out of Demo-1.ips");
+    runtime.stop();
+  });
+
   test("gives up after repeated watch failures instead of retrying forever", async () => {
     let attempts = 0;
     const runtime = createCrashRuntime({

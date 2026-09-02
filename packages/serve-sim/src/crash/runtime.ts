@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { isSimulatorAppCrash, parseCrashReport, parseIpsHeader, type CrashReport } from "./report";
-import { logBufferCache, POLL_IDLE_MS, type LogBufferCache } from "../log-buffer";
+import { logBufferCache, POLL_IDLE_MS, pruneByUdid, type LogBufferCache } from "../log-buffer";
 import { CrashStore, type CrashEvent, type CrashRecord, type LogTailSource } from "./store";
 
 const DEFAULT_REPORTS_DIR = join(homedir(), "Library", "Logs", "DiagnosticReports");
@@ -190,7 +190,17 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     if (!isSimulatorAppCrash(parseIpsHeader(raw))) return;
 
     const report = parseCrashReport(raw);
-    if (!report?.deviceUdid) return;
+    if (!report?.deviceUdid) {
+      reportError(
+        `could not read the crash out of ${filename}`,
+        new Error(
+          report
+            ? "The report has no simulator device in its process path, so there is nothing to attach it to."
+            : "The report looked like a simulator app crash but its body did not parse."
+        )
+      );
+      return;
+    }
 
     const tail = logTailFor(report);
     storeFor(report.deviceUdid).record(report, path, tail.logTail, tail.logTailSource);
@@ -228,8 +238,9 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       let mtimeMs: number;
       try {
         mtimeMs = (await statFile(join(reportsDir, filename))).mtimeMs;
-      } catch {
-        // Retired or deleted between the listing and the stat.
+      } catch (error) {
+        // Retired or deleted between the listing and the stat is routine; anything else is not.
+        if (!isMissingFile(error)) reportError(`could not stat ${filename}`, error);
         continue;
       }
       if (mtimeMs < cutoff) continue;
@@ -293,15 +304,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     },
 
     prune(liveUdids: readonly string[]): void {
-      // An empty list usually means the state read failed, not that every device went away.
-      if (liveUdids.length === 0) return;
-      const live = new Set(liveUdids);
-      for (const [udid, store] of byUdid) {
-        // Identity-guard so a stale prune cannot drop a replacement store.
-        if (live.has(udid) || byUdid.get(udid) !== store) continue;
-        store.close();
-        byUdid.delete(udid);
-      }
+      pruneByUdid(byUdid, liveUdids, (store) => store.close());
     },
 
     meta(): CrashMeta {

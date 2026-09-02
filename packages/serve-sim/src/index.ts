@@ -17,6 +17,7 @@ import {
 } from "./state";
 import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from "./text-to-keys";
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
+import { launchAppAsync } from "./launch-app";
 import { killPortHolder } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
@@ -1765,6 +1766,25 @@ program
   .option("--no-preview", "Skip the web preview server; stream in foreground only")
   .option("--transport <http|webrtc>", "Stream transport", "http")
   .option(
+    "--launch-app-identifier <id>",
+    "Bundle identifier of an installed app to launch once the simulator boots",
+  )
+  .option(
+    "--launch-arg <arg>",
+    "Argument passed to the app when it launches. Repeat for multiple arguments.",
+    (value: string, previous: string[] = []) => [...previous, value],
+  )
+  .option(
+    "--open-url <url>",
+    "URL to open in the app after it launches",
+    (value) => {
+      if (!URL.canParse(value)) {
+        throw new InvalidArgumentError(`Invalid URL '${value}'. Pass a full URL, such as exp://127.0.0.1:8081.`);
+      }
+      return value;
+    },
+  )
+  .option(
     "--codec <codec>",
     "Stream codec for the preview UI: 'auto', 'h264', or 'mjpeg'. Use --transport webrtc for WebRTC.",
     (value) => {
@@ -1855,7 +1875,9 @@ Examples:
   serve-sim --no-preview "iPhone 16 Pro" Stream a specific device (no preview)
   serve-sim --detach                     Start streaming in background (daemon)
   serve-sim --list                       Show all running streams
-  serve-sim --kill                       Stop all streams`,
+  serve-sim --kill                       Stop all streams
+  serve-sim --launch-app-identifier host.exp.Exponent
+                                         Launch an installed app, then start the stream`,
   )
   .action(async (devices: string[], opts) => {
     if (opts.list !== undefined) {
@@ -1930,6 +1952,31 @@ Examples:
           codec: opts.codec,
           ...encoderOptions,
         };
+    const bundleId =
+      typeof opts.launchAppIdentifier === "string" ? opts.launchAppIdentifier.trim() : "";
+    if (opts.launchAppIdentifier !== undefined && !bundleId) {
+      console.error("--launch-app-identifier needs an app bundle identifier, such as host.exp.Exponent.");
+      process.exit(1);
+    }
+    const launchArgs: string[] = opts.launchArg ?? [];
+    const openUrl: string | undefined = opts.openUrl;
+    if (!bundleId && (launchArgs.length > 0 || openUrl)) {
+      console.error(
+        "--launch-arg and --open-url apply to an app launch. Pass --launch-app-identifier with the app to launch.",
+      );
+      process.exit(1);
+    }
+    let targets = devices;
+    if (bundleId) {
+      try {
+        targets = resolveTargetDevices(devices);
+        for (const udid of targets) await ensureBooted(udid);
+        for (const udid of targets) await launchAppAsync(udid, { bundleId, launchArgs, openUrl });
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : error);
+        process.exit(1);
+      }
+    }
     const startPort: number | undefined = opts.port;
     const streamOptionsProvided = wasProvided("transport")
       || wasProvided("codec")
@@ -1952,12 +1999,12 @@ Examples:
       }
     }
     if (opts.detach) {
-      const states = await detach(devices, startPort ?? 3100, stream, streamOptionsProvided);
+      const states = await detach(targets, startPort ?? 3100, stream, streamOptionsProvided);
       printStatesJSON(states);
     } else if (opts.preview === false) {
-      await follow(devices, startPort ?? 3100, !!opts.quiet, stream, streamOptionsProvided);
+      await follow(targets, startPort ?? 3100, !!opts.quiet, stream, streamOptionsProvided);
     } else {
-      await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, {
+      await serve(startPort ?? 3200, targets, startPort !== undefined, opts.host, {
         stream,
         metricsCorsOrigins: opts.metricsCorsOrigin,
         debugStreamPath,

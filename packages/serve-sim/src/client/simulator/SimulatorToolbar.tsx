@@ -12,6 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { useCoarsePointer } from "../hooks/use-coarse-pointer.js";
+import { runHostAction, type ExecResult } from "../utils/exec";
 import type { SimulatorOrientation } from "../types.js";
 import { getDeviceType, type DeviceType } from "./deviceFrames.js";
 import { ROTATE_LEFT_CYCLE } from "./orientation.js";
@@ -400,22 +401,13 @@ const ToolbarButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function
 // every Xcode version and is functionally identical to a single home press, so
 // it's the default whenever a udid is known. Watch simulators ignore both, so
 // they fall back to driving Simulator.app's Device > Home menu item.
-export function homeButtonCommand(
+export function pressHomeAsync(
   deviceType: DeviceType,
   deviceUdid?: string | null,
-): string {
-  if (deviceType === "watch") return watchHomeAppleScript();
-  if (deviceUdid) return `xcrun simctl launch ${deviceUdid} com.apple.springboard`;
-  return "serve-sim button home";
-}
-
-function watchHomeAppleScript(): string {
-  const args = [
-    'tell application "System Events" to tell process "Simulator" to set frontmost to true',
-    'tell application "System Events" to tell process "Simulator" to perform action "AXRaise" of (first window whose name contains "watchOS")',
-    'tell application "System Events" to tell process "Simulator" to click menu item "Home" of menu "Device" of menu bar item "Device" of menu bar 1',
-  ];
-  return args.map((a) => `-e '${a}'`).reduce((acc, a) => `${acc} ${a}`, "osascript");
+): Promise<ExecResult> {
+  if (deviceType === "watch") return runHostAction("home.watch");
+  if (deviceUdid) return runHostAction("home.springboard", { udid: deviceUdid });
+  return runHostAction("button", { value: "home" });
 }
 
 
@@ -469,7 +461,7 @@ const HomeButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function Ho
       onClick={(e) => {
         onClick?.(e);
         if (e.defaultPrevented) return;
-        void ctx.exec(homeButtonCommand(ctx.deviceType, ctx.deviceUdid));
+        void pressHomeAsync(ctx.deviceType, ctx.deviceUdid);
       }}
       {...rest}
     >
@@ -491,9 +483,10 @@ const ScreenshotButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(funct
         onClick?.(e);
         if (e.defaultPrevented) return;
         if (ctx.deviceUdid) {
-          void ctx.exec(
-            `xcrun simctl io ${ctx.deviceUdid} screenshot ~/Desktop/serve-sim-screenshot-$(date +%s).png`,
-          );
+          void runHostAction("screenshot.capture", {
+            udid: ctx.deviceUdid,
+            fileName: `serve-sim-screenshot-${Math.floor(Date.now() / 1000)}.png`,
+          });
         }
       }}
       {...rest}
@@ -529,7 +522,7 @@ const RotateButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function 
         if (ctx.onRotate) {
           void ctx.onRotate(next);
         } else {
-          void ctx.exec(`serve-sim rotate ${next} -d ${ctx.deviceUdid}`);
+          void runHostAction("rotate", { value: next, udid: ctx.deviceUdid });
         }
       }}
       {...rest}

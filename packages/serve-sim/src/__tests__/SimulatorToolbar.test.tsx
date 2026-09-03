@@ -1,6 +1,18 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+
+const actions: Array<{ action: string; params: Record<string, unknown> }> = [];
+void mock.module("../client/utils/exec", () => ({
+  runHostAction: async (action: string, params: Record<string, unknown> = {}) => {
+    actions.push({ action, params });
+    return { stdout: "", stderr: "", exitCode: 0 };
+  },
+}));
+
+beforeEach(() => {
+  actions.length = 0;
+});
 import { renderToStaticMarkup } from "react-dom/server";
-import { SimulatorToolbar, homeButtonCommand } from "../client/simulator/SimulatorToolbar";
+import { SimulatorToolbar, pressHomeAsync } from "../client/simulator/SimulatorToolbar";
 
 const exec = async () => ({ stdout: "", stderr: "", exitCode: 0 });
 
@@ -39,27 +51,30 @@ describe("SimulatorToolbar.Title", () => {
   });
 });
 
-describe("homeButtonCommand", () => {
+describe("pressHomeAsync", () => {
   // Xcode 26+ silently drops the HID home press, so phones/pads must relaunch
   // SpringBoard instead of going through `serve-sim button home`.
-  test("relaunches SpringBoard for a known iphone udid", () => {
-    expect(homeButtonCommand("iphone", "BOOTED-UDID")).toBe(
-      "xcrun simctl launch BOOTED-UDID com.apple.springboard",
-    );
+  test("relaunches SpringBoard for a known iphone udid", async () => {
+    await pressHomeAsync("iphone", "BOOTED-UDID");
+    expect(actions.at(-1)).toEqual({
+      action: "home.springboard",
+      params: { udid: "BOOTED-UDID" },
+    });
   });
 
-  test("relaunches SpringBoard for ipad simulators", () => {
-    expect(homeButtonCommand("ipad", "udid")).toContain("com.apple.springboard");
+  test("relaunches SpringBoard for ipad simulators", async () => {
+    await pressHomeAsync("ipad", "udid");
+    expect(actions.at(-1)?.action).toBe("home.springboard");
   });
 
-  test("drives Simulator.app's Device > Home menu for watch simulators", () => {
-    const cmd = homeButtonCommand("watch", "udid");
-    expect(cmd).toContain("osascript");
-    expect(cmd).not.toContain("com.apple.springboard");
+  test("drives Simulator.app's Device > Home menu for watch simulators", async () => {
+    await pressHomeAsync("watch", "udid");
+    expect(actions.at(-1)?.action).toBe("home.watch");
   });
 
-  test("falls back to the HID button command when no udid is known", () => {
-    expect(homeButtonCommand("iphone", null)).toBe("serve-sim button home");
+  test("falls back to the HID button action when no udid is known", async () => {
+    await pressHomeAsync("iphone", null);
+    expect(actions.at(-1)).toEqual({ action: "button", params: { value: "home" } });
   });
 });
 

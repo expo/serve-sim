@@ -74,6 +74,20 @@ function connect(): Promise<{
   });
 }
 
+describe("gated POST /exec refuses shell", () => {
+  test("returns 403 rather than running the command", async () => {
+    const response = await fetch(`http://127.0.0.1:${PORT}/exec`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ command: "echo owned" }),
+    });
+
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { stderr?: string };
+    expect(body.stderr).toMatch(/typed simulator actions only/i);
+  });
+});
+
 describe("gated exec-ws accepts typed actions only", () => {
   test("refuses a free-form shell command", async () => {
     const channel = await connect();

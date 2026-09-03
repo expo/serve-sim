@@ -2412,6 +2412,17 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       if (!assertSessionAccess(req, res, execToken, { requireJson: true, errorBody: execAuthError })) {
         return;
       }
+      // A gated preview link is shareable, so it must not reach a shell here either. The page never
+      // uses this route (it is WebSocket-only); typed actions ride /exec-ws.
+      if (requirePreviewToken) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify(
+            execAuthError("This preview accepts typed simulator actions only, not shell commands."),
+          ),
+        );
+        return;
+      }
       let body = "";
       let aborted = false;
       req.on("data", (chunk: Buffer | string) => {

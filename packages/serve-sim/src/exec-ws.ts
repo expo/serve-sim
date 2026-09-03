@@ -5,6 +5,7 @@ import {
   type SseRequestHandler,
 } from "./exec-ws-utils";
 import { type UpgradeHandlerWebSocket } from "./middleware-utils";
+import { InvalidHostActionError, runHostActionAsync } from "./host-actions";
 import { safeEqualString } from "./session-auth";
 
 // WebSocket control channel for the preview page. Browsers cap HTTP/1.1 at
@@ -23,7 +24,8 @@ import { safeEqualString } from "./session-auth";
 // Wire protocol (all JSON text frames):
 //   client → {token}                  first frame; must match the exec token
 //   server → {ready:true}             auth accepted
-//   client → {id, command}            run a shell command
+//   client → {id, action, params}      run one typed simulator action
+//   client → {id, command}            run a shell command (refused in restricted mode)
 //   server → {id, stdout, stderr, exitCode}
 //   client → {id, ui:{…}}             simulator-settings request (in-process,
 //   server → {id, …} | {id, error}     no shell round-trip)
@@ -37,6 +39,8 @@ const AUTH_TIMEOUT_MS = 10_000;
 interface ExecMessage {
   token?: string;
   id?: number;
+  action?: string;
+  params?: unknown;
   command?: string;
   ui?: unknown;
   sub?: number;
@@ -62,6 +66,13 @@ interface ExecChannelOptions {
   onCommandResult?: CommandResultHandler;
   /** Routes an authenticated subscription back through the owning middleware. */
   onSseRequest?: SseRequestHandler;
+  /**
+   * Accept only typed actions, never free-form `{ command }`. Set whenever the preview is gated: the
+   * link is shareable there, so holding it must not also mean holding a shell on this machine.
+   */
+  restrictToActions?: boolean;
+  /** serve-sim entrypoint used to run the CLI-backed actions. */
+  serveSimBinPath?: string;
 }
 
 function wireExecSocket(
@@ -190,7 +201,28 @@ function wireExecSocket(
         );
       return;
     }
+    if (typeof msg.id === "number" && typeof msg.action === "string") {
+      const { id } = msg;
+      runHostActionAsync(msg, opts.serveSimBinPath ?? "serve-sim")
+        .then((result) => send({ id, ...result }))
+        .catch((e: unknown) =>
+          send({
+            id,
+            error: e instanceof InvalidHostActionError ? e.message : "action failed",
+          }),
+        );
+      return;
+    }
     if (typeof msg.id !== "number" || typeof msg.command !== "string" || !msg.command) {
+      return;
+    }
+    if (opts.restrictToActions) {
+      send({
+        id: msg.id,
+        stdout: "",
+        stderr: "This preview accepts typed simulator actions only, not shell commands.",
+        exitCode: 1,
+      });
       return;
     }
     const { id, command } = msg;

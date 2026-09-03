@@ -2563,6 +2563,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       `${base}/ax`,
     ],
     onUiRequest: handleUiRequest,
+    // A gated preview link is shareable, so it must not also be a shell on this machine.
+    restrictToActions: requirePreviewToken,
+    serveSimBinPath: serveSimBinPath(),
     onCommandResult: (command, result) => recordCommandEvent(command, result),
     onSseRequest(path, websocketRequest) {
       const url = new URL(path, websocketRequest.url);

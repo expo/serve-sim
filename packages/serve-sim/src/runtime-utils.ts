@@ -11,7 +11,37 @@ export type WebMiddleware = ((request: Request) => Response | undefined | Promis
   handleWebSocket?: (request: Request, websocket: UpgradeHandlerWebSocket) => boolean;
 };
 
-export function nodeRequestToWeb(req: IncomingMessage, res?: ServerResponse): Request {
+/** Bodies are small (JSON control routes); uploads ride the WebSocket channel, not HTTP. */
+const MAX_BUFFERED_REQUEST_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Read a request body before the middleware runs.
+ *
+ * Bun's `node:http` drops the response status when a reply is written while the request stream is
+ * still unread, which is exactly what an auth failure does: every refused POST reached the client as
+ * an empty 200. Reading first costs nothing here and keeps the status intact.
+ */
+export async function readRequestBodyAsync(req: IncomingMessage): Promise<Buffer | undefined> {
+  if (req.method === "GET" || req.method === "HEAD") return undefined;
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+    size += buffer.length;
+    if (size > MAX_BUFFERED_REQUEST_BYTES) {
+      req.destroy();
+      break;
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+export function nodeRequestToWeb(
+  req: IncomingMessage,
+  res?: ServerResponse,
+  body?: Buffer,
+): Request {
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
     if (Array.isArray(value)) {
@@ -32,8 +62,12 @@ export function nodeRequestToWeb(req: IncomingMessage, res?: ServerResponse): Re
     signal: controller.signal,
   };
   if (req.method !== "GET" && req.method !== "HEAD") {
-    init.body = Readable.toWeb(req) as unknown as ReadableStream<Uint8Array>;
-    init.duplex = "half";
+    if (body) {
+      init.body = new Uint8Array(body);
+    } else {
+      init.body = Readable.toWeb(req) as unknown as ReadableStream<Uint8Array>;
+      init.duplex = "half";
+    }
   }
   return new Request(url, init);
 }

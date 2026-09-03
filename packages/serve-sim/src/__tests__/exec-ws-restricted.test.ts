@@ -74,19 +74,18 @@ function connect(): Promise<{
   });
 }
 
-describe("gated POST /exec refuses shell", () => {
-  // The page never uses this route, but a link holder could: without the gate a valid token still
-  // bought a shell here, which is the whole point of the restriction.
-  // Asserted on the body rather than the status: error statuses written by this route do not survive
-  // the connect-to-fetch shim, which predates the restriction and affects its 401s too.
-  test("does not run the command", async () => {
-    const response = await fetch(`http://127.0.0.1:${PORT}/exec`, {
+describe("gated POST refusals keep their status", () => {
+  // Bun's node:http drops the status when a reply is written while the request body is still
+  // unread, which is what an auth failure does. Every refused POST used to arrive as an empty 200.
+  test("an unauthenticated POST is refused with 401, not an empty 200", async () => {
+    const response = await fetch(`http://127.0.0.1:${PORT}/api`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
-      body: JSON.stringify({ command: "echo owned" }),
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
     });
 
-    expect(await response.text()).not.toContain("owned");
+    expect(response.status).toBe(401);
+    expect(await response.text()).toContain("token");
   });
 });
 

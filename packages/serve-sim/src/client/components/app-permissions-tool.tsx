@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Check, X } from "lucide-react";
 import { ReloadIcon } from "../icons";
-import { execOnHost, runHostAction, shellEscape } from "../utils/exec";
+import { runHostAction } from "../utils/exec";
 import { CollapsibleSection } from "./collapsible-section";
 import {
   PERMISSION_SERVICES,
@@ -24,14 +24,6 @@ export function AppPermissionsTool({
   // The `serve-sim permissions` subcommand handles the stores `simctl privacy`
   // can't (push notifications via BulletinBoard, location's `i<bundleId>:`
   // clients.plist keys), so the UI drives it instead of calling simctl directly.
-  const cliPrefix = useMemo(() => {
-    const bin = typeof window === "undefined" ? undefined : window.__SIM_PREVIEW__?.serveSimBin;
-    if (!bin) return "serve-sim";
-    if (/\.ts$/.test(bin)) return `bun ${shellEscape(bin)}`;
-    if (/\.js$/.test(bin)) return `node ${shellEscape(bin)}`;
-    return shellEscape(bin);
-  }, []);
-
   // Reset assumed state whenever the foreground app changes.
   useEffect(() => { setState({}); setError(null); }, [bundleId]);
 
@@ -52,7 +44,7 @@ export function AppPermissionsTool({
         setPending(null);
       }
     },
-    [cliPrefix, udid, bundleId],
+    [udid, bundleId],
   );
 
   const resetAll = useCallback(async () => {
@@ -69,7 +61,7 @@ export function AppPermissionsTool({
     } finally {
       setPending(null);
     }
-  }, [cliPrefix, udid, bundleId]);
+  }, [udid, bundleId]);
 
   if (!bundleId) {
     return <AppPermissionsLoading />;

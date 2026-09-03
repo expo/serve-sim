@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { appIconCache, fetchAppIcon } from "../utils/app-icon";
-import { execOnHost } from "../utils/exec";
 
 export function useAppIcons(udid: string | null | undefined, bundleIds: string[]) {
   const [icons, setIcons] = useState<Record<string, string | null>>({});

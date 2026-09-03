@@ -69,7 +69,7 @@ import {
   AVCC_FRAME_TIMEOUT_MS,
 } from "./avcc-fallback";
 import { fileExtension } from "./utils/drop";
-import { execOnHost, openHostEventStream } from "./utils/exec";
+import { execOnHost, openHostEventStream, runHostAction } from "./utils/exec";
 import { hidUsageForCode } from "./utils/hid";
 import { keydownForward } from "./utils/mobile-keyboard";
 import {
@@ -1138,9 +1138,9 @@ function AppWithConfig({
         if (e.code === "KeyA" && e.metaKey && e.shiftKey) {
           e.preventDefault();
           if (type === "down" && !e.repeat) {
-            execOnHost(`xcrun simctl ui ${config.device} appearance`).then((r) => {
+            runHostAction("appearance.get", { udid: config.device }).then((r) => {
               const next = r.stdout.trim() === "dark" ? "light" : "dark";
-              return execOnHost(`xcrun simctl ui ${config.device} appearance ${next}`);
+              return runHostAction("appearance.set", { udid: config.device, value: next });
             }).catch(() => {});
           }
           return;

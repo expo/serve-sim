@@ -176,6 +176,26 @@ export async function execOnHost(
   };
 }
 
+/**
+ * One simulator action, run by the host as a fixed program and argument array. A gated preview
+ * accepts only these: the link is shareable, so it must not also be a shell on the host machine.
+ */
+export async function runHostAction(
+  action: string,
+  params?: Record<string, string | undefined>,
+  opts?: { signal?: AbortSignal },
+): Promise<ExecResult> {
+  const reply = await socketRequest({ action, params }, opts?.signal);
+  if (reply.error) {
+    return { stdout: "", stderr: reply.error, exitCode: 1 };
+  }
+  return {
+    stdout: reply.stdout ?? "",
+    stderr: reply.stderr ?? "",
+    exitCode: reply.exitCode ?? 1,
+  };
+}
+
 export interface UiRequestPayload {
   device: string;
   option?: string;

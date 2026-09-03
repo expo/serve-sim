@@ -111,6 +111,21 @@ function buildInvocation(action: string, raw: unknown, binPath: string): Invocat
       return serveSim(["permissions", "reset", "all", str(p, "bundleId"), "-d", str(p, "udid")]);
     case "screenshot.capture":
       return { file: "xcrun", args: ["simctl", "io", str(p, "udid"), "screenshot", str(p, "path")] };
+    case "rotate":
+      return serveSim(["rotate", str(p, "value"), "-d", str(p, "udid")]);
+    case "button":
+      return serveSim(["button", str(p, "value")]);
+    case "app.container":
+      return {
+        file: "xcrun",
+        args: ["simctl", "get_app_container", str(p, "udid"), str(p, "bundleId"), "app"],
+      };
+    case "app.infoPlist":
+      return { file: "plutil", args: ["-convert", "json", "-o", "-", str(p, "path")] };
+    case "file.readBase64":
+      return { file: "base64", args: ["-i", str(p, "path")] };
+    case "media.add":
+      return { file: "xcrun", args: ["simctl", "addmedia", str(p, "udid"), str(p, "path")] };
     case "screenshot.thumbnail":
       return {
         file: "sips",

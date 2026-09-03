@@ -6,7 +6,7 @@ export interface ExecResult {
   exitCode: number;
 }
 
-// Everything the preview page asks of the host — shell execs, simulator
+// Everything the preview page asks of the host — simulator actions, simulator
 // settings, and the SSE side-channels — rides one WebSocket (`/exec-ws`).
 // Pooled fetches are not used: every tab holds long-lived HTTP streams
 // (MJPEG), and the browser's six-connections-per-origin cap let pooled
@@ -278,6 +278,3 @@ export function openHostEventStream(path: string): HostEventStream {
   return stream;
 }
 
-export function shellEscape(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
-}

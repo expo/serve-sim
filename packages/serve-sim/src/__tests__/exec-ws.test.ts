@@ -95,14 +95,14 @@ describe("exec-ws control channel", () => {
     channel.close();
   });
 
-  test("ignores a free-form shell command, which the protocol no longer carries", async () => {
+  test("refuses a free-form shell command, which the protocol no longer carries", async () => {
     const channel = await connect(TOKEN);
     await channel.next(); // ready
     channel.send({ id: 9, command: "echo owned" });
-    channel.send({ id: 10, action: "appearance.get", params: { udid: "DEVICE-A" } });
-    // Only the action is answered; the command frame is dropped on the floor.
     const reply = await channel.next();
-    expect(reply.id).toBe(10);
+    expect(reply.id).toBe(9);
+    expect(reply.error).toBe("unsupported request");
+    expect(reply.stdout).toBeUndefined();
     channel.close();
   });
 

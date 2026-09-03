@@ -134,7 +134,7 @@ export function useSimStream({ device: deviceProp }: UseSimStreamOptions): UseSi
 
   const sendButton = useCallback(async (button: string) => {
     try {
-      await runHostAction("button", { value: button });
+      await runHostAction("button", { value: button, udid: infoRef.current?.device });
     } catch {
       // best-effort
     }

@@ -21,19 +21,27 @@ const MAX_BUFFERED_REQUEST_BYTES = 8 * 1024 * 1024;
  * still unread, which is exactly what an auth failure does: every refused POST reached the client as
  * an empty 200. Reading first costs nothing here and keeps the status intact.
  */
+export class RequestBodyTooLargeError extends Error {}
+
 export async function readRequestBodyAsync(req: IncomingMessage): Promise<Buffer | undefined> {
   if (req.method === "GET" || req.method === "HEAD") return undefined;
   const chunks: Buffer[] = [];
   let size = 0;
+  let tooLarge = false;
   for await (const chunk of req) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
     size += buffer.length;
     if (size > MAX_BUFFERED_REQUEST_BYTES) {
-      req.destroy();
-      break;
+      // Keep draining but stop buffering: destroying the request here would take the socket with it
+      // and the 413 would never reach the client, and returning early would hand the middleware a
+      // partial body as if it were whole.
+      tooLarge = true;
+      chunks.length = 0;
+      continue;
     }
     chunks.push(buffer);
   }
+  if (tooLarge) throw new RequestBodyTooLargeError();
   return Buffer.concat(chunks);
 }
 

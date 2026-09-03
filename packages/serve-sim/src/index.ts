@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command, InvalidArgumentError } from "commander";
-import { execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
+import { execFileSync, execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
 import { existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { createHash, randomBytes } from "crypto";
 import { networkInterfaces } from "os";
@@ -705,7 +705,9 @@ async function eventLog(
 
   let payload: { events: EventLogEntry[] };
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: state.token ? { Authorization: `Bearer ${state.token}` } : undefined,
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     payload = await res.json() as { events: EventLogEntry[] };
   } catch (err) {
@@ -1393,7 +1395,7 @@ Examples:
     const terminated: string[] = [];
     for (const b of injectedBundles) {
       try {
-        execSync(`xcrun simctl terminate "${udid}" "${b}"`, { stdio: "ignore" });
+        execFileSync("xcrun", ["simctl", "terminate", udid, b], { stdio: "ignore" });
         terminated.push(b);
       } catch {}
     }
@@ -1561,12 +1563,12 @@ Examples:
   // we want to bring a new app into the set. Source-only hot-swaps go
   // through `camera switch`, not this path.
   try {
-    execSync(`xcrun simctl privacy "${udid}" grant camera "${bundleId}"`, {
+    execFileSync("xcrun", ["simctl", "privacy", udid, "grant", "camera", bundleId], {
       stdio: "ignore",
     });
   } catch {}
   try {
-    execSync(`xcrun simctl terminate "${udid}" "${bundleId}"`, { stdio: "ignore" });
+    execFileSync("xcrun", ["simctl", "terminate", udid, bundleId], { stdio: "ignore" });
   } catch {}
 
   const env = {
@@ -1578,7 +1580,7 @@ Examples:
 
   let stdoutBuf = "";
   try {
-    stdoutBuf = execSync(`xcrun simctl launch "${udid}" "${bundleId}"`, {
+    stdoutBuf = execFileSync("xcrun", ["simctl", "launch", udid, bundleId], {
       env,
       encoding: "utf-8",
     });

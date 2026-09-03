@@ -3,7 +3,6 @@ import { createHash, timingSafeEqual } from "node:crypto";
 export interface SessionAuthReq {
   method?: string;
   headers: {
-    "content-type"?: string | string[];
     origin?: string | string[];
     host?: string | string[];
     authorization?: string | string[];

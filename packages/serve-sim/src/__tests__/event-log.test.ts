@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach } from "bun:test";
 import {
   clearEventLogForTests,
   EVENT_LOG_MAX_ENTRIES,
-  eventLogEventForCommand,
+  eventLogEventForAction,
   eventLogEventForHidMessage,
   readEventLog,
   recordEventLogEvent,
@@ -12,6 +12,51 @@ import {
 
 beforeEach(() => {
   clearEventLogForTests();
+});
+
+describe("eventLogEventForAction", () => {
+  test("records an install", () => {
+    expect(eventLogEventForAction("app.install", { udid: "DEVICE-A" }, { exitCode: 0 })).toMatchObject(
+      { device: "DEVICE-A", kind: "app", action: "install", summary: "Install app" },
+    );
+  });
+
+  test("records the actions the preview drives", () => {
+    const cases: [string, string][] = [
+      ["media.add", "media"],
+      ["screenshot.capture", "screenshot"],
+      ["rotate", "rotate"],
+      ["button", "button"],
+      ["camera.switch", "camera"],
+      ["home.springboard", "button"],
+      ["home.watch", "button"],
+    ];
+    for (const [action, kind] of cases) {
+      const event = eventLogEventForAction(action, { udid: "DEVICE-A", value: "home" }, { exitCode: 0 });
+      expect(event).not.toBeNull();
+      expect(event?.kind).toBe(kind);
+    }
+  });
+
+  // The log stream is filtered per device, so an entry without one is dropped before anyone sees it.
+  test("returns null without a device", () => {
+    expect(eventLogEventForAction("button", { value: "home" }, { exitCode: 0 })).toBeNull();
+  });
+
+  test("records nothing for an action the log does not describe", () => {
+    expect(eventLogEventForAction("file.readBase64", { udid: "DEVICE-A" }, { exitCode: 0 })).toBeNull();
+  });
+
+  // Params can carry a host path or a token; only the exit status belongs in the log.
+  test("keeps action params out of the recorded details", () => {
+    const event = eventLogEventForAction(
+      "media.add",
+      { udid: "DEVICE-A", path: "/Users/someone/Desktop/secret.png" },
+      { exitCode: 0 },
+    );
+
+    expect(JSON.stringify(event)).not.toContain("secret.png");
+  });
 });
 
 describe("event log store", () => {
@@ -211,76 +256,3 @@ describe("eventLogEventForHidMessage", () => {
   });
 });
 
-describe("eventLogEventForCommand", () => {
-  test("classifies app installs without logging upload chunks", () => {
-    expect(eventLogEventForCommand("bash -c 'echo abc= | base64 -d > /tmp/app.ipa'")).toBeNull();
-    expect(
-      eventLogEventForCommand("xcrun simctl install DEVICE-A /tmp/MyApp.ipa", { exitCode: 0 }),
-    ).toMatchObject({
-      device: "DEVICE-A",
-      source: "exec",
-      kind: "app",
-      action: "install",
-      status: "ok",
-      summary: "Install app",
-    });
-  });
-
-  test("does not persist raw exec commands, host paths, or unknown execs", () => {
-    const event = eventLogEventForCommand(
-      "xcrun simctl install DEVICE-A /Users/me/Secrets/MyApp.ipa --token should-not-log",
-      { exitCode: 0 },
-    );
-
-    expect(event).toMatchObject({
-      summary: "Install app",
-      details: { exitCode: 0 },
-    });
-    const serialized = JSON.stringify(event);
-    expect(serialized).not.toContain("/Users/me");
-    expect(serialized).not.toContain("MyApp.ipa");
-    expect(serialized).not.toContain("should-not-log");
-    expect(serialized).not.toContain("command");
-    expect(serialized).not.toContain("path");
-    expect(eventLogEventForCommand("curl https://example.com?token=should-not-log")).toBeNull();
-  });
-
-  test("classifies toolbar home and screenshot commands", () => {
-    expect(
-      eventLogEventForCommand("xcrun simctl launch DEVICE-A com.apple.springboard", { exitCode: 0 }),
-    ).toMatchObject({
-      device: "DEVICE-A",
-      kind: "button",
-      action: "home",
-      summary: "Home",
-    });
-    expect(
-      eventLogEventForCommand("xcrun simctl io DEVICE-A screenshot ~/Desktop/shot.png", { exitCode: 1 }),
-    ).toMatchObject({
-      device: "DEVICE-A",
-      kind: "screenshot",
-      status: "error",
-      summary: "Screenshot",
-    });
-  });
-
-  test("classifies serve-sim commands invoked through node", () => {
-    expect(
-      eventLogEventForCommand("node /tmp/dist/serve-sim.js button volume-up -d DEVICE-A"),
-    ).toMatchObject({
-      device: "DEVICE-A",
-      kind: "button",
-      action: "volume-up",
-      summary: "Button volume-up",
-    });
-  });
-
-  test("does not log read-only camera polling commands", () => {
-    expect(
-      eventLogEventForCommand("node /tmp/dist/serve-sim.js camera status -d DEVICE-A", { exitCode: 0 }),
-    ).toBeNull();
-    expect(
-      eventLogEventForCommand("node /tmp/dist/serve-sim.js camera --list-webcams", { exitCode: 0 }),
-    ).toBeNull();
-  });
-});

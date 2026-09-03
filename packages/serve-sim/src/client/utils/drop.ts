@@ -5,8 +5,8 @@ import { runHostAction } from "./exec";
 // Media → `xcrun simctl addmedia`   (Photos)
 // .ipa  → `xcrun simctl install`    (install app on simulator)
 //
-// Files are streamed to /tmp over /exec in base64-chunked bash `echo | base64 -d`
-// calls. No sonner dep here, so uploads surface in an inline toast list.
+// Files are streamed to the host in base64 chunks over the action channel, which decodes and
+// appends each one. No sonner dep here, so uploads surface in an inline toast list.
 
 export const DROP_MEDIA_MIME_TYPES = new Set([
   "image/jpeg",
@@ -19,10 +19,9 @@ export const DROP_MEDIA_MIME_TYPES = new Set([
   "video/quicktime",
 ]);
 
-// 192KB of raw bytes per chunk → ~256KB of base64 per exec. macOS ARG_MAX is
-// 1MB, so this leaves generous headroom for the bash/echo wrapper while
-// sharply cutting round-trips on large .ipa uploads. Each chunk is decoded by
-// its own `base64 -d`, so chunks are independent of each other.
+// 192KB of raw bytes per chunk → ~256KB of base64 per frame, well inside the channel's 4MB
+// message cap, while sharply cutting round-trips on large .ipa uploads. Each chunk is decoded
+// and appended on its own, so chunks are independent of each other.
 export const DROP_CHUNK_BYTES = 196608;
 export const DROP_MAX_FILE_SIZE = 500 * 1024 * 1024;
 
@@ -101,7 +100,7 @@ async function streamFileToHost(
   return hostPath;
 }
 
-// Stream a file to /tmp via the /exec base64 chunk loop. Used by the camera
+// Stream a file to the host upload directory in base64 chunks. Used by the camera
 // panel to stage image/video sources for `serve-sim camera --file`.
 // Caller is responsible for the lifetime of the temp file.
 export async function uploadFileToTmp(file: File, prefix: string, ext: string): Promise<string> {

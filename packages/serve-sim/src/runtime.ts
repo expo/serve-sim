@@ -8,6 +8,7 @@ import { WebSocketServer } from "ws";
 import { EXEC_WS_MAX_MESSAGE_BYTES } from "./exec-ws-utils";
 import { type UpgradeHandlerWebSocket } from "./middleware-utils";
 import {
+  RequestBodyTooLargeError,
   nodeRequestToWeb,
   readRequestBodyAsync,
   writeWebResponse,
@@ -169,6 +170,11 @@ export async function servePreview(opts: {
         const response = await opts.middleware(request);
         await writeWebResponse(req, res, response);
       })().catch((error) => {
+        if (error instanceof RequestBodyTooLargeError) {
+          if (!res.headersSent) res.writeHead(413, { "Content-Type": "text/plain" });
+          res.end("Payload Too Large");
+          return;
+        }
         console.error("Middleware error:", error);
         if (res.headersSent) {
           if (!res.destroyed) res.destroy(error instanceof Error ? error : undefined);

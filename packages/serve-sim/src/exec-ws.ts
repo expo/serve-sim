@@ -11,7 +11,7 @@ import { safeEqualString } from "./session-auth";
 // six connections per origin, and every preview tab used to hold several
 // long-lived requests (MJPEG + 3-4 SSE channels + pooled exec fetches) — with
 // two or more tabs open, new requests queue behind them forever. This channel
-// carries shell execs, simulator-settings requests, and multiplexed SSE
+// carries typed simulator actions, simulator-settings requests, and multiplexed SSE
 // subscriptions, so each tab needs just one pooled connection (the video
 // stream) plus this socket.
 //
@@ -33,13 +33,17 @@ import { safeEqualString } from "./session-auth";
 //   client → {unsub: sub}             cancel a subscription
 
 const AUTH_TIMEOUT_MS = 10_000;
+// A gated preview link is shareable, so one socket must not be able to spawn unbounded work on the
+// host. Each SSE subscription holds a stream or watcher, and each action spawns a process with a
+// 16MB output buffer, so both are capped per socket.
+const MAX_SUBSCRIPTIONS_PER_SOCKET = 16;
+const MAX_ACTIONS_IN_FLIGHT_PER_SOCKET = 8;
 
 interface ExecMessage {
   token?: string;
   id?: number;
   action?: string;
   params?: unknown;
-  command?: string;
   ui?: unknown;
   sub?: number;
   path?: string;
@@ -76,6 +80,7 @@ function wireExecSocket(
 ): void {
   let authed = false;
   const subscriptions = new Map<number, { destroy: () => void }>();
+  let actionsInFlight = 0;
   const ssePrefixes = opts.ssePrefixes ?? [];
 
   const send = (value: unknown) => {
@@ -89,6 +94,10 @@ function wireExecSocket(
 
   const subscribe = (sub: number, path: string) => {
     if (subscriptions.has(sub)) return;
+    if (subscriptions.size >= MAX_SUBSCRIPTIONS_PER_SOCKET) {
+      send({ sub, end: true, error: "too many subscriptions on this connection" });
+      return;
+    }
     // Only same-origin SSE routes owned by this middleware are reachable, and
     // only for authed sockets — strictly less exposure than the routes' own
     // direct (tokenless same-origin) GET surface.
@@ -121,7 +130,14 @@ function wireExecSocket(
     void (async () => {
       try {
         const response = await opts.onSseRequest!(path, request);
-        if (!active) return;
+        if (!active) {
+          // Destroyed while the request was in flight, so `reader` was never taken. Cancelling the
+          // body is the only thing that tells the upstream route to tear down: a subrequest from
+          // this channel has no socket whose close it could notice, so its watcher, heartbeat or
+          // `log stream` child would otherwise run for the life of the process.
+          void response?.body?.cancel().catch(() => {});
+          return;
+        }
         if (!response?.body) {
           sendEnd();
           return;
@@ -187,19 +203,36 @@ function wireExecSocket(
         send({ id, error: "ui requests not supported" });
         return;
       }
+      // A ui request spawns simctl or ax just as an action does, so it shares the ceiling.
+      if (actionsInFlight >= MAX_ACTIONS_IN_FLIGHT_PER_SOCKET) {
+        send({ id, error: "too many actions in flight on this connection" });
+        return;
+      }
+      actionsInFlight += 1;
       opts
         .onUiRequest(msg.ui)
         .then((reply) => send({ id, ...reply }))
-        .catch((e: unknown) =>
-          send({ id, error: e instanceof Error ? e.message : String(e) }),
-        );
+        .catch((e: unknown) => send({ id, error: e instanceof Error ? e.message : String(e) }))
+        .finally(() => {
+          actionsInFlight -= 1;
+        });
       return;
     }
-    if (typeof msg.id !== "number" || typeof msg.action !== "string") {
+    if (typeof msg.id !== "number") {
+      return;
+    }
+    if (typeof msg.action !== "string") {
+      // The client keeps a pending promise per id with no timeout, so an unanswered frame hangs it.
+      send({ id: msg.id, error: "unsupported request" });
       return;
     }
     const { id, action } = msg;
+    if (actionsInFlight >= MAX_ACTIONS_IN_FLIGHT_PER_SOCKET) {
+      send({ id, error: "too many actions in flight on this connection" });
+      return;
+    }
     const params = msg.params as Record<string, unknown> | undefined;
+    actionsInFlight += 1;
     runHostActionAsync(msg, opts.serveSimBinPath ?? "serve-sim")
       .then((result) => {
         try {
@@ -209,9 +242,15 @@ function wireExecSocket(
         }
         send({ id, ...result });
       })
-      .catch((e: unknown) =>
-        send({ id, error: e instanceof InvalidHostActionError ? e.message : "action failed" }),
-      );
+      .catch((e: unknown) => {
+        if (!(e instanceof InvalidHostActionError)) {
+          console.error(`serve-sim action ${action} failed:`, e);
+        }
+        send({ id, error: e instanceof InvalidHostActionError ? e.message : "action failed" });
+      })
+      .finally(() => {
+        actionsInFlight -= 1;
+      });
   });
 
   ws.on("error", () => ws.close());

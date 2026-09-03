@@ -1,12 +1,19 @@
 import { execFile } from "child_process";
-import { appendFile, mkdir, rm, stat, writeFile } from "fs/promises";
+import { randomUUID } from "crypto";
+import { appendFile, chmod, lstat, mkdir, readdir, rm, stat, writeFile } from "fs/promises";
 import { homedir, tmpdir } from "os";
-import { basename, join } from "path";
+import { realpathSync } from "fs";
+import { join, resolve, sep } from "path";
+import { z } from "zod";
 
 // The preview page drives the simulator through this fixed set of actions. Under --require-token the
-// preview link is shareable, so the control socket must not also be a shell: an action either runs a
-// known program with an argument array built here, or is handled in process. Nothing the page sends
-// is ever interpreted by a shell.
+// preview link is shareable, so the control socket is not a shell: an action either runs a known
+// program with an argument array built here, or is handled in process, and no value the page sends
+// reaches a shell.
+//
+// This bounds what a link holder can run on the host, not what they can do to the simulator.
+// Installing a dropped .ipa and launching it is a feature, and simulator processes run as the
+// operator, so the session token remains the real boundary.
 
 export interface HostActionResult {
   stdout: string;
@@ -27,81 +34,229 @@ interface Invocation {
 
 export class InvalidHostActionError extends Error {}
 
-function fields(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-function str(source: Record<string, unknown>, name: string): string {
-  const value = source[name];
-  if (typeof value !== "string" || value === "") {
-    throw new InvalidHostActionError(`${name} must be a non-empty string`);
-  }
-  return value;
-}
-
-function optionalStr(source: Record<string, unknown>, name: string): string | undefined {
-  const value = source[name];
-  if (value === undefined || value === null || value === "") return undefined;
-  if (typeof value !== "string") {
-    throw new InvalidHostActionError(`${name} must be a string`);
-  }
-  return value;
-}
-
-function oneOf<T extends string>(
-  source: Record<string, unknown>,
-  name: string,
-  allowed: readonly T[],
-): T {
-  const value = str(source, name);
-  if (!allowed.includes(value as T)) {
-    throw new InvalidHostActionError(`${name} must be one of ${allowed.join(", ")}`);
-  }
-  return value as T;
-}
-
-function coordinate(source: Record<string, unknown>, name: string): string {
-  const value = source[name];
-  const numeric = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(numeric)) {
-    throw new InvalidHostActionError(`${name} must be a number`);
-  }
-  return numeric.toFixed(7);
-}
-
-/** Icon file names to probe, supplied by the caller from Info.plist. Names only, never paths. */
-function fileNames(source: Record<string, unknown>, name: string): string[] {
-  const value = source[name];
-  if (!Array.isArray(value) || value.length === 0 || value.length > 32) {
-    throw new InvalidHostActionError(`${name} must be a list of 1 to 32 file names`);
-  }
-  return value.map((entry) => {
-    if (typeof entry !== "string" || !/^[^/\\]{1,255}$/.test(entry) || entry.startsWith(".")) {
-      throw new InvalidHostActionError(`${name} entries must be plain file names`);
-    }
-    return entry;
-  });
-}
-
-/** Scratch space for uploads. Confining them here keeps a path param from reaching the filesystem. */
+/** Scratch space for uploads. Confining them here keeps a caller-supplied path off the filesystem. */
 const UPLOAD_DIR = join(tmpdir(), "serve-sim-uploads");
+// A shareable link can upload, so the staging area needs a ceiling: without one a caller could fill
+// the host's disk, and an abandoned upload (a closed tab) is never cleaned up by its own action.
+const MAX_UPLOAD_DIR_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_AGE_MS = 6 * 60 * 60 * 1000;
+/** ~3MB of raw bytes, matching the client's 192KB slices with generous headroom. */
+const MAX_UPLOAD_CHUNK_BASE64 = 4 * 1024 * 1024;
 
-/** An upload is addressed by an opaque id, never by a caller-supplied path. */
-function uploadPath(source: Record<string, unknown>): string {
-  const id = str(source, "uploadId");
-  if (!/^[A-Za-z0-9._-]{1,128}$/.test(id) || id.startsWith(".")) {
-    throw new InvalidHostActionError("uploadId must be a short alphanumeric name");
-  }
-  return join(UPLOAD_DIR, basename(id));
+// Appends are serialized through this chain so the budget check and the write cannot interleave:
+// concurrent callers would otherwise all read the same pre-write total and sail past the ceiling.
+let uploadQueue: Promise<unknown> = Promise.resolve();
+
+function queueUploadAsync<T>(work: () => Promise<T>): Promise<T> {
+  const result = uploadQueue.then(work, work);
+  uploadQueue = result.catch(() => {});
+  return result;
 }
+
+/** mkdir's mode only applies on creation, so an area left by an earlier run keeps its old mode. */
+async function ensureUploadDirAsync(): Promise<void> {
+  await mkdir(UPLOAD_DIR, { recursive: true, mode: 0o700 });
+  await chmod(UPLOAD_DIR, 0o700).catch(() => {});
+}
+
+/** Ceiling on serve-sim's own screenshots, counted by name so unrelated Desktop files are ignored. */
+const MAX_DESKTOP_SCREENSHOTS = 200;
+
+async function desktopScreenshotBudgetExceededAsync(): Promise<boolean> {
+  try {
+    const entries = await readdir(join(homedir(), "Desktop"));
+    return entries.filter((entry) => entry.startsWith("serve-sim-screenshot-")).length >= MAX_DESKTOP_SCREENSHOTS;
+  } catch {
+    return false;
+  }
+}
+
+/** Drop abandoned uploads, then report what the directory still holds. */
+async function pruneUploadsAsync(): Promise<number> {
+  let total = 0;
+  let entries: string[];
+  try {
+    entries = await readdir(UPLOAD_DIR);
+  } catch {
+    return 0;
+  }
+  const cutoff = Date.now() - MAX_UPLOAD_AGE_MS;
+  for (const entry of entries) {
+    const full = join(UPLOAD_DIR, entry);
+    try {
+      const info = await lstat(full);
+      if (info.mtimeMs < cutoff) await rm(full, { force: true, recursive: true });
+      else total += info.size;
+    } catch {
+      // Raced with another writer or already gone; it is not this call's file to account for.
+    }
+  }
+  return total;
+}
+
+const APPEARANCES = ["light", "dark"] as const;
+const PERMISSION_ACTIONS = ["grant", "revoke", "reset"] as const;
+const MIRROR_VALUES = ["on", "off"] as const;
 
 /**
- * File an action operates on: either something this server staged under UPLOAD_DIR, or a path the
- * host itself produced (a screenshot, an app bundle). Both are already reachable from the preview
- * today; neither lets the caller run anything.
+ * Every value the preview page can send. The page is reachable through a shareable link, so each
+ * field is pinned to the narrowest shape that still serves the UI: an enum, a bounded identifier, a
+ * number, or a path under a root this server owns.
  */
-function sourcePath(source: Record<string, unknown>): string {
-  return source.uploadId === undefined ? str(source, "path") : uploadPath(source);
+const Device = z
+  .string()
+  .max(256)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9 ._()-]*$/, "must be a simulator udid or device name");
+
+const BundleId = z.string().max(256).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "must look like com.example.app");
+
+/** An orientation or button name. Bounded rather than allowlisted, so a new button still works. */
+const Token = z.string().max(64).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "must be a plain identifier");
+
+/** A value passed straight to a program: a leading "-" would be read as a flag. */
+const Argument = z
+  .string()
+  .min(1)
+  .max(4096)
+  .regex(/^[^\p{C}]+$/u, "must not contain control characters")
+  .refine((v) => !v.startsWith("-"), 'must not start with "-"');
+
+const UploadId = z
+  .string()
+  .regex(/^(?!\.)[A-Za-z0-9._-]{1,128}$/, "must be a short plain file name");
+
+/** A file name with no directory part, supplied by the caller from an app's Info.plist. */
+const FileName = z.string().regex(/^(?!\.)[^/\\\n]{1,255}$/, "must be a plain file name");
+
+const Coordinate = z.number().finite();
+
+/**
+ * Roots a caller-named path may sit under. Everything the preview legitimately touches is a
+ * simulator app container, a screenshot this server took, or a file it staged, so anything else is
+ * out of scope for a shareable preview link. Resolved first, so traversal collapses before the check.
+ */
+const ConfinedPath = Argument.transform((value) => {
+  // realpath, not resolve: a symlink under an allowed root would otherwise point anywhere. A path
+  // that does not exist yet keeps its lexical form, which the roots check below still constrains.
+  try {
+    return realpathSync(resolve(value));
+  } catch {
+    return resolve(value);
+  }
+}).refine((value) => {
+  const roots = [
+    join(homedir(), "Library", "Developer", "CoreSimulator", "Devices"),
+    // Apple's own apps live in the runtime root, not under a device's data container.
+    "/Library/Developer/CoreSimulator",
+    join(homedir(), "Desktop"),
+    UPLOAD_DIR,
+  ].map((root) => {
+    try {
+      return realpathSync(root);
+    } catch {
+      return root;
+    }
+  });
+  return roots.some((root) => value === root || value.startsWith(root + sep));
+}, "is outside the paths this preview may read");
+
+/** Either a file this server staged, or a path the host itself produced. */
+const FileSource = z.union([
+  z.object({ uploadId: UploadId }),
+  z.object({ path: ConfinedPath }),
+]);
+
+const ACTION_SCHEMAS = {
+  "appearance.get": z.object({ udid: Device }),
+  "appearance.set": z.object({ udid: Device, value: z.enum(APPEARANCES) }),
+  "location.set": z.object({ udid: Device, lat: Coordinate, lng: Coordinate }),
+  "location.clear": z.object({ udid: Device }),
+  "home.springboard": z.object({ udid: Device }),
+  "home.watch": z.object({ udid: Device.optional() }),
+  rotate: z.object({ udid: Device, value: Token }),
+  // udid is not part of the invocation; it is here so the session event log can file the press.
+  button: z.object({ value: Token, udid: Device.optional() }),
+  "server.detach": z.object({
+    udid: Device.optional(),
+    port: z.string().regex(/^[0-9]{1,5}$/).optional(),
+  }),
+  "server.kill": z.object({}),
+  "camera.listWebcams": z.object({}),
+  // A file source renders a host file into the preview stream, so it is confined like any other
+  // read. The union also makes the target required for "file" and optional for the rest.
+  "camera.switch": z.discriminatedUnion("source", [
+    z.object({ udid: Device, source: z.literal("file"), target: ConfinedPath }),
+    z.object({ udid: Device, source: z.literal("webcam"), target: Argument.optional() }),
+    z.object({ udid: Device, source: z.literal("placeholder") }),
+  ]),
+  "camera.inject": z.discriminatedUnion("source", [
+    z.object({
+      udid: Device,
+      bundleId: BundleId,
+      mirror: z.enum(MIRROR_VALUES),
+      source: z.literal("file"),
+      target: ConfinedPath,
+    }),
+    z.object({
+      udid: Device,
+      bundleId: BundleId,
+      mirror: z.enum(MIRROR_VALUES),
+      source: z.literal("webcam"),
+      target: Argument.optional(),
+    }),
+    z.object({
+      udid: Device,
+      bundleId: BundleId,
+      mirror: z.enum(MIRROR_VALUES),
+      source: z.literal("placeholder"),
+    }),
+  ]),
+  "camera.mirror": z.object({ udid: Device, value: z.enum(MIRROR_VALUES) }),
+  "camera.stopWebcam": z.object({ udid: Device }),
+  "permissions.set": z.object({
+    udid: Device,
+    bundleId: BundleId,
+    action: z.enum(PERMISSION_ACTIONS),
+    service: Token,
+  }),
+  "permissions.resetAll": z.object({ udid: Device, bundleId: BundleId }),
+  "app.container": z.object({ udid: Device, bundleId: BundleId }),
+  "app.infoPlist": z.object({ path: ConfinedPath }),
+  "app.install": z.object({ udid: Device }).and(FileSource),
+  "app.iconPath": z.object({ appPath: ConfinedPath, candidates: z.array(FileName).min(1).max(32) }),
+  "media.add": z.object({ udid: Device }).and(FileSource),
+  reveal: z.object({ path: ConfinedPath }),
+  "file.readBase64": z.object({ path: ConfinedPath }),
+  "screenshot.capture": z.object({ udid: Device, fileName: UploadId }),
+  "screenshot.thumbnail": z.object({ path: ConfinedPath }),
+  "upload.append": z.object({
+    uploadId: UploadId,
+    // Bounded here rather than trusting the socket's frame cap: this module is usable by a host
+    // that supplies its own transport.
+    data: z.base64().min(1).max(MAX_UPLOAD_CHUNK_BASE64),
+    first: z.boolean().optional(),
+  }),
+  "upload.remove": z.object({ uploadId: UploadId }),
+} as const;
+
+type HostActionName = keyof typeof ACTION_SCHEMAS;
+
+function isHostActionName(action: string): action is HostActionName {
+  return Object.hasOwn(ACTION_SCHEMAS, action);
+}
+
+type ParamsFor<A extends HostActionName> = z.infer<(typeof ACTION_SCHEMAS)[A]>;
+
+function parseParams<A extends HostActionName>(action: A, raw: unknown): ParamsFor<A> {
+  const result = ACTION_SCHEMAS[action].safeParse(raw ?? {});
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    const field = issue?.path.join(".");
+    throw new InvalidHostActionError(
+      `${action}: ${field ? `${field} ` : ""}${issue?.message ?? "invalid params"}`,
+    );
+  }
+  return result.data as ParamsFor<A>;
 }
 
 /** How the serve-sim CLI is invoked; a .ts/.js entrypoint needs its runtime in front. */
@@ -111,33 +266,33 @@ function serveSimInvocation(binPath: string, args: string[]): Invocation {
   return { file: binPath, args };
 }
 
-const CAMERA_SOURCES = ["file", "webcam", "placeholder"] as const;
-const APPEARANCES = ["light", "dark"] as const;
-const PERMISSION_ACTIONS = ["grant", "revoke", "reset"] as const;
-const MIRROR_VALUES = ["on", "off"] as const;
-
-function buildInvocation(action: string, raw: unknown, binPath: string): Invocation {
-  const p = fields(raw);
+function buildInvocation(action: HostActionName, raw: unknown, binPath: string): Invocation {
   const serveSim = (args: string[]): Invocation => serveSimInvocation(binPath, args);
   const simctl = (args: string[]): Invocation => ({ file: "xcrun", args: ["simctl", ...args] });
 
   switch (action) {
-    case "appearance.get":
-      return simctl(["ui", str(p, "udid"), "appearance"]);
-    case "appearance.set":
-      return simctl(["ui", str(p, "udid"), "appearance", oneOf(p, "value", APPEARANCES)]);
-    case "location.set":
-      return simctl([
-        "location",
-        str(p, "udid"),
-        "set",
-        `${coordinate(p, "lat")},${coordinate(p, "lng")}`,
-      ]);
-    case "location.clear":
-      return simctl(["location", str(p, "udid"), "clear"]);
-    case "home.springboard":
-      return simctl(["launch", str(p, "udid"), "com.apple.springboard"]);
+    case "appearance.get": {
+      const p = parseParams(action, raw);
+      return simctl(["ui", p.udid, "appearance"]);
+    }
+    case "appearance.set": {
+      const p = parseParams(action, raw);
+      return simctl(["ui", p.udid, "appearance", p.value]);
+    }
+    case "location.set": {
+      const p = parseParams(action, raw);
+      return simctl(["location", p.udid, "set", `${p.lat.toFixed(7)},${p.lng.toFixed(7)}`]);
+    }
+    case "location.clear": {
+      const p = parseParams(action, raw);
+      return simctl(["location", p.udid, "clear"]);
+    }
+    case "home.springboard": {
+      const p = parseParams(action, raw);
+      return simctl(["launch", p.udid, "com.apple.springboard"]);
+    }
     case "home.watch":
+      parseParams(action, raw);
       return {
         file: "osascript",
         args: [
@@ -149,20 +304,20 @@ function buildInvocation(action: string, raw: unknown, binPath: string): Invocat
           'tell application "System Events" to tell process "Simulator" to click menu item "Home" of menu "Device" of menu bar item "Device" of menu bar 1',
         ],
       };
-    case "rotate":
-      return serveSim(["rotate", str(p, "value"), "-d", str(p, "udid")]);
-    case "button":
-      return serveSim(["button", str(p, "value")]);
+    case "rotate": {
+      const p = parseParams(action, raw);
+      return serveSim(["rotate", p.value, "-d", p.udid]);
+    }
+    case "button": {
+      const p = parseParams(action, raw);
+      return serveSim(["button", p.value]);
+    }
     case "server.detach": {
-      const device = optionalStr(p, "udid");
-      const port = optionalStr(p, "port");
-      if (port !== undefined && !/^[0-9]{1,5}$/.test(port)) {
-        throw new InvalidHostActionError("port must be a number");
-      }
+      const p = parseParams(action, raw);
       return serveSim([
         "--detach",
-        ...(device ? [device] : []),
-        ...(port ? ["--port", port] : []),
+        ...(p.udid ? [p.udid] : []),
+        ...(p.port ? ["--port", p.port] : []),
       ]);
     }
     case "server.kill":
@@ -170,71 +325,95 @@ function buildInvocation(action: string, raw: unknown, binPath: string): Invocat
     case "camera.listWebcams":
       return serveSim(["camera", "--list-webcams"]);
     case "camera.switch": {
-      const source = oneOf(p, "source", CAMERA_SOURCES);
-      const target = optionalStr(p, "target");
+      const p = parseParams(action, raw);
+      const target = "target" in p ? p.target : undefined;
       return serveSim([
         "camera",
         "switch",
-        source,
+        p.source,
         ...(target ? [target] : []),
         "-d",
-        str(p, "udid"),
+        p.udid,
         "--quiet",
       ]);
     }
     case "camera.inject": {
-      const source = oneOf(p, "source", CAMERA_SOURCES);
-      const target = optionalStr(p, "target");
-      const args = ["camera", str(p, "bundleId"), "-d", str(p, "udid"), "--quiet"];
-      if (source === "file") args.push("--file", str(p, "target"));
-      else if (source === "webcam") args.push("--webcam", ...(target ? [target] : []));
-      args.push("--mirror", oneOf(p, "mirror", MIRROR_VALUES));
+      const p = parseParams(action, raw);
+      const args = ["camera", p.bundleId, "-d", p.udid, "--quiet"];
+      if (p.source === "file") args.push("--file", p.target);
+      else if (p.source === "webcam") args.push("--webcam", ...(p.target ? [p.target] : []));
+      args.push("--mirror", p.mirror);
       return serveSim(args);
     }
-    case "camera.mirror":
-      return serveSim([
-        "camera",
-        "mirror",
-        oneOf(p, "value", MIRROR_VALUES),
-        "-d",
-        str(p, "udid"),
-        "--quiet",
-      ]);
-    case "camera.stopWebcam":
-      return serveSim(["camera", "--stop-webcam", "-d", str(p, "udid")]);
-    case "permissions.set":
-      return serveSim([
-        "permissions",
-        oneOf(p, "action", PERMISSION_ACTIONS),
-        str(p, "service"),
-        str(p, "bundleId"),
-        "-d",
-        str(p, "udid"),
-      ]);
-    case "permissions.resetAll":
-      return serveSim(["permissions", "reset", "all", str(p, "bundleId"), "-d", str(p, "udid")]);
-    case "app.container":
-      return simctl(["get_app_container", str(p, "udid"), str(p, "bundleId"), "app"]);
-    case "app.infoPlist":
-      return { file: "plutil", args: ["-convert", "json", "-o", "-", str(p, "path")] };
-    case "app.install":
-      return simctl(["install", str(p, "udid"), sourcePath(p)]);
-    case "media.add":
-      return simctl(["addmedia", str(p, "udid"), sourcePath(p)]);
-    case "reveal":
-      return { file: "open", args: ["-R", str(p, "path")] };
+    case "camera.mirror": {
+      const p = parseParams(action, raw);
+      return serveSim(["camera", "mirror", p.value, "-d", p.udid, "--quiet"]);
+    }
+    case "camera.stopWebcam": {
+      const p = parseParams(action, raw);
+      return serveSim(["camera", "--stop-webcam", "-d", p.udid]);
+    }
+    case "permissions.set": {
+      const p = parseParams(action, raw);
+      return serveSim(["permissions", p.action, p.service, p.bundleId, "-d", p.udid]);
+    }
+    case "permissions.resetAll": {
+      const p = parseParams(action, raw);
+      return serveSim(["permissions", "reset", "all", p.bundleId, "-d", p.udid]);
+    }
+    case "app.container": {
+      const p = parseParams(action, raw);
+      return simctl(["get_app_container", p.udid, p.bundleId, "app"]);
+    }
+    case "app.infoPlist": {
+      const p = parseParams(action, raw);
+      return { file: "plutil", args: ["-convert", "json", "-o", "-", p.path] };
+    }
+    case "app.install": {
+      const p = parseParams(action, raw);
+      return simctl(["install", p.udid, fileSourcePath(p)]);
+    }
+    case "media.add": {
+      const p = parseParams(action, raw);
+      return simctl(["addmedia", p.udid, fileSourcePath(p)]);
+    }
+    case "reveal": {
+      const p = parseParams(action, raw);
+      return { file: "open", args: ["-R", p.path] };
+    }
     default:
-      throw new InvalidHostActionError(`unknown action ${action}`);
+      // The in-process actions are answered by runInProcessAsync before this runs, so reaching here
+      // means an entry was added to ACTION_SCHEMAS without a home in either dispatcher.
+      throw new InvalidHostActionError(`unknown action ${String(action)}`);
   }
+}
+
+function fileSourcePath(p: { uploadId: string } | { path: string }): string {
+  return "uploadId" in p ? join(UPLOAD_DIR, p.uploadId) : p.path;
+}
+
+/**
+ * Child output is useful diagnostics, but a runtime that cannot find its entrypoint prints the
+ * absolute path, and a stack trace prints the operator's checkout. Keep the message, drop the paths.
+ */
+function redactHostPaths(text: string): string {
+  if (!text) return text;
+  return text.split(homedir()).join("~").replace(/\/(?:private\/)?var\/folders\/\S+/g, "<tmp>");
 }
 
 function runInvocation({ file, args }: Invocation): Promise<HostActionResult> {
   return new Promise<HostActionResult>((resolve) => {
     execFile(file, args, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+      // A spawn failure has a string code (ENOENT) and empty stderr. Report the code rather than
+      // err.message, which embeds the absolute binary path and full argv.
+      const code = (err as NodeJS.ErrnoException | null)?.code;
       resolve({
         stdout: stdout.toString(),
-        stderr: stderr.toString(),
-        exitCode: err ? ((err as NodeJS.ErrnoException & { code?: number }).code ?? 1) : 0,
+        // Never `err.message`: it embeds the absolute binary path and the full argv.
+        stderr:
+          redactHostPaths(stderr.toString()) ||
+          (typeof code === "string" ? `spawn failed (${code})` : ""),
+        exitCode: err ? (typeof code === "number" ? code : 1) : 0,
       });
     });
   });
@@ -249,61 +428,92 @@ function ok(stdout = ""): HostActionResult {
  * ARG_MAX as arguments, so they are decoded and appended here instead.
  */
 async function runInProcessAsync(
-  action: string,
+  action: HostActionName,
   raw: unknown,
 ): Promise<HostActionResult | null> {
-  const p = fields(raw);
   switch (action) {
     case "upload.append": {
-      const target = uploadPath(p);
-      const chunk = Buffer.from(str(p, "data"), "base64");
-      await mkdir(UPLOAD_DIR, { recursive: true });
+      const p = parseParams(action, raw);
+      const target = join(UPLOAD_DIR, p.uploadId);
+      const chunk = Buffer.from(p.data, "base64");
+      return await queueUploadAsync(async () => {
+      await ensureUploadDirAsync();
+      // Checked on every chunk: appendFile creates the file too, so a caller that never sends
+      // `first` would otherwise write without ever passing the ceiling.
+      if ((await pruneUploadsAsync()) + chunk.length > MAX_UPLOAD_DIR_BYTES) {
+        return {
+          stdout: "",
+          stderr:
+            `The upload staging area is full (over ${Math.floor(MAX_UPLOAD_DIR_BYTES / 1024 ** 3)}GB). ` +
+            `Uploads are removed after ${MAX_UPLOAD_AGE_MS / 3_600_000} hours; retry once the ` +
+            "transfers in flight finish.",
+          exitCode: 1,
+        };
+      }
       if (p.first === true) await writeFile(target, chunk);
       else await appendFile(target, chunk);
       return ok(target);
+      });
     }
-    case "upload.remove":
-      await rm(uploadPath(p), { force: true });
+    case "upload.remove": {
+      const p = parseParams(action, raw);
+      await rm(join(UPLOAD_DIR, p.uploadId), { force: true });
       return ok();
+    }
     case "app.iconPath": {
-      const appPath = str(p, "appPath");
-      for (const candidate of fileNames(p, "candidates")) {
-        const full = join(appPath, candidate);
+      const p = parseParams(action, raw);
+      for (const candidate of p.candidates) {
+        const full = join(p.appPath, candidate);
         try {
           if ((await stat(full)).isFile()) return ok(full);
-        } catch {}
+        } catch {
+          // A missing candidate is the normal case; try the next name.
+        }
       }
       return { stdout: "", stderr: "no icon found", exitCode: 1 };
     }
     case "file.readBase64": {
-      const result = await runInvocation({ file: "base64", args: ["-i", str(p, "path")] });
-      return result;
+      const p = parseParams(action, raw);
+      return await runInvocation({ file: "base64", args: ["-i", p.path] });
     }
     // Screenshots land on the operator's Desktop, so the page names the file but never the
     // directory, and the resolved absolute path comes back for the toast's reveal action.
     case "screenshot.capture": {
-      const fileName = str(p, "fileName");
-      if (!/^[A-Za-z0-9._-]{1,128}$/.test(fileName) || fileName.startsWith(".")) {
-        throw new InvalidHostActionError("fileName must be a short plain file name");
+      const p = parseParams(action, raw);
+      const target = join(homedir(), "Desktop", p.fileName);
+      // The other write path has a ceiling; without one here a link holder can loop screenshots
+      // until the operator's disk is full.
+      if (await desktopScreenshotBudgetExceededAsync()) {
+        return {
+          stdout: "",
+          stderr:
+            "Too many serve-sim screenshots are already on the Desktop. Move or delete some, " +
+            "then take another.",
+          exitCode: 1,
+        };
       }
-      const target = join(homedir(), "Desktop", fileName);
       const result = await runInvocation({
         file: "xcrun",
-        args: ["simctl", "io", str(p, "udid"), "screenshot", target],
+        args: ["simctl", "io", p.udid, "screenshot", target],
       });
       return result.exitCode === 0 ? ok(target) : result;
     }
+    // The thumbnail is scratch, so it is staged away from the screenshot it came from and removed
+    // even when sips fails part-way through.
     case "screenshot.thumbnail": {
-      const source = str(p, "path");
-      const thumb = `${source}.thumb.png`;
-      const sips = await runInvocation({
-        file: "sips",
-        args: ["-Z", "320", source, "--out", thumb],
-      });
-      if (sips.exitCode !== 0) return sips;
-      const encoded = await runInvocation({ file: "base64", args: ["-i", thumb] });
-      await rm(thumb, { force: true });
-      return encoded;
+      const p = parseParams(action, raw);
+      const thumb = join(UPLOAD_DIR, `thumb-${randomUUID()}.png`);
+      await ensureUploadDirAsync();
+      try {
+        const sips = await runInvocation({
+          file: "sips",
+          args: ["-Z", "320", p.path, "--out", thumb],
+        });
+        if (sips.exitCode !== 0) return sips;
+        return await runInvocation({ file: "base64", args: ["-i", thumb] });
+      } finally {
+        await rm(thumb, { force: true });
+      }
     }
     default:
       return null;
@@ -314,8 +524,8 @@ export async function runHostActionAsync(
   msg: HostActionRequest,
   binPath: string,
 ): Promise<HostActionResult> {
-  if (typeof msg.action !== "string") {
-    throw new InvalidHostActionError("action must be a string");
+  if (typeof msg.action !== "string" || !isHostActionName(msg.action)) {
+    throw new InvalidHostActionError(`unknown action ${String(msg.action)}`);
   }
   const inProcess = await runInProcessAsync(msg.action, msg.params);
   if (inProcess) return inProcess;

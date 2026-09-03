@@ -400,8 +400,9 @@ export function pressHomeAsync(
   deviceType: DeviceType,
   deviceUdid?: string | null,
 ): Promise<ExecResult> {
-  if (deviceType === "watch") return runHostAction("home.watch");
+  if (deviceType === "watch") return runHostAction("home.watch", { udid: deviceUdid || undefined });
   if (deviceUdid) return runHostAction("home.springboard", { udid: deviceUdid });
+  // Only reached without a udid, so this press cannot be filed against a device in the event log.
   return runHostAction("button", { value: "home" });
 }
 

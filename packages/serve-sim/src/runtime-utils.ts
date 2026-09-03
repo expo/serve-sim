@@ -11,7 +11,7 @@ export type WebMiddleware = ((request: Request) => Response | undefined | Promis
   handleWebSocket?: (request: Request, websocket: UpgradeHandlerWebSocket) => boolean;
 };
 
-export function nodeRequestToWeb(req: IncomingMessage, res?: ServerResponse): Request {
+export function nodeRequestToWeb(req: IncomingMessage, _res?: ServerResponse): Request {
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
     if (Array.isArray(value)) {
@@ -24,7 +24,11 @@ export function nodeRequestToWeb(req: IncomingMessage, res?: ServerResponse): Re
   const host = headers.get("host") ?? "127.0.0.1";
   const url = new URL(req.url ?? "/", `http://${host}`);
   const controller = new AbortController();
-  res?.on("close", () => controller.abort());
+  const abort = () => controller.abort();
+  req.on("aborted", abort);
+  req.on("close", () => {
+    if (!req.readableEnded) abort();
+  });
 
   const init: RequestInitWithDuplex = {
     method: req.method,

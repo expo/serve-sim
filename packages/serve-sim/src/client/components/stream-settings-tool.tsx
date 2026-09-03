@@ -4,7 +4,7 @@ import { CollapsibleSection } from "./collapsible-section";
 import { TriangleAlert } from "lucide-react";
 import { useSenderStats } from "../hooks/use-sender-stats";
 import { useStreamStats } from "../hooks/use-stream-stats";
-import { StreamStatsDownload, StreamStatsSection, describeFaults, summariseStream } from "./stream-stats-tool";
+import { StreamStatsDownload, StreamStatsSection, describeFaults, liveStreamCodecLabel, summariseStream } from "./stream-stats-tool";
 import { SettingRow, SettingSelect } from "./simulator-settings-tool";
 import { streamFpsOptions } from "../utils/stream-fps-options";
 import type {
@@ -120,7 +120,9 @@ export function StreamSettingsTool({
             {!open && summary !== null ? (
               <span className="text-[11px] text-white/40 tabular-nums">{summary}</span>
             ) : (
-              <span className="text-[11px] text-white/40 uppercase">{activeCodec}</span>
+              <span className="text-[11px] text-white/40 uppercase">
+                {liveStreamCodecLabel(activeCodec, stats?.codec)}
+              </span>
             )}
             {(faults.length > 0 || stale) && (
               <span

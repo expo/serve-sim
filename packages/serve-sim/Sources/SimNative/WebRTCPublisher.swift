@@ -178,7 +178,7 @@ final class WebRTCPublisher: @unchecked Sendable {
     private var useNativePixelBufferFrames: Bool?
     private let pixelBufferScaler = PixelBufferScaler()
     private let h264PixelBufferConverter = H264WebRTCPixelBufferConverter()
-    private lazy var h264WebRTCSupport = Self.detectH264WebRTCSupport()
+    private let h264WebRTCSupport: WebRTCH264Support
     private let h264FrameModeOverride: H264WebRTCFrameMode?
     private var frameRatePolicy: WebRTCFrameRatePolicy
     private var targetBitrate: Int
@@ -192,23 +192,27 @@ final class WebRTCPublisher: @unchecked Sendable {
         self.maxDimension = max(0, maxDimension)
         self.framePacer = ContinuousFramePacer(framesPerSecond: normalizedMaxFps)
         h264FrameModeOverride = Self.h264FrameModeOverride()
+        h264WebRTCSupport = Self.detectH264WebRTCSupport()
         Self.configureLowLatencyPlayout()
         activityToken = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .latencyCritical],
             reason: "serve-sim WebRTC streaming"
         )
-        let defaultEncoderFactory = LKRTCDefaultVideoEncoderFactory()
+        let encoderFactory: LKRTCVideoEncoderFactory = h264WebRTCSupport.usesHost
+            ? HostH264EncoderFactory()
+            : LKRTCDefaultVideoEncoderFactory()
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()
         factory = LKRTCPeerConnectionFactory(
-            encoderFactory: defaultEncoderFactory,
+            encoderFactory: encoderFactory,
             decoderFactory: decoderFactory
         )
         videoSource = factory.videoSource(forScreenCast: false)
         videoTrack = factory.videoTrack(with: videoSource, trackId: "simulator-video")
         videoTrack.isEnabled = true
         capturer = LKRTCVideoCapturer(delegate: videoSource)
+        let encoderLabel = h264WebRTCSupport.usesHost ? "host AVE" : "in-process VT"
         streamLog(
-            "[webrtc] Publisher ready (default codec factory + screen-cast video source) " +
+            "[webrtc] Publisher ready (\(encoderLabel)) " +
             "h264=\(h264SupportDescription()) h264FrameMode=\(h264FrameModeDescription()) " +
             "senderCodecs=\(senderCodecSummary())"
         )
@@ -1163,8 +1167,12 @@ final class WebRTCPublisher: @unchecked Sendable {
             encoding.scaleResolutionDownBy = NSNumber(value: scaleResolutionDownBy)
         }
         parameters.encodings = encodings
-        parameters.degradationPreference =
-            NSNumber(value: LKRTCDegradationPreference.maintainFramerate.rawValue)
+        let hostH264 = h264WebRTCSupport.usesHost
+            && session.codecName.caseInsensitiveCompare("H264") == .orderedSame
+        let degradation: LKRTCDegradationPreference = hostH264
+            ? .maintainResolution
+            : .maintainFramerate
+        parameters.degradationPreference = NSNumber(value: degradation.rawValue)
         sender.parameters = parameters
         // Read back: assigning `scaleResolutionDownBy` is not proof libwebrtc kept it.
         let appliedScale = sender.parameters.encodings.first?.scaleResolutionDownBy?.doubleValue
@@ -1180,6 +1188,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             "maxBitrate=\(maxBitrate) maxDimension=\(maxDimension) " +
             "scaleDown=\(String(format: "%.3f", scaleResolutionDownBy)) " +
             "applied=\(appliedScale.map { String(format: "%.3f", $0) } ?? "nil") " +
+            "degrade=\(hostH264 ? "maintainResolution" : "maintainFramerate") " +
             "encodings=\(encodings.count) " +
             "bweUpdated=\(bweUpdated)"
         )
@@ -1263,6 +1272,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         if envFlagEnabled(environment["SERVE_SIM_DISABLE_WEBRTC_H264"]) {
             return WebRTCH264Support(
                 allowed: false,
+                usesHost: false,
                 reason: "disabled by SERVE_SIM_DISABLE_WEBRTC_H264",
                 encoderID: nil,
                 usesHardware: nil,
@@ -1273,26 +1283,64 @@ final class WebRTCPublisher: @unchecked Sendable {
             envFlagEnabled(environment["SERVE_SIM_FORCE_WEBRTC_H264"]) {
             return WebRTCH264Support(
                 allowed: true,
+                usesHost: false,
                 reason: nil,
                 encoderID: nil,
                 usesHardware: nil,
-                probeSummary: "forced by environment"
+                probeSummary: "forced in-process"
+            )
+        }
+        let virtual = sysctlString("hw.model")?.hasPrefix("Virtual") == true
+        if HostH264Plan.usesHostSocket(
+            isVirtualMac: virtual,
+            hostEncoderFlag: environment["SERVE_SIM_HOST_ENCODER"]
+        ) {
+            let host = HostH264Plan.host(from: environment)
+            let port = HostH264Plan.port(from: environment)
+            if HostEncoderSocket.sidecarListening(host: host, port: port) {
+                return WebRTCH264Support(
+                    allowed: true,
+                    usesHost: true,
+                    reason: nil,
+                    encoderID: "host-ave.avc",
+                    usesHardware: true,
+                    probeSummary: "host \(host):\(port)"
+                )
+            }
+            return WebRTCH264Support(
+                allowed: false,
+                usesHost: false,
+                reason: "host encoder not listening at \(host):\(port)",
+                encoderID: nil,
+                usesHardware: nil,
+                probeSummary: "host \(host):\(port) down"
+            )
+        }
+        if virtual {
+            return WebRTCH264Support(
+                allowed: false,
+                usesHost: false,
+                reason: "host encoder off on VirtualMac; guest VT skipped",
+                encoderID: nil,
+                usesHardware: nil,
+                probeSummary: "skipped guest VT"
             )
         }
         let probe = probeVideoToolboxH264Encoder()
         if probe.encodedFrame {
             return WebRTCH264Support(
                 allowed: true,
+                usesHost: false,
                 reason: nil,
                 encoderID: probe.encoderID,
                 usesHardware: probe.usesHardware,
                 probeSummary: probe.summary
             )
         }
-        let modelPrefix = sysctlString("hw.model").map { " on \($0)" } ?? ""
         return WebRTCH264Support(
             allowed: false,
-            reason: "VideoToolbox H.264 probe failed\(modelPrefix): \(probe.summary)",
+            usesHost: false,
+            reason: "in-process VT \(probe.summary)",
             encoderID: probe.encoderID,
             usesHardware: probe.usesHardware,
             probeSummary: probe.summary
@@ -1506,6 +1554,7 @@ final class WebRTCPublisher: @unchecked Sendable {
 
 private struct WebRTCH264Support {
     let allowed: Bool
+    let usesHost: Bool
     let reason: String?
     let encoderID: String?
     let usesHardware: Bool?

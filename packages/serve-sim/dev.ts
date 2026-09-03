@@ -30,6 +30,7 @@ import {
   type ServeSimState,
 } from "./src/middleware";
 import { servePreview } from "./src/runtime";
+import type { StreamSettings } from "./src/stream-settings";
 
 const PORT = Number(process.env.PORT) || 3200;
 const CLIENT_DIR = resolve(import.meta.dir, "src/client");
@@ -50,18 +51,35 @@ const SERVE_SIM_BIN = resolveServeSimBin();
 // this per-process token (injected into the page config + the middleware).
 const EXEC_TOKEN = randomBytes(32).toString("base64url");
 
+function previewStreamSettings(): StreamSettings | undefined {
+  const transport = process.env.SERVE_SIM_TRANSPORT;
+  if (transport !== "webrtc") return undefined;
+  const codec = process.env.SERVE_SIM_WEBRTC_CODEC ?? "h264";
+  if (codec !== "vp8" && codec !== "vp9" && codec !== "h264") {
+    throw new Error(`SERVE_SIM_WEBRTC_CODEC must be vp8, vp9, or h264 (got ${codec})`);
+  }
+  return { transport: "webrtc", codec };
+}
+
+const STREAM_SETTINGS = previewStreamSettings();
+
 // The same connect-style middleware production runs. `basePath: "/"` normalizes
 // to an empty base internally, matching the `previewConfigForState(state, "")`
 // endpoints we inject into the dev HTML shell below.
 // The dev server owns its HTTP server and forwards upgrades (below), so it
 // proxies helper/DevTools sockets through the single port like production.
-const middleware = simMiddleware({ basePath: "/", execToken: EXEC_TOKEN, proxyHelpers: true });
+const middleware = simMiddleware({
+  basePath: "/",
+  execToken: EXEC_TOKEN,
+  proxyHelpers: true,
+  streamSettings: STREAM_SETTINGS,
+});
 
 // The dev server serves at the root (empty base), so endpoints look like
 // `/logs`, `/grid/api`, etc. We point the advertised CLI binary at our local
 // source so the sidebar's `serve-sim …` calls run from this checkout.
 function devPreviewConfig(state: ServeSimState) {
-  return previewConfigForState(state, "", SERVE_SIM_BIN, EXEC_TOKEN, undefined, true);
+  return previewConfigForState(state, "", SERVE_SIM_BIN, EXEC_TOKEN, STREAM_SETTINGS, true);
 }
 
 // ─── Client bundler with watch ───

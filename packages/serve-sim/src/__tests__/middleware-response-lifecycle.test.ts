@@ -195,4 +195,69 @@ describe("fetch middleware response lifecycle", () => {
 
     await expect(connectToFetch(handler, new Request("http://localhost/fail"))).rejects.toThrow("boom");
   });
+
+  test("keeps a JSON response when the handler ends before reading a POST body", async () => {
+    const handler: ConnectMiddleware = (_req, res) => {
+      res.writeHead(405, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "method_not_allowed" }));
+    };
+
+    const response = await connectToFetch(
+      handler,
+      new Request("http://localhost/settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+
+    expect(response?.status).toBe(405);
+    expect(await response?.json()).toEqual({ error: "method_not_allowed" });
+  });
+
+  test("replays a POST body to a handler that awaits before attaching listeners", async () => {
+    const handler: ConnectMiddleware = async (req, res) => {
+      await Promise.resolve();
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve) => {
+        req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        req.on("end", () => resolve());
+      });
+      res.end(Buffer.concat(chunks).toString());
+    };
+
+    const response = await connectToFetch(
+      handler,
+      new Request("http://localhost/offer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: '{"hello":"body"}',
+      }),
+    );
+
+    expect(await response?.text()).toBe('{"hello":"body"}');
+  });
+});
+
+describe("servePreview POST body drain", () => {
+  test("does not replace an unread-POST JSON response with an empty 200", async () => {
+    const { servePreview } = await import("../runtime");
+    const middleware = (request: Request) =>
+      connectToFetch((_req, res) => {
+        res.writeHead(405, { "Content-Type": "application/json" });
+        res.end('{"error":"method_not_allowed"}');
+      }, request);
+    const server = await servePreview({ port: 0, middleware });
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.port}/x`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      expect(response.status).toBe(405);
+      expect(await response.text()).toBe('{"error":"method_not_allowed"}');
+    } finally {
+      server.stop();
+    }
+  });
 });

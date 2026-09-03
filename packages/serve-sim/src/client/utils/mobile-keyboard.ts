@@ -49,7 +49,7 @@ export function keyEventsForTextChange(
 
 export const KEYBOARD_CAPTURE_ATTRIBUTES = {
   autoCapitalize: "none",
-  autoCorrect: "off",
+  autoCorrect: "on",
   autoComplete: "off",
-  spellCheck: false,
+  spellCheck: true,
 } as const;

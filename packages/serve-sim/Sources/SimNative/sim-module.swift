@@ -271,4 +271,14 @@ private func axQuery(
             return String(decoding: data, as: UTF8.self)
         }
     },
+    // setHardwareKeyboard(udid, enabled): Promise<boolean> — connect/disconnect
+    // the guest's hardware keyboard (⌘⇧K). Disconnected → on-screen keyboard.
+    "setHardwareKeyboard": try NodeFunction { (udid: String, enabled: Bool) async throws -> Bool in
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Bool, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do { cont.resume(returning: try HardwareKeyboard.setEnabled(udid: udid, enabled: enabled)) }
+                catch { cont.resume(throwing: error) }
+            }
+        }
+    },
 ])

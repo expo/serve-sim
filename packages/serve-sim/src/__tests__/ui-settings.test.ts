@@ -89,6 +89,7 @@ describe("option catalogue", () => {
       [
         "appearance",
         "color-filter",
+        "hardware-keyboard",
         "increase-contrast",
         "liquid-glass",
         "reduce-motion",

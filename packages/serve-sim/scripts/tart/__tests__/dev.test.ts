@@ -1,13 +1,13 @@
 import { spawn } from "bun";
 import { describe, expect, test } from "bun:test";
 import { guestPreviewScript, waitGone } from "../dev";
-import { SSH_OPTS, sshTunnelArgs } from "../guest";
+import { shellEscape, SSH_OPTS, sshTunnelArgs } from "../guest";
 
 describe("tart-dev", () => {
   test("guest preview cds to the share and runs bun dev.ts", () => {
     const share = "/Volumes/My Shared Files/serve-sim/packages/serve-sim";
     const script = guestPreviewScript(share, 3200);
-    expect(script).toContain(`cd ${JSON.stringify(share)}`);
+    expect(script).toContain(`cd ${shellEscape(share)}`);
     expect(script).toContain("exec bun run dev.ts");
     expect(script).toContain("export PORT=3200");
     expect(script).not.toContain("simpb");
@@ -37,9 +37,9 @@ describe("waitGone", () => {
     tunnel.kill("SIGTERM");
 
     const started = Date.now();
-    await waitGone(serve, tunnel, 5000);
+    await waitGone(serve, tunnel, 1000);
 
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(Date.now() - started).toBeLessThan(500);
     expect(serve.signalCode).toBe("SIGTERM");
     expect(tunnel.signalCode).toBe("SIGTERM");
   });

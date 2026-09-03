@@ -1,6 +1,6 @@
 import { existsSync } from "fs";
 import { join } from "path";
-import { assertHostModules, GUEST_PATH, guestPkgPath, type TartGuest } from "./guest";
+import { assertHostModules, GUEST_PATH, guestPkgPath, shellEscape, type TartGuest } from "./guest";
 import { warmSafari } from "./sim";
 
 export const GUEST_PKG = "/tmp/serve-sim-pkg";
@@ -20,7 +20,7 @@ function simpbFiles(pkgDir: string): string[] {
 export async function stageGuest(guest: TartGuest): Promise<void> {
   const { pkgDir } = guest.config;
   await guest.ssh(
-    `rm -rf ${GUEST_PKG}/src ${GUEST_PKG}/dist ${GUEST_PKG}/node_modules && mkdir -p ${GUEST_SIMPB} ${GUEST_PKG}`,
+    `rm -rf ${GUEST_SIMPB} ${GUEST_PKG}/src ${GUEST_PKG}/dist ${GUEST_PKG}/node_modules && mkdir -p ${GUEST_SIMPB} ${GUEST_PKG}`,
   );
 
   const binaries = simpbFiles(pkgDir);
@@ -35,7 +35,7 @@ export async function stageGuest(guest: TartGuest): Promise<void> {
 }
 
 export async function warmFixture(guest: TartGuest, udid: string): Promise<void> {
-  const quoted = JSON.stringify(udid);
+  const quoted = shellEscape(udid);
   const code = await guest.sshInherit(`${GUEST_PATH}
 set -euo pipefail
 if [[ ! -d ${GUEST_SIMPB}/PasteboardFixture.app ]]; then
@@ -49,8 +49,8 @@ xcrun simctl privacy ${quoted} grant pasteboard dev.expo.serve-sim.pasteboard-fi
 
 export async function runGuestTests(guest: TartGuest, files: string[]): Promise<number> {
   assertHostModules(guest.config);
-  const shareModules = JSON.stringify(`${guestPkgPath(guest.config)}/node_modules`);
-  const quoted = files.map((file) => JSON.stringify(file)).join(" ");
+  const shareModules = shellEscape(`${guestPkgPath(guest.config)}/node_modules`);
+  const quoted = files.map(shellEscape).join(" ");
   return guest.sshInherit(`${GUEST_PATH}
 set -euo pipefail
 chmod -R 755 ${GUEST_SIMPB}

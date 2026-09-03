@@ -1,9 +1,9 @@
-import { GUEST_PATH, type TartGuest } from "./guest";
+import { GUEST_PATH, shellEscape, type TartGuest } from "./guest";
 import { parseSimctlDevices, pickAvailableNamed, pickBootedIphone, pickBootedNamed } from "./simctl";
 
 const DEVICE_NAME = "iPhone 17";
 
-async function simctlList(guest: TartGuest, extra: string): Promise<string> {
+async function simctlList(guest: TartGuest, extra: "booted" | "available"): Promise<string> {
   return guest.ssh(`${GUEST_PATH}\nxcrun simctl list devices ${extra} -j`);
 }
 
@@ -22,10 +22,10 @@ export async function bootSim(guest: TartGuest): Promise<string> {
   const udid = pickAvailableNamed(available, DEVICE_NAME);
   if (!udid) throw new Error(`no available ${DEVICE_NAME}`);
 
-  const quoted = JSON.stringify(udid);
+  const quoted = shellEscape(udid);
   const code = await guest.sshInherit(`${GUEST_PATH}
 set -euo pipefail
-echo "booting ${udid}"
+echo booting ${quoted}
 xcrun simctl boot ${quoted}
 xcrun simctl bootstatus ${quoted} -b
 `);
@@ -34,7 +34,7 @@ xcrun simctl bootstatus ${quoted} -b
 }
 
 export async function warmSafari(guest: TartGuest, udid: string): Promise<void> {
-  const quoted = JSON.stringify(udid);
+  const quoted = shellEscape(udid);
   const code = await guest.sshInherit(`${GUEST_PATH}
 set -euo pipefail
 env SIMCTL_CHILD_DYLD_INSERT_LIBRARIES= xcrun simctl spawn ${quoted} launchctl unsetenv DYLD_INSERT_LIBRARIES >/dev/null 2>&1 || true

@@ -2,14 +2,14 @@ import { existsSync } from "fs";
 import { createServer } from "net";
 import { join } from "path";
 import type { Subprocess } from "bun";
-import { assertHostModules, GUEST_PATH, guestPkgPath, type TartGuest } from "./guest";
+import { assertHostModules, GUEST_PATH, guestPkgPath, shellEscape, type TartGuest } from "./guest";
 
 const PREVIEW_PORT = Number(process.env.PORT) || 3200;
 
 export function guestPreviewScript(share: string, port: number): string {
   return `${GUEST_PATH}
 set -euo pipefail
-cd ${JSON.stringify(share)}
+cd ${shellEscape(share)}
 export PORT=${port}
 exec bun run dev.ts
 `;

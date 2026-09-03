@@ -52,6 +52,10 @@ export function loadTartConfig(): TartConfig {
   };
 }
 
+export function shellEscape(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
 export function guestPkgPath(config: TartConfig): string {
   return `/Volumes/My Shared Files/${config.shareName}/packages/serve-sim`;
 }
@@ -193,6 +197,10 @@ export class TartGuest {
     }
 
     console.log(`starting ${this.config.vm} with ${this.config.repoDir} mounted as ${this.config.shareName}`);
+    const logDir = join(this.config.pkgDir, "dist");
+    mkdirSync(logDir, { recursive: true });
+    const log = join(logDir, "tart-run.log");
+    writeFileSync(log, "");
     const child = spawn(
       [
         "tart",
@@ -204,20 +212,31 @@ export class TartGuest {
         `${this.config.shareName}:${this.config.repoDir}`,
         this.config.vm,
       ],
-      { stdout: "ignore", stderr: "inherit", stdin: "ignore" },
+      { stdout: "ignore", stderr: Bun.file(log), stdin: "ignore", detached: true },
     );
     child.unref();
     for (let i = 0; i < 60; i++) {
       this.ip = await this.tartIp();
       if (this.ip) return;
+      if (child.exitCode != null || child.signalCode != null) {
+        const how = child.signalCode ?? `code ${child.exitCode}`;
+        throw new Error(
+          `tart run ${this.config.vm} exited (${how}). Another checkout may already hold the VM. Run \`tart list\` to see what is running. ${logTail(log)}`,
+        );
+      }
       await Bun.sleep(2000);
     }
-    throw new Error("tart VM never got an IP");
+    try {
+      child.kill("SIGTERM");
+    } catch {}
+    throw new Error(
+      `${this.config.vm} never got an IP after 120s, so tart run was stopped. The VM likely never got a DHCP lease. Run \`tart run ${this.config.vm}\` by hand to watch it boot. ${logTail(log)}`,
+    );
   }
 
   async assertShare(): Promise<void> {
     const share = guestPkgPath(this.config);
-    const srcQuoted = JSON.stringify(`${share}/src`);
+    const srcQuoted = shellEscape(`${share}/src`);
     const stopHint = `Stop the VM with \`tart stop ${this.config.vm}\` and rerun bun run tart up.`;
 
     const stampDir = join(this.config.pkgDir, "dist");
@@ -237,7 +256,7 @@ export class TartGuest {
         throw new Error(`VM share is missing (${share}). ${stopHint}`);
       }
       for (let i = 0; i < 15; i++) {
-        const seen = (await this.ssh(`cat ${JSON.stringify(remote)} 2>/dev/null || true`)).trim();
+        const seen = (await this.ssh(`cat ${shellEscape(remote)} 2>/dev/null || true`)).trim();
         if (seen === token) return;
         await Bun.sleep(400);
       }
@@ -248,6 +267,15 @@ export class TartGuest {
       } catch {}
     }
   }
+}
+
+export function logTail(path: string): string {
+  let text = "";
+  try {
+    text = readFileSync(path, "utf-8").trim();
+  } catch {}
+  if (!text) return `See ${path}.`;
+  return `tart run said:\n${text.split("\n").slice(-10).join("\n")}`;
 }
 
 function publicKey(): string {

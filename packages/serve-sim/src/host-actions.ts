@@ -95,6 +95,15 @@ function uploadPath(source: Record<string, unknown>): string {
   return join(UPLOAD_DIR, basename(id));
 }
 
+/**
+ * File an action operates on: either something this server staged under UPLOAD_DIR, or a path the
+ * host itself produced (a screenshot, an app bundle). Both are already reachable from the preview
+ * today; neither lets the caller run anything.
+ */
+function sourcePath(source: Record<string, unknown>): string {
+  return source.uploadId === undefined ? str(source, "path") : uploadPath(source);
+}
+
 /** How the serve-sim CLI is invoked; a .ts/.js entrypoint needs its runtime in front. */
 function serveSimInvocation(binPath: string, args: string[]): Invocation {
   if (/\.ts$/.test(binPath)) return { file: "bun", args: [binPath, ...args] };
@@ -102,7 +111,7 @@ function serveSimInvocation(binPath: string, args: string[]): Invocation {
   return { file: binPath, args };
 }
 
-const CAMERA_SOURCES = ["file", "webcam", "none"] as const;
+const CAMERA_SOURCES = ["file", "webcam", "placeholder"] as const;
 const APPEARANCES = ["light", "dark"] as const;
 const PERMISSION_ACTIONS = ["grant", "revoke", "reset"] as const;
 const MIRROR_VALUES = ["on", "off"] as const;
@@ -165,13 +174,13 @@ function buildInvocation(action: string, raw: unknown, binPath: string): Invocat
         "--quiet",
       ]);
     }
-    case "camera.configure": {
+    case "camera.inject": {
       const source = oneOf(p, "source", CAMERA_SOURCES);
       const target = optionalStr(p, "target");
-      const args = ["camera"];
+      const args = ["camera", str(p, "bundleId"), "-d", str(p, "udid"), "--quiet"];
       if (source === "file") args.push("--file", str(p, "target"));
       else if (source === "webcam") args.push("--webcam", ...(target ? [target] : []));
-      args.push("--mirror", oneOf(p, "mirror", MIRROR_VALUES), "-d", str(p, "udid"), "--quiet");
+      args.push("--mirror", oneOf(p, "mirror", MIRROR_VALUES));
       return serveSim(args);
     }
     case "camera.mirror":
@@ -201,9 +210,9 @@ function buildInvocation(action: string, raw: unknown, binPath: string): Invocat
     case "app.infoPlist":
       return { file: "plutil", args: ["-convert", "json", "-o", "-", str(p, "path")] };
     case "app.install":
-      return simctl(["install", str(p, "udid"), uploadPath(p)]);
+      return simctl(["install", str(p, "udid"), sourcePath(p)]);
     case "media.add":
-      return simctl(["addmedia", str(p, "udid"), uploadPath(p)]);
+      return simctl(["addmedia", str(p, "udid"), sourcePath(p)]);
     case "reveal":
       return { file: "open", args: ["-R", str(p, "path")] };
     default:

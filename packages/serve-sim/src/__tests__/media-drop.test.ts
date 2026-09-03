@@ -1,18 +1,16 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
+
+void mock.module("../client/utils/exec", () => ({
+  runHostAction: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+}));
+
 import { startHostPathDrop } from "../client/hooks/use-media-drop";
-import type { ExecResult } from "../client/utils/exec";
 
 describe("startHostPathDrop", () => {
   test("dismisses the screenshot toast when a host screenshot path is dropped", async () => {
     const events: string[] = [];
-    const exec = async (): Promise<ExecResult> => {
-      events.push("exec");
-      return { stdout: "", stderr: "", exitCode: 0 };
-    };
-
     const done = startHostPathDrop({
       hostPath: "/Users/me/Desktop/serve-sim-screenshot.png",
-      exec,
       udid: "UDID",
       onUploadStart: (name, kind) => {
         events.push(`start:${name}:${kind}`);

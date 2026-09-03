@@ -1184,7 +1184,6 @@ function AppWithConfig({
   const uploads = useUploadToasts();
   const screenshot = useScreenshotToast(config.device);
   const mediaDrop = useMediaDrop({
-    exec: execOnHost,
     udid: config.device,
     enabled: streaming,
     onUploadStart: uploads.add,

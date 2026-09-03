@@ -14,7 +14,6 @@ export function keyEventsForInputType(
 ): KeyEvent[] {
   switch (inputType) {
     case "insertText":
-    case "insertCompositionText":
     case "insertFromPaste":
       return data != null && data !== ""
         ? textToKeyEventsLenient(data).events
@@ -28,6 +27,21 @@ export function keyEventsForInputType(
     default:
       return [];
   }
+}
+
+export function compositionDeltaKeyEvents(
+  previous: string,
+  next: string,
+): KeyEvent[] {
+  const prev = Array.from(previous);
+  const cur = Array.from(next);
+  let common = 0;
+  const max = Math.min(prev.length, cur.length);
+  while (common < max && prev[common] === cur[common]) common++;
+  const events: KeyEvent[] = [];
+  for (let i = common; i < prev.length; i++) events.push(...press(BACKSPACE));
+  events.push(...textToKeyEventsLenient(cur.slice(common).join("")).events);
+  return events;
 }
 
 export const KEYBOARD_CAPTURE_ATTRIBUTES = {

@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
@@ -39,6 +40,7 @@ import {
   KeyboardToggleButton,
 } from "./components/keyboard-capture";
 import { DeviceKitChrome, type ChromeButtonPress } from "./components/device-chrome-frame";
+import { createPacedKeySender } from "./utils/paced-key-sender";
 import { GridPanel } from "./components/grid-panel";
 import { IconButton } from "./components/icon-button";
 import { ResizeHandle } from "./components/resize-handle";
@@ -825,6 +827,12 @@ function AppWithConfig({
     );
   }, []);
 
+  const keySender = useMemo(
+    () => createPacedKeySender((e) => sendWs(0x06, { type: e.type, usage: e.usage })),
+    [sendWs],
+  );
+  useEffect(() => () => keySender.dispose(), [keySender]);
+
   const onStreamTouch = useCallback(
     (data: { type: string; x: number; y: number; edge?: number }) => {
       sendWs(0x03, data);
@@ -1285,9 +1293,7 @@ function AppWithConfig({
         )}
         <KeyboardCapture
           open={keyboardOpen}
-          onKeys={(events) => {
-            for (const e of events) sendWs(0x06, { type: e.type, usage: e.usage });
-          }}
+          onKeys={(events) => keySender.enqueue(events)}
           inputRef={keyboardInputRef}
         />
         <div

@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unl
 import { createHash, randomBytes } from "crypto";
 import { networkInterfaces } from "os";
 import { join, resolve } from "path";
+import WebSocket from "ws";
 import {
   STATE_DIR,
   stateFileForDevice,
@@ -188,14 +189,15 @@ function writeState(state: ServerState) {
   debugState("wrote state pid=%d device=%s port=%d", state.pid, state.device, state.port);
 }
 
-// Helper-socket URL for a device, with the session token appended when the server runs gated
-// (--require-token). The input subcommands use the global WebSocket, which has no header API, so the
-// token rides the URL; the server accepts `?token=` on the upgrade the same as a bearer or cookie.
-function helperSocketUrl(state: ServerState): string {
-  if (!state.token) return state.wsUrl;
-  const url = new URL(state.wsUrl);
-  url.searchParams.set("token", state.token);
-  return url.toString();
+// Helper socket for a device, carrying the session token as a bearer header when the server runs
+// gated (--require-token). `ws` is used rather than the global WebSocket because the package
+// supports Node 20, where the global is undefined, and because a header keeps the token out of
+// request URLs and proxy logs.
+function openHelperSocket(state: ServerState): WebSocket {
+  return new WebSocket(
+    state.wsUrl,
+    state.token ? { headers: { Authorization: `Bearer ${state.token}` } } : undefined,
+  );
 }
 
 function clearState(udid?: string) {
@@ -775,7 +777,7 @@ async function gesture(jsonStr: string, deviceArg?: string) {
   }
 
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(helperSocketUrl(state));
+    const ws = openHelperSocket(state);
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
@@ -809,7 +811,7 @@ async function tap(xArg: string, yArg: string, deviceArg?: string) {
     process.exit(1);
   }
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(helperSocketUrl(state));
+    const ws = openHelperSocket(state);
     ws.binaryType = "arraybuffer";
     const send = (type: "begin" | "end") => {
       const json = new TextEncoder().encode(JSON.stringify({ type, x, y }));
@@ -883,7 +885,7 @@ async function typeText(
     process.exit(1);
   }
 
-  await sendKeyEventsToWs(state.wsUrl, events);
+  await sendKeyEventsToWs(state.wsUrl, events, { token: state.token });
 }
 
 async function rotate(orientation: string, deviceArg?: string) {
@@ -907,7 +909,7 @@ async function rotate(orientation: string, deviceArg?: string) {
   }
 
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(helperSocketUrl(state));
+    const ws = openHelperSocket(state);
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
@@ -950,7 +952,7 @@ async function button(buttonName = "home", deviceArg?: string) {
   const payload = hid ? { button: buttonName, ...hid } : { button: buttonName };
 
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(helperSocketUrl(state));
+    const ws = openHelperSocket(state);
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
@@ -999,7 +1001,7 @@ async function caDebug(option: string, stateRaw: string, deviceArg?: string) {
   }
 
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(helperSocketUrl(stateFile));
+    const ws = openHelperSocket(stateFile);
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       const json = new TextEncoder().encode(JSON.stringify({ option: resolved, enabled }));
@@ -1024,7 +1026,7 @@ async function memoryWarning(deviceArg?: string) {
     process.exit(1);
   }
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(helperSocketUrl(stateFile));
+    const ws = openHelperSocket(stateFile);
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       ws.send(new Uint8Array([0x09]));

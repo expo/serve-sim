@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { IncomingMessage } from "http";
 import type { Socket } from "net";
 
-import { ACCESS_COOKIE } from "../session-auth";
+import { accessCookieName } from "../session-auth";
 import { simMiddleware } from "../middleware";
 import type { UpgradeHandlerWebSocket } from "../middleware-utils";
 
@@ -42,12 +42,12 @@ describe("preview access with --require-token", () => {
 
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe("/");
-    expect(response.headers.get("set-cookie")).toContain(ACCESS_COOKIE);
+    expect(response.headers.get("set-cookie")).toContain(accessCookieName(TOKEN));
   });
 
   test("accepts the cookie it handed out", async () => {
     const response = await gated(true)("/api", {
-      headers: { cookie: `${ACCESS_COOKIE}=${encodeURIComponent(TOKEN)}` },
+      headers: { cookie: `${accessCookieName(TOKEN)}=${encodeURIComponent(TOKEN)}` },
     });
 
     expect(response.status).toBe(200);
@@ -71,7 +71,7 @@ describe("the rest of the surface with --require-token", () => {
   });
 
   test("accepts the cookie the browser already carries, so the UI keeps working", async () => {
-    const cookie = { cookie: `${ACCESS_COOKIE}=${encodeURIComponent(TOKEN)}` };
+    const cookie = { cookie: `${accessCookieName(TOKEN)}=${encodeURIComponent(TOKEN)}` };
 
     expect((await gated(true)("/grid/api", { headers: cookie })).status).toBe(200);
   });
@@ -183,7 +183,7 @@ describe("websocket upgrades with --require-token", () => {
 
     handler.handleWebSocket?.(
       new Request(`${ORIGIN}/exec-ws`, {
-        headers: { cookie: `${ACCESS_COOKIE}=${encodeURIComponent(TOKEN)}` },
+        headers: { cookie: `${accessCookieName(TOKEN)}=${encodeURIComponent(TOKEN)}` },
       }),
       ws,
     );

@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
+import type { SessionAuthReq } from "../session-auth";
 import {
-  ACCESS_COOKIE,
+  accessCookieName,
   assertPreviewAccess,
   assertSessionAccess,
   assertUpgradeAccess,
@@ -158,7 +159,7 @@ describe("assertPreviewAccess", () => {
 
     expect(sent.status).toBe(302);
     expect(sent.headers?.Location).toBe("/?device=abc");
-    expect(sent.headers?.["Set-Cookie"]).toContain(`${ACCESS_COOKIE}=${encodeURIComponent(TOKEN)}`);
+    expect(sent.headers?.["Set-Cookie"]).toContain(`${accessCookieName(TOKEN)}=${encodeURIComponent(TOKEN)}`);
     expect(sent.headers?.["Set-Cookie"]).toContain("HttpOnly");
     // Lax, not Strict: the dashboard link is a cross-site top-level navigation, and a Strict cookie
     // would be withheld on the redirect that follows the token swap.
@@ -181,7 +182,7 @@ describe("assertPreviewAccess", () => {
   test("accepts the cookie it set, so the page's own requests work", () => {
     const { res: r } = res();
     expect(
-      assertPreviewAccess(req({ cookie: `${ACCESS_COOKIE}=${encodeURIComponent(TOKEN)}` }), r, TOKEN, {
+      assertPreviewAccess(req({ cookie: `${accessCookieName(TOKEN)}=${encodeURIComponent(TOKEN)}` }), r, TOKEN, {
         required: true,
         basePath: "/",
       }),
@@ -198,7 +199,7 @@ describe("assertPreviewAccess", () => {
   test("refuses a wrong token in every position it accepts a right one", () => {
     const wrong: Record<string, string>[] = [
       { authorization: "Bearer wrong" },
-      { cookie: `${ACCESS_COOKIE}=wrong` },
+      { cookie: `${accessCookieName(TOKEN)}=wrong` },
     ];
     for (const headers of wrong) {
       const { sent, res: r } = res();
@@ -231,21 +232,20 @@ describe("assertUpgradeAccess", () => {
   test("accepts the cookie the page carries on its own sockets", () => {
     expect(
       assertUpgradeAccess(
-        { cookie: `${ACCESS_COOKIE}=${encodeURIComponent(TOKEN)}` },
+        { cookie: `${accessCookieName(TOKEN)}=${encodeURIComponent(TOKEN)}` },
         TOKEN,
         { required: true },
       ),
     ).toBe(true);
   });
 
-  test("accepts a ?token= query param, for the global-WebSocket CLI subcommands", () => {
+  test("refuses a ?token= query param, so the credential stays out of URLs and proxy logs", () => {
     expect(
-      assertUpgradeAccess({ url: `/helper/x/ws?token=${encodeURIComponent(TOKEN)}` }, TOKEN, {
-        required: true,
-      }),
-    ).toBe(true);
-    expect(
-      assertUpgradeAccess({ url: `/helper/x/ws?token=wrong` }, TOKEN, { required: true }),
+      assertUpgradeAccess(
+        { url: `/helper/x/ws?token=${encodeURIComponent(TOKEN)}` } as SessionAuthReq["headers"],
+        TOKEN,
+        { required: true },
+      ),
     ).toBe(false);
   });
 
@@ -254,8 +254,8 @@ describe("assertUpgradeAccess", () => {
   });
 
   test("refuses, without throwing, a malformed cookie on the synchronous upgrade path", () => {
-    expect(() => assertUpgradeAccess({ cookie: `${ACCESS_COOKIE}=%` }, TOKEN, { required: true })).not.toThrow();
-    expect(assertUpgradeAccess({ cookie: `${ACCESS_COOKIE}=%` }, TOKEN, { required: true })).toBe(false);
+    expect(() => assertUpgradeAccess({ cookie: `${accessCookieName(TOKEN)}=%` }, TOKEN, { required: true })).not.toThrow();
+    expect(assertUpgradeAccess({ cookie: `${accessCookieName(TOKEN)}=%` }, TOKEN, { required: true })).toBe(false);
   });
 
   test("refuses a wrong token in either position", () => {
@@ -263,7 +263,7 @@ describe("assertUpgradeAccess", () => {
       assertUpgradeAccess({ authorization: "Bearer wrong" }, TOKEN, { required: true }),
     ).toBe(false);
     expect(
-      assertUpgradeAccess({ cookie: `${ACCESS_COOKIE}=wrong` }, TOKEN, { required: true }),
+      assertUpgradeAccess({ cookie: `${accessCookieName(TOKEN)}=wrong` }, TOKEN, { required: true }),
     ).toBe(false);
   });
 });

@@ -2509,7 +2509,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // sockets carry no token of their own, and without this an exposed server hands them to any caller.
     if (
       !assertUpgradeAccess(
-        { authorization: req.headers.authorization, cookie: req.headers.cookie, url: req.url },
+        { authorization: req.headers.authorization, cookie: req.headers.cookie },
         execToken,
         { required: requirePreviewToken },
       )
@@ -2588,7 +2588,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         {
           authorization: request.headers.get("authorization") ?? undefined,
           cookie: request.headers.get("cookie") ?? undefined,
-          url: request.url,
         },
         execToken,
         { required: requirePreviewToken },

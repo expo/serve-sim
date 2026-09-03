@@ -112,7 +112,7 @@ describe("sendKeyEventsToWs e2e", () => {
     // 'a' (2 events) + 'B' (4 events) = 6 frames
     expect(events.length).toBe(6);
 
-    await sendKeyEventsToWs(wsUrl, events, /* perEventDelayMs */ 0);
+    await sendKeyEventsToWs(wsUrl, events, { perEventDelayMs: 0 });
 
     // Wait briefly for the server to drain all frames before we assert. The
     // WS client closes only after a 50ms tail in sendKeyEventsToWs, so frames
@@ -131,7 +131,7 @@ describe("sendKeyEventsToWs e2e", () => {
     // Port 1 is virtually never accepting connections from a normal process.
     let err: unknown;
     try {
-      await sendKeyEventsToWs("ws://127.0.0.1:1/ws", [{ type: "down", usage: 0x04 }], 0);
+      await sendKeyEventsToWs("ws://127.0.0.1:1/ws", [{ type: "down", usage: 0x04 }], { perEventDelayMs: 0 });
     } catch (e) {
       err = e;
     }

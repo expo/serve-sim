@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 /** Minimal request surface used by the session token check. */
 export interface SessionAuthReq {
@@ -102,6 +102,16 @@ function headerValue(value: string | string[] | undefined): string | undefined {
 /** Cookie the preview sets once the operator has proved they hold the token. */
 export const ACCESS_COOKIE = "serve_sim_access";
 
+/**
+ * Cookie name for one server. Cookies ignore the port, so two serve-sims on the same host would
+ * otherwise overwrite each other's access cookie. The suffix comes from the session token, so every
+ * server owns a distinct name without having to know the port it was reached on.
+ */
+export function accessCookieName(sessionToken: string): string {
+  const suffix = createHash("sha256").update(sessionToken).digest("hex").slice(0, 8);
+  return `${ACCESS_COOKIE}_${suffix}`;
+}
+
 function cookieValue(header: string | undefined, name: string): string | null {
   if (!header) return null;
   for (const part of header.split(";")) {
@@ -119,15 +129,43 @@ function cookieValue(header: string | undefined, name: string): string | null {
   return null;
 }
 
-function carriesSessionToken(
-  headers: { authorization?: string | string[]; cookie?: string | string[] },
-  sessionToken: string,
-): boolean {
-  const fromBearer = bearerToken(headerValue(headers.authorization));
-  if (fromBearer && safeEqualString(fromBearer, sessionToken)) return true;
-  const fromCookie = cookieValue(headerValue(headers.cookie), ACCESS_COOKIE);
-  if (fromCookie && safeEqualString(fromCookie, sessionToken)) return true;
+
+/**
+ * Whether the preview is reached over HTTPS. EAS fronts serve-sim with an HTTPS tunnel that
+ * terminates TLS, so the proxy's forwarded scheme is the only signal the origin server sees.
+ */
+function isHttpsRequest(headers: SessionAuthReq["headers"]): boolean {
+  const forwarded = headerValue(headers["x-forwarded-proto"]);
+  if (forwarded) return forwarded.split(",", 1)[0]!.trim().toLowerCase() === "https";
   return false;
+}
+
+/** The root mount normalizes its base path to "", which is not a valid cookie Path. */
+function accessCookie(sessionToken: string, basePath: string, secure: boolean): string {
+  return [
+    `${accessCookieName(sessionToken)}=${encodeURIComponent(sessionToken)}`,
+    "HttpOnly",
+    "SameSite=Lax",
+    `Path=${basePath || "/"}`,
+    ...(secure ? ["Secure"] : []),
+  ].join("; ");
+}
+
+/**
+ * Whether a browser request came from the preview's own origin. A cookie rides along on any request
+ * a same-site page makes, so cookie-authenticated callers must also prove the origin; a bearer or
+ * query token is presented deliberately and needs no such check.
+ */
+function isSameOriginRequest(headers: SessionAuthReq["headers"]): boolean {
+  const site = headerValue(headers["sec-fetch-site"]);
+  if (site !== undefined) return site === "same-origin" || site === "none";
+  const origin = headerValue(headers.origin);
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === headerValue(headers.host);
+  } catch {
+    return false;
+  }
 }
 
 /** Whether the request is a top-level page navigation (rather than a fetch/XHR/EventSource). */
@@ -164,14 +202,19 @@ export function assertPreviewAccess(
     url.searchParams.delete("token");
     res.writeHead(302, {
       Location: `${url.pathname}${url.search}`,
-      "Set-Cookie": `${ACCESS_COOKIE}=${encodeURIComponent(sessionToken)}; HttpOnly; SameSite=Lax; Path=${opts.basePath}`,
+      "Set-Cookie": accessCookie(sessionToken, opts.basePath, isHttpsRequest(req.headers)),
       "Cache-Control": "no-store, private",
     });
     res.end();
     return false;
   }
 
-  if (carriesSessionToken(req.headers, sessionToken)) return true;
+  const fromBearer = bearerToken(headerValue(req.headers.authorization));
+  if (fromBearer && safeEqualString(fromBearer, sessionToken)) return true;
+  const fromCookie = cookieValue(headerValue(req.headers.cookie), accessCookieName(sessionToken));
+  if (fromCookie && safeEqualString(fromCookie, sessionToken) && isSameOriginRequest(req.headers)) {
+    return true;
+  }
 
   res.writeHead(401, { "Content-Type": "text/plain", "Cache-Control": "no-store, private" });
   res.end(
@@ -183,21 +226,20 @@ export function assertPreviewAccess(
 }
 
 /**
- * Gate a WebSocket upgrade: a bearer header, the access cookie the page already holds, or a `?token=`
- * query param. The page's own sockets are same-origin and send the cookie; the local CLI subcommands
- * use the global `WebSocket`, which has no header API, so they present the token in the URL instead.
- * There is no redirect (an upgrade cannot). Returns false when the socket must be closed.
+ * Gate a WebSocket upgrade: a bearer header, or the access cookie the page already holds on a
+ * same-origin request. The page's own sockets are same-origin and send the cookie; every other
+ * caller sends the header. There is no `?token=` fallback, so this credential never reaches a
+ * request URL or a proxy log. There is no redirect either (an upgrade cannot). Returns false when
+ * the socket must be closed.
  */
 export function assertUpgradeAccess(
-  req: { authorization?: string | string[]; cookie?: string | string[]; url?: string },
+  req: SessionAuthReq["headers"],
   sessionToken: string,
   opts: { required: boolean },
 ): boolean {
   if (!opts.required) return true;
-  if (carriesSessionToken(req, sessionToken)) return true;
-  if (req.url) {
-    const fromQuery = new URL(req.url, "http://127.0.0.1").searchParams.get("token");
-    if (fromQuery && safeEqualString(fromQuery, sessionToken)) return true;
-  }
-  return false;
+  const fromBearer = bearerToken(headerValue(req.authorization));
+  if (fromBearer && safeEqualString(fromBearer, sessionToken)) return true;
+  const fromCookie = cookieValue(headerValue(req.cookie), accessCookieName(sessionToken));
+  return !!fromCookie && safeEqualString(fromCookie, sessionToken) && isSameOriginRequest(req);
 }

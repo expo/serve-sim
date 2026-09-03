@@ -29,7 +29,7 @@ export function keyEventsForInputType(
   }
 }
 
-export function compositionDeltaKeyEvents(
+export function keyEventsForTextChange(
   previous: string,
   next: string,
 ): KeyEvent[] {
@@ -38,9 +38,12 @@ export function compositionDeltaKeyEvents(
   let common = 0;
   const max = Math.min(prev.length, cur.length);
   while (common < max && prev[common] === cur[common]) common++;
+  const removed = prev.slice(common).join("");
+  const added = cur.slice(common).join("");
+  const removedKeystrokes = prev.length - common - textToKeyEventsLenient(removed).skipped.length;
   const events: KeyEvent[] = [];
-  for (let i = common; i < prev.length; i++) events.push(...press(BACKSPACE));
-  events.push(...textToKeyEventsLenient(cur.slice(common).join("")).events);
+  for (let i = 0; i < removedKeystrokes; i++) events.push(...press(BACKSPACE));
+  events.push(...textToKeyEventsLenient(added).events);
   return events;
 }
 

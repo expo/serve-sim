@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  compositionDeltaKeyEvents,
   keyEventsForInputType,
+  keyEventsForTextChange,
 } from "../client/utils/mobile-keyboard";
 import { textToKeyEventsLenient } from "../text-to-keys";
 
@@ -44,33 +44,53 @@ describe("keyEventsForInputType", () => {
     expect(keyEventsForInputType("historyUndo", null)).toEqual([]);
     expect(keyEventsForInputType("insertText", null)).toEqual([]);
   });
-
-  test("does not forward the cumulative composition string directly", () => {
-    expect(keyEventsForInputType("insertCompositionText", "he")).toEqual([]);
-  });
 });
 
-describe("compositionDeltaKeyEvents", () => {
-  test("forwards only the newly composed characters across updates", () => {
-    let composition = "";
+describe("keyEventsForTextChange", () => {
+  const BACKSPACE = {
+    down: { type: "down", usage: 0x2a },
+    up: { type: "up", usage: 0x2a },
+  } as const;
+
+  test("forwards only the newly typed characters across updates", () => {
+    let sent = "";
     const emitted = [];
     for (const next of ["h", "he", "hel"]) {
-      emitted.push(...compositionDeltaKeyEvents(composition, next));
-      composition = next;
+      emitted.push(...keyEventsForTextChange(sent, next));
+      sent = next;
     }
 
-    // Composing "h" -> "he" -> "hel" types "hel" once, not "hhhehel".
+    // Typing "h" -> "he" -> "hel" types "hel" once, not "hhhehel".
     expect(emitted).toEqual(textToKeyEventsLenient("hel").events);
   });
 
-  test("backspaces the replaced tail when autocorrect swaps the word", () => {
-    const events = compositionDeltaKeyEvents("helo", "hello");
+  test("backspaces the replaced tail when a suggestion swaps the word", () => {
+    // "helo" gets replaced by the "hello" suggestion.
+    const events = keyEventsForTextChange("helo", "hello");
 
     // Common prefix "hel"; delete the trailing "o", then type "lo".
+    expect(events).toEqual([BACKSPACE.down, BACKSPACE.up, ...textToKeyEventsLenient("lo").events]);
+  });
+
+  test("replaces a whole mistyped word", () => {
+    const events = keyEventsForTextChange("teh", "the");
+
+    // Common prefix ""... actually "t"; delete "eh", type "he".
     expect(events).toEqual([
-      { type: "down", usage: 0x2a },
-      { type: "up", usage: 0x2a },
-      ...textToKeyEventsLenient("lo").events,
+      BACKSPACE.down,
+      BACKSPACE.up,
+      BACKSPACE.down,
+      BACKSPACE.up,
+      ...textToKeyEventsLenient("he").events,
     ]);
+  });
+
+  test("skips an inserted emoji without keystrokes", () => {
+    expect(keyEventsForTextChange("", "😀")).toEqual([]);
+  });
+
+  test("does not backspace for an emoji that was never sent", () => {
+    // "a😀" -> "a": the emoji leaves the value but was never a keystroke.
+    expect(keyEventsForTextChange("a😀", "a")).toEqual([]);
   });
 });

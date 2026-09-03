@@ -3,8 +3,8 @@ import { Keyboard } from "lucide-react";
 import { IconButton } from "./icon-button";
 import {
   KEYBOARD_CAPTURE_ATTRIBUTES,
-  compositionDeltaKeyEvents,
   keyEventsForInputType,
+  keyEventsForTextChange,
 } from "../utils/mobile-keyboard";
 import { readNativeKeyboardRaised } from "../utils/simulator-resize";
 import type { KeyEvent } from "../../text-to-keys";
@@ -22,39 +22,36 @@ export function KeyboardCapture({
   onKeysRef.current = onKeys;
   const openRef = useRef(open);
   openRef.current = open;
+  const sentRef = useRef("");
 
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
-    if (open) el.focus();
-    else el.blur();
+    if (open) {
+      el.value = "";
+      sentRef.current = "";
+      el.focus();
+    } else {
+      el.blur();
+    }
   }, [open, inputRef]);
 
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
-    let composition = "";
     const emit = (events: KeyEvent[]) => {
       if (events.length) onKeysRef.current(events);
     };
     const onBeforeInput = (event: Event) => {
       const e = event as InputEvent;
-      if (e.inputType === "insertCompositionText") {
-        const next = e.data ?? "";
-        emit(compositionDeltaKeyEvents(composition, next));
-        composition = next;
-        return;
+      if (e.inputType === "insertLineBreak" || e.inputType === "insertParagraph") {
+        emit(keyEventsForInputType(e.inputType, null));
+        e.preventDefault();
       }
-      emit(keyEventsForInputType(e.inputType, e.data));
-      e.preventDefault();
     };
-    const onCompositionStart = () => {
-      composition = "";
-    };
-    const onCompositionEnd = (event: Event) => {
-      const e = event as CompositionEvent;
-      emit(compositionDeltaKeyEvents(composition, e.data ?? ""));
-      composition = "";
+    const onInput = () => {
+      emit(keyEventsForTextChange(sentRef.current, el.value));
+      sentRef.current = el.value;
     };
     const onFocusOut = () => {
       if (!openRef.current) return;
@@ -66,13 +63,11 @@ export function KeyboardCapture({
       });
     };
     el.addEventListener("beforeinput", onBeforeInput);
-    el.addEventListener("compositionstart", onCompositionStart);
-    el.addEventListener("compositionend", onCompositionEnd);
+    el.addEventListener("input", onInput);
     el.addEventListener("focusout", onFocusOut);
     return () => {
       el.removeEventListener("beforeinput", onBeforeInput);
-      el.removeEventListener("compositionstart", onCompositionStart);
-      el.removeEventListener("compositionend", onCompositionEnd);
+      el.removeEventListener("input", onInput);
       el.removeEventListener("focusout", onFocusOut);
     };
   }, [inputRef]);

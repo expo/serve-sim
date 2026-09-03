@@ -1006,6 +1006,7 @@ function AppWithConfig({
   }, [sendKey]);
 
   const simContainerRef = useRef<HTMLDivElement | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const flipRef = useRef<HTMLDivElement | null>(null);
   const [deviceRenderedWidth, setDeviceRenderedWidth] = useState(0);
   const [deviceRenderedHeight, setDeviceRenderedHeight] = useState(0);
@@ -1053,6 +1054,30 @@ function AppWithConfig({
   const phoneKeyboardRaised =
     coarsePointer && isVisualViewportKeyboardRaised(windowInnerHeight, viewportHeight);
   const stableViewportHeight = coarsePointer ? windowInnerHeight : viewportHeight;
+  const containerHeight = phoneKeyboardRaised ? viewportHeight : stableViewportHeight;
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el || !phoneKeyboardRaised) return;
+    let lastY = 0;
+    const onStart = (e: TouchEvent) => {
+      lastY = e.touches[0]?.clientY ?? 0;
+    };
+    const onMove = (e: TouchEvent) => {
+      const target = e.target as Element | null;
+      if (target && (flipRef.current?.contains(target) || target.closest("[data-panel]"))) return;
+      const y = e.touches[0]?.clientY ?? lastY;
+      el.scrollTop += lastY - y;
+      lastY = y;
+      e.preventDefault();
+    };
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+    };
+  }, [phoneKeyboardRaised]);
 
   useEffect(() => {
     if (!keyboardOpen) {
@@ -1254,11 +1279,12 @@ function AppWithConfig({
   return (
     <AxStateProvider endpoint={axOverlayEnabled ? config?.axEndpoint : undefined}>
     <div
-      className={`flex flex-col items-center justify-center h-dvh bg-page font-system box-border ${
-        presentation ? "gap-0" : "pt-16 pb-6 sm:py-6 gap-3"
-      }`}
+      ref={scrollContainerRef}
+      className={`flex flex-col items-center h-dvh bg-page font-system box-border ${
+        phoneKeyboardRaised ? "justify-start overflow-y-hidden" : "justify-center"
+      } ${presentation ? "gap-0" : "pt-16 pb-6 sm:py-6 gap-3"}`}
       style={{
-        height: stableViewportHeight > 0 ? stableViewportHeight : undefined,
+        height: containerHeight > 0 ? containerHeight : undefined,
         paddingTop: presentation ? presentationInset : undefined,
         paddingBottom: presentation ? presentationInset : undefined,
         paddingLeft: presentation ? presentationInset : 24 + shiftForLeftPanel,
@@ -1266,8 +1292,20 @@ function AppWithConfig({
         transition: resizing || scaling ? "none" : SIMULATOR_RESIZE_PAGE_TRANSITION,
       }}
     >
+      {phoneKeyboardRaised && (
+        <div
+          aria-hidden
+          style={{
+            height: presentation
+              ? "max(env(safe-area-inset-top, 0px), 68px)"
+              : "env(safe-area-inset-top, 0px)",
+            flexShrink: 0,
+            width: "100%",
+          }}
+        />
+      )}
       <div
-        className={`flex flex-col items-center min-w-0 ${presentation ? "gap-0" : "gap-3"}`}
+        className={`flex flex-col items-center min-w-0 ${phoneKeyboardRaised ? "shrink-0" : ""} ${presentation ? "gap-0" : "gap-3"}`}
         style={{
           width: layoutWidth,
           transition: resizing ? SIMULATOR_RESIZE_DRAG_TRANSITION : undefined,

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Check, X } from "lucide-react";
 import { ReloadIcon } from "../icons";
-import { execOnHost, shellEscape } from "../utils/exec";
+import { execOnHost, runHostAction, shellEscape } from "../utils/exec";
 import { CollapsibleSection } from "./collapsible-section";
 import {
   PERMISSION_SERVICES,
@@ -42,9 +42,7 @@ export function AppPermissionsTool({
       setPending(key);
       setError(null);
       try {
-        const res = await execOnHost(
-          `${cliPrefix} permissions ${action} ${service} ${shellEscape(bundleId)} -d ${shellEscape(udid)}`,
-        );
+        const res = await runHostAction("permissions.set", { action, service, bundleId, udid });
         if (res.exitCode !== 0) {
           setError(res.stderr.trim() || `serve-sim permissions failed (exit ${res.exitCode})`);
           return;
@@ -62,9 +60,7 @@ export function AppPermissionsTool({
     setPending("__all__");
     setError(null);
     try {
-      const res = await execOnHost(
-        `${cliPrefix} permissions reset all ${shellEscape(bundleId)} -d ${shellEscape(udid)}`,
-      );
+      const res = await runHostAction("permissions.resetAll", { bundleId, udid });
       if (res.exitCode !== 0) {
         setError(res.stderr.trim() || `serve-sim permissions failed (exit ${res.exitCode})`);
         return;

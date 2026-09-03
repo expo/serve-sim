@@ -182,7 +182,7 @@ export async function execOnHost(
  */
 export async function runHostAction(
   action: string,
-  params?: Record<string, string | undefined>,
+  params?: Record<string, string | number | boolean | string[] | undefined>,
   opts?: { signal?: AbortSignal },
 ): Promise<ExecResult> {
   const reply = await socketRequest({ action, params }, opts?.signal);

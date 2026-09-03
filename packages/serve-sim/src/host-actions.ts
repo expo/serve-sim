@@ -69,6 +69,20 @@ function coordinate(source: Record<string, unknown>, name: string): string {
   return numeric.toFixed(7);
 }
 
+/** Icon file names to probe, supplied by the caller from Info.plist. Names only, never paths. */
+function fileNames(source: Record<string, unknown>, name: string): string[] {
+  const value = source[name];
+  if (!Array.isArray(value) || value.length === 0 || value.length > 32) {
+    throw new InvalidHostActionError(`${name} must be a list of 1 to 32 file names`);
+  }
+  return value.map((entry) => {
+    if (typeof entry !== "string" || !/^[^/\\]{1,255}$/.test(entry) || entry.startsWith(".")) {
+      throw new InvalidHostActionError(`${name} entries must be plain file names`);
+    }
+    return entry;
+  });
+}
+
 /** Scratch space for uploads. Confining them here keeps a path param from reaching the filesystem. */
 const UPLOAD_DIR = join(tmpdir(), "serve-sim-uploads");
 
@@ -92,16 +106,6 @@ const CAMERA_SOURCES = ["file", "webcam", "none"] as const;
 const APPEARANCES = ["light", "dark"] as const;
 const PERMISSION_ACTIONS = ["grant", "revoke", "reset"] as const;
 const MIRROR_VALUES = ["on", "off"] as const;
-
-// Icon files an app bundle may carry, newest naming first. Probed in order server-side so the page
-// never composes a shell test.
-const ICON_CANDIDATES = [
-  "AppIcon60x60@3x.png",
-  "AppIcon60x60@2x.png",
-  "AppIcon76x76@2x~ipad.png",
-  "AppIcon.png",
-  "Icon.png",
-];
 
 function buildInvocation(action: string, raw: unknown, binPath: string): Invocation {
   const p = fields(raw);
@@ -246,7 +250,7 @@ async function runInProcessAsync(
       return ok();
     case "app.iconPath": {
       const appPath = str(p, "appPath");
-      for (const candidate of ICON_CANDIDATES) {
+      for (const candidate of fileNames(p, "candidates")) {
         const full = join(appPath, candidate);
         try {
           if ((await stat(full)).isFile()) return ok(full);

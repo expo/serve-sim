@@ -1,7 +1,7 @@
 import { useCallback, useRef } from "react";
 import { toast as sonnerToast } from "sonner";
 import { ScreenshotToast } from "../components/screenshot-toast";
-import { execOnHost, shellEscape } from "../utils/exec";
+import { execOnHost, runHostAction, shellEscape } from "../utils/exec";
 import {
   fetchScreenshotPng,
   isLoopbackPreviewHostname,
@@ -69,7 +69,7 @@ export function useScreenshotToast(deviceUdid?: string | null) {
 
   const reveal = useCallback(() => {
     const t = toastRef.current;
-    if (t?.path) void execOnHost(`open -R ${shellEscape(t.path)}`);
+    if (t?.path) void runHostAction("reveal", { path: t.path });
     else if (t?.downloadUrl && t.downloadName) {
       triggerBrowserDownload(t.downloadUrl, t.downloadName);
     }

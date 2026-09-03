@@ -18,7 +18,7 @@ export function useAppIcons(udid: string | null | undefined, bundleIds: string[]
         setIcons((prev) => (prev[bundleId] === cached ? prev : { ...prev, [bundleId]: cached as string | null }));
         continue;
       }
-      void fetchAppIcon(execOnHost, udid, bundleId).then((url) => {
+      void fetchAppIcon(udid, bundleId).then((url) => {
         if (cancelled) return;
         setIcons((prev) => ({ ...prev, [bundleId]: url }));
       });

@@ -35,8 +35,8 @@ export interface SimulatorStreamProps {
  * Uses the gateway exec to invoke the `serve-sim` CLI on the host,
  * then connects directly to the serve-sim server for video + touch.
  */
-export function SimulatorStream({ exec, device, style, imageStyle, className, stream, headerless, onStreamingChange, onScreenConfigChange, onError, onActiveDeviceChange, enableDigitalCrown, streamMode }: SimulatorStreamProps) {
-  const { info, loading, error, connect, disconnect, sendButton } = useSimStream({ exec, device });
+export function SimulatorStream({ device, style, imageStyle, className, stream, headerless, onStreamingChange, onScreenConfigChange, onError, onActiveDeviceChange, enableDigitalCrown, streamMode }: SimulatorStreamProps) {
+  const { info, loading, error, connect, disconnect, sendButton } = useSimStream({ device });
   const [fullscreen, setFullscreen] = useState(false);
   const relayMode = !!stream;
   const canSendDigitalCrown = !!enableDigitalCrown && (!relayMode || !!stream?.sendDigitalCrown);

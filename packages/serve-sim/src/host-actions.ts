@@ -1,6 +1,6 @@
 import { execFile } from "child_process";
 import { appendFile, mkdir, rm, stat, writeFile } from "fs/promises";
-import { tmpdir } from "os";
+import { homedir, tmpdir } from "os";
 import { basename, join } from "path";
 
 // The preview page drives the simulator through this fixed set of actions. Under --require-token the
@@ -155,7 +155,15 @@ function buildInvocation(action: string, raw: unknown, binPath: string): Invocat
       return serveSim(["button", str(p, "value")]);
     case "server.detach": {
       const device = optionalStr(p, "udid");
-      return serveSim(["--detach", ...(device ? [device] : [])]);
+      const port = optionalStr(p, "port");
+      if (port !== undefined && !/^[0-9]{1,5}$/.test(port)) {
+        throw new InvalidHostActionError("port must be a number");
+      }
+      return serveSim([
+        "--detach",
+        ...(device ? [device] : []),
+        ...(port ? ["--port", port] : []),
+      ]);
     }
     case "server.kill":
       return serveSim(["--kill"]);
@@ -271,9 +279,14 @@ async function runInProcessAsync(
       const result = await runInvocation({ file: "base64", args: ["-i", str(p, "path")] });
       return result;
     }
+    // Screenshots land on the operator's Desktop, so the page names the file but never the
+    // directory, and the resolved absolute path comes back for the toast's reveal action.
     case "screenshot.capture": {
-      const target = join(UPLOAD_DIR, `serve-sim-screenshot-${Date.now()}.png`);
-      await mkdir(UPLOAD_DIR, { recursive: true });
+      const fileName = str(p, "fileName");
+      if (!/^[A-Za-z0-9._-]{1,128}$/.test(fileName) || fileName.startsWith(".")) {
+        throw new InvalidHostActionError("fileName must be a short plain file name");
+      }
+      const target = join(homedir(), "Desktop", fileName);
       const result = await runInvocation({
         file: "xcrun",
         args: ["simctl", "io", str(p, "udid"), "screenshot", target],

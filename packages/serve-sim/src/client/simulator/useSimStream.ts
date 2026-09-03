@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { runHostAction } from "../utils/exec";
 
 /** Matches the JSON output of `serve-sim --detach` and `serve-sim --list`. */
 export interface SimStreamInfo {
@@ -11,7 +12,6 @@ export interface SimStreamInfo {
 
 export interface UseSimStreamOptions {
   /** Gateway exec function: `(command: string) => Promise<{ stdout: string; exitCode: number }>` */
-  exec: (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
   /** Device name or UDID. When changed while streaming, auto-switches to the new device. */
   device?: string | null;
 }
@@ -31,7 +31,7 @@ export interface UseSimStreamResult {
   sendButton: (button: string) => Promise<void>;
 }
 
-export function useSimStream({ exec, device: deviceProp }: UseSimStreamOptions): UseSimStreamResult {
+export function useSimStream({ device: deviceProp }: UseSimStreamOptions): UseSimStreamResult {
   const [info, setInfo] = useState<SimStreamInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -66,11 +66,11 @@ export function useSimStream({ exec, device: deviceProp }: UseSimStreamOptions):
       try {
         if (!deviceProp) {
           // No device selected — just disconnect
-          await exec("serve-sim --kill");
+          await runHostAction("server.kill");
           if (mountedRef.current) setInfo(null);
           return;
         }
-        const result = await exec(`serve-sim --detach ${deviceProp}`);
+        const result = await runHostAction("server.detach", { udid: deviceProp });
         if (cancelled) return;
         if (result.exitCode !== 0) {
           throw new Error(result.stderr || `serve-sim --detach failed (exit ${result.exitCode})`);
@@ -87,7 +87,7 @@ export function useSimStream({ exec, device: deviceProp }: UseSimStreamOptions):
     })();
 
     return () => { cancelled = true; };
-  }, [deviceProp, exec]);
+  }, [deviceProp]);
 
   const connect = useCallback(async (device?: string, port?: number): Promise<boolean> => {
     setLoading(true);
@@ -96,11 +96,10 @@ export function useSimStream({ exec, device: deviceProp }: UseSimStreamOptions):
     console.log(`[serve-sim] connect: starting`);
     try {
       const target = device ?? deviceProp ?? undefined;
-      let cmd = "serve-sim --detach";
-      if (target) cmd += ` ${target}`;
-      if (port) cmd += ` --port ${port}`;
-
-      const result = await exec(cmd);
+      const result = await runHostAction("server.detach", {
+        udid: target,
+        port: port ? String(port) : undefined,
+      });
       console.log(`[serve-sim] connect: exec returned (+${(performance.now() - t0).toFixed(0)}ms, exit ${result.exitCode})`);
       if (result.exitCode !== 0) {
         throw new Error(result.stderr || `serve-sim --detach failed (exit ${result.exitCode})`);
@@ -116,13 +115,13 @@ export function useSimStream({ exec, device: deviceProp }: UseSimStreamOptions):
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [exec, deviceProp]);
+  }, [deviceProp]);
 
   const disconnect = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      await exec("serve-sim --kill");
+      await runHostAction("server.kill");
       if (mountedRef.current) setInfo(null);
     } catch (err) {
       if (mountedRef.current) {
@@ -131,15 +130,15 @@ export function useSimStream({ exec, device: deviceProp }: UseSimStreamOptions):
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [exec]);
+  }, []);
 
   const sendButton = useCallback(async (button: string) => {
     try {
-      await exec(`serve-sim button ${button}`);
+      await runHostAction("button", { value: button });
     } catch {
       // best-effort
     }
-  }, [exec]);
+  }, []);
 
   return { info, loading, error, connect, disconnect, sendButton };
 }

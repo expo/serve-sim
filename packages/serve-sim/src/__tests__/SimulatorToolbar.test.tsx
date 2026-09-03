@@ -14,13 +14,11 @@ beforeEach(() => {
 import { renderToStaticMarkup } from "react-dom/server";
 import { SimulatorToolbar, pressHomeAsync } from "../client/simulator/SimulatorToolbar";
 
-const exec = async () => ({ stdout: "", stderr: "", exitCode: 0 });
 
 describe("SimulatorToolbar.Title", () => {
   test("can hide the runtime subtitle", () => {
     const html = renderToStaticMarkup(
       <SimulatorToolbar
-        exec={exec}
         deviceUdid="booted"
         deviceName="iPhone 16 (26.5)"
         deviceRuntime="iOS-26-5"
@@ -37,7 +35,6 @@ describe("SimulatorToolbar.Title", () => {
   test("can hide the chevron", () => {
     const html = renderToStaticMarkup(
       <SimulatorToolbar
-        exec={exec}
         deviceUdid="booted"
         deviceName="iPhone 16 (26.5)"
         streaming
@@ -81,7 +78,7 @@ describe("pressHomeAsync", () => {
 describe("SimulatorToolbar.Button", () => {
   test("uses the shared panel background variable", () => {
     const html = renderToStaticMarkup(
-      <SimulatorToolbar exec={exec} deviceUdid="booted" streaming>
+      <SimulatorToolbar deviceUdid="booted" streaming>
         <SimulatorToolbar.Button aria-label="Capture">icon</SimulatorToolbar.Button>
       </SimulatorToolbar>,
     );
@@ -91,7 +88,7 @@ describe("SimulatorToolbar.Button", () => {
 
   test("uses a rounded hover surface for icon actions", () => {
     const html = renderToStaticMarkup(
-      <SimulatorToolbar exec={exec} deviceUdid="booted" streaming>
+      <SimulatorToolbar deviceUdid="booted" streaming>
         <SimulatorToolbar.Button aria-label="Capture">icon</SimulatorToolbar.Button>
       </SimulatorToolbar>,
     );
@@ -101,7 +98,7 @@ describe("SimulatorToolbar.Button", () => {
 
   test("renders a tooltip from the aria label", () => {
     const html = renderToStaticMarkup(
-      <SimulatorToolbar exec={exec} deviceUdid="booted" streaming>
+      <SimulatorToolbar deviceUdid="booted" streaming>
         <SimulatorToolbar.HomeButton />
       </SimulatorToolbar>,
     );
@@ -112,7 +109,7 @@ describe("SimulatorToolbar.Button", () => {
 
   test("uses title text for the tooltip without relying on native title", () => {
     const html = renderToStaticMarkup(
-      <SimulatorToolbar exec={exec} deviceUdid="booted" streaming>
+      <SimulatorToolbar deviceUdid="booted" streaming>
         <SimulatorToolbar.Button aria-label="Capture" title="Screenshot">
           icon
         </SimulatorToolbar.Button>

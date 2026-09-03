@@ -1,4 +1,3 @@
-import { exec, type ExecException } from "child_process";
 import {
   messageToString,
   requestHost,
@@ -25,7 +24,6 @@ import { safeEqualString } from "./session-auth";
 //   client → {token}                  first frame; must match the exec token
 //   server → {ready:true}             auth accepted
 //   client → {id, action, params}      run one typed simulator action
-//   client → {id, command}            run a shell command (refused in restricted mode)
 //   server → {id, stdout, stderr, exitCode}
 //   client → {id, ui:{…}}             simulator-settings request (in-process,
 //   server → {id, …} | {id, error}     no shell round-trip)
@@ -50,8 +48,9 @@ interface ExecMessage {
 
 /** In-process handler for `{id, ui}` requests; resolves to the reply body. */
 export type UiRequestHandler = (payload: unknown) => Promise<Record<string, unknown>>;
-export type CommandResultHandler = (
-  command: string,
+export type ActionResultHandler = (
+  action: string,
+  params: Record<string, unknown> | undefined,
   result: { stdout: string; stderr: string; exitCode: number },
 ) => void;
 
@@ -62,15 +61,10 @@ interface ExecChannelOptions {
   ssePrefixes?: string[];
   /** In-process handler for `{id, ui}` simulator-settings requests. */
   onUiRequest?: UiRequestHandler;
-  /** Optional observer for completed shell commands. */
-  onCommandResult?: CommandResultHandler;
+  /** Optional observer for completed actions. */
+  onActionResult?: ActionResultHandler;
   /** Routes an authenticated subscription back through the owning middleware. */
   onSseRequest?: SseRequestHandler;
-  /**
-   * Accept only typed actions, never free-form `{ command }`. Set whenever the preview is gated: the
-   * link is shareable there, so holding it must not also mean holding a shell on this machine.
-   */
-  restrictToActions?: boolean;
   /** serve-sim entrypoint used to run the CLI-backed actions. */
   serveSimBinPath?: string;
 }
@@ -201,46 +195,23 @@ function wireExecSocket(
         );
       return;
     }
-    if (typeof msg.id === "number" && typeof msg.action === "string") {
-      const { id } = msg;
-      runHostActionAsync(msg, opts.serveSimBinPath ?? "serve-sim")
-        .then((result) => send({ id, ...result }))
-        .catch((e: unknown) =>
-          send({
-            id,
-            error: e instanceof InvalidHostActionError ? e.message : "action failed",
-          }),
-        );
+    if (typeof msg.id !== "number" || typeof msg.action !== "string") {
       return;
     }
-    if (typeof msg.id !== "number" || typeof msg.command !== "string" || !msg.command) {
-      return;
-    }
-    if (opts.restrictToActions) {
-      send({
-        id: msg.id,
-        stdout: "",
-        stderr: "This preview accepts typed simulator actions only, not shell commands.",
-        exitCode: 1,
-      });
-      return;
-    }
-    const { id, command } = msg;
-    exec(command, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      const result = {
-        id,
-        stdout: stdout.toString(),
-        stderr: stderr.toString(),
-        exitCode: err ? ((err as ExecException).code ?? 1) : 0,
-      };
-      try {
-        opts.onCommandResult?.(command, result);
-      } catch {
-        // Command-result observers are diagnostic side-channels; a failure
-        // here must not break the exec response path.
-      }
-      send(result);
-    });
+    const { id, action } = msg;
+    const params = msg.params as Record<string, unknown> | undefined;
+    runHostActionAsync(msg, opts.serveSimBinPath ?? "serve-sim")
+      .then((result) => {
+        try {
+          opts.onActionResult?.(action, params, result);
+        } catch {
+          // Action observers are diagnostic side-channels; a failure here must not break the reply.
+        }
+        send({ id, ...result });
+      })
+      .catch((e: unknown) =>
+        send({ id, error: e instanceof InvalidHostActionError ? e.message : "action failed" }),
+      );
   });
 
   ws.on("error", () => ws.close());
@@ -260,8 +231,8 @@ export function createExecWebSocketHandler(opts: ExecChannelOptions) {
     const url = new URL(request.url);
     if (url.pathname !== opts.path && url.pathname !== `${opts.path}/`) return false;
 
-    // Same-origin policy mirrors POST /exec: browsers always send Origin on
-    // WebSocket upgrades, and a cross-origin page's Origin won't match Host.
+    // Browsers always send Origin on WebSocket upgrades, and a cross-origin page's Origin won't
+    // match Host, so this keeps another site's page off the channel.
     const origin = request.headers.get("origin");
     if (origin) {
       try {

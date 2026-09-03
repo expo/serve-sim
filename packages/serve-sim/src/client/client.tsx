@@ -69,7 +69,7 @@ import {
   AVCC_FRAME_TIMEOUT_MS,
 } from "./avcc-fallback";
 import { fileExtension } from "./utils/drop";
-import { execOnHost, openHostEventStream, runHostAction } from "./utils/exec";
+import { openHostEventStream, runHostAction } from "./utils/exec";
 import { hidUsageForCode } from "./utils/hid";
 import { keydownForward } from "./utils/mobile-keyboard";
 import {
@@ -1313,7 +1313,6 @@ function AppWithConfig({
         {!presentation && (
         <div className={`fixed sm:static top-[18px] sm:top-auto left-1/2 -translate-x-1/2 sm:translate-x-0 z-30 sm:z-auto self-center ${panelOpen || devtoolsOpen ? "max-sm:hidden" : ""}`}>
           <SimulatorToolbar
-            exec={execOnHost}
             onRotate={rotateDevice}
             orientation={(activeStreamConfig as { orientation?: SimulatorOrientation }).orientation ?? null}
             deviceUdid={config.device}
@@ -1507,7 +1506,6 @@ function AppWithConfig({
         {!presentation && (
         <div className="inline-flex items-center justify-center gap-2 max-w-full pb-1 sm:pb-0">
           <SimulatorToolbar
-            exec={execOnHost}
             onRotate={rotateDevice}
             orientation={(activeStreamConfig as { orientation?: SimulatorOrientation }).orientation ?? null}
             deviceUdid={config.device}
@@ -1544,7 +1542,6 @@ function AppWithConfig({
             </SimulatorToolbar.Actions>
           </SimulatorToolbar>
           <SimulatorToolbar
-            exec={execOnHost}
             onRotate={rotateDevice}
             orientation={(activeStreamConfig as { orientation?: SimulatorOrientation }).orientation ?? null}
             deviceUdid={config.device}

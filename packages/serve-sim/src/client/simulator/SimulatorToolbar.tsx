@@ -17,11 +17,9 @@ import type { SimulatorOrientation } from "../types.js";
 import { getDeviceType, type DeviceType } from "./deviceFrames.js";
 import { ROTATE_LEFT_CYCLE } from "./orientation.js";
 
-type ExecFn = (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 type RotateFn = (orientation: SimulatorOrientation) => void | Promise<void>;
 
 interface ToolbarContextValue {
-  exec: ExecFn;
   onRotate?: RotateFn;
   orientation?: SimulatorOrientation | null;
   deviceUdid?: string | null;
@@ -43,7 +41,6 @@ function useToolbar(component: string): ToolbarContextValue {
 }
 
 export interface SimulatorToolbarProps extends HTMLAttributes<HTMLDivElement> {
-  exec: ExecFn;
   /** Optional direct rotate handler. Defaults to shelling out to `serve-sim rotate`. */
   onRotate?: RotateFn;
   /** Current requested orientation, when known. Keeps the built-in rotate button in sync. */
@@ -74,7 +71,6 @@ const toolbarStyle: CSSProperties = {
 };
 
 function SimulatorToolbarRoot({
-  exec,
   onRotate,
   orientation,
   deviceUdid,
@@ -89,7 +85,6 @@ function SimulatorToolbarRoot({
   const deviceType = getDeviceType(deviceName);
   const effectiveDisabled = disabled || !deviceUdid || !streaming;
   const value: ToolbarContextValue = {
-    exec,
     onRotate,
     orientation,
     deviceUdid,

@@ -322,6 +322,56 @@ export function eventLogEventForHidMessage(
   }
 }
 
+/**
+ * Session event for one typed host action. The preview used to send shell commands, which this
+ * module parsed back into events; actions carry the same information without the round trip.
+ */
+export function eventLogEventForAction(
+  action: string,
+  params: Record<string, unknown> | undefined,
+  result?: { exitCode?: number },
+): EventLogDraft | null {
+  const status = statusFromExitCode(result?.exitCode);
+  const details = commandResultDetails(result);
+  const device = typeof params?.udid === "string" ? params.udid : undefined;
+  if (device === undefined) return null;
+
+  switch (action) {
+    case "app.install":
+      return {
+        device,
+        source: "exec",
+        kind: "app",
+        action: "install",
+        status,
+        summary: "Install app",
+        details,
+      };
+    case "media.add":
+      return {
+        device,
+        source: "exec",
+        kind: "media",
+        action: "addmedia",
+        status,
+        summary: "Add media",
+        details,
+      };
+    case "home.springboard":
+      return {
+        device,
+        source: "exec",
+        kind: "button",
+        action: "home",
+        status,
+        summary: "Home",
+        details: { ...details, bundleId: "com.apple.springboard" },
+      };
+    default:
+      return null;
+  }
+}
+
 export function eventLogEventForCommand(
   command: string,
   result?: { exitCode?: number },

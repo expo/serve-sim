@@ -1,6 +1,6 @@
+import { execFile, execSync, spawn, type ChildProcess } from "child_process";
 import { readdirSync, readFileSync, existsSync, unlinkSync, watch, type FSWatcher } from "fs";
 import { readFile, unlink } from "fs/promises";
-import { execSync, spawn, exec, execFile, type ChildProcess, type ExecException } from "child_process";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createServer as createNetServer } from "net";
@@ -24,9 +24,9 @@ import {
   sendCorsPreflight,
   type HidSocket,
 } from "./device-session";
-import { assertPreviewAccess, assertSessionAccess, assertUpgradeAccess, execAuthError } from "./session-auth";
+import { assertPreviewAccess, assertUpgradeAccess } from "./session-auth";
 import {
-  eventLogEventForCommand,
+  eventLogEventForAction,
   readEventLog,
   recordEventLogEvent,
   subscribeEventLog,
@@ -118,8 +118,6 @@ type ShutdownRequestBody = { udid?: string };
 type StartRequestBody = { udid?: string };
 type ReleaseRequestBody = { targetId?: string };
 type HighlightRequestBody = { targetId?: string; on?: boolean };
-type ExecRequestBody = { command?: string };
-
 /** Re-exported alias for the canonical device-state record in `./state`. */
 export type ServeSimState = ServeSimDeviceState;
 
@@ -150,12 +148,16 @@ function eventLogSinceId(rawUrl: string): number | undefined {
   return Number.isFinite(since) ? since : undefined;
 }
 
-function recordCommandEvent(command: string, result: { exitCode?: number }): void {
+function recordActionEvent(
+  action: string,
+  params: Record<string, unknown> | undefined,
+  result: { exitCode?: number },
+): void {
   try {
-    const event = eventLogEventForCommand(command, result);
+    const event = eventLogEventForAction(action, params, result);
     if (event) recordEventLogEvent(event);
   } catch {
-    // Event-log recording is diagnostic; it must never break the exec path.
+    // Event-log recording is diagnostic; it must never break the action path.
   }
 }
 
@@ -2403,63 +2405,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       return;
     }
 
-    // POST /exec — run a shell command on the host. Gated by a per-process
-    // bearer token injected only into the same-origin preview HTML, with
-    // Content-Type + Origin checks to block CORS-simple CSRF (a malicious
-    // page POSTing `text/plain` JSON to a dev server bound to a public iface)
-    // and LAN attackers who can reach the port but can't read the token.
-    if ((url === base + "/exec" || url === base + "/exec/") && req.method === "POST") {
-      if (!assertSessionAccess(req, res, execToken, { requireJson: true, errorBody: execAuthError })) {
-        return;
-      }
-      // A gated preview link is shareable, so it must not reach a shell here either. The page never
-      // uses this route (it is WebSocket-only); typed actions ride /exec-ws.
-      if (requirePreviewToken) {
-        res.writeHead(403, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify(
-            execAuthError("This preview accepts typed simulator actions only, not shell commands."),
-          ),
-        );
-        return;
-      }
-      let body = "";
-      let aborted = false;
-      req.on("data", (chunk: Buffer | string) => {
-        body += typeof chunk === "string" ? chunk : chunk.toString();
-        // Cheap belt-and-braces cap so a runaway POST can't OOM the dev server.
-        if (body.length > 4 * 1024 * 1024) {
-          aborted = true;
-          res.writeHead(413, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ stdout: "", stderr: "Payload Too Large", exitCode: 1 }));
-          req.destroy();
-        }
-      });
-      req.on("end", () => {
-        if (aborted) return;
-        let command = "";
-        try {
-          command = (JSON.parse(body) as ExecRequestBody).command ?? "";
-        } catch {}
-        if (!command) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ stdout: "", stderr: "Missing command", exitCode: 1 }));
-          return;
-        }
-        exec(command, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-          const exitCode = err ? (err as ExecException).code ?? 1 : 0;
-          recordCommandEvent(command, { exitCode });
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({
-            stdout: stdout.toString(),
-            stderr: stderr.toString(),
-            exitCode,
-          }));
-        });
-      });
-      return;
-    }
-
     // SSE: foreground-app change stream. Emits `{bundleId, pid}` events
     // parsed from SpringBoard's "Setting process visibility to: Foreground"
     // log line. Filtering is done here (not in the browser) so the SSE stream
@@ -2551,12 +2496,10 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
     socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
   };
-  // WebSocket exec channel — same auth/origin policy as POST /exec, but off
-  // the browser's per-origin HTTP connection pool so multiple preview tabs
-  // (each holding MJPEG + SSE streams) can't starve exec actions. Servers
-  // mounting this middleware should forward `upgrade` events here (the
-  // built-in preview server does); the client falls back to POST /exec when
-  // the upgrade never completes.
+  // WebSocket action channel — off the browser's per-origin HTTP connection pool, so multiple
+  // preview tabs (each holding MJPEG + SSE streams) can't starve simulator actions. Servers mounting
+  // this middleware should forward `upgrade` events here (the built-in preview server does). There
+  // is no HTTP fallback: a broken channel must surface as an error, not silent degradation.
   const fetchMiddleware = (async (request: Request) => {
     return connectToFetch(connectMiddleware, request);
   }) as SimMiddleware;
@@ -2575,9 +2518,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     ],
     onUiRequest: handleUiRequest,
     // A gated preview link is shareable, so it must not also be a shell on this machine.
-    restrictToActions: requirePreviewToken,
     serveSimBinPath: serveSimBinPath(),
-    onCommandResult: (command, result) => recordCommandEvent(command, result),
+    onActionResult: (action, params, result) => recordActionEvent(action, params, result),
     onSseRequest(path, websocketRequest) {
       const url = new URL(path, websocketRequest.url);
       // The exec channel already authenticated, so its fan-out carries the token past the gate.

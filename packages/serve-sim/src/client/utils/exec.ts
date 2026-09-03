@@ -164,18 +164,6 @@ async function socketRequest(
   });
 }
 
-export async function execOnHost(
-  command: string,
-  opts?: { signal?: AbortSignal },
-): Promise<ExecResult> {
-  const reply = await socketRequest({ command }, opts?.signal);
-  return {
-    stdout: reply.stdout ?? "",
-    stderr: reply.stderr ?? "",
-    exitCode: reply.exitCode ?? 1,
-  };
-}
-
 /**
  * One simulator action, run by the host as a fixed program and argument array. A gated preview
  * accepts only these: the link is shareable, so it must not also be a shell on the host machine.

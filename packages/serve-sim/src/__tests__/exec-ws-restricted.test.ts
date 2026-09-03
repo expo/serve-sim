@@ -91,20 +91,6 @@ describe("gated POST /exec refuses shell", () => {
 });
 
 describe("gated exec-ws accepts typed actions only", () => {
-  test("refuses a free-form shell command", async () => {
-    const channel = await connect();
-    expect((await channel.next()).ready).toBe(true);
-
-    channel.send({ id: 1, command: "echo owned" });
-    const reply = await channel.next();
-
-    expect(reply.id).toBe(1);
-    expect(reply.exitCode).toBe(1);
-    expect(reply.stdout).toBe("");
-    expect(reply.stderr).toMatch(/typed simulator actions only/i);
-    channel.close();
-  });
-
   test("refuses an action outside the allowed set", async () => {
     const channel = await connect();
     await channel.next();

@@ -27,6 +27,7 @@ import {
 } from "./native";
 import { isSoftwareKeyboardVisible } from "./ax";
 import { debugKeyboard } from "./debug";
+import { clearDeviceOptionState, setUiOption } from "./ui-settings";
 import { eventLogEventForHidMessage, formatEventLogPoint, recordEventLogEvent, updateEventLogEvent } from "./event-log";
 import {
   MAX_WEBRTC_SIGNALING_BODY_BYTES,
@@ -250,6 +251,7 @@ export class DeviceSession {
     this.encoderSettings = streamEncoderSettingsFrom(streamSettings);
     this.hid = new NativeHid(udid);
     this.capture = new NativeCapture(udid, this.encoderSettings);
+    clearDeviceOptionState(udid);
   }
 
   /** Begin capture. Throws if the device isn't booted. Idempotent. */
@@ -691,7 +693,12 @@ export class DeviceSession {
 
   private detachHidSocket(ws: HidSocket): void {
     this.hidSockets.delete(ws);
-    if (this.hidSockets.size === 0) this.queueSoftwareKeyboardSync(true);
+    if (this.hidSockets.size === 0) {
+      this.queueSoftwareKeyboardSync(true);
+      // Reconnect the hardware keyboard once no client needs the on-screen one,
+      // so the sim isn't left disconnected after everyone leaves.
+      void setUiOption(this.udid, "hardware-keyboard", "on").catch(() => {});
+    }
   }
 
   private async handleHidMessage(data: Buffer): Promise<void> {
@@ -796,6 +803,16 @@ export class DeviceSession {
         if (m) {
           this.recordHidEvent(tag, m);
           this.queueSoftwareKeyboardSync(m.visible);
+        }
+        break;
+      }
+      case 0x0e: {
+        // A touch client disconnects the hardware keyboard so the guest shows
+        // its on-screen keyboard; desktop clients never send this.
+        const m = json<{ enabled: boolean }>();
+        if (m) {
+          this.recordHidEvent(tag, m);
+          void setUiOption(this.udid, "hardware-keyboard", m.enabled ? "on" : "off").catch(() => {});
         }
         break;
       }

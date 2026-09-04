@@ -757,6 +757,7 @@ function AppWithConfig({
   // Touch/button relay via direct WebSocket
   const wsRef = useRef<WebSocket | null>(null);
   const pendingWsMessagesRef = useRef<QueuedWsMessage[]>([]);
+  const coarsePointerRef = useRef(false);
   useEffect(() => {
     let stopped = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -781,6 +782,16 @@ function AppWithConfig({
           ws,
           pendingWsMessagesRef.current,
         );
+        // A touch client disconnects the sim's hardware keyboard so its
+        // on-screen keyboard shows; desktop leaves it connected.
+        if (coarsePointerRef.current) {
+          pendingWsMessagesRef.current = sendOrQueueWsMessage(
+            ws,
+            pendingWsMessagesRef.current,
+            0x0e,
+            { enabled: false },
+          );
+        }
       };
       ws.onmessage = (ev) => {
         // Server -> client screen-config push (tag 0x82): [tag][JSON].
@@ -1014,6 +1025,7 @@ function AppWithConfig({
   simFocusedRef.current = simFocused;
   const pressedKeysRef = useRef<Set<number>>(new Set());
   const coarsePointer = useCoarsePointer();
+  coarsePointerRef.current = coarsePointer;
   useBlockPageZoom(coarsePointer);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const keyboardOpenRef = useRef(keyboardOpen);

@@ -47,7 +47,8 @@ through `serve-sim` subcommands against a running server:
 - `serve-sim camera …` — inject the dylib, hot-swap source, toggle mirror.
 - `serve-sim ui <option> [value] [-d udid]` — simulator-wide UI options
   (appearance, liquid-glass, color-filter, text-size, reduce-motion,
-  increase-contrast, show-borders, reduce-transparency, voiceover); `ui status
+  increase-contrast, show-borders, reduce-transparency, voiceover,
+  hardware-keyboard); `ui status
 --json` dumps all. Verify sets via `simctl ui <udid> <option>` readback or
   `simctl spawn <udid> defaults read` on com.apple.Accessibility /
   com.apple.mediaaccessibility / com.apple.UIKit.

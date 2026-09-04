@@ -2,6 +2,7 @@ import { execFile } from "child_process";
 import { existsSync } from "fs";
 import { join, resolve } from "path";
 import { findBootedDevice, resolveDevice } from "./device";
+import { setHardwareKeyboard } from "./native";
 import { dirnameOf } from "./runtime";
 
 // Bun's bundler inlines a bare `__dirname` as the build machine's source
@@ -53,13 +54,18 @@ const ON_SYNONYMS = new Set(["on", "true", "enabled", "1", "yes"]);
 const OFF_SYNONYMS = new Set(["off", "false", "disabled", "0", "no"]);
 
 interface UiOptionSpec {
-  /** `simctl ui` subcommand, or "ax" for the in-sim helper. */
-  via: "appearance" | "increase_contrast" | "content_size" | "ax";
+  /**
+   * `simctl ui` subcommand, "ax" for the in-sim helper, or "device" for a
+   * host-side CoreSimulator device setting driven through the native addon.
+   */
+  via: "appearance" | "increase_contrast" | "content_size" | "ax" | "device";
   values: readonly string[];
   /** Extra accepted set-values that aren't reported by `get` (text-size). */
   extraValues?: readonly string[];
   aliases?: Record<string, string>;
   toggle?: boolean;
+  /** Reported value before anything is set (device-backed options only). */
+  default?: string;
 }
 
 export const UI_OPTIONS: Record<string, UiOptionSpec> = {
@@ -76,7 +82,24 @@ export const UI_OPTIONS: Record<string, UiOptionSpec> = {
   "show-borders": { via: "ax", values: TOGGLE_VALUES, toggle: true },
   "reduce-transparency": { via: "ax", values: TOGGLE_VALUES, toggle: true },
   voiceover: { via: "ax", values: TOGGLE_VALUES, toggle: true },
+  "hardware-keyboard": { via: "device", values: TOGGLE_VALUES, toggle: true, default: "on" },
 };
+
+// CoreSimulator has no getter for device-backed settings and the setter is
+// runtime-only, so the last value we set is the source of truth for the panel.
+// Keyed by `${udid}:${option}`; falls back to the option's `default`.
+const deviceOptionState = new Map<string, string>();
+
+// A device-backed setter is runtime-only, so a session recreate resets the
+// device to the option defaults (see HIDInjector.setup). Drop the stale panel
+// state for that udid so the panel reflects the reset rather than the last
+// value a previous session set.
+export function clearDeviceOptionState(udid: string): void {
+  const prefix = `${udid}:`;
+  for (const key of deviceOptionState.keys()) {
+    if (key.startsWith(prefix)) deviceOptionState.delete(key);
+  }
+}
 
 /**
  * Map a user-supplied value onto its canonical form for the option, or null
@@ -220,6 +243,9 @@ function fromToggle(value: string): string {
 export async function getUiOption(udid: string, option: string): Promise<string> {
   const spec = UI_OPTIONS[option];
   if (!spec) throw new Error(`unknown option: ${option}`);
+  if (spec.via === "device") {
+    return deviceOptionState.get(`${udid}:${option}`) ?? spec.default ?? "off";
+  }
   if (spec.via === "ax") return axRun(udid, "get", option);
   // simctl's casing is inconsistent (`content_size` prints "Small" but
   // "large") — values are canonically lowercase everywhere here.
@@ -230,6 +256,11 @@ export async function getUiOption(udid: string, option: string): Promise<string>
 export async function setUiOption(udid: string, option: string, value: string): Promise<void> {
   const spec = UI_OPTIONS[option];
   if (!spec) throw new Error(`unknown option: ${option}`);
+  if (spec.via === "device") {
+    if (option === "hardware-keyboard") await setHardwareKeyboard(udid, value === "on");
+    deviceOptionState.set(`${udid}:${option}`, value);
+    return;
+  }
   if (spec.via === "ax") {
     await axRun(udid, "set", option, value);
     return;
@@ -238,25 +269,25 @@ export async function setUiOption(udid: string, option: string, value: string): 
 }
 
 export async function getUiStatus(udid: string): Promise<Record<string, string>> {
-  // One ax-tool spawn covers all its settings; the simctl-backed reads fan
-  // out in parallel alongside it. The ax helper is an iOS-simulator Mach-O, so
-  // on watchOS / tvOS / visionOS the spawn aborts in dyld — degrade those
-  // options to "unsupported" instead of failing the whole panel. (The web UI
-  // also gates the panel on the device runtime, so this is the backstop for
-  // direct callers.)
-  const simctlOptions = Object.entries(UI_OPTIONS).filter(([, spec]) => spec.via !== "ax");
-  const [axStatus, ...simctlValues] = await Promise.all([
+  // One ax-tool spawn covers all its settings; the non-ax reads (simctl- and
+  // device-backed) fan out in parallel alongside it. The ax helper is an
+  // iOS-simulator Mach-O, so on watchOS / tvOS / visionOS the spawn aborts in
+  // dyld — degrade those options to "unsupported" instead of failing the whole
+  // panel. (The web UI also gates the panel on the device runtime, so this is
+  // the backstop for direct callers.)
+  const nonAxOptions = Object.entries(UI_OPTIONS).filter(([, spec]) => spec.via !== "ax");
+  const [axStatus, ...nonAxValues] = await Promise.all([
     axRun(udid, "status")
       .then((out) => JSON.parse(out) as Record<string, string>)
       .catch(() => ({}) as Record<string, string>),
-    ...simctlOptions.map(([option]) => getUiOption(udid, option).catch(() => "unsupported")),
+    ...nonAxOptions.map(([option]) => getUiOption(udid, option).catch(() => "unsupported")),
   ]);
   const status: Record<string, string> = {};
   for (const [option, spec] of Object.entries(UI_OPTIONS)) {
     if (spec.via === "ax") status[option] = axStatus[option] ?? "unsupported";
   }
-  simctlOptions.forEach(([option], i) => {
-    status[option] = simctlValues[i]!;
+  nonAxOptions.forEach(([option], i) => {
+    status[option] = nonAxValues[i]!;
   });
   return status;
 }
@@ -278,7 +309,8 @@ Simulator-wide UI options:
   increase-contrast    on | off
   show-borders         on | off
   reduce-transparency  on | off
-  voiceover            on | off`;
+  voiceover            on | off
+  hardware-keyboard    on | off`;
 
 export async function uiSettings(args: string[]): Promise<void> {
   if (args.includes("-h") || args.includes("--help")) {

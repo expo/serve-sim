@@ -47,6 +47,7 @@ const DEFAULT_STATE: SettingsState = {
   "show-borders": "off",
   "reduce-transparency": "off",
   voiceover: "off",
+  "hardware-keyboard": "on",
 };
 
 const SELECT_OPTIONS: Record<string, Array<{ value: string; label: string }>> = {
@@ -68,6 +69,7 @@ const SELECT_OPTIONS: Record<string, Array<{ value: string; label: string }>> = 
 };
 
 const TOGGLE_OPTIONS = [
+  { key: "hardware-keyboard", label: "Hardware Keyboard" },
   { key: "reduce-motion", label: "Reduce Motion" },
   { key: "increase-contrast", label: "Increase Contrast" },
   { key: "show-borders", label: "Show Borders" },
@@ -274,6 +276,12 @@ const I = {
       <circle cx="16" cy="7" r="5" />
     </svg>
   ),
+  keyboard: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 8h.01M12 12h.01M14 8h.01M16 12h.01M18 8h.01M6 8h.01M7 16h10M8 12h.01" />
+      <rect width="20" height="16" x="2" y="4" rx="2" />
+    </svg>
+  ),
 };
 
 // These options drive the iOS accessibility/appearance setters; the in-sim
@@ -464,15 +472,17 @@ export function SimulatorSettingsTool({
             <SettingRow
               key={key}
               icon={I[
-                key === "reduce-motion"
-                  ? "motion"
-                  : key === "increase-contrast"
-                    ? "contrast"
-                    : key === "show-borders"
-                      ? "borders"
-                      : key === "reduce-transparency"
-                        ? "transparency"
-                        : "voiceover"
+                key === "hardware-keyboard"
+                  ? "keyboard"
+                  : key === "reduce-motion"
+                    ? "motion"
+                    : key === "increase-contrast"
+                      ? "contrast"
+                      : key === "show-borders"
+                        ? "borders"
+                        : key === "reduce-transparency"
+                          ? "transparency"
+                          : "voiceover"
               ]}
               label={label}
             >

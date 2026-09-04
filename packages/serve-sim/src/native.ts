@@ -66,6 +66,7 @@ interface NativeAddon {
   ) => SimCaptureHandle;
   axDescribe(udid: string): Promise<string>;
   axFrontmost(udid: string): Promise<string>;
+  setHardwareKeyboard(udid: string, enabled: boolean): Promise<boolean>;
 }
 
 // (codec, data, width, height, flags) — codec 0=MJPEG 1=AVCC; flags bit0=desc bit1=keyframe.
@@ -302,4 +303,13 @@ export function axDescribeAsync(udid: string): Promise<string> {
 /** Async frontmost-app probe — JSON string `{ bundleId, pid }` for the visible app. */
 export function axFrontmostAsync(udid: string): Promise<string> {
   return load().axFrontmost(udid);
+}
+
+/**
+ * Connect/disconnect the device's hardware keyboard (⌘⇧K). Disconnecting makes
+ * the guest show its on-screen keyboard. Per-device; resolves true when the
+ * CoreSimulator call succeeds (not a read-back of the resulting state).
+ */
+export function setHardwareKeyboard(udid: string, enabled: boolean): Promise<boolean> {
+  return load().setHardwareKeyboard(udid, enabled);
 }

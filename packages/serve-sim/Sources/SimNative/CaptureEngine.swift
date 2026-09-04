@@ -88,6 +88,7 @@ actor CaptureEngine {
     private(set) var screenSize = Dimensions(width: 0, height: 0)
     private var consumers = [UUID: CaptureConsuming]()
     private var webRTCPublisher: WebRTCPublisher?
+    private var webRTCInputHandler: (@Sendable (Data) -> Void)?
     private var frameContinuation: AsyncStream<Frame>.Continuation?
     private var cancelledWebRTCSessionIds = Set<String>()
     private var cancelledWebRTCSessionIdOrder: [String] = []
@@ -254,6 +255,14 @@ actor CaptureEngine {
         }
     }
 
+    /// Sink for HID frames arriving on viewers' WebRTC "input" data channels.
+    /// Survives publisher recreation: the handler re-attaches when the lazy
+    /// publisher is (re)built for a later offer.
+    func setWebRTCInputHandler(_ handler: (@Sendable (Data) -> Void)?) {
+        webRTCInputHandler = handler
+        webRTCPublisher?.setInputHandler(handler)
+    }
+
     func handleWebRTCOffer(_ offerJson: String) async throws -> String {
         let request = try JSONDecoder().decode(WebRTCOfferPayload.self, from: Data(offerJson.utf8))
         guard request.type == "offer", !request.sessionId.isEmpty else {
@@ -333,6 +342,7 @@ actor CaptureEngine {
             targetBitrate: options.h264Bitrate,
             maxDimension: options.maxDimension
         )
+        publisher.setInputHandler(webRTCInputHandler)
         consumers[UUID()] = WebRTCConsumer(publisher: publisher)
         webRTCPublisher = publisher
         return publisher

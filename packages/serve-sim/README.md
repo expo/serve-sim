@@ -295,10 +295,45 @@ The npm package ships the native capture addon and LiveKit WebRTC framework alon
 
 ```sh
 bun install
-bun run packages/serve-sim/build.ts                    # full production build
-packages/serve-sim/Sources/SimNative/build.sh           # native addon only
-bun run --filter serve-sim dev                          # watch mode
+bun run packages/serve-sim/build.ts                   # full production build
+packages/serve-sim/Sources/SimNative/build.sh         # native addon only
+bun run --filter @expo/serve-sim dev                  # watch mode
+bun run --filter @expo/serve-sim tart-dev             # guest preview at localhost:3200
+bun run --filter @expo/serve-sim tart-test -- <files> # bun test on the guest
 ```
+
+### Tart guest
+
+Run serve-sim **on a [tart](https://github.com/cirruslabs/tart) macOS VM** instead of the host. SSH as Unix user `expo` (not `tart exec` as admin), which matches how EAS-shaped VMs actually run.
+
+Needs the `tart` CLI, a VM with Xcode (default name `tahoe-xcode`), and a built native addon.
+
+```sh
+bun run packages/serve-sim/build.ts
+bun run --filter @expo/serve-sim tart-dev
+# → Preview at http://localhost:3200
+```
+
+`tart-dev` starts the VM if needed, boots an iPhone 17, runs `bun run dev.ts` on the guest, and tunnels guest `:3200` to the host. Host port `3200` must be free. Ctrl-C stops the tunnel and the guest server.
+
+`tart-test` uses the same guest, but runs `bun test` there. It stages package src onto the VM, boots an iPhone, and executes the files you pass over SSH as `expo`. Pass the files; with none it exits instead of running the whole guest suite.
+
+```sh
+bun run --filter @expo/serve-sim tart-test -- src/__tests__/foo.test.ts
+bun run --filter @expo/serve-sim tart -- test src/__tests__/foo.test.ts
+```
+
+First run creates the `expo` user and copies bun onto the guest (`bun run --filter @expo/serve-sim tart -- setup` if you want that step alone).
+
+The VM mounts this checkout at `/Volumes/My Shared Files/serve-sim`. If the VM was started from a different worktree, stop it and rerun from this one.
+
+```sh
+bun run --filter @expo/serve-sim tart -- ssh                 # shell as expo
+```
+
+`tart` also has `up`, `boot`, and `stage` if you need the pieces separately.
+
+Env (all optional): `TART_VM=tahoe-xcode`, `TART_USER=expo`, `TART_SHARE_NAME=serve-sim`, `PORT=3200`.
 
 ## Origin and attribution
 

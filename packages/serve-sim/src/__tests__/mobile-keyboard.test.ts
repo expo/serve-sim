@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  keydownForward,
   keyEventsForBeforeInput,
   keyEventsForInputType,
   keyEventsForTextChange,
@@ -97,43 +98,85 @@ describe("keyEventsForTextChange", () => {
 });
 
 describe("keyEventsForBeforeInput", () => {
-  const BACKSPACE = {
-    down: { type: "down", usage: 0x2a },
-    up: { type: "up", usage: 0x2a },
-  } as const;
-
-  test("forwards Backspace for a delete on an empty input (caret at start)", () => {
-    expect(keyEventsForBeforeInput("deleteContentBackward", true)).toEqual([
-      BACKSPACE.down,
-      BACKSPACE.up,
+  test("forwards Enter, which fires beforeinput but no input event", () => {
+    expect(keyEventsForBeforeInput("insertLineBreak")).toEqual([
+      { type: "down", usage: 0x28 },
+      { type: "up", usage: 0x28 },
     ]);
-    expect(keyEventsForBeforeInput("deleteWordBackward", true)).toEqual([
-      BACKSPACE.down,
-      BACKSPACE.up,
+    expect(keyEventsForBeforeInput("insertParagraph")).toEqual([
+      { type: "down", usage: 0x28 },
+      { type: "up", usage: 0x28 },
     ]);
   });
 
-  test("leaves a delete to the value diff when the caret is not at the start", () => {
-    expect(keyEventsForBeforeInput("deleteContentBackward", false)).toEqual([]);
+  test("leaves deletes and text to the keydown and input paths", () => {
+    expect(keyEventsForBeforeInput("deleteContentBackward")).toEqual([]);
+    expect(keyEventsForBeforeInput("deleteWordBackward")).toEqual([]);
+    expect(keyEventsForBeforeInput("insertText")).toEqual([]);
+  });
+});
+
+describe("keydownForward", () => {
+  const BACKSPACE = 0x2a;
+  const KEY_A = 0x04;
+
+  test("forwards an empty-input Backspace while the phone keyboard is open, even when the sim is not focused", () => {
+    // The reopen bug: after close/reopen the hidden input is empty, so no `input`
+    // fires; the Backspace only rides the keydown path, which dropped it whenever
+    // the last tap left the sim unfocused (what happened on EAS).
+    expect(
+      keydownForward("Backspace", {
+        simFocused: false,
+        keyboardOpen: true,
+        captureInputEmpty: true,
+      }),
+    ).toBe(BACKSPACE);
   });
 
-  test("still sends Backspace after the keyboard is closed and reopened", () => {
-    const sent: { type: string; usage: number }[] = [];
-    let buffer = "";
-    for (const next of ["h", "hi"]) {
-      sent.push(...keyEventsForTextChange(buffer, next));
-      buffer = next;
-    }
+  test("does not forward a non-empty Backspace while the keyboard is open (the input path owns it)", () => {
+    expect(
+      keydownForward("Backspace", {
+        simFocused: true,
+        keyboardOpen: true,
+        captureInputEmpty: false,
+      }),
+    ).toBeNull();
+  });
 
-    // Closing then reopening the keyboard clears the hidden input and its buffer.
-    buffer = "";
-    // The value diff alone forwards nothing for a Backspace on the empty input...
-    expect(keyEventsForTextChange(buffer, buffer)).toEqual([]);
-    // ...but the beforeinput handler still forwards it to the sim.
-    const afterReopen = keyEventsForBeforeInput("deleteContentBackward", true);
-    sent.push(...afterReopen);
+  test("ignores text keys while the keyboard is open so they are not double-sent", () => {
+    expect(
+      keydownForward("KeyA", {
+        simFocused: true,
+        keyboardOpen: true,
+        captureInputEmpty: true,
+      }),
+    ).toBeNull();
+    expect(
+      keydownForward("Enter", {
+        simFocused: true,
+        keyboardOpen: true,
+        captureInputEmpty: true,
+      }),
+    ).toBeNull();
+  });
 
-    expect(afterReopen).toEqual([BACKSPACE.down, BACKSPACE.up]);
-    expect(sent.slice(-2)).toEqual([BACKSPACE.down, BACKSPACE.up]);
+  test("forwards keys for the desktop keyboard when the sim is focused and the phone keyboard is closed", () => {
+    expect(
+      keydownForward("KeyA", {
+        simFocused: true,
+        keyboardOpen: false,
+        captureInputEmpty: true,
+      }),
+    ).toBe(KEY_A);
+  });
+
+  test("drops keys when the sim is not focused and the phone keyboard is closed", () => {
+    expect(
+      keydownForward("KeyA", {
+        simFocused: false,
+        keyboardOpen: false,
+        captureInputEmpty: true,
+      }),
+    ).toBeNull();
   });
 });

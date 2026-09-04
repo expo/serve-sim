@@ -71,6 +71,7 @@ import {
 import { fileExtension } from "./utils/drop";
 import { execOnHost, openHostEventStream } from "./utils/exec";
 import { hidUsageForCode } from "./utils/hid";
+import { keydownForward } from "./utils/mobile-keyboard";
 import {
   DEVICE_SIDEBAR_WIDTH,
   DEVTOOLS_PANEL_WIDTH,
@@ -1015,6 +1016,8 @@ function AppWithConfig({
   const coarsePointer = useCoarsePointer();
   useBlockPageZoom(coarsePointer);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const keyboardOpenRef = useRef(keyboardOpen);
+  keyboardOpenRef.current = keyboardOpen;
   const keyboardInputRef = useRef<HTMLInputElement | null>(null);
   const phoneKeyboardWasRaisedRef = useRef(false);
 
@@ -1080,39 +1083,55 @@ function AppWithConfig({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent, type: "down" | "up") => {
-      if (!simFocusedRef.current) return;
-      if (e.code === "KeyH" && e.metaKey && e.shiftKey) {
-        e.preventDefault();
-        if (type === "down" && !e.repeat) sendWs(0x04, { button: "home" });
-        return;
-      }
-      if ((e.code === "ArrowLeft" || e.code === "ArrowRight") && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey) {
-        e.preventDefault();
-        if (type === "down" && !e.repeat) {
-          rotateBy(e.code === "ArrowLeft" ? "left" : "right");
+      const simFocused = simFocusedRef.current;
+      const keyboardOpen = keyboardOpenRef.current;
+      if (simFocused && !keyboardOpen) {
+        if (e.code === "KeyH" && e.metaKey && e.shiftKey) {
+          e.preventDefault();
+          if (type === "down" && !e.repeat) sendWs(0x04, { button: "home" });
+          return;
         }
-        return;
-      }
-      if (e.code === "KeyA" && e.metaKey && e.shiftKey) {
-        e.preventDefault();
-        if (type === "down" && !e.repeat) {
-          execOnHost(`xcrun simctl ui ${config.device} appearance`).then((r) => {
-            const next = r.stdout.trim() === "dark" ? "light" : "dark";
-            return execOnHost(`xcrun simctl ui ${config.device} appearance ${next}`);
-          }).catch(() => {});
+        if ((e.code === "ArrowLeft" || e.code === "ArrowRight") && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+          e.preventDefault();
+          if (type === "down" && !e.repeat) {
+            rotateBy(e.code === "ArrowLeft" ? "left" : "right");
+          }
+          return;
         }
-        return;
+        if (e.code === "KeyA" && e.metaKey && e.shiftKey) {
+          e.preventDefault();
+          if (type === "down" && !e.repeat) {
+            execOnHost(`xcrun simctl ui ${config.device} appearance`).then((r) => {
+              const next = r.stdout.trim() === "dark" ? "light" : "dark";
+              return execOnHost(`xcrun simctl ui ${config.device} appearance ${next}`);
+            }).catch(() => {});
+          }
+          return;
+        }
+        if (e.code === "KeyK" && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+          e.preventDefault();
+          if (type === "down" && !e.repeat) sendWs(0x0c, {});
+          return;
+        }
       }
-      if (e.code === "KeyK" && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+      if (type === "up") {
+        // Always release a key we are holding, even if the gate changed since the
+        // keydown, so a flip between down and up cannot leave it stuck on the sim.
+        const usage = hidUsageForCode(e.code);
+        if (usage == null || !pressedKeysRef.current.has(usage)) return;
         e.preventDefault();
-        if (type === "down" && !e.repeat) sendWs(0x0c, {});
+        pressedKeysRef.current.delete(usage);
+        sendWs(0x06, { type, usage });
         return;
       }
-      const usage = hidUsageForCode(e.code);
+      const usage = keydownForward(e.code, {
+        simFocused,
+        keyboardOpen,
+        captureInputEmpty: (keyboardInputRef.current?.value ?? "") === "",
+      });
       if (usage == null) return;
       e.preventDefault();
-      if (type === "down") pressedKeysRef.current.add(usage);
-      else pressedKeysRef.current.delete(usage);
+      pressedKeysRef.current.add(usage);
       sendWs(0x06, { type, usage });
     };
     const down = (e: KeyboardEvent) => onKey(e, "down");

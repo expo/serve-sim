@@ -44,8 +44,7 @@ export function KeyboardCapture({
     };
     const onBeforeInput = (event: Event) => {
       const e = event as InputEvent;
-      const caretAtStart = el.selectionStart === 0 && el.selectionEnd === 0;
-      emit(keyEventsForBeforeInput(e.inputType, caretAtStart));
+      emit(keyEventsForBeforeInput(e.inputType));
       if (e.inputType === "insertLineBreak" || e.inputType === "insertParagraph") {
         e.preventDefault();
       }

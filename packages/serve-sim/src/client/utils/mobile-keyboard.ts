@@ -29,19 +29,13 @@ export function keyEventsForInputType(
   }
 }
 
-export function keyEventsForBeforeInput(
-  inputType: string,
-  caretAtStart: boolean,
-): KeyEvent[] {
+export function keyEventsForBeforeInput(inputType: string): KeyEvent[] {
   switch (inputType) {
     case "insertLineBreak":
     case "insertParagraph":
+      // Enter fires `beforeinput` but changes no value, so the value diff misses
+      // it. Backspace is left to the keydown path so it is never sent twice.
       return keyEventsForInputType(inputType, null);
-    case "deleteContentBackward":
-    case "deleteWordBackward":
-      // A delete with nothing before the caret fires no `input`, so the value
-      // diff won't forward it (e.g. a fresh reopen); forward it here instead.
-      return caretAtStart ? keyEventsForInputType(inputType, null) : [];
     default:
       return [];
   }
@@ -63,6 +57,23 @@ export function keyEventsForTextChange(
   for (let i = 0; i < removedKeystrokes; i++) events.push(...press(BACKSPACE));
   events.push(...textToKeyEventsLenient(added).events);
   return events;
+}
+
+export function keydownForward(
+  code: string,
+  state: { simFocused: boolean; keyboardOpen: boolean; captureInputEmpty: boolean },
+): number | null {
+  if (state.keyboardOpen) {
+    // The hidden input owns text entry, so only carry a Backspace on an empty
+    // input: it fires no `input` for the value diff (e.g. a fresh reopen) and is
+    // otherwise dropped when the sim isn't focused. The rest stays with the
+    // input path so it is never sent twice.
+    return code === "Backspace" && state.captureInputEmpty
+      ? hidUsageForCode(code)
+      : null;
+  }
+  if (!state.simFocused) return null;
+  return hidUsageForCode(code);
 }
 
 export const KEYBOARD_CAPTURE_ATTRIBUTES = {

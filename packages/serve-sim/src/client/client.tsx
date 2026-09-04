@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
@@ -34,9 +35,14 @@ import { AxToolbarButton } from "./components/ax-toolbar-button";
 import { DeviceSidebarToggle } from "./components/device-sidebar-toggle";
 import { DevicePlaceholder } from "./components/device-placeholder";
 import { PresentationControls } from "./components/presentation-controls";
-import { IconButton } from "./components/icon-button";
+import {
+  KeyboardCapture,
+  KeyboardToggleButton,
+} from "./components/keyboard-capture";
 import { DeviceKitChrome, type ChromeButtonPress } from "./components/device-chrome-frame";
+import { createPacedKeySender } from "./utils/paced-key-sender";
 import { GridPanel } from "./components/grid-panel";
+import { IconButton } from "./components/icon-button";
 import { ResizeHandle } from "./components/resize-handle";
 import { SimulatorResizeCornerHandle } from "./components/simulator-resize-corner-handle";
 import { ServeSimToaster } from "./components/app-toasts";
@@ -51,6 +57,7 @@ import { useWebRtcStream } from "./hooks/use-webrtc-stream";
 import { useResizableWidth } from "./hooks/use-resizable-width";
 import { useScreenshotToast } from "./hooks/use-screenshot-toast";
 import { useSimulatorResize } from "./hooks/use-simulator-resize";
+import { useFlipLayout } from "./hooks/use-flip-layout";
 import { useUploadToasts } from "./hooks/use-upload-toasts";
 import { useWebKitDevtools } from "./hooks/use-webkit-devtools";
 import { useGridDevices } from "./hooks/use-grid-devices";
@@ -64,6 +71,7 @@ import {
 import { fileExtension } from "./utils/drop";
 import { execOnHost, openHostEventStream } from "./utils/exec";
 import { hidUsageForCode } from "./utils/hid";
+import { keydownForward } from "./utils/mobile-keyboard";
 import {
   DEVICE_SIDEBAR_WIDTH,
   DEVTOOLS_PANEL_WIDTH,
@@ -83,10 +91,12 @@ import {
   getPresentationFrameWidth,
   roundToDevicePixel,
   SIMULATOR_RESIZE_DRAG_TRANSITION,
-  SIMULATOR_RESIZE_LAYOUT_TRANSITION,
   SIMULATOR_RESIZE_PAGE_TRANSITION,
   SIMULATOR_RESIZE_PRESENTATION_TRANSITION,
   SIMULATOR_RESIZE_PRESENTATION_TRANSITION_MS,
+  isVisualViewportKeyboardRaised,
+  readNativeKeyboardRaised,
+  SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
   SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION,
 } from "./utils/simulator-resize";
 import {
@@ -598,8 +608,6 @@ function AppWithConfig({
   useEffect(() => {
     document.title = deviceName ? `Simulator - ${deviceName}` : "Simulator Preview";
   }, [deviceName]);
-  const coarsePointer = useCoarsePointer();
-  useBlockPageZoom(coarsePointer);
 
   const deviceType: DeviceType = getDeviceType(deviceName);
   const devtools = useWebKitDevtools(config.devtoolsEndpoint ?? simEndpoint("devtools"), devtoolsOpen);
@@ -820,6 +828,12 @@ function AppWithConfig({
     );
   }, []);
 
+  const keySender = useMemo(
+    () => createPacedKeySender((e) => sendWs(0x06, { type: e.type, usage: e.usage })),
+    [sendWs],
+  );
+  useEffect(() => () => keySender.dispose(), [keySender]);
+
   const onStreamTouch = useCallback(
     (data: { type: string; x: number; y: number; edge?: number }) => {
       sendWs(0x03, data);
@@ -935,16 +949,25 @@ function AppWithConfig({
   const [viewportWidth, setViewportWidth] = useState(
     () => (typeof window !== "undefined" ? window.innerWidth : 0),
   );
-  const [viewportHeight, setViewportHeight] = useState(
-    () => (typeof window !== "undefined" ? window.innerHeight : 0),
+  const [viewportHeight, setViewportHeight] = useState(() =>
+    typeof window === "undefined" ? 0 : window.visualViewport?.height ?? window.innerHeight,
+  );
+  const [windowInnerHeight, setWindowInnerHeight] = useState(() =>
+    typeof window === "undefined" ? 0 : window.innerHeight,
   );
   useEffect(() => {
+    const vv = window.visualViewport;
     const onResize = () => {
       setViewportWidth(window.innerWidth);
-      setViewportHeight(window.innerHeight);
+      setWindowInnerHeight(window.innerHeight);
+      setViewportHeight(vv?.height ?? window.innerHeight);
     };
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    vv?.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      vv?.removeEventListener("resize", onResize);
+    };
   }, []);
   useEffect(() => {
     const es = openHostEventStream(config.appStateEndpoint ?? simEndpoint("appstate"));
@@ -972,6 +995,7 @@ function AppWithConfig({
   }, [sendKey]);
 
   const simContainerRef = useRef<HTMLDivElement | null>(null);
+  const flipRef = useRef<HTMLDivElement | null>(null);
   const [deviceRenderedWidth, setDeviceRenderedWidth] = useState(0);
   const [deviceRenderedHeight, setDeviceRenderedHeight] = useState(0);
   useEffect(() => {
@@ -989,10 +1013,54 @@ function AppWithConfig({
   const simFocusedRef = useRef(true);
   simFocusedRef.current = simFocused;
   const pressedKeysRef = useRef<Set<number>>(new Set());
+  const coarsePointer = useCoarsePointer();
+  useBlockPageZoom(coarsePointer);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const keyboardOpenRef = useRef(keyboardOpen);
+  keyboardOpenRef.current = keyboardOpen;
+  const keyboardInputRef = useRef<HTMLInputElement | null>(null);
+  const phoneKeyboardWasRaisedRef = useRef(false);
+
+  const closePhoneKeyboard = useCallback(() => {
+    keyboardInputRef.current?.blur();
+    setKeyboardOpen(false);
+  }, []);
+
+  const toggleKeyboard = useCallback(() => {
+    const el = keyboardInputRef.current;
+    const focused = document.activeElement === el;
+    const raised = readNativeKeyboardRaised();
+    if (keyboardOpen && (raised || focused)) {
+      closePhoneKeyboard();
+    } else {
+      el?.focus();
+      setKeyboardOpen(true);
+    }
+  }, [keyboardOpen, closePhoneKeyboard]);
+
+  const phoneKeyboardRaised =
+    coarsePointer && isVisualViewportKeyboardRaised(windowInnerHeight, viewportHeight);
+  const stableViewportHeight = coarsePointer ? windowInnerHeight : viewportHeight;
 
   useEffect(() => {
-    // The device is the page, so clicking the exit control isn't a focus change;
-    // treating it as one would force-release every held key.
+    if (!keyboardOpen) {
+      phoneKeyboardWasRaisedRef.current = false;
+      return;
+    }
+    if (phoneKeyboardRaised) {
+      phoneKeyboardWasRaisedRef.current = true;
+      return;
+    }
+    if (!phoneKeyboardWasRaisedRef.current) return;
+    const id = setTimeout(() => {
+      if (readNativeKeyboardRaised()) return;
+      phoneKeyboardWasRaisedRef.current = false;
+      closePhoneKeyboard();
+    }, 200);
+    return () => clearTimeout(id);
+  }, [keyboardOpen, phoneKeyboardRaised, closePhoneKeyboard]);
+
+  useEffect(() => {
     if (presentation) {
       setSimFocused(true);
       return;
@@ -1015,39 +1083,55 @@ function AppWithConfig({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent, type: "down" | "up") => {
-      if (!simFocusedRef.current) return;
-      if (e.code === "KeyH" && e.metaKey && e.shiftKey) {
-        e.preventDefault();
-        if (type === "down" && !e.repeat) sendWs(0x04, { button: "home" });
-        return;
-      }
-      if ((e.code === "ArrowLeft" || e.code === "ArrowRight") && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey) {
-        e.preventDefault();
-        if (type === "down" && !e.repeat) {
-          rotateBy(e.code === "ArrowLeft" ? "left" : "right");
+      const simFocused = simFocusedRef.current;
+      const keyboardOpen = keyboardOpenRef.current;
+      if (simFocused && !keyboardOpen) {
+        if (e.code === "KeyH" && e.metaKey && e.shiftKey) {
+          e.preventDefault();
+          if (type === "down" && !e.repeat) sendWs(0x04, { button: "home" });
+          return;
         }
-        return;
-      }
-      if (e.code === "KeyA" && e.metaKey && e.shiftKey) {
-        e.preventDefault();
-        if (type === "down" && !e.repeat) {
-          execOnHost(`xcrun simctl ui ${config.device} appearance`).then((r) => {
-            const next = r.stdout.trim() === "dark" ? "light" : "dark";
-            return execOnHost(`xcrun simctl ui ${config.device} appearance ${next}`);
-          }).catch(() => {});
+        if ((e.code === "ArrowLeft" || e.code === "ArrowRight") && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+          e.preventDefault();
+          if (type === "down" && !e.repeat) {
+            rotateBy(e.code === "ArrowLeft" ? "left" : "right");
+          }
+          return;
         }
-        return;
+        if (e.code === "KeyA" && e.metaKey && e.shiftKey) {
+          e.preventDefault();
+          if (type === "down" && !e.repeat) {
+            execOnHost(`xcrun simctl ui ${config.device} appearance`).then((r) => {
+              const next = r.stdout.trim() === "dark" ? "light" : "dark";
+              return execOnHost(`xcrun simctl ui ${config.device} appearance ${next}`);
+            }).catch(() => {});
+          }
+          return;
+        }
+        if (e.code === "KeyK" && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+          e.preventDefault();
+          if (type === "down" && !e.repeat) sendWs(0x0c, {});
+          return;
+        }
       }
-      if (e.code === "KeyK" && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+      if (type === "up") {
+        // Always release a key we are holding, even if the gate changed since the
+        // keydown, so a flip between down and up cannot leave it stuck on the sim.
+        const usage = hidUsageForCode(e.code);
+        if (usage == null || !pressedKeysRef.current.has(usage)) return;
         e.preventDefault();
-        if (type === "down" && !e.repeat) sendWs(0x0c, {});
+        pressedKeysRef.current.delete(usage);
+        sendWs(0x06, { type, usage });
         return;
       }
-      const usage = hidUsageForCode(e.code);
+      const usage = keydownForward(e.code, {
+        simFocused,
+        keyboardOpen,
+        captureInputEmpty: (keyboardInputRef.current?.value ?? "") === "",
+      });
       if (usage == null) return;
       e.preventDefault();
-      if (type === "down") pressedKeysRef.current.add(usage);
-      else pressedKeysRef.current.delete(usage);
+      pressedKeysRef.current.add(usage);
       sendWs(0x06, { type, usage });
     };
     const down = (e: KeyboardEvent) => onKey(e, "down");
@@ -1083,8 +1167,9 @@ function AppWithConfig({
   const simulatorResize = useSimulatorResize({
     defaultWidth: containerDefaultWidth,
     viewportWidth,
-    viewportHeight,
+    viewportHeight: stableViewportHeight,
     aspectRatio: containerAspectRatioValue,
+    reservedForChrome: SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
     onStart: () => setSimFocused(false),
   });
 
@@ -1114,29 +1199,6 @@ function AppWithConfig({
     : panelOpen
     ? toolsPanelWidth
     : 0;
-  const shiftForRightPanel = presentation ? 0 : shiftToClear(rightPanelWidthPx);
-  const shiftForLeftPanel = presentation ? 0 : shiftToClear(gridOpen ? gridPanelWidth : 0);
-  const presentationInset = SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION;
-  const layoutWidth = simulatorResize.width;
-  const layoutHeight =
-    containerAspectRatioValue > 0
-      ? roundToDevicePixel(layoutWidth / containerAspectRatioValue)
-      : 0;
-  const frameWidth = presentation
-    ? getPresentationFrameWidth(
-        viewportWidth,
-        viewportHeight,
-        containerAspectRatioValue,
-        presentationInset,
-      )
-    : layoutWidth;
-  const layoutScale =
-    layoutWidth > 0 && frameWidth > 0 ? frameWidth / layoutWidth : 1;
-  const resizing = simulatorResize.isResizing || simulatorResize.isInertia;
-  // `scale(1)` is not `none`: it would make this the containing block for every
-  // fixed descendant. The state only holds the transform past the exit so the
-  // device eases back down; entering reads `presentation` directly, in the same
-  // commit that strips the chrome.
   const [exitScaling, setExitScaling] = useState(false);
   useEffect(() => {
     if (presentation) {
@@ -1148,27 +1210,55 @@ function AppWithConfig({
     return () => clearTimeout(id);
   }, [presentation, exitScaling]);
   const scaling = presentation || exitScaling;
-  const layoutTransition = resizing
-    ? SIMULATOR_RESIZE_DRAG_TRANSITION
-    : SIMULATOR_RESIZE_LAYOUT_TRANSITION;
+  const shiftForRightPanel = presentation ? 0 : shiftToClear(rightPanelWidthPx);
+  const shiftForLeftPanel = presentation ? 0 : shiftToClear(gridOpen ? gridPanelWidth : 0);
+  const presentationInset = SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION;
+  const layoutWidth = simulatorResize.width;
+  const layoutHeight =
+    containerAspectRatioValue > 0
+      ? roundToDevicePixel(layoutWidth / containerAspectRatioValue)
+      : 0;
+  const frameWidth = presentation
+    ? getPresentationFrameWidth(
+        viewportWidth,
+        stableViewportHeight,
+        containerAspectRatioValue,
+        presentationInset,
+      )
+    : layoutWidth;
+  const layoutScale =
+    layoutWidth > 0 && frameWidth > 0 ? frameWidth / layoutWidth : 1;
+  const resizing = simulatorResize.isResizing || simulatorResize.isInertia;
+  useFlipLayout(
+    flipRef,
+    !resizing && !presentation,
+    layoutWidth,
+    layoutHeight,
+    stableViewportHeight,
+    phoneKeyboardRaised,
+    scaling,
+  );
 
   return (
     <AxStateProvider endpoint={axOverlayEnabled ? config?.axEndpoint : undefined}>
     <div
-      className={`flex flex-col items-center justify-center h-dvh bg-page font-system box-border ${presentation ? "gap-0" : "pt-16 pb-6 sm:py-6 gap-3"}`}
+      className={`flex flex-col items-center justify-center h-dvh bg-page font-system box-border ${
+        presentation ? "gap-0" : "pt-16 pb-6 sm:py-6 gap-3"
+      }`}
       style={{
+        height: stableViewportHeight > 0 ? stableViewportHeight : undefined,
         paddingTop: presentation ? presentationInset : undefined,
         paddingBottom: presentation ? presentationInset : undefined,
         paddingLeft: presentation ? presentationInset : 24 + shiftForLeftPanel,
         paddingRight: presentation ? presentationInset : 24 + shiftForRightPanel,
-        transition: resizing ? "none" : SIMULATOR_RESIZE_PAGE_TRANSITION,
+        transition: resizing || scaling ? "none" : SIMULATOR_RESIZE_PAGE_TRANSITION,
       }}
     >
       <div
         className={`flex flex-col items-center min-w-0 ${presentation ? "gap-0" : "gap-3"}`}
         style={{
           width: layoutWidth,
-          transition: layoutTransition,
+          transition: resizing ? SIMULATOR_RESIZE_DRAG_TRANSITION : undefined,
         }}
       >
         {!presentation && (
@@ -1211,20 +1301,40 @@ function AppWithConfig({
         </div>
         )}
         {presentation && !embedLocked && (
-          <PresentationControls onExit={onExitPresentation} />
+          <PresentationControls onExit={onExitPresentation}>
+            {coarsePointer && (
+              <KeyboardToggleButton
+                open={keyboardOpen}
+                onClick={toggleKeyboard}
+              />
+            )}
+          </PresentationControls>
         )}
+        <KeyboardCapture
+          open={keyboardOpen}
+          onKeys={(events) => keySender.enqueue(events)}
+          inputRef={keyboardInputRef}
+        />
         <div
-          ref={simContainerRef}
-          className="relative max-h-full"
+          ref={flipRef}
           style={{
             width: layoutWidth,
             height: layoutHeight > 0 ? layoutHeight : undefined,
+            transition: resizing ? SIMULATOR_RESIZE_DRAG_TRANSITION : undefined,
+          }}
+        >
+        <div
+          ref={simContainerRef}
+          className="relative w-full h-full"
+          style={{
             aspectRatio: containerAspectRatio,
             transform: scaling ? `scale(${layoutScale})` : undefined,
             transformOrigin: "center center",
             transition: resizing
-              ? SIMULATOR_RESIZE_DRAG_TRANSITION
-              : `${SIMULATOR_RESIZE_LAYOUT_TRANSITION}, ${SIMULATOR_RESIZE_PRESENTATION_TRANSITION}`,
+              ? undefined
+              : scaling
+                ? SIMULATOR_RESIZE_PRESENTATION_TRANSITION
+                : undefined,
             willChange: resizing ? "width" : scaling ? "transform" : undefined,
           }}
           {...mediaDrop.dropZoneProps}
@@ -1344,6 +1454,7 @@ function AppWithConfig({
             visible={!presentation && (simulatorResize.isResizing || simulatorResize.isInertia)}
           />
         </div>
+        </div>
         {!presentation && (
         <div className="inline-flex items-center justify-center gap-2 max-w-full pb-1 sm:pb-0">
           <SimulatorToolbar
@@ -1422,6 +1533,12 @@ function AppWithConfig({
               : 0),
         }}
       >
+        {coarsePointer && (
+          <KeyboardToggleButton
+            open={keyboardOpen}
+            onClick={toggleKeyboard}
+          />
+        )}
         <IconButton
           onClick={onEnterPresentation}
           aria-label="Full screen"

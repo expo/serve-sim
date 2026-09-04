@@ -2,6 +2,28 @@ export const SIMULATOR_RESIZE_MIN_WIDTH = 280;
 export const SIMULATOR_RESIZE_ABSOLUTE_MIN_WIDTH = 180;
 export const SIMULATOR_RESIZE_MAX_SCALE = 3;
 export const SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME = 136;
+export const SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD = 24;
+export const SIMULATOR_RESIZE_KEYBOARD_VIEWPORT_SHRINK_PX = 120;
+
+export function isVisualViewportKeyboardRaised(
+  windowInnerHeight: number,
+  visualViewportHeight: number,
+): boolean {
+  return (
+    windowInnerHeight > 0 &&
+    visualViewportHeight > 0 &&
+    windowInnerHeight - visualViewportHeight >= SIMULATOR_RESIZE_KEYBOARD_VIEWPORT_SHRINK_PX
+  );
+}
+
+export function readNativeKeyboardRaised(): boolean {
+  if (typeof window === "undefined") return false;
+  const vv = window.visualViewport;
+  return isVisualViewportKeyboardRaised(
+    window.innerHeight,
+    vv?.height ?? window.innerHeight,
+  );
+}
 export const SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION = 0;
 export const SIMULATOR_RESIZE_DRAG_TRANSITION = "width 70ms linear";
 export const SIMULATOR_RESIZE_LAYOUT_TRANSITION = "width 0.24s cubic-bezier(0.22, 1, 0.36, 1)";
@@ -81,6 +103,7 @@ export function getSimulatorFrameMaxWidth(
   viewportWidth: number,
   viewportHeight: number,
   aspectRatio: number,
+  reservedForChrome = SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
 ) {
   const scaledMaxWidth = defaultWidth * SIMULATOR_RESIZE_MAX_SCALE;
   const viewportMaxWidth =
@@ -89,13 +112,10 @@ export function getSimulatorFrameMaxWidth(
       : scaledMaxWidth;
   const viewportMaxHeight =
     viewportHeight > 0 && Number.isFinite(aspectRatio) && aspectRatio > 0
-      ? Math.max(
-          SIMULATOR_RESIZE_ABSOLUTE_MIN_WIDTH,
-          (viewportHeight - SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME) * aspectRatio,
-        )
+      ? Math.max(0, (viewportHeight - reservedForChrome) * aspectRatio)
       : scaledMaxWidth;
   return Math.max(
-    SIMULATOR_RESIZE_ABSOLUTE_MIN_WIDTH,
+    Math.min(SIMULATOR_RESIZE_ABSOLUTE_MIN_WIDTH, viewportMaxHeight),
     Math.min(scaledMaxWidth, viewportMaxWidth, viewportMaxHeight),
   );
 }
@@ -139,8 +159,15 @@ export function clampSimulatorFrameWidth(
   viewportWidth: number,
   viewportHeight: number,
   aspectRatio: number,
+  reservedForChrome = SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
 ) {
-  const maxWidth = getSimulatorFrameMaxWidth(defaultWidth, viewportWidth, viewportHeight, aspectRatio);
+  const maxWidth = getSimulatorFrameMaxWidth(
+    defaultWidth,
+    viewportWidth,
+    viewportHeight,
+    aspectRatio,
+    reservedForChrome,
+  );
   const minWidth = Math.min(SIMULATOR_RESIZE_MIN_WIDTH, maxWidth);
   return Math.min(maxWidth, Math.max(minWidth, value));
 }
@@ -151,6 +178,7 @@ export function restoredSimulatorFrameWidth(
   viewportHeight: number,
   aspectRatio: number,
   storedScale: number | null | undefined,
+  reservedForChrome = SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
 ) {
   const restored = Number.isFinite(storedScale)
     ? defaultWidth * storedScale!
@@ -161,6 +189,7 @@ export function restoredSimulatorFrameWidth(
     viewportWidth,
     viewportHeight,
     aspectRatio,
+    reservedForChrome,
   );
 }
 

@@ -10,7 +10,10 @@ import {
   SIMULATOR_RESIZE_HANDLE_DUR_IDLE,
   SIMULATOR_RESIZE_MAX_SCALE,
   SIMULATOR_RESIZE_MIN_WIDTH,
+  SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
+  SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD,
   SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION,
+  isVisualViewportKeyboardRaised,
 } from "../client/utils/simulator-resize";
 
 describe("simulator resize visual tuning", () => {
@@ -84,5 +87,59 @@ describe("simulator resize visual tuning", () => {
 
       expect(Number.isInteger(width * dpr)).toBe(true);
     }
+  });
+
+  test("a smaller height gutter raises the height-capped max width", () => {
+    const aspect = 1179 / 2556;
+    const viewportWidth = 390;
+    const viewportHeight = 645;
+    const withFullChrome = getSimulatorFrameMaxWidth(320, viewportWidth, viewportHeight, aspect);
+    const withKeyboardChrome = getSimulatorFrameMaxWidth(
+      320,
+      viewportWidth,
+      viewportHeight,
+      aspect,
+      SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD,
+    );
+
+    expect(withKeyboardChrome).toBeGreaterThan(withFullChrome);
+    expect(withFullChrome).toBe(
+      getSimulatorFrameMaxWidth(
+        320,
+        viewportWidth,
+        viewportHeight,
+        aspect,
+        SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
+      ),
+    );
+    expect(withFullChrome).toBe((viewportHeight - SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME) * aspect);
+    expect(withKeyboardChrome).toBe(
+      (viewportHeight - SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD) * aspect,
+    );
+  });
+
+  test("keyboard height gutter fits the full frame in a short visual viewport", () => {
+    const aspect = 1179 / 2556;
+    const viewportHeight = 334;
+    const maxWidth = getSimulatorFrameMaxWidth(
+      320,
+      390,
+      viewportHeight,
+      aspect,
+      SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD,
+    );
+
+    expect(maxWidth).toBe(
+      (viewportHeight - SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD) * aspect,
+    );
+    expect(maxWidth / aspect).toBeLessThanOrEqual(
+      viewportHeight - SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_KEYBOARD,
+    );
+  });
+
+  test("detects when the visual viewport shrank for the soft keyboard", () => {
+    expect(isVisualViewportKeyboardRaised(645, 645)).toBe(false);
+    expect(isVisualViewportKeyboardRaised(645, 520)).toBe(true);
+    expect(isVisualViewportKeyboardRaised(0, 334)).toBe(false);
   });
 });

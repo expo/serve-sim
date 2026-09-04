@@ -79,6 +79,18 @@ function normalizeAxTree(roots: RawAxeNode[]): AxSnapshot {
   };
 }
 
+const SOFTWARE_KEYBOARD_KEY_IDS = ["delete", "shift", "space", "more", "dictation"];
+
+export async function isSoftwareKeyboardVisible(udid: string): Promise<boolean> {
+  const snapshot = await snapshotFromNative(udid);
+  if (snapshot.errors?.length) return false;
+  const keys = new Set<string>();
+  for (const el of snapshot.elements) {
+    if (SOFTWARE_KEYBOARD_KEY_IDS.includes(el.id)) keys.add(el.id);
+  }
+  return keys.size >= 2;
+}
+
 async function snapshotFromNative(udid: string): Promise<AxSnapshot> {
   let raw: RawAxeNode[];
   try {

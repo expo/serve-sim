@@ -306,6 +306,17 @@ export function eventLogEventForHidMessage(
         action: "toggle",
         summary: "Software keyboard",
       };
+    case 0x0d: {
+      const visible = booleanValue(details.visible);
+      if (visible == null) return null;
+      return {
+        device,
+        source: "hid",
+        kind: "software-keyboard",
+        action: visible ? "show" : "hide",
+        summary: `Software keyboard ${visible ? "shown" : "hidden"}`,
+      };
+    }
     default:
       return null;
   }

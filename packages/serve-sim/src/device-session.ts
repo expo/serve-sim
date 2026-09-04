@@ -25,6 +25,8 @@ import {
   type MjpegFrame,
   type NativeUnsubscribe,
 } from "./native";
+import { isSoftwareKeyboardVisible } from "./ax";
+import { debugKeyboard } from "./debug";
 import { eventLogEventForHidMessage, formatEventLogPoint, recordEventLogEvent, updateEventLogEvent } from "./event-log";
 import {
   MAX_WEBRTC_SIGNALING_BODY_BYTES,
@@ -237,6 +239,10 @@ export class DeviceSession {
   private readonly transport: StreamPlaybackSettings["transport"];
   private encoderSettings: StreamEncoderSettings;
   private streamSettingsUpdate: Promise<void> = Promise.resolve();
+  private softwareKeyboardHidden = false;
+  private softwareKeyboardSync: Promise<void> = Promise.resolve();
+  private softwareKeyboardSyncPending = false;
+  private softwareKeyboardPendingVisible: boolean | undefined;
 
   constructor(public readonly udid: string, initialStreamSettings?: StreamSettings) {
     const streamSettings = streamControlSettingsFrom(initialStreamSettings);
@@ -679,8 +685,13 @@ export class DeviceSession {
     const cfg = this.configFrame();
     if (cfg) ws.send(cfg); // seed dimensions/orientation, replacing the old poll
     ws.on("message", (data: Buffer) => this.handleHidMessage(Buffer.isBuffer(data) ? data : Buffer.from(data)));
-    ws.on("close", () => this.hidSockets.delete(ws));
-    ws.on("error", () => this.hidSockets.delete(ws));
+    ws.on("close", () => this.detachHidSocket(ws));
+    ws.on("error", () => this.detachHidSocket(ws));
+  }
+
+  private detachHidSocket(ws: HidSocket): void {
+    this.hidSockets.delete(ws);
+    if (this.hidSockets.size === 0) this.queueSoftwareKeyboardSync(true);
   }
 
   private async handleHidMessage(data: Buffer): Promise<void> {
@@ -780,7 +791,53 @@ export class DeviceSession {
         this.recordHidEvent(tag, {});
         this.hid.softwareKeyboard();
         break;
+      case 0x0d: {
+        const m = json<{ visible: boolean }>();
+        if (m) {
+          this.recordHidEvent(tag, m);
+          this.queueSoftwareKeyboardSync(m.visible);
+        }
+        break;
+      }
     }
+  }
+
+  private queueSoftwareKeyboardSync(visible: boolean): void {
+    this.softwareKeyboardPendingVisible = visible;
+    if (this.softwareKeyboardSyncPending) return;
+    this.softwareKeyboardSyncPending = true;
+    this.softwareKeyboardSync = this.softwareKeyboardSync
+      .then(() => this.drainSoftwareKeyboardSync())
+      .finally(() => {
+        this.softwareKeyboardSyncPending = false;
+      });
+  }
+
+  private async drainSoftwareKeyboardSync(): Promise<void> {
+    while (this.softwareKeyboardPendingVisible !== undefined) {
+      const visible = this.softwareKeyboardPendingVisible;
+      this.softwareKeyboardPendingVisible = undefined;
+      await this.setSoftwareKeyboardVisible(visible);
+    }
+  }
+
+  private async setSoftwareKeyboardVisible(visible: boolean): Promise<void> {
+    if (visible) {
+      debugKeyboard("show requested, hidden=%s", this.softwareKeyboardHidden);
+      if (!this.softwareKeyboardHidden) return;
+      this.softwareKeyboardHidden = false;
+      this.hid.softwareKeyboard();
+      return;
+    }
+    const keyboardVisible = await isSoftwareKeyboardVisible(this.udid);
+    debugKeyboard(
+      "hide requested, keyboard=%s hidden=%s",
+      keyboardVisible,
+      this.softwareKeyboardHidden,
+    );
+    if (this.softwareKeyboardHidden || !keyboardVisible) return;
+    this.softwareKeyboardHidden = true;
+    this.hid.softwareKeyboard();
   }
 
   private recordTouchEvent(payload: { type: string; x: number; y: number; edge?: number }): void {

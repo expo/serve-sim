@@ -68,8 +68,6 @@ export class UnsupportedCharacterError extends Error {
 export async function sendKeyEventsToWs(
   wsUrl: string,
   events: ReadonlyArray<KeyEvent>,
-  // iOS coalesces events that arrive in the same tick, so a small gap keeps
-  // long strings reliable without making the command noticeably slow.
   perEventDelayMs = 4,
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -101,8 +99,6 @@ export async function sendKeyEventsToWs(
   });
 }
 
-/** Returns the events needed to type `text`, or throws on unsupported chars.
- *  Each character emits (optional shift down) → key down → key up → (optional shift up). */
 export function textToKeyEvents(text: string): KeyEvent[] {
   const events: KeyEvent[] = [];
   for (const ch of text) {
@@ -116,4 +112,22 @@ export function textToKeyEvents(text: string): KeyEvent[] {
     if (spec.shift) events.push({ type: "up", usage: LEFT_SHIFT });
   }
   return events;
+}
+
+export function textToKeyEventsLenient(text: string): { events: KeyEvent[]; skipped: string[] } {
+  const events: KeyEvent[] = [];
+  const skipped: string[] = [];
+  for (const ch of text) {
+    if (ch === "\r") continue;
+    const spec = US_KEYBOARD_MAP[ch];
+    if (!spec) {
+      skipped.push(ch);
+      continue;
+    }
+    if (spec.shift) events.push({ type: "down", usage: LEFT_SHIFT });
+    events.push({ type: "down", usage: spec.usage });
+    events.push({ type: "up", usage: spec.usage });
+    if (spec.shift) events.push({ type: "up", usage: LEFT_SHIFT });
+  }
+  return { events, skipped };
 }

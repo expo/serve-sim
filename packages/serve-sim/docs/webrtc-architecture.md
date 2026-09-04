@@ -197,6 +197,11 @@ Keeping WebSocket control gives us:
 - The same behavior in MJPEG, AVCC, and WebRTC modes.
 - No native WebRTC-to-Node callback queue on a libwebrtc thread.
 
+Bundled clients send a one-byte application heartbeat every five seconds while
+the control socket is open. Browser WebSockets cannot originate protocol-level
+ping frames, and without application traffic a tunneled control path can go
+cold even while the separate WebRTC media path remains active.
+
 A data channel should only be reconsidered if measured WebSocket latency is a
 material problem and WebRTC can replace the entire helper control socket. A
 partial migration is not worth the extra lifecycle and ordering complexity.

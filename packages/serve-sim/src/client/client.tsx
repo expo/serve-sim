@@ -91,7 +91,9 @@ import {
 } from "./utils/simulator-resize";
 import {
   flushWsMessageQueue,
+  sendWsHeartbeat,
   sendOrQueueWsMessage,
+  WS_HEARTBEAT_INTERVAL_MS,
   type QueuedWsMessage,
 } from "./utils/ws-send-queue";
 import {
@@ -752,8 +754,15 @@ function AppWithConfig({
   useEffect(() => {
     let stopped = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     let currentWs: WebSocket | null = null;
     pendingWsMessagesRef.current = [];
+
+    const stopHeartbeat = () => {
+      if (!heartbeatTimer) return;
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    };
 
     const scheduleReconnect = () => {
       if (stopped || reconnectTimer) return;
@@ -769,6 +778,11 @@ function AppWithConfig({
       currentWs = ws;
       wsRef.current = ws;
       ws.onopen = () => {
+        stopHeartbeat();
+        heartbeatTimer = setInterval(
+          () => sendWsHeartbeat(ws),
+          WS_HEARTBEAT_INTERVAL_MS,
+        );
         pendingWsMessagesRef.current = flushWsMessageQueue(
           ws,
           pendingWsMessagesRef.current,
@@ -793,6 +807,7 @@ function AppWithConfig({
         } catch {}
       };
       ws.onclose = () => {
+        stopHeartbeat();
         if (wsRef.current === ws) wsRef.current = null;
         scheduleReconnect();
       };
@@ -806,6 +821,7 @@ function AppWithConfig({
     return () => {
       stopped = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      stopHeartbeat();
       if (wsRef.current === currentWs) wsRef.current = null;
       currentWs?.close();
     };

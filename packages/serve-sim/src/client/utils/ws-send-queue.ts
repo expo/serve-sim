@@ -1,4 +1,10 @@
 export const WS_OPEN_READY_STATE = 1;
+export const WS_HEARTBEAT_INTERVAL_MS = 5_000;
+
+// Browser WebSockets cannot send protocol-level ping frames. A one-byte
+// application heartbeat keeps tunneled control connections active while the
+// simulator is idle, avoiding a cold first HID event after a quiet period.
+const WS_MSG_HEARTBEAT = 0x01;
 
 export type QueuedWsMessage = {
   tag: number;
@@ -20,6 +26,12 @@ export function encodeWsMessage(tag: number, payload: object): Uint8Array<ArrayB
   msg[0] = tag;
   msg.set(json, 1);
   return msg;
+}
+
+export function sendWsHeartbeat(ws: WsSendTarget | null | undefined): boolean {
+  if (!ws || ws.readyState !== WS_OPEN_READY_STATE) return false;
+  ws.send(new Uint8Array([WS_MSG_HEARTBEAT]).buffer);
+  return true;
 }
 
 export function enqueueWsMessage(

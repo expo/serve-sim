@@ -192,6 +192,46 @@ describeIfSim("WebRTC input data channel", () => {
     }
   }, 60_000);
 
+  test("a gesture split across the reliable and lossy lanes lands once, in order", async () => {
+    const { pc, inputChannel } = await negotiate(offerUrl);
+    try {
+      // Mirrors the browser client: unordered, lifetime-limited lane for moves.
+      const movesChannel = pc.createDataChannel("moves", { ordered: false, maxPacketLifeTime: 100 });
+      expect(await waitForChannelState(inputChannel, "open", 20_000)).toBe(true);
+      expect(await waitForChannelState(movesChannel, "open", 20_000)).toBe(true);
+
+      const baseline = (await readEvents()).reduce((max, event) => Math.max(max, event.id), 0);
+
+      // begin/end on both lanes, moves only on the lossy lane — exactly what
+      // the browser sends. The server must apply one begin, the moves, and one
+      // end: a drag, not two taps or a stuck finger.
+      const g = 41;
+      const begin = { type: "begin", x: 0.5, y: 0.7, g, s: 0 };
+      const end = { type: "end", x: 0.5, y: 0.3, g, s: 4 };
+      inputChannel.send(hidFrame(WS_TAG_TOUCH, begin));
+      movesChannel.send(hidFrame(WS_TAG_TOUCH, begin));
+      for (let s = 1; s <= 3; s++) {
+        movesChannel.send(hidFrame(WS_TAG_TOUCH, { type: "move", x: 0.5, y: 0.7 - s * 0.1, g, s }));
+      }
+      movesChannel.send(hidFrame(WS_TAG_TOUCH, end));
+      inputChannel.send(hidFrame(WS_TAG_TOUCH, end));
+
+      const dragLogged = await waitFor(async () => {
+        const events = await readEvents();
+        return events.some((event) => event.id > baseline && event.source === "hid" && event.kind === "drag");
+      }, 15_000);
+      expect(dragLogged).toBe(true);
+      // The duplicated begin/end must not surface as extra taps.
+      await new Promise((r) => setTimeout(r, 500));
+      const newEvents = (await readEvents()).filter((event) => event.id > baseline && event.source === "hid");
+      expect(newEvents.filter((event) => event.kind === "tap")).toHaveLength(0);
+      expect(newEvents.filter((event) => event.kind === "drag")).toHaveLength(1);
+      expect(movesChannel.readyState).toBe("open");
+    } finally {
+      pc.close();
+    }
+  }, 60_000);
+
   test("a channel with an unknown label is closed by the server", async () => {
     const { pc, inputChannel } = await negotiate(offerUrl);
     try {

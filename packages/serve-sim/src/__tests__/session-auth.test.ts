@@ -189,6 +189,56 @@ describe("assertPreviewAccess", () => {
     ).toBe(true);
   });
 
+  // The hop after the token-for-cookie redirect is still reported as cross-site by the browser, so
+  // the dashboard link 401s on first load unless a navigation is allowed to present the cookie.
+  test("accepts the cookie on the navigation that follows the token redirect", () => {
+    const { res: r } = res();
+    expect(
+      assertPreviewAccess(
+        req({
+          cookie: `${accessCookieName(TOKEN)}=${encodeURIComponent(TOKEN)}`,
+          "sec-fetch-site": "cross-site",
+          "sec-fetch-dest": "document",
+          "sec-fetch-mode": "navigate",
+        }),
+        r,
+        TOKEN,
+        { required: true, basePath: "/" },
+      ),
+    ).toBe(true);
+  });
+
+  // A same-site page can still make subresource requests that carry the Lax cookie, and those can
+  // read the response, so they keep needing the origin check.
+  test("still refuses a cookie sent from another origin on a subresource request", () => {
+    const { sent, res: r } = res();
+    expect(
+      assertPreviewAccess(
+        req({
+          cookie: `${accessCookieName(TOKEN)}=${encodeURIComponent(TOKEN)}`,
+          "sec-fetch-site": "same-site",
+          "sec-fetch-dest": "empty",
+          "sec-fetch-mode": "cors",
+        }),
+        r,
+        TOKEN,
+        { required: true, basePath: "/" },
+      ),
+    ).toBe(false);
+    expect(sent.status).toBe(401);
+  });
+
+  test("does not redirect to another origin when the path normalizes to //", () => {
+    const { sent, res: r } = res();
+    assertPreviewAccess(req({ "sec-fetch-dest": "document" }, `/..//evil.example?token=${TOKEN}`), r, TOKEN, {
+      required: true,
+      basePath: "/",
+    });
+
+    expect(sent.status).toBe(302);
+    expect(sent.headers?.Location).not.toMatch(/^\/\//);
+  });
+
   test("refuses a caller with no token, and says how to get one", () => {
     const { sent, res: r } = res();
     expect(assertPreviewAccess(req(), r, TOKEN, { required: true, basePath: "/" })).toBe(false);
@@ -247,6 +297,33 @@ describe("assertUpgradeAccess", () => {
         { required: true },
       ),
     ).toBe(false);
+  });
+
+  // The cookie rides along on any request a same-site page makes, so a cookie-authenticated upgrade
+  // must also prove the origin. The call sites forward these headers for exactly this check.
+  test("refuses a cookie-authenticated upgrade from another origin", () => {
+    const cookie = `${accessCookieName(TOKEN)}=${encodeURIComponent(TOKEN)}`;
+    expect(
+      assertUpgradeAccess(
+        { cookie, origin: "https://evil.example", host: "preview.example" },
+        TOKEN,
+        { required: true },
+      ),
+    ).toBe(false);
+    expect(
+      assertUpgradeAccess({ cookie, "sec-fetch-site": "cross-site" }, TOKEN, { required: true }),
+    ).toBe(false);
+  });
+
+  test("accepts a cookie-authenticated upgrade from the preview's own origin", () => {
+    const cookie = `${accessCookieName(TOKEN)}=${encodeURIComponent(TOKEN)}`;
+    expect(
+      assertUpgradeAccess(
+        { cookie, origin: "https://preview.example", host: "preview.example" },
+        TOKEN,
+        { required: true },
+      ),
+    ).toBe(true);
   });
 
   test("refuses an upgrade with no token", () => {

@@ -177,6 +177,20 @@ function isDocumentNavigation(headers: SessionAuthReq["headers"]): boolean {
 }
 
 /**
+ * A top-level page load. A SameSite=Lax cookie only rides a *cross-site* request when it is one of
+ * these, and the page that started it cannot read the response, so the cookie is honoured here
+ * without the same-origin check every other request needs. Without this the dashboard's link 401s on
+ * first load: the hop after the token-for-cookie redirect still reports `Sec-Fetch-Site: cross-site`.
+ */
+function isTopLevelNavigation(req: SessionAuthReq): boolean {
+  const method = (req.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") return false;
+  const mode = headerValue(req.headers["sec-fetch-mode"]);
+  if (mode !== undefined && mode !== "navigate") return false;
+  return isDocumentNavigation(req.headers);
+}
+
+/**
  * Require the session token before serving anything that carries it.
  *
  * Off unless `--require-token` is set; when on, every gated route needs the token regardless of the
@@ -201,7 +215,8 @@ export function assertPreviewAccess(
     }
     url.searchParams.delete("token");
     res.writeHead(302, {
-      Location: `${url.pathname}${url.search}`,
+      // A leading "//" would be read as an absolute cross-origin URL by the browser.
+      Location: `${url.pathname.replace(/^\/+/, "/")}${url.search}`,
       "Set-Cookie": accessCookie(sessionToken, opts.basePath, isHttpsRequest(req.headers)),
       "Cache-Control": "no-store, private",
     });
@@ -212,7 +227,11 @@ export function assertPreviewAccess(
   const fromBearer = bearerToken(headerValue(req.headers.authorization));
   if (fromBearer && safeEqualString(fromBearer, sessionToken)) return true;
   const fromCookie = cookieValue(headerValue(req.headers.cookie), accessCookieName(sessionToken));
-  if (fromCookie && safeEqualString(fromCookie, sessionToken) && isSameOriginRequest(req.headers)) {
+  if (
+    fromCookie &&
+    safeEqualString(fromCookie, sessionToken) &&
+    (isSameOriginRequest(req.headers) || isTopLevelNavigation(req))
+  ) {
     return true;
   }
 

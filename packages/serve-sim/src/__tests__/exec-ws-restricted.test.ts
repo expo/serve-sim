@@ -80,8 +80,7 @@ function connect(): Promise<{
 }
 
 describe("gated POST refusals keep their status", () => {
-  // Bun's node:http drops the status when a reply is written while the request body is still
-  // unread, which is what an auth failure does. Every refused POST used to arrive as an empty 200.
+  // Bun's node:http drops the status when a reply is written with the body unread.
   test("an unauthenticated POST is refused with 401, not an empty 200", async () => {
     const response = await fetch(`http://127.0.0.1:${PORT}/api`, {
       method: "POST",
@@ -95,8 +94,7 @@ describe("gated POST refusals keep their status", () => {
 });
 
 describe("per-connection limits", () => {
-  // One shareable link must not be able to spawn unbounded work: each subscription holds a log
-  // stream child and each action spawns a process with a large output buffer.
+  // A subscription holds a log stream child and an action spawns a process.
   test("refuses more subscriptions than the cap allows", async () => {
     const channel = await connect();
     await channel.next(); // ready
@@ -140,8 +138,7 @@ describe("per-connection limits", () => {
 });
 
 describe("grid-booted devices", () => {
-  // The CLI subcommands and the metrics recorder authenticate from this file, so a device booted
-  // through the grid has to get the same token the primary device did.
+  // The subcommands and metrics recorder authenticate from this file.
   test("carry the session token in their state file when gated", () => {
     const gated = gridDeviceState("DEVICE-B", 4100, "", undefined, TOKEN);
     const ungated = gridDeviceState("DEVICE-B", 4100, "", undefined, undefined);
@@ -152,8 +149,7 @@ describe("grid-booted devices", () => {
 });
 
 describe("gated SSE fan-out", () => {
-  // The channel loops the subscription back through the server, which is gated, so the internal
-  // request has to carry the token.
+  // The subscription loops back through the gated server, so it must carry the token.
   test("streams a middleware route the gate would otherwise refuse", async () => {
     const channel = await connect();
     await channel.next(); // ready

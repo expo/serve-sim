@@ -850,10 +850,7 @@ function serveHelperInProcess(
  * preview server itself serves the device's /helper routes in-process. Resolves
  * to an error string on boot failure, or null on success.
  */
-/**
- * State file for a device booted through the grid. It has to carry the session token like the
- * primary device's does, or every authenticated reader of that file starts failing against it.
- */
+/** Carries the session token like the primary device's does, or its readers start failing. */
 export function gridDeviceState(
   udid: string,
   port: number,
@@ -870,8 +867,7 @@ export async function startDeviceInProcess(
   port: number,
   base: string,
   streamSettings?: StreamSettings,
-  /** Session token, when the server runs gated. Without it this device's state file would be
-   * written tokenless and every authenticated reader of it would start failing. */
+  /** Session token, when the server runs gated. */
   sessionToken?: string,
 ): Promise<string | null> {
   // `simctl boot` errors when already booted — ignore and let bootstatus confirm.
@@ -1014,9 +1010,8 @@ export function previewConfigForState(
   const streamSettings = typeof streamSettingsOrCodec === "object"
     ? streamSettingsOrCodec
     : httpStreamSettingsFromLegacyCodec(legacyCodec);
-  // The state files of every serve-sim on this host are readable here and the page config is picked
-  // by a caller-supplied ?device=, so neither the state's session token nor its TURN credentials may
-  // ride along: they would hand one instance's secrets to a visitor of another.
+  // Every serve-sim's state file is readable here and ?device= is caller-supplied, so neither the
+  // token nor the TURN credentials may ride along: that hands one instance's secrets to another.
   const { token: _sessionToken, streamSettings: _foreignStreamSettings, ...publicState } = state;
   return {
     ...publicState,
@@ -1596,10 +1591,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   // Simulator-settings requests run in-process (just the underlying simctl /
   // ax-tool spawn) instead of round-tripping a full `node <cli>` exec per
   // sidebar interaction.
-  /**
-   * Validation messages describe the caller's own input and are safe to return. A failure from
-   * simctl or the ax helper is not: it carries absolute host paths and the child's argv.
-   */
+  /** Validation messages are the caller's own input. A child's failure carries host paths. */
   const sanitizeUiFailure = async <T,>(work: Promise<T>): Promise<T> => {
     try {
       return await work;
@@ -1682,8 +1674,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         return;
       }
       try {
-        // The gate accepts `?token=` on non-document requests, so the session token can be sitting
-        // in this URL. Forward the rest of the query but never the credential.
+        // The gate accepts `?token=` here, so forward the rest of the query but never that.
         const upstreamQuery = new URLSearchParams(qIndex === -1 ? "" : rawUrl.slice(qIndex + 1));
         upstreamQuery.delete("token");
         const upstreamSuffix = upstreamQuery.size === 0 ? "" : `?${upstreamQuery.toString()}`;
@@ -2546,10 +2537,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
     socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
   };
-  // WebSocket action channel — off the browser's per-origin HTTP connection pool, so multiple
-  // preview tabs (each holding MJPEG + SSE streams) can't starve simulator actions. Servers mounting
-  // this middleware should forward `upgrade` events here (the built-in preview server does). There
-  // is no HTTP fallback: a broken channel must surface as an error, not silent degradation.
+  // Off the browser's per-origin connection pool, so preview tabs holding MJPEG and SSE streams
+  // can't starve actions. Hosts mounting this middleware forward `upgrade` events here.
   const fetchMiddleware = (async (request: Request) => {
     return connectToFetch(connectMiddleware, request);
   }) as SimMiddleware;

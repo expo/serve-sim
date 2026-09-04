@@ -15,11 +15,8 @@ export type WebMiddleware = ((request: Request) => Response | undefined | Promis
 const MAX_BUFFERED_REQUEST_BYTES = 8 * 1024 * 1024;
 
 /**
- * Read a request body before the middleware runs.
- *
- * Bun's `node:http` drops the response status when a reply is written while the request stream is
- * still unread, which is exactly what an auth failure does: every refused POST reached the client as
- * an empty 200. Reading first costs nothing here and keeps the status intact.
+ * Bun's `node:http` drops the response status when a reply is written with the request still unread,
+ * which is what an auth failure does: every refused POST reached the client as an empty 200.
  */
 export class RequestBodyTooLargeError extends Error {}
 
@@ -32,9 +29,8 @@ export async function readRequestBodyAsync(req: IncomingMessage): Promise<Buffer
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
     size += buffer.length;
     if (size > MAX_BUFFERED_REQUEST_BYTES) {
-      // Keep draining but stop buffering: destroying the request here would take the socket with it
-      // and the 413 would never reach the client, and returning early would hand the middleware a
-      // partial body as if it were whole.
+      // Keep draining but stop buffering: destroying the request would take the socket with it,
+      // and returning early would hand the middleware a partial body as if it were whole.
       tooLarge = true;
       chunks.length = 0;
       continue;

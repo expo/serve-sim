@@ -7,8 +7,7 @@ import { join } from "path";
 
 import { InvalidHostActionError, runHostActionAsync } from "../host-actions";
 
-// `true` ignores its arguments and exits 0, so these assert the validation layer without running
-// simctl. Argument construction itself is covered by the CLI-backed actions below.
+// `true` ignores its arguments and exits 0, so these assert validation without running simctl.
 const BIN = "true";
 
 describe("runHostActionAsync validation", () => {
@@ -74,8 +73,7 @@ describe("runHostActionAsync validation", () => {
     ).rejects.toBeInstanceOf(InvalidHostActionError);
   });
 
-  // execFile takes an argument vector, so a value that would be a metacharacter in a shell arrives
-  // as one argument and cannot start a second command. Proven against a real spawn.
+  // execFile takes an argument vector, so a shell metacharacter arrives as one argument.
   it("passes params through as literal arguments to a real spawn", async () => {
     const result = await runHostActionAsync(
       {
@@ -97,8 +95,7 @@ describe("runHostActionAsync validation", () => {
     }
   });
 
-  // The intersection of the udid object and the file source is the fiddliest schema here, so assert
-  // it validates. Reaching simctl at all means the params were accepted.
+  // The fiddliest schema here; reaching simctl means the params were accepted.
   it("accepts a staged upload as an install source", async () => {
     await expect(
       runHostActionAsync({ action: "app.install", params: { udid: "U", uploadId: "app.ipa" } }, BIN),

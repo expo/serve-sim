@@ -33,9 +33,8 @@ import { safeEqualString } from "./session-auth";
 //   client → {unsub: sub}             cancel a subscription
 
 const AUTH_TIMEOUT_MS = 10_000;
-// A gated preview link is shareable, so one socket must not be able to spawn unbounded work on the
-// host. Each SSE subscription holds a stream or watcher, and each action spawns a process with a
-// 16MB output buffer, so both are capped per socket.
+// A shareable link must not spawn unbounded work: a subscription holds a stream or watcher and an
+// action spawns a process, so both are capped per socket.
 const MAX_SUBSCRIPTIONS_PER_SOCKET = 16;
 const MAX_ACTIONS_IN_FLIGHT_PER_SOCKET = 8;
 
@@ -65,11 +64,9 @@ interface ExecChannelOptions {
   ssePrefixes?: string[];
   /** In-process handler for `{id, ui}` simulator-settings requests. */
   onUiRequest?: UiRequestHandler;
-  /** Optional observer for completed actions. */
   onActionResult?: ActionResultHandler;
   /** Routes an authenticated subscription back through the owning middleware. */
   onSseRequest?: SseRequestHandler;
-  /** serve-sim entrypoint used to run the CLI-backed actions. */
   serveSimBinPath?: string;
 }
 
@@ -131,10 +128,8 @@ function wireExecSocket(
       try {
         const response = await opts.onSseRequest!(path, request);
         if (!active) {
-          // Destroyed while the request was in flight, so `reader` was never taken. Cancelling the
-          // body is the only thing that tells the upstream route to tear down: a subrequest from
-          // this channel has no socket whose close it could notice, so its watcher, heartbeat or
-          // `log stream` child would otherwise run for the life of the process.
+          // `reader` was never taken, and cancelling the body is the only thing that tells the
+          // route to tear down: a subrequest here has no socket whose close it could notice.
           void response?.body?.cancel().catch(() => {});
           return;
         }
@@ -238,7 +233,7 @@ function wireExecSocket(
         try {
           opts.onActionResult?.(action, params, result);
         } catch {
-          // Action observers are diagnostic side-channels; a failure here must not break the reply.
+          // Diagnostic side-channel; a failure here must not break the reply.
         }
         send({ id, ...result });
       })
@@ -270,8 +265,7 @@ export function createExecWebSocketHandler(opts: ExecChannelOptions) {
     const url = new URL(request.url);
     if (url.pathname !== opts.path && url.pathname !== `${opts.path}/`) return false;
 
-    // Browsers always send Origin on WebSocket upgrades, and a cross-origin page's Origin won't
-    // match Host, so this keeps another site's page off the channel.
+    // Browsers always send Origin on upgrades, so this keeps another site's page off the channel.
     const origin = request.headers.get("origin");
     if (origin) {
       try {

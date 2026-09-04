@@ -6,14 +6,9 @@ import { realpathSync } from "fs";
 import { join, resolve, sep } from "path";
 import { z } from "zod";
 
-// The preview page drives the simulator through this fixed set of actions. Under --require-token the
-// preview link is shareable, so the control socket is not a shell: an action either runs a known
-// program with an argument array built here, or is handled in process, and no value the page sends
-// reaches a shell.
-//
-// This bounds what a link holder can run on the host, not what they can do to the simulator.
-// Installing a dropped .ipa and launching it is a feature, and simulator processes run as the
-// operator, so the session token remains the real boundary.
+// The preview link is shareable, so this is a fixed set of actions rather than a shell: no value the
+// page sends ever reaches one. It bounds what a link holder can run on the host, not what they can
+// do to the simulator, so the session token remains the real boundary.
 
 export interface HostActionResult {
   stdout: string;
@@ -26,7 +21,6 @@ export interface HostActionRequest {
   params?: unknown;
 }
 
-/** Program and argument vector for one action. `execFile` never involves a shell. */
 interface Invocation {
   file: string;
   args: string[];
@@ -34,17 +28,16 @@ interface Invocation {
 
 export class InvalidHostActionError extends Error {}
 
-/** Scratch space for uploads. Confining them here keeps a caller-supplied path off the filesystem. */
+/** Confining uploads here keeps a caller-supplied path off the filesystem. */
 const UPLOAD_DIR = join(tmpdir(), "serve-sim-uploads");
-// A shareable link can upload, so the staging area needs a ceiling: without one a caller could fill
-// the host's disk, and an abandoned upload (a closed tab) is never cleaned up by its own action.
+// Without a ceiling a caller could fill the disk, and a closed tab never cleans up after itself.
 const MAX_UPLOAD_DIR_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_UPLOAD_AGE_MS = 6 * 60 * 60 * 1000;
 /** ~3MB of raw bytes, matching the client's 192KB slices with generous headroom. */
 const MAX_UPLOAD_CHUNK_BASE64 = 4 * 1024 * 1024;
 
-// Appends are serialized through this chain so the budget check and the write cannot interleave:
-// concurrent callers would otherwise all read the same pre-write total and sail past the ceiling.
+// Serialized so the budget check and the write cannot interleave: concurrent callers would
+// otherwise all read the same pre-write total and sail past the ceiling.
 let uploadQueue: Promise<unknown> = Promise.resolve();
 
 function queueUploadAsync<T>(work: () => Promise<T>): Promise<T> {
@@ -53,13 +46,13 @@ function queueUploadAsync<T>(work: () => Promise<T>): Promise<T> {
   return result;
 }
 
-/** mkdir's mode only applies on creation, so an area left by an earlier run keeps its old mode. */
+/** mkdir's mode only applies on creation, so a directory from an earlier run keeps its mode. */
 async function ensureUploadDirAsync(): Promise<void> {
   await mkdir(UPLOAD_DIR, { recursive: true, mode: 0o700 });
   await chmod(UPLOAD_DIR, 0o700).catch(() => {});
 }
 
-/** Ceiling on serve-sim's own screenshots, counted by name so unrelated Desktop files are ignored. */
+/** Counted by name so unrelated Desktop files are ignored. */
 const MAX_DESKTOP_SCREENSHOTS = 200;
 
 async function desktopScreenshotBudgetExceededAsync(): Promise<boolean> {
@@ -88,7 +81,6 @@ async function pruneUploadsAsync(): Promise<number> {
       if (info.mtimeMs < cutoff) await rm(full, { force: true, recursive: true });
       else total += info.size;
     } catch {
-      // Raced with another writer or already gone; it is not this call's file to account for.
     }
   }
   return total;
@@ -136,8 +128,7 @@ const Coordinate = z.number().finite();
  * out of scope for a shareable preview link. Resolved first, so traversal collapses before the check.
  */
 const ConfinedPath = Argument.transform((value) => {
-  // realpath, not resolve: a symlink under an allowed root would otherwise point anywhere. A path
-  // that does not exist yet keeps its lexical form, which the roots check below still constrains.
+  // realpath, not resolve: a symlink under an allowed root would otherwise point anywhere.
   try {
     return realpathSync(resolve(value));
   } catch {
@@ -182,8 +173,7 @@ const ACTION_SCHEMAS = {
   }),
   "server.kill": z.object({}),
   "camera.listWebcams": z.object({}),
-  // A file source renders a host file into the preview stream, so it is confined like any other
-  // read. The union also makes the target required for "file" and optional for the rest.
+  // The union also makes the target required for "file" and optional for the rest.
   "camera.switch": z.discriminatedUnion("source", [
     z.object({ udid: Device, source: z.literal("file"), target: ConfinedPath }),
     z.object({ udid: Device, source: z.literal("webcam"), target: Argument.optional() }),
@@ -231,8 +221,7 @@ const ACTION_SCHEMAS = {
   "screenshot.thumbnail": z.object({ path: ConfinedPath }),
   "upload.append": z.object({
     uploadId: UploadId,
-    // Bounded here rather than trusting the socket's frame cap: this module is usable by a host
-    // that supplies its own transport.
+    // Bounded here rather than trusting the socket's cap: a host may supply its own transport.
     data: z.base64().min(1).max(MAX_UPLOAD_CHUNK_BASE64),
     first: z.boolean().optional(),
   }),
@@ -382,8 +371,7 @@ function buildInvocation(action: HostActionName, raw: unknown, binPath: string):
       return { file: "open", args: ["-R", p.path] };
     }
     default:
-      // The in-process actions are answered by runInProcessAsync before this runs, so reaching here
-      // means an entry was added to ACTION_SCHEMAS without a home in either dispatcher.
+      // Reaching here means an ACTION_SCHEMAS entry has no home in either dispatcher.
       throw new InvalidHostActionError(`unknown action ${String(action)}`);
   }
 }
@@ -392,10 +380,7 @@ function fileSourcePath(p: { uploadId: string } | { path: string }): string {
   return "uploadId" in p ? join(UPLOAD_DIR, p.uploadId) : p.path;
 }
 
-/**
- * Child output is useful diagnostics, but a runtime that cannot find its entrypoint prints the
- * absolute path, and a stack trace prints the operator's checkout. Keep the message, drop the paths.
- */
+/** Child output is useful, but a stack trace prints the operator's checkout. Keep the message. */
 function redactHostPaths(text: string): string {
   if (!text) return text;
   return text.split(homedir()).join("~").replace(/\/(?:private\/)?var\/folders\/\S+/g, "<tmp>");
@@ -404,8 +389,6 @@ function redactHostPaths(text: string): string {
 function runInvocation({ file, args }: Invocation): Promise<HostActionResult> {
   return new Promise<HostActionResult>((resolve) => {
     execFile(file, args, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      // A spawn failure has a string code (ENOENT) and empty stderr. Report the code rather than
-      // err.message, which embeds the absolute binary path and full argv.
       const code = (err as NodeJS.ErrnoException | null)?.code;
       resolve({
         stdout: stdout.toString(),
@@ -438,8 +421,7 @@ async function runInProcessAsync(
       const chunk = Buffer.from(p.data, "base64");
       return await queueUploadAsync(async () => {
       await ensureUploadDirAsync();
-      // Checked on every chunk: appendFile creates the file too, so a caller that never sends
-      // `first` would otherwise write without ever passing the ceiling.
+      // Every chunk: appendFile creates the file too, so omitting `first` would skip the ceiling.
       if ((await pruneUploadsAsync()) + chunk.length > MAX_UPLOAD_DIR_BYTES) {
         return {
           stdout: "",
@@ -476,13 +458,11 @@ async function runInProcessAsync(
       const p = parseParams(action, raw);
       return await runInvocation({ file: "base64", args: ["-i", p.path] });
     }
-    // Screenshots land on the operator's Desktop, so the page names the file but never the
-    // directory, and the resolved absolute path comes back for the toast's reveal action.
+    // The page names the file but never the directory.
     case "screenshot.capture": {
       const p = parseParams(action, raw);
       const target = join(homedir(), "Desktop", p.fileName);
-      // The other write path has a ceiling; without one here a link holder can loop screenshots
-      // until the operator's disk is full.
+      // Without a ceiling a link holder can loop screenshots until the disk is full.
       if (await desktopScreenshotBudgetExceededAsync()) {
         return {
           stdout: "",
@@ -498,8 +478,7 @@ async function runInProcessAsync(
       });
       return result.exitCode === 0 ? ok(target) : result;
     }
-    // The thumbnail is scratch, so it is staged away from the screenshot it came from and removed
-    // even when sips fails part-way through.
+    // Scratch, so it is staged away from its source and removed even if sips fails part-way.
     case "screenshot.thumbnail": {
       const p = parseParams(action, raw);
       const thumb = join(UPLOAD_DIR, `thumb-${randomUUID()}.png`);

@@ -1120,6 +1120,9 @@ function AppWithConfig({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent, type: "down" | "up") => {
+      ((window as unknown as { __kbdbg?: string[] }).__kbdbg ??= []).push(
+        `KEY ${type} code=${JSON.stringify(e.code)} key=${JSON.stringify(e.key)} simF=${simFocusedRef.current} u=${String(hidUsageForCode(e.code))}`,
+      );
       const simFocused = simFocusedRef.current;
       const keyboardOpen = keyboardOpenRef.current;
       if (simFocused && !keyboardOpen) {

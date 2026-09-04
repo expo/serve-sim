@@ -159,6 +159,28 @@ private func u32(_ v: Int) -> UInt32 {
         return try NodeFunction { await unsubscribe() }
     }
 
+    /// HID frames arriving on viewers' WebRTC "input" data channels, handed to
+    /// `onInput` as the same binary `[tag][JSON]` payloads the `/ws` socket
+    /// carries. libwebrtc's delegate thread only enqueues onto the threadsafe
+    /// function — nonblocking, so a full queue drops a frame instead of
+    /// stalling libwebrtc — and the JS thread runs the callbacks in FIFO order.
+    @NodeMethod func subscribeInput(
+        onInput: NodeFunction
+    ) async throws -> NodeFunction {
+        var buffer = try CaptureBuffer(initialCapacity: 4096)
+        let queue = self.queue
+        await engine.setWebRTCInputHandler { data in
+            // The JS callback consumes the reused buffer synchronously
+            // (parse + dispatch), so the next setData cannot race it.
+            try? queue.run {
+                let array = try buffer.setData(data)
+                _ = try? onInput.call([array])
+            }
+        }
+        let engine = self.engine
+        return try NodeFunction { await engine.setWebRTCInputHandler(nil) }
+    }
+
     @NodeMethod func start() async throws {
         try await engine.start()
     }

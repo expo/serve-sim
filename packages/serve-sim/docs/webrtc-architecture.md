@@ -18,8 +18,11 @@ stream or decoded browser output.
 
 ## Decisions
 
-1. WebRTC carries video only.
-2. The existing helper WebSocket is the canonical input and metadata channel.
+1. WebRTC carries video, plus one "input" data channel per viewer for HID.
+2. The helper WebSocket stays open in every mode. It is the canonical metadata
+   channel (screen size, orientation) and the input fallback. On the WebRTC
+   transport, HID prefers the data channel because it rides the media path
+   (UDP, no tunnel hops) instead of the tunneled TCP socket.
 3. HTTP video remains available for compatibility, automation, and multiple
    viewers.
 4. Multiple WebRTC viewers can share one simulator capture session.
@@ -67,6 +70,7 @@ DeviceSession (one per UDID)
   +-- HTTP stream handlers
   +-- WebRTC signaling handlers
   +-- WebSocket input and screen-config fan-out
+  +-- WebRTC "input" data-channel intake (same HID dispatch as /ws)
           |
           v
 CaptureEngine
@@ -82,6 +86,7 @@ WebRTCPublisher (LiveKit WebRTC framework)
   +-- codec preference and H.264 capability probe
   +-- pre-encode resolution scaling and pixel-buffer conversion
   +-- latest-frame pacing at the configured frame rate
+  +-- "input" data-channel acceptance -> ordered bridge to the JS HID dispatch
 ```
 
 The browser has three rendering paths:
@@ -90,7 +95,7 @@ The browser has three rendering paths:
 | --- | --- | --- | --- |
 | MJPEG | `/stream.mjpeg` | `<img>` | WebSocket |
 | AVCC | `/stream.avcc` | WebCodecs + `<canvas>` | WebSocket |
-| WebRTC | `/webrtc/offer` + RTP | `<video>` | WebSocket |
+| WebRTC | `/webrtc/offer` + RTP | `<video>` | "input" data channel, WebSocket fallback |
 
 ### Capture and frame flow
 
@@ -146,7 +151,8 @@ a frame while no peer is active exits before conversion or encoding.
 
 ### Signaling lifecycle
 
-1. The browser creates a receive-only video transceiver and gathers ICE.
+1. The browser creates a receive-only video transceiver plus the "input" data
+   channel, and gathers ICE.
 2. It POSTs an SDP offer, session ID, codec preference, and ICE configuration.
 3. Native creates a peer connection for that session, applies codec preferences,
    gathers ICE, and returns a complete SDP answer.
@@ -181,31 +187,49 @@ The current codec ladder is H.264 -> VP8 -> VP9 when H.264 was requested, and
 VP9 -> VP8 when VP9 was requested. Native can also prefer VP8 when its H.264
 runtime probe fails.
 
-## WebSocket control decision
+## Input transport decision
 
-WebRTC data-channel input was removed intentionally. The preview already keeps
-the helper WebSocket open because it carries screen size and orientation updates.
-Using both channels for HID introduced a handover point where `begin` could be
-sent on WebSocket and `move` or `end` on the data channel. Each channel is
-ordered independently, but their combined delivery order is undefined.
+An earlier iteration removed data-channel input and set a bar for bringing it
+back: measured WebSocket latency being a material problem. Production met that
+bar. Hosted deployments reach the helper WebSocket through an HTTP tunnel, so
+every touch move crossed extra relay hops on ordered TCP, where one lost
+segment stalls the whole gesture stream for a retransmit round trip. The
+WebRTC media path had already negotiated a direct (or TURN) UDP route between
+the same two machines — input now uses it.
 
-Keeping WebSocket control gives us:
+Each viewer opens one ordered, reliable data channel labeled `input` before its
+SDP offer. It carries the exact `[tag][JSON]` frames the `/ws` socket carries,
+and the server funnels both into the same `DeviceSession` HID dispatch, so the
+two paths cannot drift in behavior. The server closes data channels with any
+other label.
 
-- One ordered path for every gesture and hardware-button sequence.
-- Existing reconnect and bounded queue behavior.
-- Screen metadata on the same control connection.
-- The same behavior in MJPEG, AVCC, and WebRTC modes.
-- No native WebRTC-to-Node callback queue on a libwebrtc thread.
+The original removal was motivated by a real hazard: `begin` sent on the
+WebSocket and `move`/`end` on the data channel are each ordered, but their
+combined delivery order is undefined. The client closes that hazard with a
+gesture-boundary router (`webrtc-input-channel.ts`): every event of one touch
+or multi-touch gesture travels on the transport the gesture began on, and the
+router only re-evaluates which transport to prefer while no gesture is in
+flight. If a channel dies mid-gesture, the rest of the gesture falls back to
+the WebSocket immediately — a closed channel delivers nothing late, so that
+switch cannot reorder events.
 
-A data channel should only be reconsidered if measured WebSocket latency is a
-material problem and WebRTC can replace the entire helper control socket. A
-partial migration is not worth the extra lifecycle and ordering complexity.
+What stays on the WebSocket:
 
-Every viewer owns a WebSocket, and all sockets have equal control access. Input
-is dispatched in arrival order with no exclusive-controller lease. Messages are
-ordered within one viewer's socket; operations from different viewers can
-interleave, so two people dragging at exactly the same time still contend for
-the simulator's single synthetic touch surface.
+- Screen size and orientation pushes (server to client).
+- All input whenever the data channel is not open: HTTP transports, channel
+  setup, channel failure, and reconnect gaps.
+- Existing reconnect and bounded-queue behavior, unchanged.
+
+On the native side, libwebrtc's delegate thread only copies the message and
+enqueues it on an AsyncStream; a single consumer task marshals messages onto
+the JS thread through the existing NodeAsyncQueue, preserving arrival order
+without ever blocking a libwebrtc thread on Node.
+
+Every viewer still has equal control access. Input is dispatched in arrival
+order with no exclusive-controller lease. Messages are ordered within one
+viewer's channel or socket; operations from different viewers can interleave,
+so two people dragging at exactly the same time still contend for the
+simulator's single synthetic touch surface.
 
 ## Current constraints
 
@@ -308,7 +332,9 @@ to HTTP when the network cannot establish WebRTC media.
 
 ### Current hardening
 
-- Keep WebSocket as the sole control path.
+- Prefer the "input" data channel for HID on the WebRTC transport; keep the
+  WebSocket as metadata channel and input fallback, with gesture-boundary
+  transport handover.
 - Separate external input from external MJPEG frame routing.
 - Restrict codec fallback to connected first-frame decode failures.
 - Retry transport failures with the same codec.
@@ -351,6 +377,8 @@ The stable transport should be exercised against:
 - Two simulators software-encoding concurrently.
 - External simulator shutdown while multiple viewers are connected.
 - HTTP and WebRTC viewers running side by side.
+- HID over the input data channel, and WebSocket fallback while the channel is
+  connecting, closed, or failed.
 
 The useful operational signals are negotiated codec, candidate-pair type, RTT,
 packet loss, actual bitrate, encoded/sent/dropped frames, encode duration, and

@@ -52,6 +52,7 @@ interface SimCaptureHandle {
   screenSize(): Promise<{ width: number; height: number }>;
   stop(): Promise<void>;
   subscribe(codec: number, onFrame: RawFrameCallback): Promise<NativeUnsubscribe>;
+  subscribeInput(onInput: RawInputCallback): Promise<NativeUnsubscribe>;
 }
 
 interface NativeAddon {
@@ -75,6 +76,10 @@ type RawFrameCallback = (
   height: number,
   flags: number,
 ) => Promise<void>;
+
+// One binary [tag][JSON] HID frame from a viewer's WebRTC "input" data channel.
+// `data` is a view into a reused native buffer: consume it synchronously.
+type RawInputCallback = (data: Uint8Array) => void;
 
 const CODEC_MJPEG = 0;
 const CODEC_AVCC = 1;
@@ -261,6 +266,15 @@ export class NativeCapture {
         isKeyframe: (flags & FLAG_KEYFRAME) !== 0,
       });
     });
+  }
+
+  /**
+   * HID frames arriving on viewers' WebRTC "input" data channels — the same
+   * binary `[tag][JSON]` protocol as the `/ws` control socket. The callback
+   * must consume `data` synchronously; the underlying buffer is reused.
+   */
+  subscribeInput(onInput: (data: Uint8Array) => void): Promise<NativeUnsubscribe> {
+    return this.handle.subscribeInput(onInput);
   }
 
   async handleWebRTCOffer(offer: unknown): Promise<unknown> {

@@ -237,6 +237,7 @@ export class DeviceSession {
   private readonly transport: StreamPlaybackSettings["transport"];
   private encoderSettings: StreamEncoderSettings;
   private streamSettingsUpdate: Promise<void> = Promise.resolve();
+  private webRtcInputUnsubscribe?: Promise<NativeUnsubscribe>;
 
   constructor(public readonly udid: string, initialStreamSettings?: StreamSettings) {
     const streamSettings = streamControlSettingsFrom(initialStreamSettings);
@@ -252,13 +253,37 @@ export class DeviceSession {
     if (this.phase === "stopped") return Promise.reject(new Error("Capture session is stopped"));
     this.phase = "running";
     this.captureStart = this.capture.start();
+    if (this.transport === "webrtc") this.attachWebRtcInput();
     return this.captureStart;
+  }
+
+  /**
+   * Viewers on the WebRTC transport send HID over an "input" data channel — the
+   * same binary `[tag][JSON]` frames as `/ws`, dispatched through the same
+   * handler so both paths behave identically. A subscription failure is not
+   * fatal: the browser falls back to the control WebSocket by itself.
+   */
+  private attachWebRtcInput(): void {
+    const subscription = this.capture.subscribeInput((data) => {
+      // The view aliases a reused native buffer; handleHidMessage parses it
+      // synchronously before any await, so no copy is needed.
+      void this.handleHidMessage(Buffer.from(data.buffer, data.byteOffset, data.byteLength));
+    });
+    this.webRtcInputUnsubscribe = subscription;
+    subscription.catch((err) => {
+      if (this.webRtcInputUnsubscribe === subscription) this.webRtcInputUnsubscribe = undefined;
+      console.error(
+        `WebRTC input channel unavailable; input stays on /ws: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
   }
 
   close(): void {
     if (this.phase !== "running") return;
     for (const ws of this.hidSockets) ws.close();
     this.hidSockets.clear();
+    void this.webRtcInputUnsubscribe?.then((unsubscribe) => unsubscribe()).catch(() => {});
+    this.webRtcInputUnsubscribe = undefined;
     void this.capture.stop().catch(() => {});
     this.phase = "stopped";
   }

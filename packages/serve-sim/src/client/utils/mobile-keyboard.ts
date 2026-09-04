@@ -29,6 +29,24 @@ export function keyEventsForInputType(
   }
 }
 
+export function keyEventsForBeforeInput(
+  inputType: string,
+  caretAtStart: boolean,
+): KeyEvent[] {
+  switch (inputType) {
+    case "insertLineBreak":
+    case "insertParagraph":
+      return keyEventsForInputType(inputType, null);
+    case "deleteContentBackward":
+    case "deleteWordBackward":
+      // A delete with nothing before the caret fires no `input`, so the value
+      // diff won't forward it (e.g. a fresh reopen); forward it here instead.
+      return caretAtStart ? keyEventsForInputType(inputType, null) : [];
+    default:
+      return [];
+  }
+}
+
 export function keyEventsForTextChange(
   previous: string,
   next: string,

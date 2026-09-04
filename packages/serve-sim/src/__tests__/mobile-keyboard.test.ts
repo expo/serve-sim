@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  keyEventsForBeforeInput,
   keyEventsForInputType,
   keyEventsForTextChange,
 } from "../client/utils/mobile-keyboard";
@@ -92,5 +93,47 @@ describe("keyEventsForTextChange", () => {
   test("does not backspace for an emoji that was never sent", () => {
     // "a😀" -> "a": the emoji leaves the value but was never a keystroke.
     expect(keyEventsForTextChange("a😀", "a")).toEqual([]);
+  });
+});
+
+describe("keyEventsForBeforeInput", () => {
+  const BACKSPACE = {
+    down: { type: "down", usage: 0x2a },
+    up: { type: "up", usage: 0x2a },
+  } as const;
+
+  test("forwards Backspace for a delete on an empty input (caret at start)", () => {
+    expect(keyEventsForBeforeInput("deleteContentBackward", true)).toEqual([
+      BACKSPACE.down,
+      BACKSPACE.up,
+    ]);
+    expect(keyEventsForBeforeInput("deleteWordBackward", true)).toEqual([
+      BACKSPACE.down,
+      BACKSPACE.up,
+    ]);
+  });
+
+  test("leaves a delete to the value diff when the caret is not at the start", () => {
+    expect(keyEventsForBeforeInput("deleteContentBackward", false)).toEqual([]);
+  });
+
+  test("still sends Backspace after the keyboard is closed and reopened", () => {
+    const sent: { type: string; usage: number }[] = [];
+    let buffer = "";
+    for (const next of ["h", "hi"]) {
+      sent.push(...keyEventsForTextChange(buffer, next));
+      buffer = next;
+    }
+
+    // Closing then reopening the keyboard clears the hidden input and its buffer.
+    buffer = "";
+    // The value diff alone forwards nothing for a Backspace on the empty input...
+    expect(keyEventsForTextChange(buffer, buffer)).toEqual([]);
+    // ...but the beforeinput handler still forwards it to the sim.
+    const afterReopen = keyEventsForBeforeInput("deleteContentBackward", true);
+    sent.push(...afterReopen);
+
+    expect(afterReopen).toEqual([BACKSPACE.down, BACKSPACE.up]);
+    expect(sent.slice(-2)).toEqual([BACKSPACE.down, BACKSPACE.up]);
   });
 });

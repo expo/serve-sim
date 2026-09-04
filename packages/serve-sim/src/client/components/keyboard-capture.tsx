@@ -3,7 +3,7 @@ import { Keyboard } from "lucide-react";
 import { IconButton } from "./icon-button";
 import {
   KEYBOARD_CAPTURE_ATTRIBUTES,
-  keyEventsForInputType,
+  keyEventsForBeforeInput,
   keyEventsForTextChange,
 } from "../utils/mobile-keyboard";
 import { readNativeKeyboardRaised } from "../utils/simulator-resize";
@@ -44,8 +44,9 @@ export function KeyboardCapture({
     };
     const onBeforeInput = (event: Event) => {
       const e = event as InputEvent;
+      const caretAtStart = el.selectionStart === 0 && el.selectionEnd === 0;
+      emit(keyEventsForBeforeInput(e.inputType, caretAtStart));
       if (e.inputType === "insertLineBreak" || e.inputType === "insertParagraph") {
-        emit(keyEventsForInputType(e.inputType, null));
         e.preventDefault();
       }
     };

@@ -1476,12 +1476,7 @@ export interface SimMiddlewareOptions {
    * cross-origin pages cannot read it.
    */
   execToken?: string;
-  /**
-   * Require the token before serving the preview HTML or `/api`, both of which carry it.
-   *
-   * Set when the server is bound to a non-loopback address. Off by default, because a loopback-only
-   * server is already reachable to whoever is on the machine.
-   */
+  /** Off by default: a loopback-only server is already reachable to whoever is on the machine. */
   requirePreviewToken?: boolean;
   /** Stream transport and codec settings for the preview. */
   streamSettings?: StreamSettings;
@@ -1618,8 +1613,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     const selectedDevice = requestedDevice ?? options?.device ?? null;
     const devtoolsFrontendBase = base === "/" ? "/devtools-frontend" : `${base}/devtools-frontend`;
 
-    // Gated as a whole rather than per route, so a new route is protected by default. Health checks stay
-    // open because a probe cannot hold a token, and the helper paths carry their own device session.
+    // Gated as a whole rather than per route, so a new route is protected by default.
     if (
       !UNGATED_PATHS.some((path) => url === base + path)
       && !assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })
@@ -2505,8 +2499,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     if (next) return next();
   }) as ConnectMiddleware;
   connectMiddleware.handleUpgrade = (req: SimReq, socket: Socket, head: Buffer) => {
-    // WebSocket upgrades skip the HTTP request path, so gate them here too: the HID and devtools
-    // sockets carry no token of their own, and without this an exposed server hands them to any caller.
+    // Upgrades skip the HTTP request path, and the HID and devtools sockets carry no token of
+    // their own, so gate them here too.
     if (
       !assertUpgradeAccess(
         { authorization: req.headers.authorization, cookie: req.headers.cookie },
@@ -2572,8 +2566,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     onCommandResult: (command, result) => recordCommandEvent(command, result),
     onSseRequest(path, websocketRequest) {
       const url = new URL(path, websocketRequest.url);
-      // The exec channel already authenticated (token frame), so its internal fan-out to same-origin
-      // SSE routes carries the token past the whole-surface gate. Without this it 401s when gated.
+      // The exec channel already authenticated, so its fan-out carries the token past the gate.
       return fetchMiddleware(new Request(url, {
         headers: { accept: "text/event-stream", authorization: `Bearer ${execToken}` },
       }));
@@ -2581,8 +2574,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   });
 
   fetchMiddleware.handleWebSocket = (request: Request, websocket: UpgradeHandlerWebSocket): boolean => {
-    // Hosts that forward accepted sockets here (embedded mode) bypass the request gate too. The exec
-    // channel re-checks the token in its first frame; the helper HID socket does not, so gate up front.
+    // Embedded hosts forward accepted sockets and bypass the request gate. The exec channel
+    // re-checks the token in its first frame; the helper HID socket does not.
     if (
       !assertUpgradeAccess(
         {

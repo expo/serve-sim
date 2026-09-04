@@ -82,8 +82,7 @@ describe("the rest of the surface with --require-token", () => {
 });
 
 describe("the protected surface", () => {
-  // Opting in per route left /api/screenshot, /logs, /ax and /devtools open. This pins the whole
-  // surface so a new route cannot be forgotten the same way.
+  // Opting in per route left /api/screenshot, /logs, /ax and /devtools open.
   const GATED = [
     "/api",
     "/api/events",
@@ -155,7 +154,7 @@ describe("websocket upgrades with --require-token", () => {
     return { calls, ws };
   }
 
-  // The devtools branch is async, so the only way this socket is torn down synchronously is the gate.
+  // The devtools branch is async, so a synchronous teardown can only be the gate.
   test("destroys a tokenless devtools socket (handleUpgrade)", () => {
     const handler = simMiddleware({ basePath: "/", execToken: TOKEN, requirePreviewToken: true });
     const { calls, socket } = fakeSocket();
@@ -165,7 +164,7 @@ describe("websocket upgrades with --require-token", () => {
     expect(calls.destroyed).toBe(true);
   });
 
-  // exec-ws would otherwise wire the socket and wait for its token frame; a synchronous close is the gate.
+  // exec-ws would otherwise wire the socket and wait for its token frame.
   test("closes a tokenless exec-ws socket before wiring it (handleWebSocket)", () => {
     const handler = simMiddleware({ basePath: "/", execToken: TOKEN, requirePreviewToken: true });
     const { calls, ws } = fakeWebSocket();

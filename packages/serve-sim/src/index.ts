@@ -189,10 +189,8 @@ function writeState(state: ServerState) {
   debugState("wrote state pid=%d device=%s port=%d", state.pid, state.device, state.port);
 }
 
-// Helper socket for a device, carrying the session token as a bearer header when the server runs
-// gated (--require-token). `ws` is used rather than the global WebSocket because the package
-// supports Node 20, where the global is undefined, and because a header keeps the token out of
-// request URLs and proxy logs.
+// `ws` rather than the global WebSocket: the package supports Node 20, where the global is
+// undefined, and a header keeps the token out of request URLs and proxy logs.
 function openHelperSocket(state: ServerState): WebSocket {
   return new WebSocket(
     state.wsUrl,
@@ -1671,7 +1669,7 @@ async function serve(
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
   // it can route helper/DevTools sockets through the single preview port.
-  // Minted here rather than inside the middleware, because the operator has to be told what it is.
+  // Minted here, not in the middleware, because the operator has to be told what it is.
   const requirePreviewToken = !!options.requireToken;
   const previewToken = randomBytes(32).toString("base64url");
   const middleware = simMiddleware({

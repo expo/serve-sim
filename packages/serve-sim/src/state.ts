@@ -30,19 +30,11 @@ export interface ServeSimDeviceState {
   streamUrl: string;
   wsUrl: string;
   streamSettings?: StreamSettings;
-  /**
-   * Present only under `--require-token`. Lets same-user CLI subcommands reach the gated helper
-   * socket by appending it to `wsUrl`. Owner-only on disk (0600); a network peer cannot read it.
-   */
+  /** Present only under `--require-token`, so local subcommands can reach the gated socket. */
   token?: string;
 }
 
-/**
- * Machine-readable startup payload for the preview server's `--quiet` output. Mirrors the shape the
- * follow/detach paths already print, and carries the session token only when the gate is on, so an
- * orchestrator (e.g. eas-cli) reads it once and presents it on every later call. The same token is
- * also written to the owner-only (0600) state file, so local subcommands can reach the gated socket.
- */
+/** `--quiet` startup payload. Carries the session token only when the gate is on. */
 export function previewStartupPayload(
   states: ServeSimDeviceState[],
   token?: string,
@@ -94,8 +86,7 @@ export function writeServeSimState(state: ServeSimDeviceState): void {
   mkdirSync(STATE_DIR, { recursive: true });
   const file = stateFileForDevice(state.device);
   const tmp = `${file}.${process.pid}.tmp`;
-  // Holds secrets: short-lived TURN credentials, and the session token under --require-token. Keep
-  // the file readable only by the account running serve-sim.
+  // Holds TURN credentials and, when gated, the session token.
   writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
   renameSync(tmp, file);
 }

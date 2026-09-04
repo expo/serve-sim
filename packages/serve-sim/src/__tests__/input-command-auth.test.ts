@@ -49,9 +49,8 @@ describe("sendKeyEventsToWs authorization", () => {
   });
 });
 
-// `type` once reached the helper socket through sendKeyEventsToWs without a token, so it broke under
-// --require-token while every sibling command worked. index.ts is a CLI entrypoint with no exports,
-// so guard the invariant at the source: the token-carrying helpers are the only way to the socket.
+// index.ts has no exports to drive, so the invariant is guarded at the source instead: the
+// token-carrying helpers are the only way to the socket.
 describe("CLI input commands cannot bypass the gate", () => {
   const source = readFileSync(join(import.meta.dir, "..", "index.ts"), "utf-8");
 

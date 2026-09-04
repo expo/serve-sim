@@ -161,8 +161,7 @@ describe("assertPreviewAccess", () => {
     expect(sent.headers?.Location).toBe("/?device=abc");
     expect(sent.headers?.["Set-Cookie"]).toContain(`${accessCookieName(TOKEN)}=${encodeURIComponent(TOKEN)}`);
     expect(sent.headers?.["Set-Cookie"]).toContain("HttpOnly");
-    // Lax, not Strict: the dashboard link is a cross-site top-level navigation, and a Strict cookie
-    // would be withheld on the redirect that follows the token swap.
+    // Strict would be withheld on the redirect that follows the token swap.
     expect(sent.headers?.["Set-Cookie"]).toContain("SameSite=Lax");
   });
 
@@ -189,8 +188,7 @@ describe("assertPreviewAccess", () => {
     ).toBe(true);
   });
 
-  // The hop after the token-for-cookie redirect is still reported as cross-site by the browser, so
-  // the dashboard link 401s on first load unless a navigation is allowed to present the cookie.
+  // The hop after the redirect still reports cross-site, which 401s the dashboard link.
   test("accepts the cookie on the navigation that follows the token redirect", () => {
     const { res: r } = res();
     expect(
@@ -208,8 +206,7 @@ describe("assertPreviewAccess", () => {
     ).toBe(true);
   });
 
-  // A same-site page can still make subresource requests that carry the Lax cookie, and those can
-  // read the response, so they keep needing the origin check.
+  // A subresource request can read the response, so it still needs the origin check.
   test("still refuses a cookie sent from another origin on a subresource request", () => {
     const { sent, res: r } = res();
     expect(
@@ -299,8 +296,7 @@ describe("assertUpgradeAccess", () => {
     ).toBe(false);
   });
 
-  // The cookie rides along on any request a same-site page makes, so a cookie-authenticated upgrade
-  // must also prove the origin. The call sites forward these headers for exactly this check.
+  // The call sites forward these headers for exactly this check.
   test("refuses a cookie-authenticated upgrade from another origin", () => {
     const cookie = `${accessCookieName(TOKEN)}=${encodeURIComponent(TOKEN)}`;
     expect(

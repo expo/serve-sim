@@ -24,6 +24,7 @@ export function Panel({
 
   return (
     <aside
+      data-panel
       className={`fixed z-35 min-w-0 overflow-hidden bg-panel-bg text-white/90 backdrop-blur-[18px] [font-family:-apple-system,system-ui,sans-serif] [transition:transform_0.25s_ease,opacity_0.2s_ease] flex flex-col ${chromeClass}`}
       style={{
         width,

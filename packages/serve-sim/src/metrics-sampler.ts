@@ -4,11 +4,11 @@
 // ~1-minute average. Scopes to the foreground app via the foreground tracker, tagging each sample
 // with its bundleId (null when nothing user-facing is foreground, in which case the numbers cover
 // every user app). Memory is phys_footprint, RSS fallback. Network rates come from a nettop poller.
-
 import { execFile } from "node:child_process";
 import { cpus } from "node:os";
 import { promisify } from "node:util";
 
+import { readFpsSample } from "./fps-shm";
 import { foregroundTracker, frontmostAppViaAx, type ForegroundApp } from "./foreground-tracker";
 
 const execFileAsync = promisify(execFile);
@@ -32,6 +32,8 @@ export interface MetricSample {
   memBytes: number;
   netInBytesPerSec: number; // latest download throughput (bytes/s) from the nettop poller
   netOutBytesPerSec: number; // latest upload throughput (bytes/s) from the nettop poller
+  fps: number | null;
+  mainThreadFps: number | null;
 }
 
 export interface MetricsMeta {
@@ -309,6 +311,7 @@ export interface MetricsSamplerOptions {
   sample?: (udid: string) => Promise<AppUsage | null>;
   now?: () => number;
   hostCores?: number;
+  readFps?: (udid: string, bundleId: string | null) => { fps: number; mainThreadFps: number } | null;
 }
 
 /** Polls the sim and fans samples out; reschedules only after each tick settles, so ticks never overlap. */
@@ -318,6 +321,10 @@ export class MetricsSampler {
   private readonly intervalMs: number;
   private readonly sample: (udid: string) => Promise<AppUsage | null>;
   private readonly now: () => number;
+  private readonly readFps: (
+    udid: string,
+    bundleId: string | null,
+  ) => { fps: number; mainThreadFps: number } | null;
   private readonly listeners = new Set<(sample: MetricSample) => void>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private startedAt: number | null = null;
@@ -339,6 +346,7 @@ export class MetricsSampler {
       this.network = network;
       this.sample = (udid) => sampleUserApp(udid, { networkRate: (pids) => network.rateForPids(pids) });
     }
+    this.readFps = opts.readFps ?? readFpsSample;
     this.meta = {
       schemaVersion: METRICS_SCHEMA_VERSION,
       udid: opts.udid,
@@ -373,6 +381,7 @@ export class MetricsSampler {
     const cpuPct = this.cpuPctSince(reading, t);
     this.prev = { t, bundleId: reading.bundleId, processKey: reading.processKey, cpuSeconds: reading.cpuSeconds };
 
+    const fpsSample = this.readFps(this.meta.udid, reading.bundleId);
     const sample: MetricSample = {
       t,
       bundleId: reading.bundleId,
@@ -380,6 +389,8 @@ export class MetricsSampler {
       memBytes: reading.memBytes,
       netInBytesPerSec: reading.netInBytesPerSec, // already rates from the nettop poller
       netOutBytesPerSec: reading.netOutBytesPerSec,
+      fps: fpsSample?.fps ?? null,
+      mainThreadFps: fpsSample?.mainThreadFps ?? null,
     };
     for (const listener of this.listeners) {
       try {

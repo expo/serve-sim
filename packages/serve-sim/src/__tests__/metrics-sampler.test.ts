@@ -415,11 +415,11 @@ describe("MetricsSampler", () => {
     for (let n = 0; n < readings.length; n++) await sampler.tickOnce();
 
     expect(got).toEqual([
-      { t: 1000, bundleId: "dev.expo.A", cpuPct: 0, memBytes: 100, netInBytesPerSec: 0, netOutBytesPerSec: 0 },
-      { t: 2000, bundleId: "dev.expo.A", cpuPct: 50, memBytes: 400, netInBytesPerSec: 2000, netOutBytesPerSec: 0 },
-      { t: 3000, bundleId: "dev.expo.A", cpuPct: 0, memBytes: 250, netInBytesPerSec: 0, netOutBytesPerSec: 0 },
-      { t: 4000, bundleId: "dev.expo.B", cpuPct: 0, memBytes: 260, netInBytesPerSec: 10, netOutBytesPerSec: 0 },
-      { t: 5000, bundleId: "dev.expo.B", cpuPct: 60, memBytes: 270, netInBytesPerSec: 600, netOutBytesPerSec: 0 },
+      { t: 1000, bundleId: "dev.expo.A", cpuPct: 0, memBytes: 100, netInBytesPerSec: 0, netOutBytesPerSec: 0, fps: null, mainThreadFps: null },
+      { t: 2000, bundleId: "dev.expo.A", cpuPct: 50, memBytes: 400, netInBytesPerSec: 2000, netOutBytesPerSec: 0, fps: null, mainThreadFps: null },
+      { t: 3000, bundleId: "dev.expo.A", cpuPct: 0, memBytes: 250, netInBytesPerSec: 0, netOutBytesPerSec: 0, fps: null, mainThreadFps: null },
+      { t: 4000, bundleId: "dev.expo.B", cpuPct: 0, memBytes: 260, netInBytesPerSec: 10, netOutBytesPerSec: 0, fps: null, mainThreadFps: null },
+      { t: 5000, bundleId: "dev.expo.B", cpuPct: 60, memBytes: 270, netInBytesPerSec: 600, netOutBytesPerSec: 0, fps: null, mainThreadFps: null },
     ]);
     sampler.stop();
   });
@@ -501,6 +501,28 @@ describe("MetricsSampler", () => {
     sampler.onSample((s) => received.push(s));
     await sampler.tickOnce();
     expect(received).toHaveLength(1);
+  });
+
+  it("attaches probe FPS when the shm sample is fresh for this bundle", async () => {
+    const sampler = new MetricsSampler({
+      udid: "FPS-SAMPLER-TEST-UDID",
+      sample: async () => ({
+        bundleId: "dev.expo.A",
+        processKey: "1",
+        cpuSeconds: 1,
+        memBytes: 2,
+        netInBytesPerSec: 0,
+        netOutBytesPerSec: 0,
+      }),
+      now: fakeClock(),
+      hostCores: 8,
+      readFps: (_udid, bundleId) =>
+        bundleId === "dev.expo.A" ? { fps: 48, mainThreadFps: 60 } : null,
+    });
+    const sample = await sampler.tickOnce();
+    expect(sample?.fps).toBe(48);
+    expect(sample?.mainThreadFps).toBe(60);
+    sampler.stop();
   });
 
   it("does not spawn overlapping poll loops on a stop/start during a tick", async () => {

@@ -2,9 +2,8 @@
 import { Command, InvalidArgumentError } from "commander";
 import { execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
 import { existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unlinkSync, writeFileSync } from "fs";
-import { createHash } from "crypto";
 import { networkInterfaces } from "os";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import {
   STATE_DIR,
   stateFileForDevice,
@@ -20,6 +19,20 @@ import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from ".
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
 import { killPortHolder } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
+import { fpsShmName, unlinkFpsShm } from "./fps-shm";
+import {
+  buildCameraDylib,
+  cameraShmName,
+  fpsDylib,
+  injectedAppEnvironment,
+  locateCameraDylib,
+} from "./app-injection";
+import {
+  ensureFpsProbeManager,
+  launchAppWithFpsProbe,
+  stopFpsProbeManager,
+} from "./fps-probe-manager";
+import { installAndLaunchApp } from "./launch-app";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
 import { permissions } from "./permissions";
 import { uiSettings } from "./ui-settings";
@@ -1025,43 +1038,9 @@ async function memoryWarning(deviceArg?: string) {
   });
 }
 
-// ─── Camera injection ───
-
-/**
- * Resolve the path to the SimCameraInjector dylib. The dev/source layout
- * places it under packages/serve-sim/dist/simcam/; the published npm tarball
- * ships the same file at <package>/dist/simcam/.
- */
-function locateCameraDylib(): string | null {
-  const candidates = [
-    join(__dirname, "..", "dist", "simcam", "libSimCameraInjector.dylib"),
-    join(__dirname, "simcam", "libSimCameraInjector.dylib"),
-    join(__dirname, "..", "Sources", "SimCameraInjector", "build",
-         "libSimCameraInjector.dylib"),
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) return resolve(p);
-  }
-  return null;
-}
-
-function buildCameraDylib(): string {
-  const buildScript = join(__dirname, "..", "Sources", "SimCameraInjector", "build.sh");
-  if (!existsSync(buildScript)) {
-    throw new Error(
-      "SimCameraInjector source not found — this build of serve-sim does not " +
-      "include camera support sources. Reinstall from a recent release.",
-    );
-  }
-  console.error("[serve-sim] building libSimCameraInjector.dylib (one-time)…");
-  execSync(`bash "${buildScript}"`, { stdio: "inherit" });
-  const out = locateCameraDylib();
-  if (!out) throw new Error("Build succeeded but dylib not found.");
-  return out;
-}
-
 function locateCameraHelper(): string | null {
   const candidates = [
+    join(dirname(process.execPath), "simcam", "serve-sim-camera-helper"),
     join(__dirname, "..", "dist", "simcam", "serve-sim-camera-helper"),
     join(__dirname, "simcam", "serve-sim-camera-helper"),
   ];
@@ -1082,12 +1061,6 @@ function buildCameraHelper(): string {
   const out = locateCameraHelper();
   if (!out) throw new Error("Build succeeded but helper binary not found.");
   return out;
-}
-
-function shmNameForUdid(udid: string): string {
-  // POSIX shm names on macOS have a 31-char limit. Hash the UDID short.
-  const short = createHash("sha1").update(udid).digest("hex").slice(0, 8);
-  return `/serve-sim-cam-${short}`;
 }
 
 function recordInjectedBundle(udid: string, bundleId: string, helperPid: number): void {
@@ -1244,7 +1217,7 @@ async function ensureHelperWithSource(opts: {
   source: ResolvedSource;
   forceBuild: boolean;
 }): Promise<{ helperPid: number | null; shmName: string; relaunched: boolean }> {
-  const shmName = shmNameForUdid(opts.udid);
+  const shmName = cameraShmName(opts.udid);
   const sockPath = helperSocketFile(opts.udid);
   if (isHelperAlive(opts.udid)) {
     // Hot-swap source via control socket — no relaunch needed.
@@ -1557,12 +1530,15 @@ Examples:
     execSync(`xcrun simctl terminate "${udid}" "${bundleId}"`, { stdio: "ignore" });
   } catch {}
 
-  const env = {
-    ...process.env,
-    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: dylib,
-    SIMCTL_CHILD_SIMCAM_SHM_NAME: shmName,
-    ...(mirror !== "auto" ? { SIMCTL_CHILD_SIMCAM_MIRROR_MODE: mirror } : {}),
-  };
+  const env = injectedAppEnvironment({
+    fps: { dylib: fpsDylib(), shmName: fpsShmName(udid) },
+    camera: {
+      dylib,
+      shmName,
+      ...(mirror !== "auto" ? { mirror } : {}),
+    },
+  });
+  unlinkFpsShm(udid);
 
   let stdoutBuf = "";
   try {
@@ -1608,7 +1584,7 @@ Examples:
 
 /** Resolve which simulators to stream, without spawning anything. */
 function resolveTargetDevices(devices: string[]): string[] {
-  if (devices.length > 0) return devices.map(resolveDevice);
+  if (devices.length > 0) return [...new Set(devices.map(resolveDevice))];
   const existing = readAllStates();
   if (existing.length > 0) return [existing[0]!.device];
   const booted = findBootedDevice();
@@ -1630,6 +1606,7 @@ async function serve(
     stream?: StreamRuntimeOptions;
     metricsCorsOrigins?: string[];
     debugStreamPath?: string;
+    launchAppPath?: string;
   } = {},
 ) {
   // Boot the target simulators; the preview server streams them in-process
@@ -1639,6 +1616,12 @@ async function serve(
     console.log("Starting simulator stream...");
   }
   for (const udid of targetDevices) await ensureBooted(udid);
+  if (options.launchAppPath) {
+    for (const udid of targetDevices) ensureFpsProbeManager(udid);
+    for (const udid of targetDevices) {
+      await installAndLaunchApp(udid, options.launchAppPath, launchAppWithFpsProbe);
+    }
+  }
   const targetDevice = targetDevices[0];
 
   const { simMiddleware } = await import("./middleware");
@@ -1687,7 +1670,9 @@ async function serve(
   for (const udid of targetDevices) {
     writeState(inProcessServeSimState(udid, boundPort, "/", host, options.stream));
   }
+  for (const udid of targetDevices) ensureFpsProbeManager(udid);
   const clearAll = () => {
+    for (const udid of targetDevices) stopFpsProbeManager(udid);
     for (const udid of targetDevices) {
       try { clearServeSimState(udid, process.pid); } catch {}
     }
@@ -1764,6 +1749,7 @@ program
   .option("--detach", "Spawn helper and exit (daemon mode)")
   .option("-q, --quiet", "Suppress human-readable output, JSON only")
   .option("--no-preview", "Skip the web preview server; stream in foreground only")
+  .option("--launch-app <path>", "Install and launch an iOS .app with FPS injection")
   .option("--transport <http|webrtc>", "Stream transport", "http")
   .option(
     "--codec <codec>",
@@ -1895,6 +1881,15 @@ Examples:
       console.error("--turn-username and --turn-credential require --turn-url.");
       process.exit(1);
     }
+    const launchAppPath = opts.launchApp?.trim();
+    if (opts.launchApp !== undefined && !launchAppPath) {
+      console.error("--launch-app needs an .app path.");
+      process.exit(1);
+    }
+    if (launchAppPath && (opts.detach || opts.preview === false)) {
+      console.error("--launch-app requires the preview server.");
+      process.exit(1);
+    }
     const stunUrls: string[] = opts.stunUrl ?? [];
     const webrtcIceServers: WebRtcIceServer[] = [];
     if (stunUrls.length) webrtcIceServers.push({ urls: stunUrls });
@@ -1962,6 +1957,7 @@ Examples:
         stream,
         metricsCorsOrigins: opts.metricsCorsOrigin,
         debugStreamPath,
+        launchAppPath,
       });
     }
   });

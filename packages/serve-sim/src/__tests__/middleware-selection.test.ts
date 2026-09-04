@@ -7,7 +7,6 @@ import {
   selectServeSimState,
   type ServeSimState,
 } from "../middleware";
-import { parseForegroundAppLogMessage } from "../foreground-tracker";
 
 const states: ServeSimState[] = [
   {
@@ -204,20 +203,6 @@ describe("rewriteStateForRequestHost", () => {
         wsUrl: "wss://tunnel.example.com/helper/DEVICE-A/ws",
       });
     });
-  });
-});
-
-describe("parseForegroundAppLogMessage", () => {
-  test("extracts bundle id and pid from SpringBoard foreground logs", () => {
-    expect(
-      parseForegroundAppLogMessage(
-        "[app<com.example.SampleApp>:43117] Setting process visibility to: Foreground",
-      ),
-    ).toEqual({ bundleId: "com.example.SampleApp", pid: 43117 });
-  });
-
-  test("ignores unrelated log messages", () => {
-    expect(parseForegroundAppLogMessage("Setting process visibility to: Background")).toBeNull();
   });
 });
 

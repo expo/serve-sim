@@ -1,12 +1,12 @@
-import { TriangleAlert } from "lucide-react";
+import { Info, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useMetricsStream } from "../hooks/use-metrics-stream";
+import { Chevron } from "../icons";
 import { formatCpu, formatMem, formatRate, sparklinePath } from "../utils/format-metrics";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
 import { SPARK_H, SPARK_W, SparkPath, Sparkline } from "./sparkline";
 
-/** Live CPU, memory, and network readout for the sim's user app, with a sparkline for each. */
 export function MetricsTool({
   udid,
   currentAppBundleId,
@@ -35,6 +35,8 @@ export function MetricsTool({
     : foregroundIsSystemApp
       ? "Only your app is measured; a system app is in the foreground"
       : "Waiting for activity data";
+  const fpsStart = history.findIndex((s) => s.fps != null);
+  const fpsHistory = fpsStart < 0 ? [] : history.slice(fpsStart);
 
   return (
     <CollapsibleSection
@@ -90,6 +92,12 @@ export function MetricsTool({
             downValues={history.map((s) => s.netInBytesPerSec)}
             upValues={history.map((s) => s.netOutBytesPerSec)}
           />
+          <FpsRow
+            refresh={latest.mainThreadFps ?? latest.fps}
+            rendered={latest.fps}
+            refreshValues={fpsHistory.map((s) => s.mainThreadFps ?? 0)}
+            renderedValues={fpsHistory.map((s) => s.fps ?? 0)}
+          />
         </>
       ) : null}
     </CollapsibleSection>
@@ -124,6 +132,68 @@ function MetricRow({
   );
 }
 
+export function FpsRow({
+  refresh,
+  rendered,
+  refreshValues,
+  renderedValues,
+}: {
+  refresh: number | null;
+  rendered: number | null;
+  refreshValues: number[];
+  renderedValues: number[];
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details
+      open={open}
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+      className="border-0 outline-none"
+    >
+      <summary className="flex cursor-pointer list-none select-none items-center justify-between outline-none [&::-webkit-details-marker]:hidden">
+        <span className="group relative inline-flex items-center gap-1 text-white/50 text-[11px]">
+          FPS
+          <Info aria-hidden="true" className="w-3 h-3 text-white/70" />
+          <span className="sr-only">What the FPS lines mean</span>
+          <span className="pointer-events-none absolute left-0 bottom-full z-10 mb-1.5 hidden w-max max-w-[220px] rounded-md bg-black/90 px-2.5 py-2 text-[11px] font-normal leading-snug text-white/80 shadow-lg group-hover:block">
+            <span className="text-cyan-400 font-medium">Refresh</span> — main-thread render loop rate, tracking the display refresh.
+            <br />
+            <span className="text-violet-400 font-medium">Rendered</span> — frames the render server composites to the display; near zero when idle.
+          </span>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="tabular-nums text-[11px]">
+            <span className="text-cyan-400">
+              Refresh {refresh == null ? "--" : Math.round(refresh)}
+            </span>
+            <span className="text-white/30 mx-1.5">·</span>
+            <span className="text-violet-400">
+              Rendered {rendered == null ? "--" : Math.round(rendered)}
+            </span>
+          </span>
+          <Chevron open={open} />
+        </span>
+      </summary>
+      <div className="pt-1">
+        <DualFpsSparkline refresh={refreshValues} rendered={renderedValues} />
+      </div>
+    </details>
+  );
+}
+
+function DualFpsSparkline({ refresh, rendered }: { refresh: number[]; rendered: number[] }) {
+  const max = Math.max(...refresh, ...rendered, 1);
+  const refreshLine = sparklinePath(refresh, SPARK_W, SPARK_H, max);
+  const refreshArea = refreshLine ? `${refreshLine} L${SPARK_W},${SPARK_H} L0,${SPARK_H} Z` : "";
+  return (
+    <svg viewBox={`0 0 ${SPARK_W} ${SPARK_H}`} preserveAspectRatio="none" className="w-full h-8">
+      <path d={refreshArea} className="text-cyan-400" fill="currentColor" opacity={0.12} stroke="none" />
+      <SparkPath d={refreshLine} className="text-cyan-400" />
+      <SparkPath d={sparklinePath(rendered, SPARK_W, SPARK_H, max)} className="text-violet-400" />
+    </svg>
+  );
+}
+
 /** Network with download / upload broken out: a value pair and a two-line graph on a shared scale. */
 function NetworkRow({
   down,
@@ -154,9 +224,12 @@ function NetworkRow({
 /** Two lines (download, upload) on one shared vertical scale so their magnitudes are comparable. */
 function DualSparkline({ down, up }: { down: number[]; up: number[] }) {
   const max = Math.max(...down, ...up, 1);
+  const downLine = sparklinePath(down, SPARK_W, SPARK_H, max);
+  const downArea = downLine ? `${downLine} L${SPARK_W},${SPARK_H} L0,${SPARK_H} Z` : "";
   return (
     <svg viewBox={`0 0 ${SPARK_W} ${SPARK_H}`} preserveAspectRatio="none" className="w-full h-8">
-      <SparkPath d={sparklinePath(down, SPARK_W, SPARK_H, max)} className="text-cyan-400" />
+      <path d={downArea} className="text-cyan-400" fill="currentColor" opacity={0.12} stroke="none" />
+      <SparkPath d={downLine} className="text-cyan-400" />
       <SparkPath d={sparklinePath(up, SPARK_W, SPARK_H, max)} className="text-violet-400" />
     </svg>
   );

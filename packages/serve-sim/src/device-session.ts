@@ -26,6 +26,7 @@ import {
   type NativeUnsubscribe,
 } from "./native";
 import { eventLogEventForHidMessage, formatEventLogPoint, recordEventLogEvent, updateEventLogEvent } from "./event-log";
+import { ensureFpsProbeManager, stopFpsProbeManager } from "./fps-probe-manager";
 import {
   MAX_WEBRTC_SIGNALING_BODY_BYTES,
   WebRtcSignalingError,
@@ -976,6 +977,7 @@ export function getDeviceSession(udid: string, initialStreamSettings?: StreamSet
     const createdSession = new DeviceSession(udid, initialStreamSettings);
     session = createdSession;
     sessions.set(udid, createdSession);
+    ensureFpsProbeManager(udid);
     try {
       const start = createdSession.start();
       void start.catch(() => {
@@ -998,4 +1000,5 @@ export function closeDeviceSession(udid: string): void {
     session.close();
     sessions.delete(udid);
   }
+  stopFpsProbeManager(udid);
 }

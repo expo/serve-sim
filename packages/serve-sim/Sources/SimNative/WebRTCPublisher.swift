@@ -73,9 +73,15 @@ struct WebRTCCaptureCounts: Codable {
     let screenFrames: UInt64
     let idleFrames: UInt64
     /// Offered frames are capture deliveries, including the 5 FPS idle refresh. Forwarded frames
-    /// are paced source submissions and may be higher when the retained latest frame is repeated.
+    /// are source submissions and may be higher when the retained latest frame is repeated.
     let offeredFrames: UInt64?
     let forwardedFrames: UInt64?
+    /// Submissions split by cause: a fresh capture sent on arrival, or the
+    /// repeat chain re-sending the retained frame because nothing fresh
+    /// arrived for an interval. Arrivals ≈ offered while a peer is connected;
+    /// repeats fill the remainder of the configured cadence.
+    let arrivalFrames: UInt64?
+    let repeatFrames: UInt64?
     /// Times the arrival-side watchdog replaced a frame pump that stopped
     /// ticking. Nonzero means the host starved or dropped pump timers.
     let pumpRestarts: UInt64?
@@ -159,7 +165,6 @@ final class WebRTCPublisher: @unchecked Sendable {
     private var acceptsFrames = false
     private var latestFrame: PendingWebRTCFrame?
     private var framePacer: ContinuousFramePacer
-    private var arrivalPumpPending = false
     private var framePumpGeneration: UInt64 = 0
     /// The single pending chain tick; confined to `queue` (armed, fired, and
     /// cancelled there only).
@@ -171,6 +176,8 @@ final class WebRTCPublisher: @unchecked Sendable {
     /// All guarded by `frameLock`.
     private var offeredFrameCount: UInt64 = 0
     private var forwardedFrameCount: UInt64 = 0
+    private var arrivalFrameCount: UInt64 = 0
+    private var repeatFrameCount: UInt64 = 0
     private var framePumpRestartCount: UInt64 = 0
     private var lastOutputWidth = 0
     private var lastOutputHeight = 0
@@ -227,7 +234,6 @@ final class WebRTCPublisher: @unchecked Sendable {
                 self.frameLock.lock()
                 if self.frameRatePolicy.outputFramesPerSecond != normalizedMaxFps {
                     self.framePumpGeneration &+= 1
-                    self.arrivalPumpPending = false
                     let generation = self.framePumpGeneration
                     if let delayNs = self.framePacer.update(
                         framesPerSecond: normalizedMaxFps,
@@ -440,16 +446,30 @@ final class WebRTCPublisher: @unchecked Sendable {
         return durations.mapValues(\.doubleValue)
     }
 
-    func frameFlowCounts() -> (offered: UInt64, forwarded: UInt64, pumpRestarts: UInt64) {
+    struct FrameFlowCounts {
+        let offered: UInt64
+        let forwarded: UInt64
+        let arrivals: UInt64
+        let repeats: UInt64
+        let pumpRestarts: UInt64
+    }
+
+    func frameFlowCounts() -> FrameFlowCounts {
         frameLock.lock()
         defer { frameLock.unlock() }
-        return (
+        return FrameFlowCounts(
             offered: offeredFrameCount,
             forwarded: forwardedFrameCount,
+            arrivals: arrivalFrameCount,
+            repeats: repeatFrameCount,
             pumpRestarts: framePumpRestartCount
         )
     }
 
+    /// A fresh capture. It is submitted on arrival — never held for the next
+    /// cadence slot, which cost 0–16.7 ms (10–15 ms at p50 tap-to-frame). The
+    /// pacer only decides what happens to the repeat chain, which re-sends the
+    /// retained frame whenever nothing fresh has gone out for an interval.
     func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp _: CMTime) {
         let nowNs = DispatchTime.now().uptimeNanoseconds
         frameLock.lock()
@@ -460,31 +480,33 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
         latestFrame = PendingWebRTCFrame(pixelBuffer: pixelBuffer)
         let generation = framePumpGeneration
+        var chainToArm: (delayNs: UInt64, generation: UInt64)?
         switch framePacer.latestFrameArrived(atNanoseconds: nowNs) {
         case .ignore:
-            break
-        case .pumpNow:
-            guard !arrivalPumpPending else { break }
-            arrivalPumpPending = true
-            queue.async {
-                self.drainFramePump(generation: generation, chained: false)
-            }
-        case let .schedule(delayNs):
             frameLock.unlock()
-            scheduleFramePump(afterNs: delayNs, generation: generation)
             return
-        case let .restart(delayNs):
+        case .send:
+            break
+        case let .sendAndSchedule(delayNs):
+            chainToArm = (delayNs, generation)
+        case let .sendAndRestart(delayNs):
             // The chain stopped ticking (a lost or starved timer). Invalidate
             // any zombie pump and start a replacement under a fresh generation.
             framePumpGeneration &+= 1
             framePumpRestartCount &+= 1
-            arrivalPumpPending = false
-            let restartGeneration = framePumpGeneration
-            frameLock.unlock()
-            scheduleFramePump(afterNs: delayNs, generation: restartGeneration)
-            return
+            chainToArm = (delayNs, framePumpGeneration)
         }
+        arrivalFrameCount &+= 1
         frameLock.unlock()
+        if let chainToArm {
+            scheduleFramePump(afterNs: chainToArm.delayNs, generation: chainToArm.generation)
+        }
+        // Submissions serialize on `queue` with the repeat chain, so a repeat
+        // can never overtake the fresher frame it would duplicate.
+        queue.async { [self] in
+            guard sessions.values.contains(where: \.isConnected) else { return }
+            sendFrameOnQueue(pixelBuffer, timestampNanoseconds: nowNs)
+        }
     }
 
     private func nextFrameTimestampNs(_ proposedTimestamp: UInt64) -> Int64 {
@@ -635,18 +657,20 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
     }
 
-    private func drainFramePump(generation: UInt64, chained: Bool = true) {
+    /// One chained tick of the repeat pump. Re-sends the retained frame when
+    /// nothing fresh went out for an interval; otherwise sleeps until the next
+    /// repeat is due.
+    private func drainFramePump(generation: UInt64) {
         let nowNs = DispatchTime.now().uptimeNanoseconds
         frameLock.lock()
         guard generation == framePumpGeneration else {
             frameLock.unlock()
             return
         }
-        if !chained { arrivalPumpPending = false }
-        let decision = framePacer.tick(atNanoseconds: nowNs, chained: chained)
+        let decision = framePacer.tick(atNanoseconds: nowNs)
         guard case let .send(timestampNs, nextDelayNs) = decision else {
             frameLock.unlock()
-            if chained, case let .wait(delayNs) = decision {
+            if case let .wait(delayNs) = decision {
                 scheduleFramePump(afterNs: delayNs, generation: generation)
             }
             return
@@ -655,18 +679,15 @@ final class WebRTCPublisher: @unchecked Sendable {
             frameLock.unlock()
             // The pacer consumed a slot with nothing retained (acceptance was
             // toggling); keep the chain alive for the next retained frame.
-            if chained {
-                scheduleFramePump(afterNs: nextDelayNs, generation: generation)
-            }
+            scheduleFramePump(afterNs: nextDelayNs, generation: generation)
             return
         }
+        repeatFrameCount &+= 1
         frameLock.unlock()
 
         // Preserve the cadence by scheduling the next tick before scaling or
         // conversion work consumes part of the frame interval.
-        if chained {
-            scheduleFramePump(afterNs: nextDelayNs, generation: generation)
-        }
+        scheduleFramePump(afterNs: nextDelayNs, generation: generation)
         if sessions.values.contains(where: \.isConnected) {
             sendFrameOnQueue(frame.pixelBuffer, timestampNanoseconds: timestampNs)
         }
@@ -705,7 +726,6 @@ final class WebRTCPublisher: @unchecked Sendable {
         if acceptsFrames != active {
             acceptsFrames = active
             latestFrame = nil
-            arrivalPumpPending = false
             framePumpGeneration &+= 1
             framePacer.setActive(active)
         }

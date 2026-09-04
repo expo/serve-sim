@@ -295,6 +295,8 @@ actor CaptureEngine {
                 idleFrames: counts.idle,
                 offeredFrames: flow?.offered,
                 forwardedFrames: flow?.forwarded,
+                arrivalFrames: flow?.arrivals,
+                repeatFrames: flow?.repeats,
                 pumpRestarts: flow?.pumpRestarts,
                 captureCpuCopies: cpuCopies,
                 pollTicks: poll.ticks,

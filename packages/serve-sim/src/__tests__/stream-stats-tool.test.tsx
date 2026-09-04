@@ -241,6 +241,7 @@ describe("StreamStatsBody", () => {
 
 const capture = {
   screenFrames: 900, idleFrames: 12, offeredFrames: 880, forwardedFrames: 830,
+  arrivalFrames: 700, repeatFrames: 130,
   pumpRestarts: 0, captureCpuCopies: 0,
   pollTicks: 2400, pollLateSumMs: 600,
 };
@@ -293,7 +294,11 @@ describe("capture rows", () => {
     expect(row(markup, "Screen frames")).toBe("900");
     expect(row(markup, "Idle frames")).toBe("12");
     expect(row(markup, "Capture deliveries")).toBe("880");
-    expect(row(markup, "Pacer submissions")).toBe("830");
+    expect(row(markup, "Submissions")).toBe("830");
+    // Arrivals + repeats explain every submission: a static screen shows repeats
+    // filling the cadence, a stalled capture shows both flat.
+    expect(row(markup, "Sent on arrival")).toBe("700");
+    expect(row(markup, "Repeats")).toBe("130");
   });
 
   test("shows a fractional encoder rate, so a limping encoder is not a dead one", () => {
@@ -321,7 +326,7 @@ describe("capture rows", () => {
     );
     expect(row(markup, "Screen frames")).toBe("1.62M");
     expect(row(markup, "Capture deliveries")).toBe("105.5k");
-    expect(row(markup, "Pacer submissions")).toBe("4.4k");
+    expect(row(markup, "Submissions")).toBe("4.4k");
     expect(row(markup, "Idle frames")).toBe("0");
   });
 });

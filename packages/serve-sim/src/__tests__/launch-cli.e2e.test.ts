@@ -98,7 +98,6 @@ describe.skipIf(!ready)("serve-sim launch flags", () => {
         udid!,
         "--port", String(port),
         "--no-preview",
-        "--quiet",
         "--launch-app-identifier", APP,
         "--launch-arg", "-ServeSimCliFlag",
         "--launch-arg", "1",
@@ -138,7 +137,8 @@ describe.skipIf(!ready)("serve-sim launch flags", () => {
 
     expect(
       await waitFor(() => insert() === "", 30_000),
-      `insert still ${insert()}. signal=${server?.signalCode} output:\n${output}`,
+      `insert still ${insert()} on ${udid}. exit=${server?.exitCode} ` +
+        `signal=${server?.signalCode} output:\n${output}`,
     ).toBe(true);
   }, 240_000);
 
@@ -151,7 +151,6 @@ describe.skipIf(!ready)("serve-sim launch flags", () => {
         udid!,
         "--port", String(port),
         "--no-preview",
-        "--quiet",
         "--launch-app-identifier", "dev.expo.serve-sim.not-installed",
       ],
       { encoding: "utf-8", timeout: 180_000 },

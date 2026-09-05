@@ -202,4 +202,22 @@ describe("gated exec-ws accepts typed actions only", () => {
     expect(reply.error).toBeUndefined();
     channel.close();
   });
+
+  test("answers a duplicate subscription id instead of going silent", async () => {
+    const socket = await connect();
+    expect(await socket.next()).toMatchObject({ ready: true });
+
+    socket.send({ sub: 500, path: "/api/events" });
+    socket.send({ sub: 500, path: "/api/events" });
+
+    const replies: Reply[] = [];
+    for (let i = 0; i < 40; i += 1) {
+      const reply = await socket.next();
+      replies.push(reply);
+      if (reply.error !== undefined) break;
+    }
+    socket.close();
+
+    expect(replies.at(-1)?.error).toContain("already in use");
+  }, 20_000);
 });

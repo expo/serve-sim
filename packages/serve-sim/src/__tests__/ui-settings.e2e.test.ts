@@ -184,6 +184,7 @@ describeIfSim("serve-sim ui (simulator-wide options)", () => {
     expect(Object.keys(status).sort()).toEqual([
       "appearance",
       "color-filter",
+      "hardware-keyboard",
       "increase-contrast",
       "liquid-glass",
       "reduce-motion",

@@ -107,12 +107,23 @@ function notifyEventLogSubscribers(entry: EventLogEntry): void {
   }
 }
 
+/**
+ * Values off the HID socket reach `summary` and `action` unvalidated, and `serve-sim event-log`
+ * prints them to the operator's terminal, where an escape sequence would be interpreted. Bounded
+ * here rather than at each print site so the stored entry is safe for every reader.
+ */
+function displaySafe(value: string): string {
+  return value.replace(/[\p{C}]/gu, " ").slice(0, 256);
+}
+
 export function recordEventLogEvent(draft: EventLogDraft): EventLogEntry {
   const entry: EventLogEntry = {
     ...draft,
     id: nextEventId++,
     timestamp: draft.timestamp ?? new Date().toISOString(),
-    msg: draft.msg ?? draft.summary,
+    summary: displaySafe(draft.summary),
+    ...(draft.action === undefined ? {} : { action: displaySafe(draft.action) }),
+    msg: displaySafe(draft.msg ?? draft.summary),
   };
   entries.push(entry);
   if (entries.length > EVENT_LOG_MAX_ENTRIES) {

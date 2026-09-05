@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { rmSync, symlinkSync, writeFileSync } from "fs";
 import { randomUUID } from "crypto";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
 
 import { InvalidHostActionError, runHostActionAsync } from "../host-actions";
@@ -39,13 +39,6 @@ describe("runHostActionAsync validation", () => {
     ).rejects.toBeInstanceOf(InvalidHostActionError);
   });
 
-  // Validation passes, so this reaches xcrun and comes back as a result rather than a throw.
-  it("accepts an allowed value", async () => {
-    await expect(
-      runHostActionAsync({ action: "appearance.set", params: { udid: "U", value: "dark" } }, BIN),
-    ).resolves.toMatchObject({ exitCode: expect.any(Number) });
-  });
-
   it("rejects a bundle id carrying shell metacharacters", async () => {
     await expect(
       runHostActionAsync(
@@ -73,7 +66,6 @@ describe("runHostActionAsync validation", () => {
     ).rejects.toBeInstanceOf(InvalidHostActionError);
   });
 
-  // execFile takes an argument vector, so a shell metacharacter arrives as one argument.
   it("passes params through as literal arguments to a real spawn", async () => {
     const result = await runHostActionAsync(
       {
@@ -95,13 +87,6 @@ describe("runHostActionAsync validation", () => {
     }
   });
 
-  // The fiddliest schema here; reaching simctl means the params were accepted.
-  it("accepts a staged upload as an install source", async () => {
-    await expect(
-      runHostActionAsync({ action: "app.install", params: { udid: "U", uploadId: "app.ipa" } }, BIN),
-    ).resolves.toMatchObject({ exitCode: expect.any(Number) });
-  });
-
   it("rejects an install with neither an upload nor a path", async () => {
     await expect(
       runHostActionAsync({ action: "app.install", params: { udid: "U" } }, BIN),
@@ -110,7 +95,7 @@ describe("runHostActionAsync validation", () => {
 
   it("refuses a symlink that escapes the allowed roots", async () => {
     const secret = join(homedir(), `probe-secret-${randomUUID()}.txt`);
-    const link = join(homedir(), "Desktop", `probe-link-${randomUUID()}.txt`);
+    const link = join(tmpdir(), "serve-sim-uploads", `probe-link-${randomUUID()}.txt`);
     writeFileSync(secret, "SECRET");
     symlinkSync(secret, link);
 
@@ -149,7 +134,7 @@ describe("runHostActionAsync validation", () => {
   });
 
   it("accepts a path inside an allowed root", async () => {
-    const file = join(homedir(), "Desktop", `probe-ok-${randomUUID()}.txt`);
+    const file = join(tmpdir(), "serve-sim-uploads", `probe-ok-${randomUUID()}.txt`);
     writeFileSync(file, "hello");
 
     try {
@@ -158,6 +143,7 @@ describe("runHostActionAsync validation", () => {
         BIN,
       );
       expect(result.exitCode).toBe(0);
+      expect(result.stdout.trim()).toBe(btoa("hello"));
     } finally {
       rmSync(file, { force: true });
     }

@@ -254,5 +254,34 @@ describe("eventLogEventForHidMessage", () => {
       details: { usage: 0x28, key: "Enter" },
     });
   });
+
+  // A HID payload reaches `summary` unvalidated and `serve-sim event-log` prints it to a terminal,
+  // where an escape sequence would be interpreted rather than shown.
+  test("strips control characters from what an operator will see", () => {
+    const entry = recordEventLogEvent({
+      device: "DEVICE-A",
+      source: "hid",
+      kind: "button",
+      action: `home\u001b[2J`,
+      status: "ok",
+      summary: `Button home\u001b[31mred\u001b[0m`,
+    });
+
+    for (const field of [entry.summary, entry.msg, entry.action]) {
+      expect(String(field)).not.toContain("\u001b");
+    }
+    expect(entry.summary).toContain("Button home");
+  });
+
+  test("bounds how much of an attacker's string it keeps", () => {
+    const entry = recordEventLogEvent({
+      device: "DEVICE-A",
+      source: "hid",
+      kind: "button",
+      status: "ok",
+      summary: `Button ${"A".repeat(5000)}`,
+    });
+    expect(entry.summary.length).toBeLessThanOrEqual(256);
+  });
 });
 

@@ -22,9 +22,26 @@ export function getPortHolders(port: number): number[] {
     return output
       .split("\n")
       .map((s) => parseInt(s, 10))
-      .filter((pid) => Number.isFinite(pid) && pid !== myPid);
+      .filter((pid) => Number.isFinite(pid) && pid !== myPid && isServeSimProcess(pid));
   } catch {
     return [];
+  }
+}
+
+/**
+ * Only ever kill our own helpers. The port is caller-chosen (the preview asks for a device on a
+ * given port), and a wildcard bind reports a loopback-held port as free, so without this a request
+ * for someone else's port would SIGKILL whatever is listening there.
+ */
+function isServeSimProcess(pid: number): boolean {
+  try {
+    const command = execSync(`ps -p ${pid} -o command=`, {
+      encoding: "utf-8",
+      stdio: "pipe",
+    }).trim();
+    return /(^|[/\s])serve-sim(\.[cm]?[jt]s)?([\s]|$)/.test(command);
+  } catch {
+    return false;
   }
 }
 

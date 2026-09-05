@@ -16,7 +16,7 @@
  *   • `/grid/api/start` re-pointed at the local source instead of the
  *     published `serve-sim` the middleware would otherwise resolve.
  */
-import { readdirSync, readFileSync, existsSync, watch } from "fs";
+import { readdirSync, readFileSync, watch } from "fs";
 import { randomBytes } from "crypto";
 import type { IncomingMessage } from "http";
 import type { Socket } from "net";
@@ -34,16 +34,6 @@ import { servePreview } from "./src/runtime";
 const PORT = Number(process.env.PORT) || 3200;
 const CLIENT_DIR = resolve(import.meta.dir, "src/client");
 const CLIENT_ENTRY = resolve(CLIENT_DIR, "client.tsx");
-const PKG_ROOT = resolve(import.meta.dir);
-const SERVE_SIM_BIN_CANDIDATES = [
-  join(PKG_ROOT, "src", "index.ts"),
-  join(PKG_ROOT, "dist", "serve-sim.js"),
-];
-function resolveServeSimBin(): string {
-  for (const p of SERVE_SIM_BIN_CANDIDATES) if (existsSync(p)) return p;
-  return "serve-sim";
-}
-const SERVE_SIM_BIN = resolveServeSimBin();
 
 // The in-page UI routes host requests (shell exec, simulator settings, SSE
 // side-channels) through one `/exec-ws` control socket, authenticated with
@@ -61,7 +51,7 @@ const middleware = simMiddleware({ basePath: "/", execToken: EXEC_TOKEN, proxyHe
 // `/logs`, `/grid/api`, etc. We point the advertised CLI binary at our local
 // source so the sidebar's `serve-sim …` calls run from this checkout.
 function devPreviewConfig(state: ServeSimState) {
-  return previewConfigForState(state, "", SERVE_SIM_BIN, EXEC_TOKEN, undefined, true);
+  return previewConfigForState(state, "", EXEC_TOKEN, undefined, true);
 }
 
 // ─── Client bundler with watch ───

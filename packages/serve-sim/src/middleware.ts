@@ -1,6 +1,6 @@
+import { execFile, execSync, spawn, type ChildProcess } from "child_process";
 import { readdirSync, readFileSync, existsSync, unlinkSync, watch, type FSWatcher } from "fs";
 import { readFile, unlink } from "fs/promises";
-import { execSync, spawn, exec, execFile, type ChildProcess, type ExecException } from "child_process";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createServer as createNetServer } from "net";
@@ -24,9 +24,9 @@ import {
   sendCorsPreflight,
   type HidSocket,
 } from "./device-session";
-import { assertPreviewAccess, assertSessionAccess, assertUpgradeAccess, execAuthError } from "./session-auth";
+import { assertPreviewAccess, assertUpgradeAccess } from "./session-auth";
 import {
-  eventLogEventForCommand,
+  eventLogEventForAction,
   readEventLog,
   recordEventLogEvent,
   subscribeEventLog,
@@ -118,8 +118,6 @@ type ShutdownRequestBody = { udid?: string };
 type StartRequestBody = { udid?: string };
 type ReleaseRequestBody = { targetId?: string };
 type HighlightRequestBody = { targetId?: string; on?: boolean };
-type ExecRequestBody = { command?: string };
-
 /** Re-exported alias for the canonical device-state record in `./state`. */
 export type ServeSimState = ServeSimDeviceState;
 
@@ -150,12 +148,16 @@ function eventLogSinceId(rawUrl: string): number | undefined {
   return Number.isFinite(since) ? since : undefined;
 }
 
-function recordCommandEvent(command: string, result: { exitCode?: number }): void {
+function recordActionEvent(
+  action: string,
+  params: Record<string, unknown> | undefined,
+  result: { exitCode?: number },
+): void {
   try {
-    const event = eventLogEventForCommand(command, result);
+    const event = eventLogEventForAction(action, params, result);
     if (event) recordEventLogEvent(event);
   } catch {
-    // Event-log recording is diagnostic; it must never break the exec path.
+    // Event-log recording is diagnostic; it must never break the action path.
   }
 }
 
@@ -848,11 +850,25 @@ function serveHelperInProcess(
  * preview server itself serves the device's /helper routes in-process. Resolves
  * to an error string on boot failure, or null on success.
  */
+/** Carries the session token like the primary device's does, or its readers start failing. */
+export function gridDeviceState(
+  udid: string,
+  port: number,
+  base: string,
+  streamSettings?: StreamSettings,
+  sessionToken?: string,
+): ServeSimDeviceState {
+  const state = inProcessServeSimState(udid, port, base, "127.0.0.1", streamSettings);
+  return sessionToken ? { ...state, token: sessionToken } : state;
+}
+
 export async function startDeviceInProcess(
   udid: string,
   port: number,
   base: string,
   streamSettings?: StreamSettings,
+  /** Session token, when the server runs gated. */
+  sessionToken?: string,
 ): Promise<string | null> {
   // `simctl boot` errors when already booted — ignore and let bootstatus confirm.
   await new Promise<void>((resolve) => execFile("xcrun", ["simctl", "boot", udid], () => resolve()));
@@ -875,7 +891,7 @@ export async function startDeviceInProcess(
     });
     if (!booted) return `Device ${udid} failed to reach booted state`;
   }
-  writeServeSimState(inProcessServeSimState(udid, port, base, "127.0.0.1", streamSettings));
+  writeServeSimState(gridDeviceState(udid, port, base, streamSettings, sessionToken));
   return null;
 }
 
@@ -959,7 +975,6 @@ function attachHidInProcess(
 export function previewConfigForState(
   state: ServeSimState,
   base: string,
-  serveSimBin: string,
   execToken: string,
   streamSettingsOrCodec?: StreamSettings | string,
   proxyHelpers = false,
@@ -974,7 +989,6 @@ export function previewConfigForState(
   cameraStatusEndpoint: string;
   devtoolsEndpoint: string;
   streamSettingsEndpoint: string;
-  serveSimBin: string;
   gridApiEndpoint: string;
   gridCatalogEndpoint: string;
   gridStatusEndpoint: string;
@@ -996,8 +1010,11 @@ export function previewConfigForState(
   const streamSettings = typeof streamSettingsOrCodec === "object"
     ? streamSettingsOrCodec
     : httpStreamSettingsFromLegacyCodec(legacyCodec);
+  // Every serve-sim's state file is readable here and ?device= is caller-supplied, so neither the
+  // token nor the TURN credentials may ride along: that hands one instance's secrets to another.
+  const { token: _sessionToken, streamSettings: _foreignStreamSettings, ...publicState } = state;
   return {
-    ...state,
+    ...publicState,
     basePath: base,
     logsEndpoint: endpoint(base, "/logs", state.device),
     appStateEndpoint: endpoint(base, "/appstate", state.device),
@@ -1008,7 +1025,6 @@ export function previewConfigForState(
     cameraStatusEndpoint: `${base === "/" ? "" : base}/helper/${encodeURIComponent(state.device)}/camera/status`,
     devtoolsEndpoint: endpoint(base, "/devtools", state.device),
     streamSettingsEndpoint: streamSettingsEndpointFrom(state.streamUrl),
-    serveSimBin,
     gridApiEndpoint: gridApiBase,
     gridCatalogEndpoint: gridApiBase + "/catalog",
     gridStatusEndpoint: gridApiBase + "/status",
@@ -1575,18 +1591,29 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   // Simulator-settings requests run in-process (just the underlying simctl /
   // ax-tool spawn) instead of round-tripping a full `node <cli>` exec per
   // sidebar interaction.
+  /** Validation messages are the caller's own input. A child's failure carries host paths. */
+  const sanitizeUiFailure = async <T,>(work: Promise<T>): Promise<T> => {
+    try {
+      return await work;
+    } catch (err) {
+      console.error("serve-sim ui request failed:", err);
+      throw new Error("the simulator rejected this UI request");
+    }
+  };
+
   const handleUiRequest: UiRequestHandler = async (payload) => {
     const p = (payload ?? {}) as { device?: string; option?: string; value?: string };
-    if (typeof p.device !== "string" || !/^[0-9A-Za-z-]+$/.test(p.device)) {
+    // Must start alphanumeric and stay bounded: a leading "-" is parsed as a flag by simctl.
+    if (typeof p.device !== "string" || !/^[0-9A-Za-z][0-9A-Za-z-]{0,255}$/.test(p.device)) {
       throw new Error("missing or invalid device udid");
     }
     if (p.option === undefined) {
-      return { status: await getUiStatus(p.device) };
+      return { status: await sanitizeUiFailure(getUiStatus(p.device)) };
     }
-    if (!UI_OPTIONS[p.option]) throw new Error(`unknown option: ${p.option}`);
+    if (!Object.hasOwn(UI_OPTIONS, p.option)) throw new Error(`unknown option: ${p.option}`);
     const value = typeof p.value === "string" ? normalizeUiValue(p.option, p.value) : null;
     if (value === null) throw new Error(`invalid value for ${p.option}: ${p.value}`);
-    await setUiOption(p.device, p.option, value);
+    await sanitizeUiFailure(setUiOption(p.device, p.option, value));
     try {
       recordEventLogEvent({
         device: p.device,
@@ -1647,8 +1674,12 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         return;
       }
       try {
+        // The gate accepts `?token=` here, so forward the rest of the query but never that.
+        const upstreamQuery = new URLSearchParams(qIndex === -1 ? "" : rawUrl.slice(qIndex + 1));
+        upstreamQuery.delete("token");
+        const upstreamSuffix = upstreamQuery.size === 0 ? "" : `?${upstreamQuery.toString()}`;
         const upstream = await fetch(
-          `https://chrome-devtools-frontend.appspot.com/serve_rev/@${DEVTOOLS_FRONTEND_REV}/${assetPath}${qIndex === -1 ? "" : rawUrl.slice(qIndex)}`,
+          `https://chrome-devtools-frontend.appspot.com/serve_rev/@${DEVTOOLS_FRONTEND_REV}/${assetPath}${upstreamSuffix}`,
         );
         const headers: Record<string, string> = {
           "Cache-Control": "public, max-age=604800",
@@ -1683,7 +1714,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
       if (state) {
         const remoteState = rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers);
-        const config = JSON.stringify(previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers));
+        const config = JSON.stringify(previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers));
         const configScript = `<script>window.__SIM_PREVIEW__=${config}</script>`;
         html = html.replace("<!--__SIM_PREVIEW_CONFIG__-->", configScript);
       }
@@ -1933,7 +1964,13 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           return;
         }
         const port = req.socket.localPort ?? 0;
-        void startDeviceInProcess(udid, port, base, streamSettings).then((error) => {
+        void startDeviceInProcess(
+          udid,
+          port,
+          base,
+          streamSettings,
+          requirePreviewToken ? execToken : undefined,
+        ).then((error) => {
           if (res.writableEnded) return;
           if (error) {
             res.writeHead(500, { "Content-Type": "application/json" });
@@ -2112,7 +2149,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         "Cache-Control": "no-store",
       });
       const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
-      res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers) : null));
+      res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers) : null));
       return;
     }
 
@@ -2248,7 +2285,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         const state = selectServeSimState(states, selectedDevice);
         const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
         return JSON.stringify(
-          remoteState ? previewConfigForState(remoteState, base, serveSimBinPath(), execToken, streamSettings, proxyHelpers) : null,
+          remoteState ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers) : null,
         );
       };
 
@@ -2403,52 +2440,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       return;
     }
 
-    // POST /exec — run a shell command on the host. Gated by a per-process
-    // bearer token injected only into the same-origin preview HTML, with
-    // Content-Type + Origin checks to block CORS-simple CSRF (a malicious
-    // page POSTing `text/plain` JSON to a dev server bound to a public iface)
-    // and LAN attackers who can reach the port but can't read the token.
-    if ((url === base + "/exec" || url === base + "/exec/") && req.method === "POST") {
-      if (!assertSessionAccess(req, res, execToken, { requireJson: true, errorBody: execAuthError })) {
-        return;
-      }
-      let body = "";
-      let aborted = false;
-      req.on("data", (chunk: Buffer | string) => {
-        body += typeof chunk === "string" ? chunk : chunk.toString();
-        // Cheap belt-and-braces cap so a runaway POST can't OOM the dev server.
-        if (body.length > 4 * 1024 * 1024) {
-          aborted = true;
-          res.writeHead(413, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ stdout: "", stderr: "Payload Too Large", exitCode: 1 }));
-          req.destroy();
-        }
-      });
-      req.on("end", () => {
-        if (aborted) return;
-        let command = "";
-        try {
-          command = (JSON.parse(body) as ExecRequestBody).command ?? "";
-        } catch {}
-        if (!command) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ stdout: "", stderr: "Missing command", exitCode: 1 }));
-          return;
-        }
-        exec(command, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-          const exitCode = err ? (err as ExecException).code ?? 1 : 0;
-          recordCommandEvent(command, { exitCode });
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({
-            stdout: stdout.toString(),
-            stderr: stderr.toString(),
-            exitCode,
-          }));
-        });
-      });
-      return;
-    }
-
     // SSE: foreground-app change stream. Emits `{bundleId, pid}` events
     // parsed from SpringBoard's "Setting process visibility to: Foreground"
     // log line. Filtering is done here (not in the browser) so the SSE stream
@@ -2503,7 +2494,13 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // their own, so gate them here too.
     if (
       !assertUpgradeAccess(
-        { authorization: req.headers.authorization, cookie: req.headers.cookie },
+        {
+          authorization: req.headers.authorization,
+          cookie: req.headers.cookie,
+          origin: req.headers.origin,
+          host: req.headers.host,
+          "sec-fetch-site": req.headers["sec-fetch-site"],
+        },
         execToken,
         { required: requirePreviewToken },
       )
@@ -2540,12 +2537,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
     socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
   };
-  // WebSocket exec channel — same auth/origin policy as POST /exec, but off
-  // the browser's per-origin HTTP connection pool so multiple preview tabs
-  // (each holding MJPEG + SSE streams) can't starve exec actions. Servers
-  // mounting this middleware should forward `upgrade` events here (the
-  // built-in preview server does); the client falls back to POST /exec when
-  // the upgrade never completes.
+  // Off the browser's per-origin connection pool, so preview tabs holding MJPEG and SSE streams
+  // can't starve actions. Hosts mounting this middleware forward `upgrade` events here.
   const fetchMiddleware = (async (request: Request) => {
     return connectToFetch(connectMiddleware, request);
   }) as SimMiddleware;
@@ -2563,7 +2556,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       `${base}/ax`,
     ],
     onUiRequest: handleUiRequest,
-    onCommandResult: (command, result) => recordCommandEvent(command, result),
+    serveSimBinPath: serveSimBinPath(),
+    onActionResult: (action, params, result) => recordActionEvent(action, params, result),
     onSseRequest(path, websocketRequest) {
       const url = new URL(path, websocketRequest.url);
       // The exec channel already authenticated, so its fan-out carries the token past the gate.
@@ -2581,6 +2575,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         {
           authorization: request.headers.get("authorization") ?? undefined,
           cookie: request.headers.get("cookie") ?? undefined,
+          origin: request.headers.get("origin") ?? undefined,
+          host: request.headers.get("host") ?? undefined,
+          "sec-fetch-site": request.headers.get("sec-fetch-site") ?? undefined,
         },
         execToken,
         { required: requirePreviewToken },

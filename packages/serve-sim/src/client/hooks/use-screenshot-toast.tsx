@@ -1,7 +1,7 @@
 import { useCallback, useRef } from "react";
 import { toast as sonnerToast } from "sonner";
 import { ScreenshotToast } from "../components/screenshot-toast";
-import { execOnHost, shellEscape } from "../utils/exec";
+import { runHostAction } from "../utils/exec";
 import {
   fetchScreenshotPng,
   isLoopbackPreviewHostname,
@@ -69,7 +69,7 @@ export function useScreenshotToast(deviceUdid?: string | null) {
 
   const reveal = useCallback(() => {
     const t = toastRef.current;
-    if (t?.path) void execOnHost(`open -R ${shellEscape(t.path)}`);
+    if (t?.path) void runHostAction("reveal", { path: t.path });
     else if (t?.downloadUrl && t.downloadName) {
       triggerBrowserDownload(t.downloadUrl, t.downloadName);
     }
@@ -148,13 +148,13 @@ export function useScreenshotToast(deviceUdid?: string | null) {
         return;
       }
 
-      // Resolve $HOME shell-side so the saved path comes back absolute — a "~"
-      // path would survive shellEscape() as a literal tilde and break the later
-      // `open -R`. The command echoes the path it wrote on success.
-      const file = `$HOME/Desktop/${fileName}`;
-      const capCmd =
-        `F="${file}"; xcrun simctl io ${shellEscape(deviceUdid)} screenshot "$F" && printf '%s' "$F"`;
-      const res = await execOnHost(capCmd, { signal: captureController.signal });
+      // The host resolves the Desktop path and hands back the absolute file it wrote, which the
+      // toast's reveal action needs.
+      const res = await runHostAction(
+        "screenshot.capture",
+        { udid: deviceUdid, fileName },
+        { signal: captureController.signal },
+      );
       const path = res.stdout.trim();
       if (res.exitCode !== 0 || !path) {
         render({ id, status: "error", phase: "in", message: res.stderr.trim() || "Screenshot failed" }, ERROR_DISMISS_MS);
@@ -163,12 +163,12 @@ export function useScreenshotToast(deviceUdid?: string | null) {
 
       render({ id, status: "saved", phase: "in", path }, SAVED_DISMISS_MS);
 
-      // Best-effort thumbnail: downscale to a temp PNG, base64 it back, then
-      // delete it. Failures (sips missing, etc.) just leave the placeholder.
-      const thumb = `/tmp/serve-sim-screenshot-thumb-${id}.png`;
+      // Best-effort thumbnail: the host downscales, encodes and cleans up. Failures (sips
+      // missing, etc.) just leave the placeholder.
       try {
-        const tr = await execOnHost(
-          `sips -Z 320 ${shellEscape(path)} --out ${shellEscape(thumb)} >/dev/null 2>&1 && base64 -i ${shellEscape(thumb)}; rm -f ${shellEscape(thumb)}`,
+        const tr = await runHostAction(
+          "screenshot.thumbnail",
+          { path },
           { signal: captureController.signal },
         );
         const b64 = tr.stdout.replace(/\s+/g, "");

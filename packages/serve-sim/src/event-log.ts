@@ -322,21 +322,22 @@ export function eventLogEventForHidMessage(
   }
 }
 
-export function eventLogEventForCommand(
-  command: string,
+/**
+ * Session event for one typed host action. The preview used to send shell commands, which this
+ * module parsed back into events; actions carry the same information without the round trip.
+ */
+export function eventLogEventForAction(
+  action: string,
+  params: Record<string, unknown> | undefined,
   result?: { exitCode?: number },
 ): EventLogDraft | null {
-  const tokens = tokenizeCommand(command);
-  if (tokens.length === 0) return null;
-  if (isUploadPlumbing(tokens)) return null;
-
   const status = statusFromExitCode(result?.exitCode);
-  const commandDetail = commandResultDetails(result);
-  const simctl = simctlCommand(tokens);
-  if (simctl) {
-    const { verb, args } = simctl;
-    if (verb === "install" && args.length >= 2) {
-      const [device] = args;
+  const details = commandResultDetails(result);
+  const device = typeof params?.udid === "string" ? params.udid : undefined;
+  if (device === undefined) return null;
+
+  switch (action) {
+    case "app.install":
       return {
         device,
         source: "exec",
@@ -344,11 +345,9 @@ export function eventLogEventForCommand(
         action: "install",
         status,
         summary: "Install app",
-        details: commandDetail,
+        details,
       };
-    }
-    if (verb === "addmedia" && args.length >= 2) {
-      const [device] = args;
+    case "media.add":
       return {
         device,
         source: "exec",
@@ -356,161 +355,65 @@ export function eventLogEventForCommand(
         action: "addmedia",
         status,
         summary: "Add media",
-        details: commandDetail,
+        details,
       };
-    }
-    if (verb === "launch" && args.length >= 2) {
-      const [device, bundleId] = args;
-      const isHome = bundleId === "com.apple.springboard";
+    case "screenshot.capture":
       return {
         device,
-        source: "exec",
-        kind: isHome ? "button" : "app",
-        action: isHome ? "home" : "launch",
-        status,
-        summary: isHome ? "Home" : `Launch ${bundleId}`,
-        details: { ...commandDetail, bundleId },
-      };
-    }
-    if (verb === "terminate" && args.length >= 2) {
-      const [device, bundleId] = args;
-      return {
-        device,
-        source: "exec",
-        kind: "app",
-        action: "terminate",
-        status,
-        summary: `Terminate ${bundleId}`,
-        details: { ...commandDetail, bundleId },
-      };
-    }
-    if (verb === "io" && args.length >= 2 && args[1] === "screenshot") {
-      return {
-        device: args[0],
         source: "exec",
         kind: "screenshot",
         action: "capture",
         status,
         summary: "Screenshot",
-        details: commandDetail,
+        details,
       };
-    }
-  }
-
-  const serveSim = serveSimCommand(tokens);
-  if (serveSim) {
-    const { verb, args } = serveSim;
-    const device = deviceArg(args);
-    if (verb === "button") {
-      const button = firstPositional(args) ?? "home";
-      return {
-        device,
-        source: "exec",
-        kind: "button",
-        action: button,
-        status,
-        summary: `Button ${button}`,
-        details: commandDetail,
-      };
-    }
-    if (verb === "tap") {
-      const [x, y] = args;
-      return {
-        device,
-        source: "exec",
-        kind: "tap",
-        action: "tap",
-        status,
-        summary: `Tap ${formatEventLogPoint(Number(x), Number(y))}`,
-        details: commandDetail,
-      };
-    }
-    if (verb === "gesture") {
-      return {
-        device,
-        source: "exec",
-        kind: "gesture",
-        action: "send",
-        status,
-        summary: "Gesture",
-        details: commandDetail,
-      };
-    }
-    if (verb === "rotate") {
-      const orientation = firstPositional(args);
+    case "rotate":
       return {
         device,
         source: "exec",
         kind: "rotate",
-        action: orientation,
+        action: "rotate",
         status,
-        summary: orientation ? `Rotate ${orientation}` : "Rotate",
-        details: commandDetail,
+        summary: `Rotate ${String(params?.value ?? "")}`.trim(),
+        details,
       };
-    }
-    if (verb === "memory-warning") {
+    case "button":
       return {
         device,
         source: "exec",
-        kind: "memory-warning",
+        kind: "button",
         action: "trigger",
         status,
-        summary: "Memory warning",
-        details: commandDetail,
+        summary: `Button ${String(params?.value ?? "")}`.trim(),
+        details,
       };
-    }
-    if (verb === "ca-debug") {
-      const option = firstPositional(args);
-      const enabled = args.find((arg) => arg === "on" || arg === "off");
-      return {
-        device,
-        source: "exec",
-        kind: "ca-debug",
-        action: option,
-        status,
-        summary: `CoreAnimation ${option ?? "debug"}${enabled ? ` ${enabled}` : ""}`,
-        details: commandDetail,
-      };
-    }
-    if (verb === "camera") {
-      const action = cameraEventAction(args);
-      if (action === "status" || action === "list-webcams") return null;
+    case "camera.switch":
+    case "camera.inject":
+    case "camera.mirror":
+    case "camera.stopWebcam":
       return {
         device,
         source: "exec",
         kind: "camera",
-        action: action ?? "start",
+        action: "toggle",
         status,
-        summary: action ? `Camera ${action}` : "Camera",
-        details: commandDetail,
+        summary: `Camera ${action.slice("camera.".length)}`,
+        details,
       };
-    }
-    if (verb === "ui") {
-      const option = firstPositional(args);
+    case "home.watch":
+    case "home.springboard":
       return {
         device,
         source: "exec",
-        kind: "ui-setting",
-        action: option,
+        kind: "button",
+        action: "home",
         status,
-        summary: option ? `UI ${option}` : "UI setting",
-        details: commandDetail,
+        summary: "Home",
+        details: { ...details, bundleId: "com.apple.springboard" },
       };
-    }
+    default:
+      return null;
   }
-
-  if (tokens[0] === "osascript" && command.includes('menu item "Home"')) {
-    return {
-      source: "exec",
-      kind: "button",
-      action: "home",
-      status,
-      summary: "Home",
-      details: commandDetail,
-    };
-  }
-
-  return null;
 }
 
 function clampLimit(limit: number | undefined): number {
@@ -590,95 +493,3 @@ function commandResultDetails(result: { exitCode?: number } | undefined): Record
   return statusFromExitCode(result?.exitCode) ? { exitCode: result?.exitCode } : {};
 }
 
-function tokenizeCommand(command: string): string[] {
-  const tokens: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | null = null;
-  let escaped = false;
-
-  for (const ch of command) {
-    if (escaped) {
-      current += ch;
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\" && quote !== "'") {
-      escaped = true;
-      continue;
-    }
-    if ((ch === "'" || ch === '"') && quote === null) {
-      quote = ch;
-      continue;
-    }
-    if (ch === quote) {
-      quote = null;
-      continue;
-    }
-    if (/\s/.test(ch) && quote === null) {
-      if (current) {
-        tokens.push(current);
-        current = "";
-      }
-      continue;
-    }
-    current += ch;
-  }
-  if (current) tokens.push(current);
-  return tokens;
-}
-
-function isUploadPlumbing(tokens: string[]): boolean {
-  if (tokens[0] === "bash" && tokens[1] === "-c" && tokens[2]?.startsWith("echo ")) return true;
-  if (tokens[0] === "bash" && tokens[1] === "-c" && tokens[2]?.startsWith("rm -f ")) return true;
-  if (tokens[0] === "rm" && tokens[1] === "-f") return true;
-  return false;
-}
-
-function simctlCommand(tokens: string[]): { verb: string; args: string[] } | null {
-  const i = tokens.findIndex((token) => token === "simctl");
-  if (i < 0 || tokens[i - 1] !== "xcrun") return null;
-  const verb = tokens[i + 1];
-  if (!verb) return null;
-  return { verb, args: tokens.slice(i + 2) };
-}
-
-function serveSimCommand(tokens: string[]): { verb: string; args: string[] } | null {
-  const i = tokens.findIndex((token) => token === "serve-sim" || /(?:^|\/)serve-sim(?:\.js)?$/.test(token));
-  if (i < 0) return null;
-  const verb = tokens[i + 1];
-  if (!verb) return null;
-  return { verb, args: tokens.slice(i + 2) };
-}
-
-function deviceArg(args: string[]): string | undefined {
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if ((arg === "-d" || arg === "--device") && args[i + 1]) return args[i + 1];
-  }
-  return undefined;
-}
-
-function firstPositional(args: string[]): string | undefined {
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!;
-    if (arg === "-d" || arg === "--device") {
-      i++;
-      continue;
-    }
-    if (arg.startsWith("-")) continue;
-    return arg;
-  }
-  return undefined;
-}
-
-function cameraAction(args: string[]): string | undefined {
-  if (args.includes("--list-webcams")) return "list-webcams";
-  if (args.includes("--stop-webcam")) return "stop-webcam";
-  return firstPositional(args);
-}
-
-function cameraEventAction(args: string[]): string | undefined {
-  const action = cameraAction(args);
-  if (action === "status" || action === "list-webcams" || action === "stop-webcam") return action;
-  return "start";
-}

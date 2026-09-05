@@ -1,17 +1,17 @@
-import { exec, type ExecException } from "child_process";
 import {
   messageToString,
   requestHost,
   type SseRequestHandler,
 } from "./exec-ws-utils";
 import { type UpgradeHandlerWebSocket } from "./middleware-utils";
+import { InvalidHostActionError, runHostActionAsync } from "./host-actions";
 import { safeEqualString } from "./session-auth";
 
 // WebSocket control channel for the preview page. Browsers cap HTTP/1.1 at
 // six connections per origin, and every preview tab used to hold several
 // long-lived requests (MJPEG + 3-4 SSE channels + pooled exec fetches) — with
 // two or more tabs open, new requests queue behind them forever. This channel
-// carries shell execs, simulator-settings requests, and multiplexed SSE
+// carries typed simulator actions, simulator-settings requests, and multiplexed SSE
 // subscriptions, so each tab needs just one pooled connection (the video
 // stream) plus this socket.
 //
@@ -23,7 +23,7 @@ import { safeEqualString } from "./session-auth";
 // Wire protocol (all JSON text frames):
 //   client → {token}                  first frame; must match the exec token
 //   server → {ready:true}             auth accepted
-//   client → {id, command}            run a shell command
+//   client → {id, action, params}      run one typed simulator action
 //   server → {id, stdout, stderr, exitCode}
 //   client → {id, ui:{…}}             simulator-settings request (in-process,
 //   server → {id, …} | {id, error}     no shell round-trip)
@@ -33,11 +33,16 @@ import { safeEqualString } from "./session-auth";
 //   client → {unsub: sub}             cancel a subscription
 
 const AUTH_TIMEOUT_MS = 10_000;
+// A shareable link must not spawn unbounded work: a subscription holds a stream or watcher and an
+// action spawns a process, so both are capped per socket.
+const MAX_SUBSCRIPTIONS_PER_SOCKET = 16;
+const MAX_ACTIONS_IN_FLIGHT_PER_SOCKET = 8;
 
 interface ExecMessage {
   token?: string;
   id?: number;
-  command?: string;
+  action?: string;
+  params?: unknown;
   ui?: unknown;
   sub?: number;
   path?: string;
@@ -46,8 +51,9 @@ interface ExecMessage {
 
 /** In-process handler for `{id, ui}` requests; resolves to the reply body. */
 export type UiRequestHandler = (payload: unknown) => Promise<Record<string, unknown>>;
-export type CommandResultHandler = (
-  command: string,
+export type ActionResultHandler = (
+  action: string,
+  params: Record<string, unknown> | undefined,
   result: { stdout: string; stderr: string; exitCode: number },
 ) => void;
 
@@ -58,10 +64,10 @@ interface ExecChannelOptions {
   ssePrefixes?: string[];
   /** In-process handler for `{id, ui}` simulator-settings requests. */
   onUiRequest?: UiRequestHandler;
-  /** Optional observer for completed shell commands. */
-  onCommandResult?: CommandResultHandler;
+  onActionResult?: ActionResultHandler;
   /** Routes an authenticated subscription back through the owning middleware. */
   onSseRequest?: SseRequestHandler;
+  serveSimBinPath?: string;
 }
 
 function wireExecSocket(
@@ -71,6 +77,16 @@ function wireExecSocket(
 ): void {
   let authed = false;
   const subscriptions = new Map<number, { destroy: () => void }>();
+  let actionsInFlight = 0;
+  // A ui request spawns simctl or ax just as an action does, so both draw on the same ceiling.
+  const reserveAction = (id: unknown): boolean => {
+    if (actionsInFlight >= MAX_ACTIONS_IN_FLIGHT_PER_SOCKET) {
+      send({ id, error: "too many actions in flight on this connection" });
+      return false;
+    }
+    actionsInFlight += 1;
+    return true;
+  };
   const ssePrefixes = opts.ssePrefixes ?? [];
 
   const send = (value: unknown) => {
@@ -84,9 +100,11 @@ function wireExecSocket(
 
   const subscribe = (sub: number, path: string) => {
     if (subscriptions.has(sub)) return;
-    // Only same-origin SSE routes owned by this middleware are reachable, and
-    // only for authed sockets — strictly less exposure than the routes' own
-    // direct (tokenless same-origin) GET surface.
+    if (subscriptions.size >= MAX_SUBSCRIPTIONS_PER_SOCKET) {
+      send({ sub, end: true, error: "too many subscriptions on this connection" });
+      return;
+    }
+    // Only this middleware's own SSE routes, and only for an authed socket.
     const pathOnly = path.split("?")[0]!;
     if (!path.startsWith("/") || !ssePrefixes.some((p) => pathOnly === p)) {
       send({ sub, end: true, error: "path not allowed" });
@@ -116,7 +134,12 @@ function wireExecSocket(
     void (async () => {
       try {
         const response = await opts.onSseRequest!(path, request);
-        if (!active) return;
+        if (!active) {
+          // `reader` was never taken, and cancelling the body is the only thing that tells the
+          // route to tear down: a subrequest here has no socket whose close it could notice.
+          void response?.body?.cancel().catch(() => {});
+          return;
+        }
         if (!response?.body) {
           sendEnd();
           return;
@@ -182,33 +205,45 @@ function wireExecSocket(
         send({ id, error: "ui requests not supported" });
         return;
       }
+      if (!reserveAction(id)) return;
       opts
         .onUiRequest(msg.ui)
         .then((reply) => send({ id, ...reply }))
-        .catch((e: unknown) =>
-          send({ id, error: e instanceof Error ? e.message : String(e) }),
-        );
+        .catch((e: unknown) => send({ id, error: e instanceof Error ? e.message : String(e) }))
+        .finally(() => {
+          actionsInFlight -= 1;
+        });
       return;
     }
-    if (typeof msg.id !== "number" || typeof msg.command !== "string" || !msg.command) {
+    if (typeof msg.id !== "number") {
       return;
     }
-    const { id, command } = msg;
-    exec(command, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      const result = {
-        id,
-        stdout: stdout.toString(),
-        stderr: stderr.toString(),
-        exitCode: err ? ((err as ExecException).code ?? 1) : 0,
-      };
-      try {
-        opts.onCommandResult?.(command, result);
-      } catch {
-        // Command-result observers are diagnostic side-channels; a failure
-        // here must not break the exec response path.
-      }
-      send(result);
-    });
+    if (typeof msg.action !== "string") {
+      // The client keeps a pending promise per id with no timeout, so an unanswered frame hangs it.
+      send({ id: msg.id, error: "unsupported request" });
+      return;
+    }
+    const { id, action } = msg;
+    if (!reserveAction(id)) return;
+    const params = msg.params as Record<string, unknown> | undefined;
+    runHostActionAsync(msg, opts.serveSimBinPath ?? "serve-sim")
+      .then((result) => {
+        try {
+          opts.onActionResult?.(action, params, result);
+        } catch {
+          // Diagnostic side-channel; a failure here must not break the reply.
+        }
+        send({ id, ...result });
+      })
+      .catch((e: unknown) => {
+        if (!(e instanceof InvalidHostActionError)) {
+          console.error(`serve-sim action ${action} failed:`, e);
+        }
+        send({ id, error: e instanceof InvalidHostActionError ? e.message : "action failed" });
+      })
+      .finally(() => {
+        actionsInFlight -= 1;
+      });
   });
 
   ws.on("error", () => ws.close());
@@ -228,8 +263,7 @@ export function createExecWebSocketHandler(opts: ExecChannelOptions) {
     const url = new URL(request.url);
     if (url.pathname !== opts.path && url.pathname !== `${opts.path}/`) return false;
 
-    // Same-origin policy mirrors POST /exec: browsers always send Origin on
-    // WebSocket upgrades, and a cross-origin page's Origin won't match Host.
+    // Browsers always send Origin on upgrades, so this keeps another site's page off the channel.
     const origin = request.headers.get("origin");
     if (origin) {
       try {

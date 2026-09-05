@@ -85,14 +85,24 @@ function connect(token: string): Promise<{
 }
 
 describe("exec-ws control channel", () => {
-  test("authenticates and runs a shell exec", async () => {
+  test("authenticates and runs a typed action", async () => {
     const channel = await connect(TOKEN);
     expect((await channel.next()).ready).toBe(true);
-    channel.send({ id: 1, command: "echo channel-works" });
+    channel.send({ id: 1, action: "appearance.get", params: { udid: "DEVICE-A" } });
     const reply = await channel.next();
     expect(reply.id).toBe(1);
-    expect(reply.exitCode).toBe(0);
-    expect(reply.stdout?.trim()).toBe("channel-works");
+    expect(reply.error).toBeUndefined();
+    channel.close();
+  });
+
+  test("refuses a free-form shell command, which the protocol no longer carries", async () => {
+    const channel = await connect(TOKEN);
+    await channel.next(); // ready
+    channel.send({ id: 9, command: "echo owned" });
+    const reply = await channel.next();
+    expect(reply.id).toBe(9);
+    expect(reply.error).toBe("unsupported request");
+    expect(reply.stdout).toBeUndefined();
     channel.close();
   });
 

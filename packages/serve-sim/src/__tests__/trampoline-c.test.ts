@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "fs";
 import { join } from "path";
 
 // Compiles the trampoline's C for the host and runs its assertions under
@@ -8,7 +7,7 @@ import { join } from "path";
 // iOS, but the parsing it does is the same code built for the host.
 const RUNNER = join(import.meta.dir, "../../Sources/ServeSimTrampoline/tests/run.sh");
 
-describe.skipIf(!existsSync(RUNNER))("trampoline C", () => {
+describe("trampoline C", () => {
   test("parses its config safely and analyzes clean", async () => {
     const proc = Bun.spawn(["bash", RUNNER], { stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, code] = await Promise.all([

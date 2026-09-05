@@ -4,7 +4,6 @@
 
 #include "../serve-sim-trampoline.c"
 
-#include <assert.h>
 #include <sys/stat.h>
 
 static int failures = 0;
@@ -17,14 +16,23 @@ static int failures = 0;
     }                                                                           \
   } while (0)
 
+#define MAX_TEMPS 8
+static char temps[MAX_TEMPS][1024];
+static int temp_count = 0;
+
 static char *write_temp(const char *name, const char *contents, size_t len) {
-  static char path[1024];
-  snprintf(path, sizeof path, "/tmp/serve-sim-trampoline-test-%d-%s", getpid(), name);
+  if (temp_count >= MAX_TEMPS) abort();
+  char *path = temps[temp_count++];
+  snprintf(path, sizeof temps[0], "/tmp/serve-sim-trampoline-test-%d-%s", getpid(), name);
   FILE *file = fopen(path, "w");
-  assert(file != NULL);
-  assert(fwrite(contents, 1, len, file) == len);
-  assert(fclose(file) == 0);
+  if (file == NULL) abort();
+  size_t written = fwrite(contents, 1, len, file);
+  if (written != len || fclose(file) != 0) abort();
   return path;
+}
+
+static void remove_temps(void) {
+  for (int i = 0; i < temp_count; i++) unlink(temps[i]);
 }
 
 static void test_read_config(void) {
@@ -126,32 +134,69 @@ static char *load_and_capture(const char *config_body) {
 
   char *config_path = write_temp("load-config", config_body, strlen(config_body));
   struct Load *load = malloc(sizeof *load);
-  assert(load != NULL);
+  if (load == NULL) abort();
   snprintf(load->tmpdir, sizeof load->tmpdir, "%s",
            "/data/Containers/Data/Application/ABC/tmp");
   snprintf(load->config_path, sizeof load->config_path, "%s", config_path);
 
   fflush(stderr);
   int saved = dup(STDERR_FILENO);
-  assert(saved >= 0);
+  if (saved < 0) abort();
   int sink = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-  assert(sink >= 0);
-  assert(dup2(sink, STDERR_FILENO) >= 0);
+  if (sink < 0) abort();
+  if (dup2(sink, STDERR_FILENO) < 0) abort();
   close(sink);
 
   load_capabilities(load);
 
   fflush(stderr);
-  assert(dup2(saved, STDERR_FILENO) >= 0);
+  if (dup2(saved, STDERR_FILENO) < 0) abort();
   close(saved);
 
   FILE *file = fopen(log_path, "r");
-  assert(file != NULL);
+  if (file == NULL) abort();
   size_t n = fread(captured, 1, sizeof captured - 1, file);
   captured[n] = '\0';
   fclose(file);
   unlink(log_path);
   return captured;
+}
+
+// The writer never emits an ancestor, but the prefix rule accepts one, so pin
+// the behaviour rather than leave it to be discovered.
+static void test_ancestor_containers(void) {
+  const char *tmpdir = "/data/Containers/Data/Application/ABC/tmp";
+  char *dylib = NULL;
+  char *env = NULL;
+
+  char ancestor[] = "/data/Containers/Data/Application\t/opt/probe.dylib\t";
+  CHECK(capability_applies(ancestor, tmpdir, &dylib, &env) == 1,
+        "an ancestor of the container matches, which only the writer prevents");
+
+  char root[] = "/\t/opt/probe.dylib\t";
+  CHECK(capability_applies(root, tmpdir, &dylib, &env) == 0,
+        "a lone slash does not match, because the next character is not a separator");
+}
+
+static void test_device_udid(void) {
+  char udid[128];
+
+  const char *real =
+      "/Users/x/Library/Developer/CoreSimulator/Devices/ABC-123/data/Containers/Data/"
+      "Application/DEF/tmp";
+  CHECK(device_udid(real, udid, sizeof udid) == 1, "a simulator container yields a udid");
+  CHECK(strcmp(udid, "ABC-123") == 0, "the udid is the path component after /Devices/");
+
+  CHECK(device_udid("/tmp/nothing/like/it", udid, sizeof udid) == 0,
+        "a path with no /Devices/ yields nothing, so no config is read");
+  CHECK(device_udid("/a/Devices/", udid, sizeof udid) == 0,
+        "a trailing /Devices/ with no component yields nothing");
+  CHECK(device_udid("/a/Devices//data", udid, sizeof udid) == 0,
+        "an empty udid component yields nothing");
+
+  char tiny[4];
+  CHECK(device_udid(real, tiny, sizeof tiny) == 0,
+        "a udid longer than the buffer yields nothing rather than truncating");
 }
 
 static void test_load_capabilities(void) {
@@ -168,6 +213,19 @@ static void test_load_capabilities(void) {
   out = load_and_capture("/data/Containers/Data/Application/XYZ\t/opt/other.dylib\t\n");
   CHECK(out[0] == '\0', "another app's capability produces no output and no load");
 
+  char loaded_marker[1024];
+  snprintf(loaded_marker, sizeof loaded_marker, "/tmp/serve-sim-host-probe-%d.txt", getpid());
+  unlink(loaded_marker);
+  char line[4096];
+  snprintf(line, sizeof line, "\t%s\tSERVE_SIM_HOST_PROBE_FILE=%s\n",
+           SERVE_SIM_TEST_DYLIB, loaded_marker);
+  out = load_and_capture(line);
+  CHECK(out[0] == '\0', "a capability that loads reports nothing");
+  FILE *marker = fopen(loaded_marker, "r");
+  CHECK(marker != NULL, "the capability dylib was dlopened");
+  if (marker != NULL) fclose(marker);
+  unlink(loaded_marker);
+
   char oversized[MAX_CONFIG_BYTES + 16];
   memset(oversized, 'x', sizeof oversized);
   oversized[sizeof oversized - 1] = '\0';
@@ -179,8 +237,11 @@ static void test_load_capabilities(void) {
 int main(void) {
   test_read_config();
   test_capability_applies();
+  test_ancestor_containers();
+  test_device_udid();
   test_apply_env();
   test_load_capabilities();
+  remove_temps();
   if (failures == 0) fprintf(stdout, "ok\n");
   return failures == 0 ? 0 : 1;
 }

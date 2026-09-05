@@ -1,11 +1,11 @@
 import { exec, type ExecException } from "child_process";
-import { createHash, timingSafeEqual } from "crypto";
 import {
   messageToString,
   requestHost,
   type SseRequestHandler,
 } from "./exec-ws-utils";
 import { type UpgradeHandlerWebSocket } from "./middleware-utils";
+import { safeEqualString } from "./session-auth";
 
 // WebSocket control channel for the preview page. Browsers cap HTTP/1.1 at
 // six connections per origin, and every preview tab used to hold several
@@ -33,13 +33,6 @@ import { type UpgradeHandlerWebSocket } from "./middleware-utils";
 //   client → {unsub: sub}             cancel a subscription
 
 const AUTH_TIMEOUT_MS = 10_000;
-
-function tokensMatch(a: string, b: string): boolean {
-  // Hash both sides so the comparison is constant-time even when lengths differ.
-  const ha = createHash("sha256").update(a).digest();
-  const hb = createHash("sha256").update(b).digest();
-  return timingSafeEqual(ha, hb);
-}
 
 interface ExecMessage {
   token?: string;
@@ -165,7 +158,7 @@ function wireExecSocket(
       return;
     }
     if (!authed) {
-      if (typeof msg.token === "string" && tokensMatch(msg.token, opts.execToken)) {
+      if (typeof msg.token === "string" && safeEqualString(msg.token, opts.execToken)) {
         authed = true;
         clearTimeout(authTimer);
         send({ ready: true });

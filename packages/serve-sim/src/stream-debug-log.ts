@@ -9,15 +9,18 @@ const NO_SESSION = 404;
 export function startStreamDebugLog({
   path,
   statsUrl,
+  authToken,
   fetchImpl = fetch,
   now = () => new Date().toISOString(),
   onError = (message: string) => console.error(message),
 }: {
   path: string;
   statsUrl: (device: string) => string;
+  /** Sent as `Authorization: Bearer` so the stats fetch passes the preview gate under --require-token. */
+  authToken?: string;
     fetchImpl?: (
     url: string,
-    init?: { signal?: AbortSignal },
+    init?: { signal?: AbortSignal; headers?: Record<string, string> },
   ) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
   now?: () => string;
   onError?: (message: string) => void;
@@ -34,6 +37,7 @@ export function startStreamDebugLog({
     try {
       const response = await fetchImpl(statsUrl(device), {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        ...(authToken ? { headers: { authorization: `Bearer ${authToken}` } } : {}),
       });
       // 404 means no session is streaming yet. Recording starts when a viewer connects, so writing
       // a line a second until then would bury the samples that matter.

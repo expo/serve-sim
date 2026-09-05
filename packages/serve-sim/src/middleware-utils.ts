@@ -158,6 +158,12 @@ export async function readTextBody(request: Request, maxBytes?: number): Promise
   }
 }
 
+/** Hosts where reaching the port already means being on the machine. */
+export function isLoopbackHost(host: string): boolean {
+  const bare = host.replace(/^\[|\]$/g, "").toLowerCase();
+  return bare === "localhost" || bare === "127.0.0.1" || bare === "::1";
+}
+
 // Echoes the request Origin (never a wildcard) when it's loopback or allowlisted.
 export function corsAllowOriginHeaders(
   origin: string | null | undefined,
@@ -172,7 +178,7 @@ export function corsAllowOriginHeaders(
   }
   // URL() keeps IPv6 hosts bracketed ("[::1]"); strip them before comparing.
   const host = parsed.hostname.replace(/^\[|\]$/g, "");
-  const isLoopback = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  const isLoopback = isLoopbackHost(host);
   // Compare on canonical origins (default port dropped, no trailing slash, host lowercased) so a
   // configured `https://expo.dev:443` or `https://expo.dev/` still matches the browser's Origin.
   // Malformed configured values throw in URL() and are skipped.

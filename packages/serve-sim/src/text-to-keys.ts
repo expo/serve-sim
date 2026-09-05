@@ -1,3 +1,4 @@
+import WebSocket from "ws";
 // Convert a US-keyboard text string into a sequence of USB HID Usage Page 0x07
 // keyboard events (`down`/`up`) suitable for the serve-sim WS key opcode (0x06).
 //
@@ -68,10 +69,14 @@ export class UnsupportedCharacterError extends Error {
 export async function sendKeyEventsToWs(
   wsUrl: string,
   events: ReadonlyArray<KeyEvent>,
-  perEventDelayMs = 4,
+  // iOS coalesces events arriving in the same tick, so a small gap keeps long strings reliable.
+  { token, perEventDelayMs = 4 }: { token?: string; perEventDelayMs?: number } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(
+      wsUrl,
+      token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
+    );
     ws.binaryType = "arraybuffer";
 
     ws.onopen = async () => {

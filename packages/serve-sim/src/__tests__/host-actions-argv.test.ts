@@ -1,6 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
 
@@ -10,36 +19,61 @@ import { runHostActionAsync } from "../host-actions";
 // positional would still exit 0 against a real tool. These shims report the argv they were handed,
 // so the vector itself is asserted rather than the fact that something ran.
 const SHIM = `#!/bin/sh
-printf '%s\\n' "$(basename "$0")"
-for a in "$@"; do printf '%s\\n' "$a"; done
+{
+  printf '%s\\n' "$(basename "$0")"
+  for a in "$@"; do printf '%s\\n' "$a"; done
+} | tee -a "\${SERVE_SIM_ARGV_LOG:-/dev/null}"
 `;
 
 const UDID = "404F2659-7202-4450-8465-912BD2AB744B";
 const BUNDLE = "com.example.app";
-// Under an allowed root so ConfinedPath accepts it; never created, so nothing is written.
-const CONFINED = join(homedir(), "Desktop", "serve-sim-argv-fixture.png");
+// Under an allowed root so ConfinedPath accepts it; never created, so nothing is written. The
+// server canonicalizes the directory, so the expected argv uses the real path, not the lexical one.
+const UPLOADS = join(tmpdir(), "serve-sim-uploads");
+mkdirSync(UPLOADS, { recursive: true });
+const CONFINED = join(realpathSync(UPLOADS), "serve-sim-argv-fixture.png");
 
 let shimDir: string;
 let serveSimBin: string;
+let argvLog: string;
 let originalPath: string | undefined;
 
 beforeAll(() => {
   shimDir = mkdtempSync(join(tmpdir(), "serve-sim-argv-"));
-  for (const name of ["xcrun", "plutil", "open", "osascript", "serve-sim"]) {
+  for (const name of ["xcrun", "plutil", "open", "osascript", "sips", "base64", "serve-sim"]) {
     const p = join(shimDir, name);
     writeFileSync(p, SHIM);
     chmodSync(p, 0o755);
   }
   serveSimBin = join(shimDir, "serve-sim");
+  argvLog = join(shimDir, "argv.log");
+  process.env.SERVE_SIM_ARGV_LOG = argvLog;
   originalPath = process.env.PATH;
   process.env.PATH = `${shimDir}:${process.env.PATH ?? ""}`;
 });
 
 afterAll(() => {
+  delete process.env.SERVE_SIM_ARGV_LOG;
   if (originalPath === undefined) delete process.env.PATH;
   else process.env.PATH = originalPath;
   rmSync(shimDir, { recursive: true, force: true });
 });
+
+// Actions that replace stdout with their own result still leave their argv in the shim log.
+function loggedArgv(): string[][] {
+  const raw = readFileSync(argvLog, "utf8").trimEnd();
+  if (!raw) return [];
+  const lines = raw.split("\n");
+  const runs: string[][] = [];
+  for (const line of lines) {
+    if (["xcrun", "plutil", "open", "osascript", "sips", "base64", "serve-sim"].includes(line)) {
+      runs.push([line]);
+    } else {
+      runs[runs.length - 1]?.push(line);
+    }
+  }
+  return runs;
+}
 
 async function argv(action: string, params?: Record<string, unknown>): Promise<string[]> {
   const result = await runHostActionAsync(
@@ -60,7 +94,6 @@ describe("simctl-backed actions", () => {
     ]);
   });
 
-  // Coordinates are formatted to 7 decimals and sent as one comma-joined positional.
   it("builds location set and clear", async () => {
     expect(await argv("location.set", { udid: UDID, lat: 37.3349, lng: -122.009 })).toEqual([
       "xcrun", "simctl", "location", UDID, "set", "37.3349000,-122.0090000",
@@ -119,15 +152,62 @@ describe("other host tools", () => {
   });
 });
 
+describe("in-process actions that still shell out", () => {
+  it("captures to the Desktop and echoes the written path", async () => {
+    const result = await runHostActionAsync(
+      { action: "screenshot.capture", params: { udid: UDID, fileName: "serve-sim-screenshot-shot.png" } },
+      serveSimBin,
+    );
+    const target = join(homedir(), "Desktop", "serve-sim-screenshot-shot.png");
+    expect(result.exitCode).toBe(0);
+    // The toast's reveal action reads this path back, so it has to be the file simctl was given.
+    expect(result.stdout.trim()).toBe(target);
+    expect(loggedArgv().at(-1)).toEqual(["xcrun", "simctl", "io", UDID, "screenshot", target]);
+  });
+
+  it("sizes a thumbnail and reads it back as base64", async () => {
+    await runHostActionAsync({ action: "screenshot.thumbnail", params: { path: CONFINED } }, serveSimBin);
+    const runs = loggedArgv();
+    const sips = runs.find((r) => r[0] === "sips")!;
+    expect(sips.slice(0, 5)).toEqual(["sips", "-Z", "320", CONFINED, "--out"]);
+    expect(sips[5]).toMatch(/serve-sim-uploads\/thumb-[0-9a-f-]+\.png$/);
+    // The scratch thumbnail is read back and then removed, whatever sips did.
+    expect(runs.at(-1)?.slice(0, 2)).toEqual(["base64", "-i"]);
+    expect(existsSync(sips[5]!)).toBe(false);
+  });
+
+  it("returns the first icon candidate that exists", async () => {
+    const appPath = realpathSync(mkdtempSync(join(UPLOADS, "serve-sim-icon-")));
+    try {
+      writeFileSync(join(appPath, "Icon@2x.png"), "");
+      const found = await runHostActionAsync(
+        { action: "app.iconPath", params: { appPath, candidates: ["Icon@3x.png", "Icon@2x.png"] } },
+        serveSimBin,
+      );
+      expect(found.exitCode).toBe(0);
+      expect(found.stdout.trim()).toBe(join(appPath, "Icon@2x.png"));
+
+      const missing = await runHostActionAsync(
+        { action: "app.iconPath", params: { appPath, candidates: ["Icon@3x.png"] } },
+        serveSimBin,
+      );
+      expect(missing.exitCode).toBe(1);
+      expect(missing.stderr).toBe("no icon found");
+    } finally {
+      rmSync(appPath, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("serve-sim-backed actions", () => {
   it("builds rotate and button", async () => {
     expect(await argv("rotate", { udid: UDID, value: "landscape" })).toEqual([
       "serve-sim", "rotate", "landscape", "-d", UDID,
     ]);
-    // The udid is recorded for the event log but is not part of the press invocation.
     expect(await argv("button", { value: "home", udid: UDID })).toEqual([
-      "serve-sim", "button", "home",
+      "serve-sim", "button", "home", "-d", UDID,
     ]);
+    expect(await argv("button", { value: "home" })).toEqual(["serve-sim", "button", "home"]);
   });
 
   it("builds server detach and kill", async () => {

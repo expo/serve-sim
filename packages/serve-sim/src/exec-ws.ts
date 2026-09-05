@@ -78,6 +78,15 @@ function wireExecSocket(
   let authed = false;
   const subscriptions = new Map<number, { destroy: () => void }>();
   let actionsInFlight = 0;
+  // A ui request spawns simctl or ax just as an action does, so both draw on the same ceiling.
+  const reserveAction = (id: unknown): boolean => {
+    if (actionsInFlight >= MAX_ACTIONS_IN_FLIGHT_PER_SOCKET) {
+      send({ id, error: "too many actions in flight on this connection" });
+      return false;
+    }
+    actionsInFlight += 1;
+    return true;
+  };
   const ssePrefixes = opts.ssePrefixes ?? [];
 
   const send = (value: unknown) => {
@@ -95,9 +104,7 @@ function wireExecSocket(
       send({ sub, end: true, error: "too many subscriptions on this connection" });
       return;
     }
-    // Only same-origin SSE routes owned by this middleware are reachable, and
-    // only for authed sockets — strictly less exposure than the routes' own
-    // direct (tokenless same-origin) GET surface.
+    // Only this middleware's own SSE routes, and only for an authed socket.
     const pathOnly = path.split("?")[0]!;
     if (!path.startsWith("/") || !ssePrefixes.some((p) => pathOnly === p)) {
       send({ sub, end: true, error: "path not allowed" });
@@ -198,12 +205,7 @@ function wireExecSocket(
         send({ id, error: "ui requests not supported" });
         return;
       }
-      // A ui request spawns simctl or ax just as an action does, so it shares the ceiling.
-      if (actionsInFlight >= MAX_ACTIONS_IN_FLIGHT_PER_SOCKET) {
-        send({ id, error: "too many actions in flight on this connection" });
-        return;
-      }
-      actionsInFlight += 1;
+      if (!reserveAction(id)) return;
       opts
         .onUiRequest(msg.ui)
         .then((reply) => send({ id, ...reply }))
@@ -222,12 +224,8 @@ function wireExecSocket(
       return;
     }
     const { id, action } = msg;
-    if (actionsInFlight >= MAX_ACTIONS_IN_FLIGHT_PER_SOCKET) {
-      send({ id, error: "too many actions in flight on this connection" });
-      return;
-    }
+    if (!reserveAction(id)) return;
     const params = msg.params as Record<string, unknown> | undefined;
-    actionsInFlight += 1;
     runHostActionAsync(msg, opts.serveSimBinPath ?? "serve-sim")
       .then((result) => {
         try {

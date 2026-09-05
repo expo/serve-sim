@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { appendFile, chmod, lstat, mkdir, readdir, rm, stat, writeFile } from "fs/promises";
 import { homedir, tmpdir } from "os";
 import { realpathSync } from "fs";
-import { join, resolve, sep } from "path";
+import { basename, dirname, join, resolve, sep } from "path";
 import { z } from "zod";
 
 // The preview link is shareable, so this is a fixed set of actions rather than a shell: no value the
@@ -54,11 +54,23 @@ async function ensureUploadDirAsync(): Promise<void> {
 
 /** Counted by name so unrelated Desktop files are ignored. */
 const MAX_DESKTOP_SCREENSHOTS = 200;
+const SCREENSHOT_PREFIX = "serve-sim-screenshot-";
+
+/**
+ * Only names the ceiling above counts. Any other name would both slip the ceiling and let a link
+ * holder replace an arbitrary file on the operator's Desktop, since simctl overwrites silently.
+ */
+const ScreenshotName = z
+  .string()
+  .regex(
+    new RegExp(`^${SCREENSHOT_PREFIX}[A-Za-z0-9._-]{1,100}\\.png$`),
+    "must be a serve-sim screenshot name",
+  );
 
 async function desktopScreenshotBudgetExceededAsync(): Promise<boolean> {
   try {
     const entries = await readdir(join(homedir(), "Desktop"));
-    return entries.filter((entry) => entry.startsWith("serve-sim-screenshot-")).length >= MAX_DESKTOP_SCREENSHOTS;
+    return entries.filter((e) => e.startsWith(SCREENSHOT_PREFIX)).length >= MAX_DESKTOP_SCREENSHOTS;
   } catch {
     return false;
   }
@@ -129,29 +141,40 @@ const Coordinate = z.number().finite();
  */
 const ConfinedPath = Argument.transform((value) => {
   // realpath, not resolve: a symlink under an allowed root would otherwise point anywhere.
+  const full = resolve(value);
   try {
-    return realpathSync(resolve(value));
+    return realpathSync(full);
   } catch {
-    return resolve(value);
+    // The leaf may not exist yet. Canonicalize the directory anyway, or a path under a symlinked
+    // root (/var -> /private/var) keeps its lexical form and misses the root it really sits in.
+    try {
+      return join(realpathSync(dirname(full)), basename(full));
+    } catch {
+      return full;
+    }
   }
 }).refine((value) => {
-  const roots = [
-    join(homedir(), "Library", "Developer", "CoreSimulator", "Devices"),
-    // Apple's own apps live in the runtime root, not under a device's data container.
-    "/Library/Developer/CoreSimulator",
-    join(homedir(), "Desktop"),
-    UPLOAD_DIR,
-  ].map((root) => {
+  const realRoot = (root: string) => {
     try {
       return realpathSync(root);
     } catch {
       return root;
     }
-  });
-  return roots.some((root) => value === root || value.startsWith(root + sep));
+  };
+  const roots = [
+    join(homedir(), "Library", "Developer", "CoreSimulator", "Devices"),
+    // Apple's own apps live in the runtime root, not under a device's data container.
+    "/Library/Developer/CoreSimulator",
+    UPLOAD_DIR,
+  ].map(realRoot);
+  if (roots.some((root) => value === root || value.startsWith(root + sep))) return true;
+
+  // The Desktop holds the operator's own files, and the only thing here that belongs to this
+  // server is a screenshot it just wrote. Reads match what writes are already limited to.
+  const desktop = realRoot(join(homedir(), "Desktop"));
+  return dirname(value) === desktop && ScreenshotName.safeParse(basename(value)).success;
 }, "is outside the paths this preview may read");
 
-/** Either a file this server staged, or a path the host itself produced. */
 const FileSource = z.union([
   z.object({ uploadId: UploadId }),
   z.object({ path: ConfinedPath }),
@@ -217,7 +240,7 @@ const ACTION_SCHEMAS = {
   "media.add": z.object({ udid: Device }).and(FileSource),
   reveal: z.object({ path: ConfinedPath }),
   "file.readBase64": z.object({ path: ConfinedPath }),
-  "screenshot.capture": z.object({ udid: Device, fileName: UploadId }),
+  "screenshot.capture": z.object({ udid: Device, fileName: ScreenshotName }),
   "screenshot.thumbnail": z.object({ path: ConfinedPath }),
   "upload.append": z.object({
     uploadId: UploadId,
@@ -299,7 +322,9 @@ function buildInvocation(action: HostActionName, raw: unknown, binPath: string):
     }
     case "button": {
       const p = parseParams(action, raw);
-      return serveSim(["button", p.value]);
+      // Without -d the CLI resolves whichever state file it finds first, so a press lands on the
+      // wrong simulator whenever more than one is running.
+      return serveSim(["button", p.value, ...(p.udid ? ["-d", p.udid] : [])]);
     }
     case "server.detach": {
       const p = parseParams(action, raw);
@@ -449,8 +474,7 @@ async function runInProcessAsync(
         try {
           if ((await stat(full)).isFile()) return ok(full);
         } catch {
-          // A missing candidate is the normal case; try the next name.
-        }
+            }
       }
       return { stdout: "", stderr: "no icon found", exitCode: 1 };
     }

@@ -56,7 +56,6 @@ function cookieValue(header: string | undefined, name: string): string | null {
   return null;
 }
 
-
 // EAS terminates TLS at the tunnel, so the forwarded scheme is the only signal we get.
 function isHttpsRequest(headers: SessionAuthReq["headers"]): boolean {
   const forwarded = headerValue(headers["x-forwarded-proto"]);

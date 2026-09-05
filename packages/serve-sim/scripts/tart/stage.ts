@@ -30,7 +30,10 @@ export async function stageGuest(guest: TartGuest): Promise<void> {
     await guest.tarTo(join(pkgDir, "dist", "simpb"), ["PasteboardFixture.app"], GUEST_SIMPB);
   }
 
-  const extras = ["bun.lock", "bun.lockb", "dev.ts", "dist"].filter((name) => existsSync(join(pkgDir, name)));
+  // Sources carries the C the trampoline tests compile on the guest.
+  const extras = ["bun.lock", "bun.lockb", "dev.ts", "dist", "Sources"].filter((name) =>
+    existsSync(join(pkgDir, name)),
+  );
   await guest.tarTo(pkgDir, ["src", "package.json", ...extras], GUEST_PKG);
 }
 

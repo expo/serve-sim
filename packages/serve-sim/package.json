@@ -37,6 +37,7 @@
     "dist/middleware.js",
     "dist/middleware.cjs",
     "dist/state.js",
+    "dist/trampoline/libServeSimTrampoline.dylib",
     "dist/simcam/libSimCameraInjector.dylib",
     "dist/simcam/serve-sim-camera-helper",
     "dist/simax/serve-sim-ax-settings",

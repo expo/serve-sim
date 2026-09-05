@@ -95,6 +95,13 @@ Options:
                       H.264/WebRTC target bitrate
       --video-fps <fps>
                       H.264/WebRTC frame rate (1-140)
+      --launch-app-identifier <id>
+                      Bundle identifier of an installed app to launch once the
+                      simulator boots
+      --launch-arg <arg>
+                      Argument passed to the app when it launches (repeatable)
+      --open-url <url>
+                      URL to open in the app after it launches
       --list [device] List running streams
       --kill [device] Kill running stream(s)
 
@@ -170,6 +177,26 @@ Multiple booted simulators are supported by passing several device names. With n
 Supervisors can probe `GET /healthz` to confirm that the preview server is
 listening and `GET /readyz` to wait until the selected simulator and native
 capture session are ready. Both endpoints return JSON and disable caching.
+
+### Launching an app
+
+`--launch-app-identifier <bundle-id>` launches an app that is already installed on the
+simulator, before the stream starts. Install it yourself first (`xcrun simctl install`);
+`serve-sim` only launches.
+
+```sh
+serve-sim --launch-app-identifier host.exp.Exponent \
+  --launch-arg -EXDevMenuIsOnboardingFinished --launch-arg 1 \
+  --open-url exp://127.0.0.1:8081
+```
+
+`--launch-arg` is repeatable and maps to `simctl launch` process arguments. `--open-url`
+runs `simctl openurl` after the app is up, and pre-approves custom URL schemes so the
+Simulator does not ask for confirmation — useful for `exp://` deep links on a headless host.
+
+Launching from `serve-sim` rather than beforehand matters because a second `simctl launch`
+on a running app is a no-op: it neither restarts the app nor applies new arguments. Owning
+the launch is what lets `serve-sim` attach to the process from the start.
 
 ### Camera
 

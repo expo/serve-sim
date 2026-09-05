@@ -2,9 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { existsSync } from "fs";
 import { join } from "path";
 
+import { requireE2E } from "./e2e-preconditions";
+
 // Drives the built CLI. Every case here is rejected before a device is touched,
 // so it needs no simulator — only the bundle CI builds ahead of the tests.
 const CLI = join(import.meta.dir, "../../dist/serve-sim.js");
+
+requireE2E("launch flags", existsSync(CLI));
 
 async function runCli(args: string[]): Promise<{ code: number; stderr: string }> {
   const proc = Bun.spawn(["node", CLI, ...args], { stdout: "pipe", stderr: "pipe" });

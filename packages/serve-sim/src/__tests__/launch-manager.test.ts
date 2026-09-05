@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
 import {
@@ -8,6 +8,7 @@ import {
   isCapabilityEnabled,
   listCapabilities,
   readLaunchState,
+  renderCapabilityConfig,
 } from "../launch-manager";
 import { STATE_DIR } from "../state";
 
@@ -98,17 +99,67 @@ describe("readLaunchState", () => {
 });
 
 describe("config size limit", () => {
+  const huge = {
+    "a:huge": {
+      name: "huge",
+      bundleId: "a",
+      container: "/c/A",
+      dylib: "/huge.dylib",
+      env: { BIG: "x".repeat(70_000) },
+    },
+  };
+
   test("a capability set that would not fit is refused, not truncated", () => {
-    const oversized = formatCapabilityConfig({
-      "a:huge": {
-        name: "huge",
-        bundleId: "a",
-        container: "/c/A",
-        dylib: "/huge.dylib",
-        env: { BIG: "x".repeat(70_000) },
-      },
-    });
-    expect(Buffer.byteLength(oversized, "utf8")).toBeGreaterThanOrEqual(64 * 1024 - 1);
+    expect(() =>
+      renderCapabilityConfig({ launchArgs: [], capabilities: huge }),
+    ).toThrow("would load nothing at all");
+  });
+
+  test("a capability set that fits is rendered", () => {
+    expect(
+      renderCapabilityConfig({
+        launchArgs: [],
+        capabilities: {
+          "a:small": {
+            name: "small",
+            bundleId: "a",
+            container: "/c/A",
+            dylib: "/small.dylib",
+          },
+        },
+      }),
+    ).toBe("/c/A\t/small.dylib\t\n");
+  });
+
+  // The trampoline reads a fixed-size buffer, so the two limits have to agree.
+  test("the limit matches the one compiled into the trampoline", () => {
+    const source = readFileSync(
+      join(import.meta.dir, "../../Sources/ServeSimTrampoline/serve-sim-trampoline.c"),
+      "utf-8",
+    );
+    const compiled = source.match(/#define MAX_CONFIG_BYTES \((\d+) \* (\d+)\)/);
+    expect(compiled).not.toBeNull();
+    expect(Number(compiled![1]) * Number(compiled![2])).toBe(64 * 1024);
+  });
+});
+
+describe("config field separators", () => {
+  test("a value carrying a separator is refused rather than corrupting a line", () => {
+    for (const value of ["a\tb", "a\nb", "a;b"]) {
+      expect(() =>
+        formatCapabilityConfig({
+          "a:x": { name: "x", bundleId: "a", container: "/c/A", dylib: "/x.dylib", env: { K: value } },
+        }),
+      ).toThrow("separates fields");
+    }
+  });
+
+  test("a name carrying the pair separator is refused", () => {
+    expect(() =>
+      formatCapabilityConfig({
+        "a:x": { name: "x", bundleId: "a", container: "/c/A", dylib: "/x.dylib", env: { "K=V": "1" } },
+      }),
+    ).toThrow('contains "="');
   });
 });
 

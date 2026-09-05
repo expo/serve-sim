@@ -1993,6 +1993,25 @@ Examples:
     let targets = devices;
     try {
       targets = resolveTargetDevices(devices);
+      // ensureBooted arms the device-wide insert, so pair it with a teardown
+      // first. A run mode installs its own shutdown later; between here and
+      // there a signal would otherwise kill serve-sim with the trampoline still
+      // inserted into every app the simulator starts. Detach deliberately leaves
+      // its session armed, so it keeps what it arms.
+      if (!opts.detach) {
+        process.on("exit", () => {
+          for (const udid of targets) {
+            try { removeTrampolineSync(udid); } catch {}
+          }
+        });
+        for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+          process.on(signal, () => {
+            // A run mode that registered its own handler stops children too.
+            if (process.listenerCount(signal) > 1) return;
+            process.exit(0);
+          });
+        }
+      }
       for (const udid of targets) await ensureBooted(udid);
       for (const udid of targets) {
         if (bundleId) {

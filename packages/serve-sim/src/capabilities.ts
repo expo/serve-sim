@@ -18,6 +18,11 @@ export function registerCapability(definition: CapabilityDefinition): void {
   registry.set(definition.name, definition);
 }
 
+/** Tests share one module instance, so each file has to start from a known set. */
+export function clearRegisteredCapabilities(): void {
+  registry.clear();
+}
+
 export function registeredCapabilities(): CapabilityDefinition[] {
   return [...registry.values()].sort((a, b) => a.name.localeCompare(b.name));
 }

@@ -56,6 +56,10 @@ jobs:
         uses: eas/start_ios_simulator
 
       - name: Run serve-sim tests
+        # A device test that skips here would leave the feature uncovered with the
+        # job still green, so an unmet precondition has to fail instead.
+        env:
+          SERVE_SIM_E2E_REQUIRED: "1"
         run: |
           run_tests() {
             bun test --max-concurrency=1 packages/serve-sim/src/__tests__/

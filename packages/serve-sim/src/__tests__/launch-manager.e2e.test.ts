@@ -4,9 +4,17 @@ import { existsSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { findBootedDevice } from "../device";
+import { e2eDevice, requireE2E } from "./e2e-preconditions";
 import { launchAppAsync } from "../launch-app";
-import { clearLaunchState, disableCapability, enableCapability, launchApp } from "../launch-manager";
+import {
+  capabilityConfigPath,
+  clearLaunchState,
+  disableCapability,
+  enableCapability,
+  isCapabilityEnabled,
+  launchApp,
+  listCapabilities,
+} from "../launch-manager";
 
 // The trampoline defers its dlopen, so every assertion polls.
 
@@ -17,9 +25,10 @@ const MARKER = join(tmpdir(), `serve-sim-probe-e2e-${process.pid}.txt`);
 const APP = "dev.expo.serve-sim.launch-fixture";
 const OTHER_APP = "com.apple.mobilesafari";
 
-// Pin the device with SERVE_SIM_TEST_UDID; first-booted-wins races other sessions.
-const udid = process.env.SERVE_SIM_TEST_UDID ?? findBootedDevice();
+const udid = e2eDevice();
 const ready = udid !== null && existsSync(PROBE) && existsSync(FIXTURE);
+
+requireE2E("launch manager capabilities", ready);
 
 function simctl(args: string[]): string {
   return execFileSync("xcrun", ["simctl", ...args], {
@@ -88,7 +97,7 @@ beforeAll(() => {
   if (!ready) return;
   try { simctl(["spawn", udid!, "launchctl", "unsetenv", "DYLD_INSERT_LIBRARIES"]); } catch {}
   clearLaunchState(udid!);
-  try { rmSync(join(DIST, "capabilities.conf")); } catch {}
+  try { rmSync(capabilityConfigPath(udid!)); } catch {}
   try { rmSync(MARKER); } catch {}
   // Reinstall so the recorded launches start from an empty container.
   try { simctl(["uninstall", udid!, APP]); } catch {}
@@ -102,6 +111,7 @@ afterAll(() => {
   terminate(udid!, OTHER_APP);
   clearLaunchState(udid!);
   try { rmSync(MARKER); } catch {}
+  try { rmSync(capabilityConfigPath(udid!)); } catch {}
   try { simctl(["uninstall", udid!, APP]); } catch {}
 }, 60_000);
 
@@ -136,7 +146,7 @@ describe.skipIf(!ready)("launch manager capabilities", () => {
     });
     const lines = await waitForLines(markerLines, 0);
     expect(lines.length).toBeGreaterThan(0);
-    expect(lines.at(-1)).toContain(".app/");
+    expect(lines.at(-1)).toContain("ServeSimLaunchFixture");
   }, 30_000);
 
   test("loads into a launch the manager did not perform", async () => {
@@ -148,6 +158,11 @@ describe.skipIf(!ready)("launch manager capabilities", () => {
 
   test("keeps the recorded launch arguments across a capability relaunch", async () => {
     await launchApp(udid!, { bundleId: APP, launchArgs: ["-ServeSimProbeMarker", "1"] });
+    // Wait for the first launch to be recorded, or the relaunch assertion below
+    // could read that same line back and pass without a relaunch happening.
+    const launches = (): string[] => fixtureLines().filter((line) => line.startsWith("launch\t"));
+    await waitForMatch(launches, () => true);
+    const firstPid = launches().at(-1)?.split("\t")[1];
     const before = fixtureLines().length;
     await enableCapability(udid!, APP, {
       name: "probe",
@@ -157,6 +172,7 @@ describe.skipIf(!ready)("launch manager capabilities", () => {
     const relaunch = (await waitForLines(fixtureLines, before))
       .slice(before)
       .find((line) => line.startsWith("launch\t"));
+    expect(relaunch?.split("\t")[1]).not.toBe(firstPid);
     expect(relaunch?.split("\t")[2]).toBe("-ServeSimProbeMarker\x1f1");
   }, 30_000);
 
@@ -178,8 +194,34 @@ describe.skipIf(!ready)("launch manager capabilities", () => {
       .split("\n")
       .find((line) => line.includes(OTHER_APP));
     const pid = other?.split("\t")[0];
+    expect(pid, "Safari did not start, so this proves nothing").toBeDefined();
     expect(markerLines().some((line) => line.startsWith(`${pid}\t`))).toBe(false);
   }, 30_000);
+
+  test("a capability for every app loads outside the launched app too", async () => {
+    terminate(udid!, APP);
+    terminate(udid!, OTHER_APP);
+    await enableCapability(udid!, APP, {
+      name: "probe",
+      dylib: PROBE,
+      allApps: true,
+      env: { SERVE_SIM_PROBE_FILE: MARKER },
+    });
+    await waitForMatch(markerLines, (line) => line.includes(".app/"));
+
+    simctl(["launch", udid!, OTHER_APP]);
+    const loadedInto = (executable: string): ((line: string) => boolean) => (line) =>
+      line.includes(executable);
+    const lines = await waitForMatch(markerLines, loadedInto("MobileSafari"));
+
+    expect(lines.some(loadedInto("ServeSimLaunchFixture"))).toBe(true);
+    expect(lines.some(loadedInto("MobileSafari"))).toBe(true);
+
+    // Naming one app turns off the wildcard that made it load there.
+    await disableCapability(udid!, APP, "probe");
+    expect(isCapabilityEnabled(udid!, APP, "probe")).toBe(false);
+    expect(listCapabilities(udid!, OTHER_APP)).not.toContain("probe");
+  }, 60_000);
 
   test("disabling a capability stops it loading", async () => {
     await disableCapability(udid!, APP, "probe");

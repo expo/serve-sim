@@ -1999,13 +1999,17 @@ Examples:
       // inserted into every app the simulator starts. Detach deliberately leaves
       // its session armed, so it keeps what it arms.
       if (!opts.detach) {
-        process.on("exit", () => {
+        const disarmAll = (): void => {
           for (const udid of targets) {
             try { removeTrampolineSync(udid); } catch {}
           }
-        });
+        };
+        process.on("exit", disarmAll);
         for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
           process.on(signal, () => {
+            // Disarm here rather than leave it to the exit handler: spawning
+            // simctl while the process is tearing down does not always finish.
+            disarmAll();
             // A run mode that registered its own handler stops children too.
             if (process.listenerCount(signal) > 1) return;
             process.exit(0);

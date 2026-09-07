@@ -132,14 +132,17 @@ final class WebRTCPublisher: @unchecked Sendable {
     /// (viewer-visible latency), tracked against tap-to-pixel measurements.
     private static let defaultPlayoutDelayMaxMs = 0
 
-    private static func configureLowLatencyPlayout() {
+    private static func configureFieldTrials() {
         struct Once {
             static let run: Void = {
                 let environment = ProcessInfo.processInfo.environment["SERVE_SIM_WEBRTC_PLAYOUT_MAX_MS"]
-                let maxMs = environment.flatMap(Int.init).map { max(0, min(1_000, $0)) }
+                let maxMs = environment.flatMap(Int.init)
                     ?? WebRTCPublisher.defaultPlayoutDelayMaxMs
+                let policy = WebRTCFieldTrialPolicy(
+                    playoutDelayMaxMilliseconds: maxMs
+                )
                 LKRTCPeerConnectionFactory.configureFieldTrials(
-                    "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:\(maxMs)/"
+                    policy.configuration
                 )
             }()
         }
@@ -194,7 +197,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         self.maxDimension = max(0, maxDimension)
         self.framePacer = ContinuousFramePacer(framesPerSecond: normalizedMaxFps)
         h264FrameModeOverride = Self.h264FrameModeOverride()
-        Self.configureLowLatencyPlayout()
+        Self.configureFieldTrials()
         activityToken = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .latencyCritical],
             reason: "serve-sim WebRTC streaming"

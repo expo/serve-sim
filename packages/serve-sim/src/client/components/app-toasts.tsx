@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Toaster } from "sonner";
 import type { ClipboardToast } from "../hooks/use-clipboard-toast";
 import type { UploadToast } from "../hooks/use-upload-toasts";
@@ -64,15 +65,49 @@ export function UploadToastContent({ toast }: { toast: UploadToast }) {
   );
 }
 
+function PasteField({ onSubmit }: { onSubmit: (text: string) => void }) {
+  const [text, setText] = useState("");
+  return (
+    <form
+      className="flex items-center gap-2 flex-1 min-w-0"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (text) onSubmit(text);
+      }}
+    >
+      <input
+        autoFocus
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        placeholder="Long-press and paste"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        aria-label="Text to paste into the simulator"
+        className="flex-1 min-w-0 px-2 py-1 rounded bg-black/40 border border-white/15 text-white/90 text-[12px] outline-none focus:border-white/35"
+      />
+      <button
+        type="submit"
+        disabled={!text}
+        className="shrink-0 px-2 py-0.5 rounded border border-white/20 text-white/90 hover:bg-white/10 disabled:opacity-40"
+      >
+        Send
+      </button>
+    </form>
+  );
+}
+
 export function ClipboardToastContent({
   toast,
   onCopy,
+  onPaste,
 }: {
   toast: ClipboardToast;
   onCopy?: () => void;
+  onPaste?: (text: string) => void;
 }) {
   const pending = toast.status === "pending";
-  const dotColor = pending
+  const dotColor = pending || toast.status === "paste"
     ? "#a5b4fc"
     : toast.status === "copied"
       ? "#4ade80"
@@ -89,9 +124,13 @@ export function ClipboardToastContent({
         className={`size-1.5 rounded-full shrink-0 ${pending ? "animate-pulse" : ""}`}
         style={{ background: dotColor }}
       />
-      <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
-        {toast.message}
-      </span>
+      {toast.status === "paste" && onPaste ? (
+        <PasteField onSubmit={onPaste} />
+      ) : (
+        <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
+          {toast.message}
+        </span>
+      )}
       {toast.status === "manual" && (
         <button
           type="button"

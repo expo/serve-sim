@@ -5,6 +5,7 @@ import {
   copyTextToSim,
   pbcopyCommand,
   readSimClipboard,
+  readTextFromBrowserClipboard,
   simCopyHidEvents,
   simPasteHidEvents,
   simSelectAllHidEvents,
@@ -140,6 +141,45 @@ describe("sim paste HID", () => {
       { type: "down", usage: KeyV },
       { type: "up", usage: KeyV },
     ]);
+  });
+});
+
+describe("readTextFromBrowserClipboard", () => {
+  function withNavigator(value: unknown, run: () => Promise<void>): Promise<void> {
+    const had = Object.prototype.hasOwnProperty.call(globalThis, "navigator");
+    const previous = Reflect.get(globalThis, "navigator");
+    Object.defineProperty(globalThis, "navigator", { value, configurable: true, writable: true });
+    return run().finally(() => {
+      if (had) {
+        Object.defineProperty(globalThis, "navigator", {
+          value: previous,
+          configurable: true,
+          writable: true,
+        });
+      } else {
+        Reflect.deleteProperty(globalThis, "navigator");
+      }
+    });
+  }
+
+  // serve-sim over a LAN address is not a secure context, so the async
+  // clipboard API is absent there. The caller has to fall back, not retry.
+  test("refuses an origin with no async clipboard", async () => {
+    await withNavigator({}, async () => {
+      await expect(readTextFromBrowserClipboard()).rejects.toThrow(/Clipboard unavailable/);
+    });
+  });
+
+  test("refuses an origin whose clipboard cannot read", async () => {
+    await withNavigator({ clipboard: { writeText: async () => {} } }, async () => {
+      await expect(readTextFromBrowserClipboard()).rejects.toThrow(/Clipboard unavailable/);
+    });
+  });
+
+  test("returns what the device clipboard holds", async () => {
+    await withNavigator({ clipboard: { readText: async () => "café 🎉" } }, async () => {
+      expect(await readTextFromBrowserClipboard()).toBe("café 🎉");
+    });
   });
 });
 

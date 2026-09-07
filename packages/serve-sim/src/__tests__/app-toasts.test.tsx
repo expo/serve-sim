@@ -56,6 +56,26 @@ describe("ClipboardToastContent", () => {
     expect(copied).not.toContain(">Copy</button>");
   });
 
+  test("renders a paste field instead of a message in the paste state", () => {
+    const html = renderToStaticMarkup(
+      <ClipboardToastContent
+        toast={{ status: "paste", message: "Paste here to send it to the simulator" }}
+        onPaste={() => {}}
+      />,
+    );
+    expect(html).toContain('aria-label="Text to paste into the simulator"');
+    expect(html).toContain(">Send</button>");
+    expect(html).not.toContain("Paste here to send it to the simulator");
+  });
+
+  test("falls back to the message when the paste state has no handler", () => {
+    const html = renderToStaticMarkup(
+      <ClipboardToastContent toast={{ status: "paste", message: "Paste here" }} />,
+    );
+    expect(html).toContain("Paste here");
+    expect(html).not.toContain(">Send</button>");
+  });
+
   test("shows a Copy button only in the manual state", () => {
     const html = renderToStaticMarkup(
       <ClipboardToastContent toast={{ status: "manual", message: "Ready — one click to copy" }} />,

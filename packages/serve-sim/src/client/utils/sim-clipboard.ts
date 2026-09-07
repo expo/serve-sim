@@ -110,6 +110,12 @@ export function copyTextViaSelection(text: string): boolean {
   }
 }
 
+export async function readTextFromBrowserClipboard(): Promise<string> {
+  const clipboard = navigator.clipboard;
+  if (!clipboard?.readText) throw new Error("Clipboard unavailable on this origin");
+  return await clipboard.readText();
+}
+
 export async function writeTextToBrowserClipboard(text: string): Promise<void> {
   const clipboard = navigator.clipboard;
   if (!clipboard) throw new Error("Clipboard unavailable on this origin");

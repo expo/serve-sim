@@ -79,6 +79,7 @@ import {
   type HidKeyEvent,
 } from "./utils/sim-clipboard";
 import { useClipboardToast } from "./hooks/use-clipboard-toast";
+import { ActionMenu } from "./components/action-menu";
 import {
   DEVICE_SIDEBAR_WIDTH,
   DEVTOOLS_PANEL_WIDTH,
@@ -1046,7 +1047,25 @@ function AppWithConfig({
     await new Promise<void>((r) => setTimeout(r, 150));
   }, [sendShortcut]);
 
-  const clipboard = useClipboardToast(config.device, sendSimCopy);
+  const sendTextToSim = useCallback(
+    (text: string): Promise<boolean> => {
+      const tool = config.pasteboardTool;
+      if (tool == null) return Promise.reject(new Error("Pasteboard helper is not available"));
+      const run = pasteChainRef.current.catch(() => {}).then(async () => {
+        if (!(await copyTextToSim(config.device, text, execOnHost, tool))) return false;
+        await sendSimPaste();
+        return true;
+      });
+      pasteChainRef.current = run.then(
+        () => {},
+        () => {},
+      );
+      return run;
+    },
+    [config.device, config.pasteboardTool, sendSimPaste],
+  );
+
+  const clipboard = useClipboardToast(config.device, sendSimCopy, sendTextToSim);
 
   const simContainerRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -1247,30 +1266,11 @@ function AppWithConfig({
       const text = e.clipboardData?.getData("text/plain");
       if (!text) return;
       e.preventDefault();
-      const tool = config.pasteboardTool;
-      if (tool == null) {
-        clipboard.pasteSettled(false, "Pasteboard helper is not available");
-        return;
-      }
-      clipboard.pasteStarted();
-      const run = pasteChainRef.current.catch(() => {}).then(async () => {
-        try {
-          const ok = await copyTextToSim(config.device, text, execOnHost, tool);
-          if (!ok) {
-            clipboard.pasteSettled(false);
-            return;
-          }
-          await sendSimPaste();
-          clipboard.pasteSettled(true);
-        } catch {
-          clipboard.pasteSettled(false);
-        }
-      });
-      pasteChainRef.current = run;
+      void clipboard.pasteText(text);
     };
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
-  }, [config.device, config.pasteboardTool, sendSimPaste, clipboard]);
+  }, [clipboard]);
 
   const uploads = useUploadToasts();
   const screenshot = useScreenshotToast(config.device);
@@ -1629,10 +1629,22 @@ function AppWithConfig({
                 title="Screenshot"
                 onClick={(e) => { e.preventDefault(); void screenshot.capture(); }}
               />
-              <SimulatorToolbar.CopyButton
-                title="Copy simulator clipboard"
-                onClick={() => void clipboard.copyFromSim()}
-              />
+              <ActionMenu
+                items={[
+                  {
+                    label: "Copy from Simulator",
+                    description: "Simulator clipboard to this device",
+                    onSelect: () => void clipboard.copyFromSim(),
+                  },
+                  {
+                    label: "Paste from Device",
+                    description: "This device's clipboard to the simulator",
+                    onSelect: () => void clipboard.pasteFromDevice(),
+                  },
+                ]}
+              >
+                {(trigger) => <SimulatorToolbar.CopyButton title="Clipboard" {...trigger} />}
+              </ActionMenu>
               <SimulatorToolbar.RotateButton title="Rotate device" />
             </SimulatorToolbar.Actions>
           </SimulatorToolbar>

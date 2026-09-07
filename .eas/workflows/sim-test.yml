@@ -56,6 +56,11 @@ jobs:
         uses: eas/start_ios_simulator
 
       - name: Run serve-sim tests
+        env:
+          # The suite skips itself on CI because `simctl ui` hangs on GitHub's shared runners. These
+          # are dedicated EAS workers, and every simctl call in it is bounded by a 15s timeout, so a
+          # wedged UI plane surfaces as a failed test rather than a stalled job.
+          SERVE_SIM_UI_E2E: "1"
         run: |
           run_tests() {
             bun test --max-concurrency=1 packages/serve-sim/src/__tests__/

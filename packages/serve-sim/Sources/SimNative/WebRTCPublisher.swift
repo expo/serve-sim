@@ -87,6 +87,8 @@ struct WebRTCCaptureCounts: Codable {
 struct WebRTCSenderStatsReport: Codable {
     let sessions: [WebRTCSenderStatsPayload]
     let capture: WebRTCCaptureCounts?
+    let usesHost: Bool
+    let encoderID: String?
 }
 
 private final class WebRTCSignalingCompletion: @unchecked Sendable {
@@ -182,9 +184,11 @@ final class WebRTCPublisher: @unchecked Sendable {
     private let h264PixelBufferConverter = H264WebRTCPixelBufferConverter()
     private let h264WebRTCSupport: WebRTCH264Support
     private let h264FrameModeOverride: H264WebRTCFrameMode?
+    private let hostEncoderFactory: HostH264EncoderFactory?
     private var frameRatePolicy: WebRTCFrameRatePolicy
     private var targetBitrate: Int
     private var maxDimension: Int
+    private var encodeMaxDimension: Int
 
     init(maxFps: Int, targetBitrate: Int, maxDimension: Int) {
         let frameRatePolicy = WebRTCFrameRatePolicy(configuredFramesPerSecond: maxFps)
@@ -195,14 +199,26 @@ final class WebRTCPublisher: @unchecked Sendable {
         self.framePacer = ContinuousFramePacer(framesPerSecond: normalizedMaxFps)
         h264FrameModeOverride = Self.h264FrameModeOverride()
         h264WebRTCSupport = Self.detectH264WebRTCSupport()
+        encodeMaxDimension = HostH264Plan.sendMaxLongEdge(
+            configuredMaxDimension: self.maxDimension,
+            usesHostSocket: /* host AVE */ h264WebRTCSupport.usesHost
+        )
         Self.configureLowLatencyPlayout()
         activityToken = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .latencyCritical],
             reason: "serve-sim WebRTC streaming"
         )
-        let encoderFactory: LKRTCVideoEncoderFactory = h264WebRTCSupport.usesHost
-            ? HostH264EncoderFactory()
-            : LKRTCDefaultVideoEncoderFactory()
+        let hostFactory: HostH264EncoderFactory?
+        let encoderFactory: LKRTCVideoEncoderFactory
+        if h264WebRTCSupport.usesHost {
+            let factory = HostH264EncoderFactory(sendMaxLongEdge: encodeMaxDimension)
+            hostFactory = factory
+            encoderFactory = factory
+        } else {
+            hostFactory = nil
+            encoderFactory = LKRTCDefaultVideoEncoderFactory()
+        }
+        hostEncoderFactory = hostFactory
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()
         factory = LKRTCPeerConnectionFactory(
             encoderFactory: encoderFactory,
@@ -250,6 +266,11 @@ final class WebRTCPublisher: @unchecked Sendable {
                 }
                 self.targetBitrate = max(100_000, targetBitrate)
                 self.maxDimension = max(0, maxDimension)
+                self.encodeMaxDimension = HostH264Plan.sendMaxLongEdge(
+                    configuredMaxDimension: self.maxDimension,
+                    usesHostSocket: /* host AVE */ self.h264WebRTCSupport.usesHost
+                )
+                self.hostEncoderFactory?.setSendMaxLongEdge(self.encodeMaxDimension)
                 if self.lastOutputWidth > 0, self.lastOutputHeight > 0 {
                     self.videoSource.adaptOutputFormat(
                         toWidth: Int32(self.lastOutputWidth),
@@ -263,7 +284,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                 streamLog(
                     "[webrtc] Settings updated fps=\(frameRatePolicy.outputFramesPerSecond) " +
                     "bitrate=\(self.targetBitrate) " +
-                    "maxDimension=\(self.maxDimension)"
+                    "maxDimension=\(self.maxDimension) encodeMax=\(self.encodeMaxDimension)"
                 )
                 continuation.resume()
             }
@@ -454,6 +475,13 @@ final class WebRTCPublisher: @unchecked Sendable {
         )
     }
 
+    /// `usesHost` says whether the sidecar is in play. `encoderID` is reported either way:
+    /// on a Tart guest the in-process encoder is `paravirtualized:...ave.avc` (the host AVE),
+    /// and hiding that made a hardware path indistinguishable from software VP8 in the panel.
+    func hostEncoderIdentity() -> (usesHost: Bool, encoderID: String?) {
+        (h264WebRTCSupport.usesHost, h264WebRTCSupport.encoderID)
+    }
+
     func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp _: CMTime) {
         let nowNs = DispatchTime.now().uptimeNanoseconds
         frameLock.lock()
@@ -501,10 +529,10 @@ final class WebRTCPublisher: @unchecked Sendable {
     private func sendFrameOnQueue(_ pixelBuffer: CVPixelBuffer, timestampNanoseconds: UInt64) {
         let sourceWidth = CVPixelBufferGetWidth(pixelBuffer)
         let sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
-        guard let scaledPixelBuffer = pixelBufferScaler.scale(pixelBuffer, maxDimension: maxDimension) else {
+        guard let scaledPixelBuffer = pixelBufferScaler.scale(pixelBuffer, maxDimension: encodeMaxDimension) else {
             streamLog(
                 "[webrtc] Failed to scale input frame \(sourceWidth)x\(sourceHeight) " +
-                "maxDimension=\(maxDimension)"
+                "maxDimension=\(encodeMaxDimension)"
             )
             return
         }
@@ -1158,8 +1186,8 @@ final class WebRTCPublisher: @unchecked Sendable {
         let minBitrate = NSNumber(value: bitratePolicy.minimumBitsPerSecond)
         let senderFramesPerSecond = frameRatePolicy.senderFramesPerSecond
         let sourceMaxDimension = max(lastOutputWidth, lastOutputHeight)
-        let scaleResolutionDownBy = maxDimension > 0 && sourceMaxDimension > maxDimension
-            ? Double(sourceMaxDimension) / Double(maxDimension)
+        let scaleResolutionDownBy = encodeMaxDimension > 0 && sourceMaxDimension > encodeMaxDimension
+            ? Double(sourceMaxDimension) / Double(encodeMaxDimension)
             : 1.0
         for encoding in encodings {
             encoding.isActive = true
@@ -1187,7 +1215,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             "[webrtc] Sender parameters pacerFps=\(frameRatePolicy.outputFramesPerSecond) " +
             "senderFpsCap=none " +
             "minBitrate=\(minBitrate) " +
-            "maxBitrate=\(maxBitrate) maxDimension=\(maxDimension) " +
+            "maxBitrate=\(maxBitrate) maxDimension=\(encodeMaxDimension) " +
             "scaleDown=\(String(format: "%.3f", scaleResolutionDownBy)) " +
             "applied=\(appliedScale.map { String(format: "%.3f", $0) } ?? "nil") " +
             "degrade=\(hostH264 ? "maintainResolution" : "maintainFramerate") " +
@@ -1293,18 +1321,22 @@ final class WebRTCPublisher: @unchecked Sendable {
             )
         }
         let virtual = sysctlString("hw.model")?.hasPrefix("Virtual") == true
+        let hostEncoderFlag = environment["SERVE_SIM_HOST_ENCODER"]
         if HostH264Plan.usesHostSocket(
             isVirtualMac: virtual,
-            hostEncoderFlag: environment["SERVE_SIM_HOST_ENCODER"]
+            hostEncoderFlag: hostEncoderFlag
         ) {
             let host = HostH264Plan.host(from: environment)
             let port = HostH264Plan.port(from: environment)
-            if HostEncoderSocket.sidecarListening(host: host, port: port) {
+            // Always probe. RATE/NV12 claim the slot, so a short connect does not steal it.
+            // SERVE_SIM_HOST_ENCODER=1 used to skip this and advertise host-ave when :9876 was down.
+            let reachable = HostEncoderSocket.sidecarListening(host: host, port: port)
+            if reachable {
                 return WebRTCH264Support(
                     allowed: true,
                     usesHost: true,
                     reason: nil,
-                    encoderID: "host-ave.avc",
+                    encoderID: HostH264Plan.hostEncoderID,
                     usesHardware: true,
                     probeSummary: "host \(host):\(port)"
                 )
@@ -1318,7 +1350,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                 probeSummary: "host \(host):\(port) down"
             )
         }
-        if virtual {
+        if !HostH264Plan.probesGuestVideoToolbox(isVirtualMac: virtual) {
             return WebRTCH264Support(
                 allowed: false,
                 usesHost: false,

@@ -1,0 +1,47 @@
+{
+  "sha": "c69063d4ded79b914438a75208b795da19812c94",
+  "url": "https://api.github.com/repos/catinthesack/avm/git/trees/c69063d4ded79b914438a75208b795da19812c94",
+  "tree": [
+    {
+      "path": ".gitignore",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "afadd8e41cdd8a8e4bcf1583a05a0dad04c75507",
+      "size": 14,
+      "url": "https://api.github.com/repos/catinthesack/avm/git/blobs/afadd8e41cdd8a8e4bcf1583a05a0dad04c75507"
+    },
+    {
+      "path": "LICENSE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2e6188289c94833f0e653512ec9f8a73735855de",
+      "size": 1071,
+      "url": "https://api.github.com/repos/catinthesack/avm/git/blobs/2e6188289c94833f0e653512ec9f8a73735855de"
+    },
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "916041da194486cd05f56e16cbf677d526658187",
+      "size": 6436,
+      "url": "https://api.github.com/repos/catinthesack/avm/git/blobs/916041da194486cd05f56e16cbf677d526658187"
+    },
+    {
+      "path": "avm.entitlements",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9edb508b6e7a313862671c33485e457b6ff9539f",
+      "size": 728,
+      "url": "https://api.github.com/repos/catinthesack/avm/git/blobs/9edb508b6e7a313862671c33485e457b6ff9539f"
+    },
+    {
+      "path": "avm.swift",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "543ea67361db78df3b355cf166439c4adaed8782",
+      "size": 33653,
+      "url": "https://api.github.com/repos/catinthesack/avm/git/blobs/543ea67361db78df3b355cf166439c4adaed8782"
+    }
+  ],
+  "truncated": false
+}

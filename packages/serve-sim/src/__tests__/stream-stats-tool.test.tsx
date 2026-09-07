@@ -320,6 +320,19 @@ describe("capture rows", () => {
     expect(row(markup, "Pacer FPS")).toBe("0.4 fps");
   });
 
+  test("names the host sidecar so staging can see host-ave.avc", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        sender={sender}
+        encoderID="host-ave.avc"
+      />,
+    );
+    expect(row(markup, "Encoder")).toBe("host-ave.avc");
+  });
+
   test("shortens a lifetime counter so it fits its cell", () => {
     const markup = renderToStaticMarkup(
       <StreamStatsBody

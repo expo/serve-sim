@@ -12,6 +12,7 @@ export function StreamStatsBody({
   faults,
   sender,
   capture,
+  encoderID,
   requestedFps,
   stale,
   action,
@@ -21,6 +22,7 @@ export function StreamStatsBody({
   faults: string[];
   sender?: SenderStreamStats | null;
   capture?: CaptureCounts | null;
+  encoderID?: string | null;
   requestedFps?: number;
   stale?: boolean;
   action?: ReactNode;
@@ -76,18 +78,19 @@ export function StreamStatsBody({
         )}
       </div>
 
-      {sender && <SenderRows sender={sender} />}
+      {sender && <SenderRows sender={sender} encoderID={encoderID} />}
       {capture && <CaptureRows capture={capture} />}
     </div>
   );
 }
 
 /** The encoder's own view. None of this is visible to a receive-only browser. */
-function SenderRows({ sender }: { sender: SenderStreamStats }) {
+function SenderRows({ sender, encoderID }: { sender: SenderStreamStats; encoderID?: string | null }) {
   return (
     <div className="flex flex-col gap-0.5 border-t border-white/10 pt-1.5">
       <div className="pb-0.5 text-[10px] uppercase tracking-[0.08em] text-white/30">Encoder</div>
       <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+        {encoderID ? <Cell label="Encoder" value={encoderID} /> : null}
         <Cell label="Encode FPS" value={fps(sender.reportedFps)} />
         <Cell label="Target" value={bitrate(sender.targetKbps)} />
         <Cell label="Pacer FPS" value={fps(sender.sourceFps)} />
@@ -254,6 +257,7 @@ export function StreamStatsSection({
   faults,
   sender,
   capture,
+  encoderID,
   requestedFps,
   stale,
   action,
@@ -263,6 +267,7 @@ export function StreamStatsSection({
   faults: string[];
   sender?: SenderStreamStats | null;
   capture?: CaptureCounts | null;
+  encoderID?: string | null;
   requestedFps?: number;
   stale?: boolean;
   action?: ReactNode;
@@ -275,6 +280,7 @@ export function StreamStatsSection({
       faults={faults}
       sender={sender}
       capture={capture}
+      encoderID={encoderID}
       requestedFps={requestedFps}
       stale={stale}
       action={action}
@@ -308,6 +314,7 @@ export interface StatsContext {
   codec?: string | null;
   sender?: SenderStreamStats | null;
   capture?: CaptureCounts | null;
+  encoderID?: string | null;
 }
 
 /** Serialize the recorded window so a session can be handed to someone else to read. */

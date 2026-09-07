@@ -3,6 +3,9 @@ import Foundation
 public enum HostH264Plan {
     public static let defaultHost = "192.168.64.1"
     public static let defaultPort: UInt16 = 9876
+    public static let hostEncoderID = "host-ave.avc"
+    /// Long-edge cap when the sidecar would otherwise send native iPhone NV12 over vmnet.
+    public static let hostSocketDefaultMaxLongEdge = 1280
 
     /// Host AVE sidecar instead of in-process VideoToolbox.
     /// `hostEncoderFlag` is `SERVE_SIM_HOST_ENCODER` (`1`/`true` on, `0`/`false` off).
@@ -11,6 +14,12 @@ public enum HostH264Plan {
         if flagOn(hostEncoderFlag) { return true }
         if flagOff(hostEncoderFlag) { return false }
         return isVirtualMac
+    }
+
+    /// Native (`0`) on the host socket becomes 1280. A real Mac in-process VT stays native.
+    public static func sendMaxLongEdge(configuredMaxDimension: Int, usesHostSocket: Bool) -> Int {
+        if configuredMaxDimension > 0 { return configuredMaxDimension }
+        return usesHostSocket ? hostSocketDefaultMaxLongEdge : 0
     }
 
     public static func host(from environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
@@ -41,6 +50,33 @@ public enum HostH264Plan {
     public static func bitsPerSecond(fromKilobits kbps: UInt32) -> UInt32 {
         let bps = UInt64(kbps) * 1_000
         return UInt32(min(max(bps, 100_000), 50_000_000))
+    }
+
+    /// A Tart guest exposes `paravirtualized:com.apple.videotoolbox.videoencoder.ave.avc`:
+    /// the host AVE, reached through the VideoToolbox device that
+    /// `VZMacGraphicsDeviceConfiguration` attaches implicitly (macOS 15.4+ host, macOS 14+
+    /// guest). No entitlement and no SIP change are involved.
+    ///
+    /// Measured host 26.5.1 / guest 26.3: ~350 fps at 590x1280 on ~0.24 CPU cores, and a
+    /// guest under load drops host AVE throughput 482 -> 81 fps, so the silicon is shared.
+    /// Skipping this probe on VirtualMac disabled a working hardware encoder and fell back
+    /// to software VP8, so the guest always gets probed now.
+    public static func probesGuestVideoToolbox(isVirtualMac _: Bool) -> Bool {
+        true
+    }
+
+    /// `nil` when the identifier says nothing either way. The `paravirtualized:` prefix is
+    /// the guest's view of the host AVE and counts as hardware.
+    public static func isHardwareEncoderID(_ encoderID: String?) -> Bool? {
+        guard let encoderID else { return nil }
+        let normalized = encoderID.lowercased()
+        if normalized.contains("paravirtualized") || normalized.contains(".ave.") {
+            return true
+        }
+        if normalized.contains("videoencoder.h264") || normalized.contains("videoencoder.hevc") {
+            return false
+        }
+        return nil
     }
 
     public static func port(from environment: [String: String] = ProcessInfo.processInfo.environment) -> UInt16 {

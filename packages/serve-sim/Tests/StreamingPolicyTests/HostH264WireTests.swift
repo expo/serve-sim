@@ -14,6 +14,24 @@ final class HostH264PlanTests: XCTestCase {
         XCTAssertTrue(HostH264Plan.usesHostSocket(isVirtualMac: false, hostEncoderFlag: "true"))
     }
 
+    func testVirtualMacStillProbesGuestVideoToolbox() {
+        // Tart guests expose `paravirtualized:...ave.avc`, the host AVE reached through
+        // the implicit VideoToolbox device (macOS 15.4+). Skipping the probe on
+        // VirtualMac disabled a working hardware encoder and fell back to software VP8.
+        XCTAssertTrue(HostH264Plan.probesGuestVideoToolbox(isVirtualMac: true))
+        XCTAssertTrue(HostH264Plan.probesGuestVideoToolbox(isVirtualMac: false))
+    }
+
+    func testParavirtualizedEncoderCountsAsHardware() {
+        XCTAssertEqual(
+            HostH264Plan.isHardwareEncoderID("paravirtualized:com.apple.videotoolbox.videoencoder.ave.avc"),
+            true
+        )
+        XCTAssertEqual(HostH264Plan.isHardwareEncoderID("com.apple.videotoolbox.videoencoder.ave.avc"), true)
+        XCTAssertEqual(HostH264Plan.isHardwareEncoderID("com.apple.videotoolbox.videoencoder.h264"), false)
+        XCTAssertNil(HostH264Plan.isHardwareEncoderID(nil))
+    }
+
     func testHostAndPortDefaultsAndOverrides() {
         XCTAssertEqual(HostH264Plan.host(from: [:]), "192.168.64.1")
         XCTAssertEqual(HostH264Plan.port(from: [:]), 9876)
@@ -49,6 +67,38 @@ final class HostH264PlanTests: XCTestCase {
         XCTAssertEqual(HostH264Plan.bitsPerSecond(fromKilobits: 16_000), 16_000_000)
         XCTAssertEqual(HostH264Plan.bitsPerSecond(fromKilobits: 50), 100_000)
         XCTAssertEqual(HostH264Plan.bitsPerSecond(fromKilobits: 100_000), 50_000_000)
+    }
+
+    func testHostSocketTreatsNativeMaxDimensionAs1280() {
+        XCTAssertEqual(
+            HostH264Plan.sendMaxLongEdge(configuredMaxDimension: 0, usesHostSocket: /* host AVE */ true),
+            1280
+        )
+        XCTAssertEqual(
+            HostH264Plan.sendMaxLongEdge(configuredMaxDimension: 0, usesHostSocket: /* in-process VT */ false),
+            0
+        )
+        XCTAssertEqual(
+            HostH264Plan.sendMaxLongEdge(configuredMaxDimension: 720, usesHostSocket: /* host AVE */ true),
+            720
+        )
+        XCTAssertEqual(
+            HostH264Plan.sendMaxLongEdge(configuredMaxDimension: 1920, usesHostSocket: /* in-process VT */ false),
+            1920
+        )
+    }
+
+    func testNv12SendSizeAppliesHostSocketDefaultLongEdge() {
+        let size = HostH264Plan.nv12SendSize(
+            width: 1206,
+            height: 2622,
+            maxLongEdge: HostH264Plan.sendMaxLongEdge(
+                configuredMaxDimension: 0,
+                usesHostSocket: /* host AVE */ true
+            )
+        )
+        XCTAssertEqual(size?.width, 588)
+        XCTAssertEqual(size?.height, 1280)
     }
 }
 

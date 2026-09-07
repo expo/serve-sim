@@ -15,6 +15,8 @@ const STALE_AFTER_MS = 4_000;
 export interface SenderView {
   session: SenderStreamStats | null;
   capture: CaptureCounts | null;
+  usesHost: boolean | null;
+  encoderID: string | null;
   stale: boolean;
 }
 
@@ -23,13 +25,19 @@ export function useSenderStats(
   sessionId: string | null,
   enabled: boolean,
 ): SenderView {
-  const [stats, setStats] = useState<SenderView>({ session: null, capture: null, stale: false });
+  const [stats, setStats] = useState<SenderView>({
+    session: null,
+    capture: null,
+    usesHost: null,
+    encoderID: null,
+    stale: false,
+  });
   const lastSampleAt = useRef(0);
 
   useEffect(() => {
     // Reset unconditionally so a device switch drops the previous device's samples.
     lastSampleAt.current = 0;
-    setStats({ session: null, capture: null, stale: false });
+    setStats({ session: null, capture: null, usesHost: null, encoderID: null, stale: false });
     if (!enabled || sessionId === null) return;
 
     let stopped = false;
@@ -41,7 +49,9 @@ export function useSenderStats(
         // A non-ok answer means no session is streaming, which is definite: clear rather than keep
         // numbers from a session that has gone. A throw is a dropped tick, handled below.
         if (!response.ok) {
-          if (!stopped) setStats({ session: null, capture: null, stale: false });
+          if (!stopped) {
+            setStats({ session: null, capture: null, usesHost: null, encoderID: null, stale: false });
+          }
           return;
         }
         // The route already returns display units: `native.ts` runs `readSenderStats` server-side.
@@ -58,6 +68,8 @@ export function useSenderStats(
       setStats({
         session: senderSessionForViewer(sessions, sessionId),
         capture: body.capture ?? null,
+        usesHost: body.usesHost ?? null,
+        encoderID: body.encoderID ?? null,
         stale: false,
       });
     };

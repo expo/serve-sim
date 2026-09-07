@@ -178,6 +178,26 @@ describe("frame flow counts", () => {
   });
 });
 
+describe("host encoder identity", () => {
+  test("keeps usesHost and host-ave.avc so staging can see the sidecar", () => {
+    const stats = readSenderStats({
+      sessions: [],
+      usesHost: true,
+      encoderID: "host-ave.avc",
+    });
+
+    expect(stats.usesHost).toBe(true);
+    expect(stats.encoderID).toBe("host-ave.avc");
+  });
+
+  test("reports null rather than guessing when the native payload omits them", () => {
+    const stats = readSenderStats({ sessions: [] });
+
+    expect(stats.usesHost).toBeNull();
+    expect(stats.encoderID).toBeNull();
+  });
+});
+
 describe("source frame stats", () => {
   test("keeps libwebrtc's own source counts, the link between forwarded and encoded", () => {
     const [session] = readSenderStats({

@@ -72,6 +72,15 @@ function isSwitchingProtocols(header: string): boolean {
   return /^HTTP\/1\.[01]\s+101\b/i.test(header.split("\r\n")[0] ?? "");
 }
 
+function isStreamingResponse(header: string): boolean {
+  const ct = headerValue(header, "content-type")?.toLowerCase() ?? "";
+  return (
+    ct.includes("multipart/x-mixed-replace") ||
+    ct.includes("application/octet-stream") ||
+    ct.includes("text/event-stream")
+  );
+}
+
 function readMessageBody(
   header: string,
   rest: Buffer,
@@ -165,6 +174,12 @@ function handleClient(client: Socket, upstreamPort: number, pin: IcePin): void {
         return;
       }
       const rest = resBuf.subarray(headerEnd + 4);
+      if (mode === "res" && isStreamingResponse(header)) {
+        toClient(resBuf);
+        resBuf = Buffer.alloc(0);
+        mode = "splice";
+        return;
+      }
       const body = readMessageBody(header, rest, true);
       if (!body) return;
       if (mode === "res-rewrite") {

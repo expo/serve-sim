@@ -1,11 +1,38 @@
 import { spawn } from "bun";
 import { describe, expect, test } from "bun:test";
-import { guestNativeAddonPath, guestPreviewScript, waitGone } from "../dev";
+import {
+  guestFrameworkPath,
+  guestHealthArgs,
+  guestNativeAddonPath,
+  guestPreviewScript,
+  parseGuestStat,
+  shouldCopyFile,
+  waitGone,
+} from "../dev";
 import { SSH_OPTS, sshTunnelArgs } from "../guest";
 
 describe("tart-dev", () => {
   test("guest native keeps loader_path/../bin layout", () => {
     expect(guestNativeAddonPath()).toBe("/tmp/serve-sim-dist/native/serve-sim-native.node");
+    expect(guestFrameworkPath()).toBe("/tmp/serve-sim-dist/bin/LiveKitWebRTC.framework");
+  });
+
+  test("shouldCopyFile skips when guest size and mtime match", () => {
+    const host = { size: 4096, mtimeSec: 1_700_000_000 };
+    expect(shouldCopyFile(host, null)).toBe(true);
+    expect(shouldCopyFile(host, { size: 4095, mtimeSec: 1_700_000_000 })).toBe(true);
+    expect(shouldCopyFile(host, { size: 4096, mtimeSec: 1_700_000_001 })).toBe(true);
+    expect(shouldCopyFile(host, host)).toBe(false);
+  });
+
+  test("parseGuestStat reads macOS stat -f %z %m", () => {
+    expect(parseGuestStat("")).toBeNull();
+    expect(parseGuestStat("stat: No such file or directory")).toBeNull();
+    expect(parseGuestStat("4096 1700000000\n")).toEqual({ size: 4096, mtimeSec: 1_700_000_000 });
+  });
+
+  test("guest health waits on loopback curl, not the host tunnel", () => {
+    expect(guestHealthArgs(3200)).toEqual(["curl", "-sf", "--max-time", "2", "http://127.0.0.1:3200/healthz"]);
   });
 
   test("guest preview cds to the share and runs bun dev.ts", () => {

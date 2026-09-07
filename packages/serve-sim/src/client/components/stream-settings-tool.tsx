@@ -148,6 +148,7 @@ export function StreamSettingsTool({
           faults={faults}
           sender={sender}
           capture={senderView.stale ? null : senderView.capture}
+          encoderID={senderView.stale ? null : senderView.encoderID}
           requestedFps={settings.h264Fps}
           stale={stale}
           action={
@@ -158,6 +159,7 @@ export function StreamSettingsTool({
                 codec: stats?.codec,
                 sender,
                 capture: senderView.stale ? null : senderView.capture,
+                encoderID: senderView.stale ? null : senderView.encoderID,
               }}
             />
           }

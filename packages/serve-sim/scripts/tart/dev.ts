@@ -1,4 +1,4 @@
-import { existsSync } from "fs";
+import { existsSync, statSync } from "fs";
 import { createServer } from "net";
 import { join } from "path";
 import type { Subprocess } from "bun";
@@ -9,8 +9,37 @@ import { startPreviewProxy, type PreviewProxy } from "./preview-proxy";
 const PREVIEW_PORT = Number(process.env.PORT) || 3200;
 export const GUEST_NATIVE_ROOT = "/tmp/serve-sim-dist";
 
+export type FileStamp = { size: number; mtimeSec: number };
+
 export function guestNativeAddonPath(): string {
   return `${GUEST_NATIVE_ROOT}/native/serve-sim-native.node`;
+}
+
+export function guestFrameworkPath(): string {
+  return `${GUEST_NATIVE_ROOT}/bin/LiveKitWebRTC.framework`;
+}
+
+export function parseGuestStat(stdout: string): FileStamp | null {
+  const match = /^(\d+) (\d+)$/.exec(stdout.trim());
+  if (!match) return null;
+  const size = Number(match[1]);
+  const mtimeSec = Number(match[2]);
+  if (!Number.isSafeInteger(size) || !Number.isSafeInteger(mtimeSec)) return null;
+  return { size, mtimeSec };
+}
+
+export function hostFileStamp(path: string): FileStamp {
+  const stat = statSync(path);
+  return { size: stat.size, mtimeSec: Math.floor(stat.mtimeMs / 1000) };
+}
+
+export function shouldCopyFile(host: FileStamp, guest: FileStamp | null): boolean {
+  if (guest == null) return true;
+  return host.size !== guest.size || host.mtimeSec !== guest.mtimeSec;
+}
+
+export function guestHealthArgs(port: number): string[] {
+  return ["curl", "-sf", "--max-time", "2", `http://127.0.0.1:${port}/healthz`];
 }
 
 export function guestPreviewScript(share: string, port: number): string {
@@ -36,6 +65,24 @@ exec bun run dev.ts
 `;
 }
 
+async function waitGuestHealth(
+  guest: TartGuest,
+  port: number,
+  serve: Subprocess,
+  stopped: () => boolean,
+  tries = 240,
+): Promise<void> {
+  const curl = guestHealthArgs(port);
+  for (let i = 0; i < tries; i++) {
+    if (stopped()) throw new Error("interrupted");
+    if (!running(serve)) throw new Error(`guest serve-sim exited (${exitReason(serve)})`);
+    if (await guest.sshOk(curl)) return;
+    if (i > 0 && i % 20 === 0) console.log("waiting for serve-sim...");
+    await Bun.sleep(500);
+  }
+  throw new Error(`serve-sim did not come up at http://127.0.0.1:${port}/healthz`);
+}
+
 async function waitOk(
   url: string,
   serve: Subprocess,
@@ -55,6 +102,38 @@ async function waitOk(
     await Bun.sleep(500);
   }
   throw new Error(`serve-sim did not come up at ${url}`);
+}
+
+async function guestFileStamp(guest: TartGuest, path: string): Promise<FileStamp | null> {
+  return parseGuestStat(await guest.ssh(`stat -f '%z %m' ${JSON.stringify(path)} 2>/dev/null || true`));
+}
+
+async function scpToGuest(args: string[], label: string): Promise<void> {
+  const proc = Bun.spawn(args, { stdout: "ignore", stderr: "inherit" });
+  if ((await proc.exited) !== 0) throw new Error(label);
+}
+
+async function syncGuestNative(guest: TartGuest, native: string, framework: string): Promise<void> {
+  const guestNative = guestNativeAddonPath();
+  const guestFramework = guestFrameworkPath();
+  const target = guest.sshTarget();
+  await guest.ssh(`mkdir -p ${GUEST_NATIVE_ROOT}/native ${GUEST_NATIVE_ROOT}/bin`);
+
+  if (shouldCopyFile(hostFileStamp(native), await guestFileStamp(guest, guestNative))) {
+    await scpToGuest(
+      ["scp", "-p", ...SSH_OPTS, native, `${target}:${guestNative}`],
+      `scp ${native} to ${guestNative} failed`,
+    );
+  }
+
+  const guestBinary = `${guestFramework}/LiveKitWebRTC`;
+  if (shouldCopyFile(hostFileStamp(join(framework, "LiveKitWebRTC")), await guestFileStamp(guest, guestBinary))) {
+    await guest.ssh(`rm -rf ${guestFramework}`);
+    await scpToGuest(
+      ["scp", "-p", "-r", ...SSH_OPTS, framework, `${target}:${GUEST_NATIVE_ROOT}/bin/`],
+      `scp ${framework} to ${GUEST_NATIVE_ROOT}/bin failed`,
+    );
+  }
 }
 
 async function startDevice(url: string, udid: string): Promise<void> {
@@ -141,31 +220,15 @@ export async function runDev(guest: TartGuest, udid: string): Promise<void> {
   await assertPortFree(port);
   await guest.ssh(`lsof -ti tcp:${port} | xargs kill -TERM 2>/dev/null || true`);
   const guestNative = guestNativeAddonPath();
-  const target = guest.sshTarget();
-  await guest.ssh(`mkdir -p ${GUEST_NATIVE_ROOT}/native ${GUEST_NATIVE_ROOT}/bin && rm -rf ${GUEST_NATIVE_ROOT}/bin/LiveKitWebRTC.framework`);
-  const scpNative = Bun.spawn(["scp", ...SSH_OPTS, native, `${target}:${guestNative}`], {
-    stdout: "ignore",
-    stderr: "inherit",
-  });
-  if ((await scpNative.exited) !== 0) {
-    throw new Error(`scp ${native} to ${guestNative} failed`);
-  }
-  const scpFramework = Bun.spawn(["scp", "-r", ...SSH_OPTS, framework, `${target}:${GUEST_NATIVE_ROOT}/bin/`], {
-    stdout: "ignore",
-    stderr: "inherit",
-  });
-  if ((await scpFramework.exited) !== 0) {
-    throw new Error(`scp ${framework} to ${GUEST_NATIVE_ROOT}/bin failed`);
-  }
+  await syncGuestNative(guest, native, framework);
   process.env.SERVE_SIM_NATIVE = guestNative;
 
   const serve = guest.sshSpawn(guestPreviewScript(share, port));
-  const tunnelPort = await allocPort();
-  const tunnel = guest.tunnel(tunnelPort, port);
+  let tunnel: Subprocess | undefined;
   let proxy: PreviewProxy | undefined;
   const shutdown = () => {
     stop(serve);
-    stop(tunnel);
+    if (tunnel) stop(tunnel);
     void proxy?.close();
   };
   let interrupted = false;
@@ -182,6 +245,9 @@ export async function runDev(guest: TartGuest, udid: string): Promise<void> {
     if (ipv6Prefix) {
       console.log(`[tart-dev] WebRTC ICE pin ${ipv6Prefix}::/64 (Tart bridge, no STUN)`);
     }
+    await waitGuestHealth(guest, port, serve, () => interrupted);
+    const tunnelPort = await allocPort();
+    tunnel = guest.tunnel(tunnelPort, port);
     proxy = await startPreviewProxy(port, tunnelPort, { ipv6Prefix });
     await waitOk(url + "/healthz", serve, tunnel, () => interrupted);
     await startDevice(url, udid);
@@ -192,6 +258,10 @@ export async function runDev(guest: TartGuest, udid: string): Promise<void> {
     if (!interrupted) throw error;
   } finally {
     shutdown();
-    await waitGone(serve, tunnel);
+    if (tunnel) await waitGone(serve, tunnel);
+    else {
+      if (running(serve)) stop(serve, "SIGKILL");
+      await serve.exited;
+    }
   }
 }

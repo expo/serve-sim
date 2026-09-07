@@ -12,13 +12,26 @@ final class HostH264EncoderFactory: NSObject, LKRTCVideoEncoderFactory {
     private let fallback = LKRTCDefaultVideoEncoderFactory()
     private let lock = NSLock()
     private var live: HostH264VideoEncoder?
+    private var sendMaxLongEdge: Int
+
+    init(sendMaxLongEdge: Int) {
+        self.sendMaxLongEdge = sendMaxLongEdge
+        super.init()
+    }
+
+    func setSendMaxLongEdge(_ value: Int) {
+        lock.lock()
+        sendMaxLongEdge = value
+        live?.setSendMaxLongEdge(value)
+        lock.unlock()
+    }
 
     func createEncoder(_ info: LKRTCVideoCodecInfo) -> LKRTCVideoEncoder? {
         if info.name.caseInsensitiveCompare("H264") == .orderedSame {
             lock.lock()
             defer { lock.unlock() }
             live?.retire()
-            let encoder = HostH264VideoEncoder()
+            let encoder = HostH264VideoEncoder(sendMaxLongEdge: sendMaxLongEdge)
             encoder.onRelease = { [weak self, weak encoder] in
                 self?.lock.lock()
                 if self?.live === encoder {
@@ -41,6 +54,15 @@ final class HostH264VideoEncoder: NSObject, LKRTCVideoEncoder {
     private var callback: ((LKRTCEncodedImage, any LKRTCCodecSpecificInfo) -> Bool)?
     private let socket = HostEncoderSocket()
     var onRelease: (() -> Void)?
+
+    init(sendMaxLongEdge: Int) {
+        super.init()
+        socket.setSendMaxLongEdge(sendMaxLongEdge)
+    }
+
+    func setSendMaxLongEdge(_ value: Int) {
+        socket.setSendMaxLongEdge(value)
+    }
 
     var resolutionAlignment: Int { 2 }
     var applyAlignmentToAllSimulcastLayers: Bool { false }
@@ -122,7 +144,7 @@ final class HostH264VideoEncoder: NSObject, LKRTCVideoEncoder {
     }
 
     func implementationName() -> String {
-        "host-ave.avc"
+        HostH264Plan.hostEncoderID
     }
 
     func scalingSettings() -> LKRTCVideoEncoderQpThresholds? {
@@ -140,6 +162,9 @@ final class HostEncoderSocket {
     private var nv12Height = 0
     private var nv12Format: OSType = 0
     private var bitrate: UInt32 = 6_000_000
+    private var sendMaxLongEdge = HostH264Plan.hostSocketDefaultMaxLongEdge
+    private static let liveLock = NSLock()
+    private static var liveCount = 0
 
     struct Encoded {
         var annexB: Data
@@ -148,7 +173,22 @@ final class HostEncoderSocket {
         var height: Int
     }
 
+    static func hasLiveConnection() -> Bool {
+        liveLock.lock()
+        defer { liveLock.unlock() }
+        return liveCount > 0
+    }
+
+    func setSendMaxLongEdge(_ value: Int) {
+        io.lock()
+        defer { io.unlock() }
+        sendMaxLongEdge = max(0, value)
+    }
+
+    /// Short connect+RST. Does not send RATE/NV12, so it must not occupy the encode slot.
+    /// Linger 0 avoids TIME_WAIT holding the 4-tuple after close.
     static func sidecarListening(host: String, port: UInt16, timeoutMs: Int32 = 400) -> Bool {
+        if hasLiveConnection() { return true }
         let sock = Darwin.socket(AF_INET, SOCK_STREAM, 0)
         guard sock >= 0 else { return false }
         var linger = linger(l_onoff: 1, l_linger: 0)
@@ -158,7 +198,10 @@ final class HostEncoderSocket {
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = port.bigEndian
         let ok = host.withCString { inet_pton(AF_INET, $0, &addr.sin_addr) == 1 }
-        defer { Darwin.close(sock) }
+        defer {
+            _ = Darwin.shutdown(sock, SHUT_RDWR)
+            Darwin.close(sock)
+        }
         guard ok else { return false }
         do {
             try connectTimed(sock, addr, timeoutMs: timeoutMs)
@@ -179,7 +222,12 @@ final class HostEncoderSocket {
         defer { io.unlock() }
         self.bitrate = max(100_000, min(bitrate, 50_000_000))
         guard fd >= 0 else { return }
-        try writeAll(HostH264Wire.rateHeader(bitrate: self.bitrate))
+        do {
+            try writeAll(HostH264Wire.rateHeader(bitrate: self.bitrate))
+        } catch {
+            closeLocked()
+            throw error
+        }
     }
 
     func encode(_ source: CVPixelBuffer, forceKeyframe: Bool) throws -> Encoded? {
@@ -188,23 +236,28 @@ final class HostEncoderSocket {
         }
         io.lock()
         defer { io.unlock() }
-        try connectLocked()
-        pts &+= 1
-        try writeAll(
-            HostH264Wire.nv12Header(
-                width: packed.width,
-                height: packed.height,
-                pts: pts,
-                forceKeyframe: forceKeyframe
+        do {
+            try connectLocked()
+            pts &+= 1
+            try writeAll(
+                HostH264Wire.nv12Header(
+                    width: packed.width,
+                    height: packed.height,
+                    pts: pts,
+                    forceKeyframe: forceKeyframe
+                )
             )
-        )
-        try writeAll(HostH264Wire.pixelCountHeader(packed.pixels.count))
-        try writeAll(packed.pixels)
-        let reply = try recvAVCC()
-        if reply.payload.isEmpty { return nil }
-        let annexB = HostH264Wire.annexB(fromAVCC: reply.payload)
-        guard !annexB.isEmpty else { return nil }
-        return Encoded(annexB: annexB, idr: reply.idr, width: packed.width, height: packed.height)
+            try writeAll(HostH264Wire.pixelCountHeader(packed.pixels.count))
+            try writeAll(packed.pixels)
+            let reply = try recvAVCC()
+            if reply.payload.isEmpty { return nil }
+            let annexB = HostH264Wire.annexB(fromAVCC: reply.payload)
+            guard !annexB.isEmpty else { return nil }
+            return Encoded(annexB: annexB, idr: reply.idr, width: packed.width, height: packed.height)
+        } catch {
+            closeLocked()
+            throw error
+        }
     }
 
     func stop() {
@@ -244,15 +297,35 @@ final class HostEncoderSocket {
             throw error
         }
         fd = sock
-        try writeAll(HostH264Wire.rateHeader(bitrate: bitrate))
+        Self.noteLive(/* connected */ true)
+        do {
+            try writeAll(HostH264Wire.rateHeader(bitrate: bitrate))
+        } catch {
+            closeLocked()
+            throw error
+        }
     }
 
     private func closeLocked() {
         if fd >= 0 {
+            var linger = linger(l_onoff: 1, l_linger: 0)
+            setsockopt(fd, SOL_SOCKET, SO_LINGER, &linger, socklen_t(MemoryLayout<linger>.size))
+            _ = Darwin.shutdown(fd, SHUT_RDWR)
             Darwin.close(fd)
             fd = -1
+            Self.noteLive(/* connected */ false)
         }
         pts = 0
+    }
+
+    private static func noteLive(_ connected: Bool) {
+        liveLock.lock()
+        defer { liveLock.unlock() }
+        if connected {
+            liveCount += 1
+        } else if liveCount > 0 {
+            liveCount -= 1
+        }
     }
 
     private static func connectTimed(_ sock: Int32, _ addr: sockaddr_in, timeoutMs: Int32) throws {
@@ -296,7 +369,8 @@ final class HostEncoderSocket {
     private func packedNV12(_ source: CVPixelBuffer) -> (pixels: Data, width: Int, height: Int)? {
         guard let sized = HostH264Plan.nv12SendSize(
             width: CVPixelBufferGetWidth(source),
-            height: CVPixelBufferGetHeight(source)
+            height: CVPixelBufferGetHeight(source),
+            maxLongEdge: sendMaxLongEdge
         ) else { return nil }
         let width = sized.width
         let height = sized.height

@@ -308,13 +308,15 @@ Run serve-sim **on a [tart](https://github.com/cirruslabs/tart) macOS VM** inste
 
 Needs the `tart` CLI, a VM with Xcode (default name `tahoe-xcode`), and a built native addon.
 
+VirtualMac uses the host encoder at `192.168.64.1:9876` by default. `SERVE_SIM_HOST_ENCODER=0` turns that off (WebRTC H.264 is then disabled on Tart unless you also set `SERVE_SIM_ALLOW_VM_H264_WEBRTC=1`). Encoded fps is the pacer repeating the last capture. Unique capture is Screen frames vs Idle frames in the stream panel (Tart idle is often ~5 unique fps).
+
 ```sh
 bun run packages/serve-sim/build.ts
 bun run --filter @expo/serve-sim tart-dev
 # → Preview at http://localhost:3200
 ```
 
-`tart-dev` starts the VM if needed, boots an iPhone 17, runs `bun run dev.ts` on the guest, and tunnels guest `:3200` to the host. Host port `3200` must be free. Ctrl-C stops the tunnel and the guest server.
+`tart-dev` attaches if the VM is already running (Anka `tart run`). Do not start a second `tart run` (Apple 2-VM cap). If the VM is down, it starts it, boots an iPhone 17, runs `bun run dev.ts` on the guest, and tunnels guest `:3200` to the host. Host port `3200` must be free. Ctrl-C stops the tunnel and the guest server.
 
 `tart-test` uses the same guest, but runs `bun test` there. It stages package src onto the VM, boots an iPhone, and executes the files you pass over SSH as `expo`. Pass the files; with none it exits instead of running the whole guest suite.
 

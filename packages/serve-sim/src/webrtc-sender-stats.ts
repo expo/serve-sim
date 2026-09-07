@@ -44,6 +44,10 @@ export interface CaptureCounts {
 export interface SenderStats {
   capture?: CaptureCounts | null;
   sessions: SenderStreamStats[];
+  /** True when the guest is sending NV12 to the host AVE sidecar. */
+  usesHost: boolean | null;
+  /** Sidecar identity, e.g. `host-ave.avc`. Null when in-process VT. */
+  encoderID: string | null;
 }
 
 export function senderSessionForViewer(
@@ -120,10 +124,14 @@ function readSenderSession(raw: Record<string, unknown>): SenderStreamStats {
 }
 
 export function readSenderStats(raw: unknown): SenderStats {
-  if (!isRecord(raw) || !Array.isArray(raw.sessions)) return { sessions: [] };
+  if (!isRecord(raw) || !Array.isArray(raw.sessions)) {
+    return { sessions: [], usesHost: null, encoderID: null };
+  }
   return {
     sessions: raw.sessions.filter(isRecord).map(readSenderSession),
     capture: readCaptureCounts(raw.capture),
+    usesHost: typeof raw.usesHost === "boolean" ? raw.usesHost : null,
+    encoderID: maybeString(raw.encoderID),
   };
 }
 

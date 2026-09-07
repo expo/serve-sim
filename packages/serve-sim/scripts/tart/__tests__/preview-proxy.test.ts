@@ -259,6 +259,127 @@ describe("tart-dev preview proxy", () => {
     }
   });
 
+  test("forwards infinite MJPEG without waiting for the stream to end", async () => {
+    const jpeg = Buffer.from("--frame\r\nContent-Type: image/jpeg\r\n\r\nJPEG\r\n");
+    const upstream = await new Promise<{ port: number; close: () => Promise<void> }>((resolve, reject) => {
+      const server = createServer((sock) => {
+        sock.once("data", () => {
+          sock.write(
+            "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\n\r\n",
+          );
+          sock.write(`${jpeg.length.toString(16)}\r\n`);
+          sock.write(jpeg);
+          sock.write("\r\n");
+        });
+      });
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const addr = server.address();
+        if (!addr || typeof addr === "string") {
+          reject(new Error("no port"));
+          return;
+        }
+        resolve({
+          port: addr.port,
+          close: () => new Promise((closeResolve, closeReject) => {
+            server.close((error) => (error ? closeReject(error) : closeResolve()));
+          }),
+        });
+      });
+    });
+    const proxy = await startPreviewProxy(0, upstream.port);
+    try {
+      const got = await new Promise<Buffer>((resolve, reject) => {
+        const sock = connect({ port: proxy.port, host: "127.0.0.1" });
+        let buf = Buffer.alloc(0);
+        const timer = setTimeout(() => {
+          sock.destroy();
+          reject(new Error(`mjpeg timeout (${buf.length} bytes)`));
+        }, 1000);
+        sock.on("connect", () => {
+          sock.write("GET /helper/x/stream.mjpeg HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        });
+        sock.on("data", (chunk) => {
+          buf = Buffer.concat([buf, chunk as Buffer]);
+          if (buf.includes("JPEG")) {
+            clearTimeout(timer);
+            sock.destroy();
+            resolve(buf);
+          }
+        });
+        sock.on("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+      });
+      expect(got.toString("latin1")).toContain("multipart/x-mixed-replace");
+      expect(got.toString("latin1")).toContain("JPEG");
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
+  test("forwards infinite AVCC without waiting for the stream to end", async () => {
+    const frame = Buffer.from([0, 0, 0, 8, 1, 2, 3, 4, 5, 6, 7, 8]);
+    const upstream = await new Promise<{ port: number; close: () => Promise<void> }>((resolve, reject) => {
+      const server = createServer((sock) => {
+        sock.once("data", () => {
+          sock.write(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\n\r\n",
+          );
+          sock.write(`${frame.length.toString(16)}\r\n`);
+          sock.write(frame);
+          sock.write("\r\n");
+        });
+      });
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const addr = server.address();
+        if (!addr || typeof addr === "string") {
+          reject(new Error("no port"));
+          return;
+        }
+        resolve({
+          port: addr.port,
+          close: () => new Promise((closeResolve, closeReject) => {
+            server.close((error) => (error ? closeReject(error) : closeResolve()));
+          }),
+        });
+      });
+    });
+    const proxy = await startPreviewProxy(0, upstream.port);
+    try {
+      const got = await new Promise<Buffer>((resolve, reject) => {
+        const sock = connect({ port: proxy.port, host: "127.0.0.1" });
+        let buf = Buffer.alloc(0);
+        const timer = setTimeout(() => {
+          sock.destroy();
+          reject(new Error(`avcc timeout (${buf.length} bytes)`));
+        }, 1000);
+        sock.on("connect", () => {
+          sock.write("GET /helper/x/stream.avcc HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        });
+        sock.on("data", (chunk) => {
+          buf = Buffer.concat([buf, chunk as Buffer]);
+          if (buf.includes(frame)) {
+            clearTimeout(timer);
+            sock.destroy();
+            resolve(buf);
+          }
+        });
+        sock.on("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+      });
+      expect(got.includes(frame)).toBe(true);
+    } finally {
+      await proxy.close();
+      await upstream.close();
+    }
+  });
+
   test("does not rewrite other paths", async () => {
     const upstream = await listenRaw(() => JSON.stringify({ status: "ok" }));
     const proxy = await startPreviewProxy(0, upstream.port);

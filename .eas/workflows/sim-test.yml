@@ -57,29 +57,53 @@ jobs:
 
       - name: Run serve-sim tests
         run: |
-          run_tests() {
-            bun test --max-concurrency=1 packages/serve-sim/src/__tests__/
-          }
+          bun test --max-concurrency=1 packages/serve-sim/src/__tests__/ &
+          TEST_PID=$!
 
-          if run_tests; then
-            exit 0
-          fi
+          for _ in $(seq 1 36); do
+            sleep 5
+            if ! kill -0 "$TEST_PID" 2>/dev/null; then
+              wait "$TEST_PID"
+              exit $?
+            fi
+          done
 
-          # The simulator-backed e2e tests share one simulator. Reboot and retry
-          # once to clear transient stuck input or native-process failures.
-          UDID=$(xcrun simctl list devices booted -j | node -e '
-            const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
-            for (const devices of Object.values(data.devices)) {
-              for (const device of devices) {
-                console.log(device.udid);
-                process.exit(0);
-              }
+          echo "===== wedged after 180s: pid $TEST_PID ====="
+          ps -o pid,ppid,stat,wchan,command -p "$TEST_PID" || true
+
+          echo "===== every bun/xcrun/simctl process ====="
+          ps -Ao pid,ppid,stat,wchan,command | grep -Ei "bun|xcrun|simctl|CoreSimulator" | grep -v grep || true
+
+          echo "===== sample: native stacks of the blocked process ====="
+          sample "$TEST_PID" 5 -mayDie -file /tmp/sample.txt || true
+          cat /tmp/sample.txt || true
+
+          echo "===== files the process has open ====="
+          lsof -p "$TEST_PID" 2>/dev/null | tail -60 || true
+
+          echo "===== what the roots resolve to on this worker ====="
+          node -e '
+            const { realpathSync, existsSync } = require("fs");
+            const { homedir, tmpdir } = require("os");
+            const { join } = require("path");
+            for (const p of [
+              join(homedir(), "Library", "Developer", "CoreSimulator", "Devices"),
+              "/Library/Developer/CoreSimulator",
+              join(tmpdir(), "serve-sim-uploads"),
+              join(homedir(), "Desktop"),
+              "/etc/passwd",
+              "/Users/.ssh",
+            ]) {
+              const started = Date.now();
+              let out;
+              try { out = realpathSync(p); } catch (e) { out = `THREW ${e.code}`; }
+              console.log(`${Date.now() - started}ms  exists=${existsSync(p)}  ${p} -> ${out}`);
             }
-            process.exit(1);
-          ')
-          echo "Test run failed; rebooting $UDID and retrying once"
-          xcrun simctl shutdown "$UDID" || true
-          sleep 3
-          xcrun simctl boot "$UDID" || true
-          xcrun simctl bootstatus "$UDID" -b || true
-          run_tests
+            console.log("homedir:", homedir(), "tmpdir:", tmpdir());
+          ' || true
+
+          echo "===== mounts ====="
+          mount || true
+
+          kill -9 "$TEST_PID" || true
+          exit 1

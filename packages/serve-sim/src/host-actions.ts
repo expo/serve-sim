@@ -2,7 +2,20 @@ import { execFile } from "child_process";
 import { randomUUID } from "crypto";
 import { appendFile, chmod, lstat, mkdir, readdir, rm, stat, writeFile } from "fs/promises";
 import { homedir, tmpdir } from "os";
-import { realpathSync } from "fs";
+import { realpathSync, writeSync } from "fs";
+
+function trace(msg: string): void {
+  try {
+    writeSync(2, `[trace] ${msg}\n`);
+  } catch {}
+}
+
+function tracedRealpath(label: string, target: string): string {
+  trace(`realpath enter ${label} :: ${target}`);
+  const out = realpathSync(target);
+  trace(`realpath exit  ${label}`);
+  return out;
+}
 import { basename, dirname, join, resolve, sep } from "path";
 import { z } from "zod";
 
@@ -151,29 +164,35 @@ const Coordinate = z.number().finite();
  * out of scope for a shareable preview link. Resolved first, so traversal collapses before the check.
  */
 const ConfinedPath = Argument.transform((value) => {
+  trace(`ConfinedPath transform enter :: ${value}`);
   // realpath, not resolve: a symlink under an allowed root would otherwise point anywhere.
   const full = resolve(value);
   try {
-    return realpathSync(full);
+    return tracedRealpath("transform-full", full);
   } catch {
     // The leaf may not exist yet. Canonicalize the directory anyway, or a path under a symlinked
     // root (/var -> /private/var) keeps its lexical form and misses the root it really sits in.
     try {
-      return join(realpathSync(dirname(full)), basename(full));
+      return join(tracedRealpath("transform-dirname", dirname(full)), basename(full));
     } catch {
+      trace("transform fell back to lexical");
       return full;
     }
   }
 }).refine((value) => {
+  trace(`ConfinedPath refine enter :: ${value}`);
   const realRoot = (root: string) => {
     try {
-      return realpathSync(root);
+      return tracedRealpath("refine-root", root);
     } catch {
       return root;
     }
   };
+  trace("refine calling homedir");
+  const home = homedir();
+  trace(`refine homedir returned :: ${home}`);
   const roots = [
-    join(homedir(), "Library", "Developer", "CoreSimulator", "Devices"),
+    join(home, "Library", "Developer", "CoreSimulator", "Devices"),
     // Apple's own apps live in the runtime root, not under a device's data container.
     "/Library/Developer/CoreSimulator",
     UPLOAD_DIR,
@@ -182,8 +201,11 @@ const ConfinedPath = Argument.transform((value) => {
 
   // The Desktop holds the operator's own files, and the only thing here that belongs to this
   // server is a screenshot it just wrote. Reads match what writes are already limited to.
-  const desktop = realRoot(join(homedir(), "Desktop"));
-  return dirname(value) === desktop && ScreenshotName.safeParse(basename(value)).success;
+  trace("refine checking desktop");
+  const desktop = realRoot(join(home, "Desktop"));
+  const verdict = dirname(value) === desktop && ScreenshotName.safeParse(basename(value)).success;
+  trace(`refine done :: ${verdict}`);
+  return verdict;
 }, "is outside the paths this preview may read");
 
 const FileSource = z.union([

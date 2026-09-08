@@ -5,7 +5,15 @@ import { randomUUID } from "crypto";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
 
+import { writeSync } from "fs";
+
 import { InvalidHostActionError, runHostActionAsync } from "../host-actions";
+
+const mark = (msg: string) => {
+  try {
+    writeSync(2, `[mark] ${msg}\n`);
+  } catch {}
+};
 
 // `true` ignores its arguments and exits 0, so these assert validation without running simctl.
 const BIN = "true";
@@ -49,15 +57,21 @@ describe("runHostActionAsync validation", () => {
   });
 
   it("rejects a path outside the paths the preview may read", async () => {
+    mark("test6 start");
     await expect(
       runHostActionAsync({ action: "file.readBase64", params: { path: "/etc/passwd" } }, BIN),
     ).rejects.toBeInstanceOf(InvalidHostActionError);
+    mark("test6 passwd assertion done");
+    mark("test6 calling homedir in test body");
+    const home = homedir();
+    mark(`test6 homedir returned :: ${home}`);
     await expect(
       runHostActionAsync(
-        { action: "file.readBase64", params: { path: `${homedir()}/Desktop/../../.ssh/id_rsa` } },
+        { action: "file.readBase64", params: { path: `${home}/Desktop/../../.ssh/id_rsa` } },
         BIN,
       ),
     ).rejects.toBeInstanceOf(InvalidHostActionError);
+    mark("test6 ssh assertion done");
   });
 
   it("rejects an argument that would be read as a flag", async () => {

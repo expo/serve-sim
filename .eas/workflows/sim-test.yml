@@ -57,28 +57,47 @@ jobs:
 
       - name: Run serve-sim tests
         run: |
-          rm -f /tmp/serve-sim-trace.log
-          bun test --max-concurrency=1 packages/serve-sim/src/__tests__/ &
-          TEST_PID=$!
+          probe() {
+            label="$1"; shift
+            "$@" >/tmp/probe.out 2>&1 &
+            pid=$!
+            for _ in 1 2 3 4 5; do
+              sleep 1
+              if ! kill -0 "$pid" 2>/dev/null; then
+                wait "$pid"
+                echo "  RETURNED  $label :: $(head -c 200 /tmp/probe.out)"
+                return
+              fi
+            done
+            echo "  BLOCKED   $label (still running after 5s)"
+            kill -9 "$pid" 2>/dev/null
+          }
 
-          for _ in $(seq 1 36); do
-            sleep 5
-            if ! kill -0 "$TEST_PID" 2>/dev/null; then
-              wait "$TEST_PID"
-              exit $?
-            fi
+          echo "===== file types ====="
+          for d in "$HOME" "$HOME/Desktop" "$HOME/Documents" "$HOME/Downloads" /tmp; do
+            stat -f '%HT  %Sp  %N' "$d" 2>&1 || true
           done
 
-          echo "===== wedged after 180s: pid $TEST_PID ====="
-          sample "$TEST_PID" 3 -mayDie -file /tmp/sample.txt || true
-          echo "===== main thread only ====="
-          awk '/^ *[0-9]+ Thread_/{n++} n<=1' /tmp/sample.txt | tail -40 || true
+          echo "===== does stat block? (never TCC-gated) ====="
+          for d in "$HOME" "$HOME/Desktop" "$HOME/Documents" "$HOME/Downloads" /tmp; do
+            probe "node lstat   $d" node -e "console.log(require('fs').lstatSync(process.argv[1]).isDirectory())" "$d"
+          done
 
-          echo "===== pipes, ttys and char devices the process holds ====="
-          lsof -p "$TEST_PID" 2>/dev/null | grep -Ei "fifo|pipe|chr|tty|noderoot" || echo "(none)"
+          echo "===== does open block? (TCC-gated for Desktop/Documents/Downloads) ====="
+          for d in "$HOME" "$HOME/Desktop" "$HOME/Documents" "$HOME/Downloads" /tmp; do
+            probe "node open    $d" node -e "console.log('fd', require('fs').openSync(process.argv[1], 'r'))" "$d"
+          done
 
-          echo "===== last 45 trace lines ====="
-          tail -45 /tmp/serve-sim-trace.log || echo "(no trace file)"
+          echo "===== bun: realpath, open, readdir ====="
+          for d in "$HOME" "$HOME/Desktop" /tmp; do
+            probe "bun realpath $d" bun -e "console.log(require('fs').realpathSync(process.argv[2]))" x "$d"
+            probe "bun open     $d" bun -e "console.log('fd', require('fs').openSync(process.argv[2], 'r'))" x "$d"
+            probe "bun readdir  $d" bun -e "console.log(require('fs').readdirSync(process.argv[2]).length)" x "$d"
+          done
 
-          kill -9 "$TEST_PID" || true
+          echo "===== node realpath (lstat-based, expected fine) ====="
+          for d in "$HOME/Desktop" "$HOME/Documents"; do
+            probe "node realpath $d" node -e "console.log(require('fs').realpathSync(process.argv[1]))" "$d"
+          done
+
           exit 1

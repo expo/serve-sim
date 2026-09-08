@@ -57,6 +57,7 @@ jobs:
 
       - name: Run serve-sim tests
         run: |
+          rm -f /tmp/serve-sim-trace.log
           bun test --max-concurrency=1 packages/serve-sim/src/__tests__/ &
           TEST_PID=$!
 
@@ -69,14 +70,15 @@ jobs:
           done
 
           echo "===== wedged after 180s: pid $TEST_PID ====="
-          ps -o pid,ppid,stat,wchan,command -p "$TEST_PID" || true
+          sample "$TEST_PID" 3 -mayDie -file /tmp/sample.txt || true
+          echo "===== main thread only ====="
+          awk '/^ *[0-9]+ Thread_/{n++} n<=1' /tmp/sample.txt | tail -40 || true
 
-          echo "===== children of the test process ====="
-          ps -Ao pid,ppid,stat,wchan,command | awk -v p="$TEST_PID" '$2 == p' || true
+          echo "===== pipes, ttys and char devices the process holds ====="
+          lsof -p "$TEST_PID" 2>/dev/null | grep -Ei "fifo|pipe|chr|tty|noderoot" || echo "(none)"
 
-          sample "$TEST_PID" 5 -mayDie -file /tmp/sample.txt || true
-          echo "===== call graph (binary images trimmed) ====="
-          awk '/^Binary Images:/{exit} {print}' /tmp/sample.txt | head -220 || true
+          echo "===== last 45 trace lines ====="
+          tail -45 /tmp/serve-sim-trace.log || echo "(no trace file)"
 
           kill -9 "$TEST_PID" || true
           exit 1

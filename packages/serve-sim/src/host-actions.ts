@@ -2,11 +2,12 @@ import { execFile } from "child_process";
 import { randomUUID } from "crypto";
 import { appendFile, chmod, lstat, mkdir, readdir, rm, stat, writeFile } from "fs/promises";
 import { homedir, tmpdir } from "os";
-import { realpathSync, writeSync } from "fs";
+import { appendFileSync, realpathSync, writeSync } from "fs";
 
 function trace(msg: string): void {
   try {
     writeSync(2, `[trace] ${msg}\n`);
+    appendFileSync("/tmp/serve-sim-trace.log", `[trace] ${msg}\n`);
   } catch {}
 }
 

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "bun:test";
 
-import { rmSync, symlinkSync, writeFileSync } from "fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { randomUUID } from "crypto";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
 
 import { InvalidHostActionError, runHostActionAsync } from "../host-actions";
+import { SCREENSHOT_DIR, UPLOAD_DIR } from "../host-paths";
 
 // `true` ignores its arguments and exits 0, so these assert validation without running simctl.
 const BIN = "true";
@@ -94,8 +95,9 @@ describe("runHostActionAsync validation", () => {
   });
 
   it("refuses a symlink that escapes the allowed roots", async () => {
-    const secret = join(homedir(), `probe-secret-${randomUUID()}.txt`);
-    const link = join(tmpdir(), "serve-sim-uploads", `probe-link-${randomUUID()}.txt`);
+    const secret = join(tmpdir(), `probe-secret-${randomUUID()}.txt`);
+    const link = join(UPLOAD_DIR, `probe-link-${randomUUID()}.txt`);
+    mkdirSync(UPLOAD_DIR, { recursive: true });
     writeFileSync(secret, "SECRET");
     symlinkSync(secret, link);
 
@@ -109,9 +111,12 @@ describe("runHostActionAsync validation", () => {
     }
   });
 
+  // The target stays inside the roots: containment is decided before existence, so a dangling link
+  // pointing outside them is refused for leaving the roots and never reaches this message.
   it("refuses a symlink whose target cannot be followed", async () => {
-    const link = join(tmpdir(), "serve-sim-uploads", `probe-dangling-${randomUUID()}.txt`);
-    symlinkSync(join(homedir(), `probe-gone-${randomUUID()}.txt`), link);
+    const link = join(UPLOAD_DIR, `probe-dangling-${randomUUID()}.txt`);
+    mkdirSync(UPLOAD_DIR, { recursive: true });
+    symlinkSync(join(UPLOAD_DIR, `probe-gone-${randomUUID()}.txt`), link);
 
     try {
       const attempt = runHostActionAsync({ action: "file.readBase64", params: { path: link } }, BIN);
@@ -122,14 +127,79 @@ describe("runHostActionAsync validation", () => {
     }
   });
 
+  // The link component is a directory, so the escape is only visible partway through resolving the
+  // path: lexically every component sits under an allowed root.
+  it("refuses a directory symlink inside an allowed root that leads out of them", async () => {
+    const outside = join(tmpdir(), `probe-outside-${randomUUID()}`);
+    const link = join(UPLOAD_DIR, `probe-dirlink-${randomUUID()}`);
+    mkdirSync(UPLOAD_DIR, { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(outside, "secret.txt"), "SECRET");
+    symlinkSync(outside, link);
+
+    try {
+      await expect(
+        runHostActionAsync(
+          { action: "file.readBase64", params: { path: join(link, "secret.txt") } },
+          BIN,
+        ),
+      ).rejects.toBeInstanceOf(InvalidHostActionError);
+    } finally {
+      rmSync(link, { force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  // Staged uploads and staged screenshots are separate roots, and a link between them is ordinary.
+  it("accepts a symlink that lands in another allowed root", async () => {
+    const target = join(SCREENSHOT_DIR, `probe-target-${randomUUID()}`);
+    const link = join(UPLOAD_DIR, `probe-inlink-${randomUUID()}`);
+    mkdirSync(UPLOAD_DIR, { recursive: true });
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(target, "staged.txt"), "hello");
+    symlinkSync(target, link);
+
+    try {
+      const result = await runHostActionAsync(
+        { action: "file.readBase64", params: { path: join(link, "staged.txt") } },
+        BIN,
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.trim()).toBe(btoa("hello"));
+    } finally {
+      rmSync(link, { force: true });
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it("gives up on a symlink loop rather than following it", async () => {
+    const first = join(UPLOAD_DIR, `probe-loop-a-${randomUUID()}`);
+    const second = join(UPLOAD_DIR, `probe-loop-b-${randomUUID()}`);
+    mkdirSync(UPLOAD_DIR, { recursive: true });
+    symlinkSync(second, first);
+    symlinkSync(first, second);
+
+    try {
+      const attempt = runHostActionAsync(
+        { action: "file.readBase64", params: { path: join(first, "payload.txt") } },
+        BIN,
+      );
+      await expect(attempt).rejects.toBeInstanceOf(InvalidHostActionError);
+      await expect(attempt).rejects.toThrow(/is a link this server cannot follow/);
+    } finally {
+      rmSync(first, { force: true });
+      rmSync(second, { force: true });
+    }
+  });
+
   // An upload target does not exist until the first chunk lands, so a missing leaf is not a link.
   it("accepts a path under an allowed root whose leaf does not exist yet", async () => {
-    const target = join(tmpdir(), "serve-sim-uploads", `probe-missing-${randomUUID()}.bin`);
+    const target = join(UPLOAD_DIR, `probe-missing-${randomUUID()}.bin`);
     const result = await runHostActionAsync(
       { action: "camera.switch", params: { source: "file", target, udid: "U" } },
-      BIN,
+      "echo",
     );
-    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(`camera switch file ${target} -d U --quiet`);
   });
 
   // A file source is rendered into the preview stream, so it is confined like any other read.
@@ -157,7 +227,8 @@ describe("runHostActionAsync validation", () => {
   });
 
   it("accepts a path inside an allowed root", async () => {
-    const file = join(tmpdir(), "serve-sim-uploads", `probe-ok-${randomUUID()}.txt`);
+    const file = join(UPLOAD_DIR, `probe-ok-${randomUUID()}.txt`);
+    mkdirSync(UPLOAD_DIR, { recursive: true });
     writeFileSync(file, "hello");
 
     try {

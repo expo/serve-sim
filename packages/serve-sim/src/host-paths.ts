@@ -1,6 +1,6 @@
-import { lstatSync, realpathSync } from "fs";
+import { lstatSync, readlinkSync, realpathSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { basename, dirname, join, resolve, sep } from "path";
+import { basename, isAbsolute, join, resolve, sep } from "path";
 import { z } from "zod";
 
 function realpathOrSelf(path: string): string {
@@ -64,24 +64,58 @@ export const Argument = z
   .regex(/^[^\p{C}]+$/u, "must not contain control characters")
   .refine((v) => !v.startsWith("-"), 'must not start with "-"');
 
-// A dangling link would otherwise fall back to its directory's realpath plus its own name, and the
-// final allowlist check would pass a target it never saw.
-function isDanglingLink(path: string): boolean {
-  try {
-    lstatSync(path);
-  } catch {
-    return false;
-  }
-  try {
-    realpathSync(path);
-    return false;
-  } catch {
-    return true;
-  }
-}
-
 function isUnderAllowedRoot(path: string): boolean {
   return ALLOWED_ROOTS.some((root) => path === root || path.startsWith(root + sep));
+}
+
+/** What macOS itself follows before it gives up with ELOOP (MAXSYMLINKS, sys/param.h). */
+const MAX_SYMLINK_HOPS = 32;
+
+/**
+ * Canonicalizes one component at a time, in place of `realpathSync`, which resolves the whole path
+ * inside a single `openat` walk: a symlink under an allowed root can point at a TCC_PROTECTED_DIRS
+ * entry, and by the time realpath returns the target it has already opened it. `lstat` and
+ * `readlink` report a link without opening what it names, so every prefix is checked against
+ * ALLOWED_ROOTS before either one runs and nothing outside them is ever touched.
+ *
+ * Returns the canonical path, or the first resolved path that left the roots so the caller's
+ * containment check refuses it, or null when a link exists but cannot be followed.
+ */
+function resolveWithinRoots(absolutePath: string): string | null {
+  let prefix: string = sep;
+  let parts = absolutePath.split(sep).filter(Boolean);
+  let hops = 0;
+  let leafIsLink = false;
+
+  for (let component = parts.shift(); component !== undefined; component = parts.shift()) {
+    const candidate = join(prefix, component);
+    const whole = join(candidate, ...parts);
+    if (leadsIntoProtectedLocation(whole) || !isUnderAllowedRoot(whole)) return whole;
+
+    let isLink: boolean;
+    try {
+      isLink = lstatSync(candidate).isSymbolicLink();
+    } catch {
+      // Nothing below this exists, so no component under it can be a link and `whole` is already
+      // canonical. A leaf reached by following a link is dangling, not a write about to happen.
+      return parts.length === 0 && leafIsLink ? null : whole;
+    }
+
+    if (!isLink) {
+      prefix = candidate;
+      continue;
+    }
+
+    if (++hops > MAX_SYMLINK_HOPS) return null;
+    if (parts.length === 0) leafIsLink = true;
+    const target = readlinkSync(candidate);
+    // A relative target hangs off the link's own directory, which is the prefix resolved so far.
+    const resolvedTarget = isAbsolute(target) ? resolve(target) : resolve(prefix, target);
+    prefix = sep;
+    parts = [...resolvedTarget.split(sep).filter(Boolean), ...parts];
+  }
+
+  return prefix;
 }
 
 /**
@@ -103,19 +137,12 @@ export const ConfinedPath = Argument.refine(
     // zod runs every refine even after one fails, and the next one touches the filesystem.
     abort: true,
   })
-  .refine((value) => !isDanglingLink(resolve(value)), "is a link this server cannot follow")
-  .transform((value) => {
-    const full = resolve(value);
-    try {
-      return realpathSync(full);
-    } catch {
-      // The leaf may not exist yet (an upload target, a screenshot about to be written); canonicalize
-      // the directory so a path under a symlinked root still lands under its real root.
-      try {
-        return join(realpathSync(dirname(full)), basename(full));
-      } catch {
-        return full;
-      }
+  .transform((value, ctx) => {
+    const resolved = resolveWithinRoots(resolve(value));
+    if (resolved === null) {
+      ctx.addIssue({ code: "custom", message: "is a link this server cannot follow", fatal: true });
+      return z.NEVER;
     }
+    return resolved;
   })
   .refine(isUnderAllowedRoot, OUTSIDE_ROOTS);

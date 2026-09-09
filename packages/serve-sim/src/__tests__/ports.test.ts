@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "child_process";
 import { findOwnListeners } from "../ports";
-import { recordState } from "./helpers";
+import { recordState, useTempStateDir } from "./helpers";
 
 const PORT = 3461;
 
@@ -17,8 +17,10 @@ function spawnNode(script: string): Promise<ChildProcess> {
 let listener: ChildProcess;
 let client: ChildProcess;
 let forgetListener: () => void;
+let tempState: ReturnType<typeof useTempStateDir>;
 
 beforeAll(async () => {
+  tempState = useTempStateDir();
   listener = await spawnNode(
     `const net = require("net");
      const srv = net.createServer((s) => s.pipe(s));
@@ -37,6 +39,7 @@ afterAll(() => {
   client?.kill("SIGKILL");
   listener?.kill("SIGKILL");
   forgetListener?.();
+  tempState?.restore();
 });
 
 describe("findOwnListeners", () => {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 
 import { spawn } from "child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
@@ -6,12 +6,22 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 
 import { findOwnListeners } from "../ports";
-import { recordState } from "./helpers";
+import { recordState, useTempStateDir } from "./helpers";
 
 const FOREIGN_PORT = 48831;
 const OURS_PORT = 48832;
 const STALE_PORT = 48833;
 const SPACED_PORT = 48834;
+
+let tempState: ReturnType<typeof useTempStateDir>;
+
+beforeAll(() => {
+  tempState = useTempStateDir();
+});
+
+afterAll(() => {
+  tempState?.restore();
+});
 
 /** A listener on loopback only. Its command line is deliberately varied; nothing should read it. */
 async function withListenerAsync(

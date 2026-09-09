@@ -2,9 +2,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "child_process";
 import { execSync } from "child_process";
 import { existsSync } from "fs";
-import net from "net";
 import { join } from "path";
 import { RTCPeerConnection, RTCRtpCodecParameters } from "werift";
+
+import { freePortAsync } from "./helpers";
 
 // Regression test for the frame pump's cadence. A production trace showed the
 // pump silently degrading to send-on-arrival on virtualized hosts: over a 55 s
@@ -30,22 +31,6 @@ function bootedUdid(): string | null {
     }
   } catch {}
   return null;
-}
-
-async function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (address === null || typeof address === "string") {
-        server.close(() => reject(new Error("could not allocate a port")));
-        return;
-      }
-      const { port } = address;
-      server.close(() => resolve(port));
-    });
-  });
 }
 
 async function waitFor(check: () => boolean | Promise<boolean>, budgetMs: number): Promise<boolean> {
@@ -79,7 +64,7 @@ describeIfSim("WebRTC frame pump cadence", () => {
   }
 
   beforeAll(async () => {
-    const port = await freePort();
+    const port = await freePortAsync();
     baseUrl = `http://127.0.0.1:${port}`;
     server = spawn(
       "node",

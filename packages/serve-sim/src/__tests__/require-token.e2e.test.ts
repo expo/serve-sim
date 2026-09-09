@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execSync, spawn, type ChildProcess } from "child_process";
 import { existsSync } from "fs";
-import net from "net";
 import { join } from "path";
 import WebSocket from "ws";
+
+import { freePortAsync } from "./helpers";
 
 /**
  * The gate, against the shipped artifact.
@@ -29,22 +30,6 @@ function bootedUdid(): string | null {
   return null;
 }
 
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (address === null || typeof address === "string") {
-        server.close(() => reject(new Error("could not allocate a port")));
-        return;
-      }
-      const { port } = address;
-      server.close(() => resolve(port));
-    });
-  });
-}
-
 async function waitFor(check: () => Promise<boolean>, budgetMs: number): Promise<boolean> {
   const deadline = Date.now() + budgetMs;
   while (Date.now() < deadline) {
@@ -64,7 +49,7 @@ describeIfSim("serve-sim --require-token (built CLI)", () => {
   let output = "";
 
   beforeAll(async () => {
-    const port = await freePort();
+    const port = await freePortAsync();
     baseUrl = `http://127.0.0.1:${port}`;
     server = spawn("node", [CLI, "--require-token", "--quiet", "--port", String(port), udid!], {
       stdio: ["ignore", "pipe", "pipe"],

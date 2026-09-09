@@ -1,16 +1,27 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { statSync, unlinkSync } from "fs";
 import {
   stateFileForDevice,
   writeServeSimState,
   type ServeSimDeviceState,
 } from "../state";
+import { useTempStateDir } from "./helpers";
 
 const device = `PERMISSIONS-${process.pid}`;
-const file = stateFileForDevice(device);
+let tempState: ReturnType<typeof useTempStateDir>;
+let file: string;
+
+beforeAll(() => {
+  tempState = useTempStateDir();
+  file = stateFileForDevice(device);
+});
 
 afterEach(() => {
   try { unlinkSync(file); } catch {}
+});
+
+afterAll(() => {
+  tempState?.restore();
 });
 
 describe("writeServeSimState", () => {

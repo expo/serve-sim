@@ -19,10 +19,18 @@ export function getPortHolders(port: number): number[] {
     }).trim();
     if (!output) return [];
     const myPid = process.pid;
-    return output
+    const listeners = output
       .split("\n")
       .map((s) => parseInt(s, 10))
-      .filter((pid) => Number.isFinite(pid) && pid !== myPid && isServeSimProcess(pid));
+      .filter((pid) => Number.isFinite(pid) && pid !== myPid);
+    const ours = listeners.filter(isServeSimProcess);
+    // Refusing is the safe answer, but it leaves the caller with a port it cannot have. Name the
+    // holder, or the failure surfaces much later as a bind error with nothing to explain it.
+    if (listeners.length > 0 && ours.length === 0) {
+      const held = listeners.map((pid) => `${pid} (${processCommand(pid) || "unknown"})`).join(", ");
+      console.log(`\x1b[90mPort ${port} is held by a process that is not ours: ${held}\x1b[0m`);
+    }
+    return ours;
   } catch {
     return [];
   }
@@ -46,16 +54,17 @@ const SERVE_SIM_ENTRYPOINTS = [
  * for someone else's port would SIGKILL whatever is listening there.
  */
 function isServeSimProcess(pid: number): boolean {
+  return processCommand(pid)
+    .split(/\s+/)
+    .some((token) => SERVE_SIM_ENTRYPOINTS.some((entry) => entry.test(token)));
+}
+
+/** -ww so a long argument vector is not truncated: a cut-off path reads as somebody else's. */
+function processCommand(pid: number): string {
   try {
-    const command = execSync(`ps -p ${pid} -o command=`, {
-      encoding: "utf-8",
-      stdio: "pipe",
-    }).trim();
-    return command
-      .split(/\s+/)
-      .some((token) => SERVE_SIM_ENTRYPOINTS.some((entry) => entry.test(token)));
+    return execSync(`ps -ww -p ${pid} -o command=`, { encoding: "utf-8", stdio: "pipe" }).trim();
   } catch {
-    return false;
+    return "";
   }
 }
 

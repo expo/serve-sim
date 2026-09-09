@@ -1,14 +1,16 @@
 import { afterEach, describe, expect, it } from "bun:test";
 
 import { type ChildProcess, spawn } from "child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 
 import { getPortHolders } from "../ports";
 
 const INNOCENT_PORT = 48831;
 const HELPER_PORT = 48832;
+const SOURCE_PORT = 48833;
+const LOOKALIKE_PORT = 48834;
 
 let scratch: string | undefined;
 const children: ChildProcess[] = [];
@@ -23,6 +25,7 @@ afterEach(() => {
 async function listenAs(name: string, port: number): Promise<void> {
   scratch ??= mkdtempSync(join(tmpdir(), "serve-sim-ports-"));
   const script = join(scratch, name);
+  mkdirSync(dirname(script), { recursive: true });
   writeFileSync(
     script,
     `require("net").createServer(() => {}).listen(${port}, "127.0.0.1", () => console.log("up"));`,
@@ -50,5 +53,19 @@ describe("who serve-sim is willing to kill for a port", () => {
   it("still targets a stale serve-sim helper", async () => {
     await listenAs("serve-sim.js", HELPER_PORT);
     expect(getPortHolders(HELPER_PORT)).toHaveLength(1);
+  }, 15_000);
+
+  // How the dev command and every simulator-backed e2e suite start the server. The ownership check
+  // used to miss this form, so a stale helper kept the default port and the next test that wanted
+  // it failed with "Port 3100 is already in use" — on CI, where teardown is slowest.
+  it("targets a stale helper started from source", async () => {
+    await listenAs("serve-sim/src/index.ts", SOURCE_PORT);
+    expect(getPortHolders(SOURCE_PORT)).toHaveLength(1);
+  }, 15_000);
+
+  // A checkout directory often carries the name; that alone must not grant us the right to kill it.
+  it("does not target a process whose path merely contains the name", async () => {
+    await listenAs("serve-sim-session-auth/tools/other.js", LOOKALIKE_PORT);
+    expect(getPortHolders(LOOKALIKE_PORT)).toEqual([]);
   }, 15_000);
 });

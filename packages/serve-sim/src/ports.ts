@@ -29,6 +29,18 @@ export function getPortHolders(port: number): number[] {
 }
 
 /**
+ * The entrypoints this server actually runs as: the published bin, the bundled dist, or
+ * src/index.ts when it runs from source, which is how the dev command and the e2e suites start it.
+ *
+ * Matched a token at a time, against the whole token, so a checkout directory that merely contains
+ * "serve-sim" in its name does not read as the program.
+ */
+const SERVE_SIM_ENTRYPOINTS = [
+  /(^|\/)serve-sim(\.[cm]?[jt]s)?$/,
+  /(^|\/)serve-sim\/src\/index\.ts$/,
+];
+
+/**
  * Only ever kill our own helpers. The port is caller-chosen (the preview asks for a device on a
  * given port), and a wildcard bind reports a loopback-held port as free, so without this a request
  * for someone else's port would SIGKILL whatever is listening there.
@@ -39,7 +51,9 @@ function isServeSimProcess(pid: number): boolean {
       encoding: "utf-8",
       stdio: "pipe",
     }).trim();
-    return /(^|[/\s])serve-sim(\.[cm]?[jt]s)?([\s]|$)/.test(command);
+    return command
+      .split(/\s+/)
+      .some((token) => SERVE_SIM_ENTRYPOINTS.some((entry) => entry.test(token)));
   } catch {
     return false;
   }

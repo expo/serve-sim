@@ -111,19 +111,52 @@ describe("what a preview link may spend on the host", () => {
       for (const uploadId of ids) rmSync(join(dir, uploadId), { force: true });
     }
   });
-  // The Desktop is the operator's own space; the only file there that belongs to this server is a
-  // screenshot it wrote, so reads are limited to the same names writes are.
-  it.each(["Thesis.docx", "notes.txt", "id_rsa", "screenshot.png"])(
-    "refuses to read %s off the Desktop",
-    async (name) => {
-      await expect(
-        runHostActionAsync(
-          { action: "file.readBase64", params: { path: join(homedir(), "Desktop", name) } },
-          BIN,
-        ),
-      ).rejects.toBeInstanceOf(InvalidHostActionError);
-    },
-  );
+  // ~/Desktop, ~/Documents and ~/Downloads are TCC-protected. Canonicalizing a path inside one
+  // opens it, and on a host with nobody to answer the consent prompt that open blocks in the
+  // kernel forever and cannot be timed out, so these are refused before the filesystem is touched.
+  //
+  // These assert the refusal, which is the contract. They cannot prove the refusal happens without
+  // the syscall: on a machine whose consent is already granted the open returns either way. Only a
+  // headless host separates the two, so CI is what guards the ordering — before this, that ordering
+  // was wrong and CI hung here for two hours.
+  //
+  // The screenshot name matters most: it is the one shape this server writes there, so it is the
+  // one that would tempt someone to allow the directory back in.
+  it.each([
+    ["Desktop", "Thesis.docx"],
+    ["Desktop", "id_rsa"],
+    ["Desktop", "serve-sim-screenshot-x.png"],
+    ["Documents", "notes.txt"],
+    ["Downloads", "installer.dmg"],
+  ])("refuses to read ~/%s/%s", async (dir, name) => {
+    await expect(
+      runHostActionAsync(
+        { action: "file.readBase64", params: { path: join(homedir(), dir, name) } },
+        BIN,
+      ),
+    ).rejects.toBeInstanceOf(InvalidHostActionError);
+  });
+
+  it.each(["Desktop", "Documents", "Downloads"])("refuses ~/%s itself", async (dir) => {
+    await expect(
+      runHostActionAsync({ action: "file.readBase64", params: { path: join(homedir(), dir) } }, BIN),
+    ).rejects.toBeInstanceOf(InvalidHostActionError);
+  });
+
+  // The check runs on the resolved path, so a traversal that lands in a protected directory is
+  // caught even though the string it arrived as pointed somewhere allowed.
+  it("refuses a traversal that resolves into a protected directory", async () => {
+    const escape = join(tmpdir(), "serve-sim-uploads", "..", "..", "..", "..");
+    await expect(
+      runHostActionAsync(
+        {
+          action: "file.readBase64",
+          params: { path: join(escape, homedir(), "Desktop", "serve-sim-screenshot-x.png") },
+        },
+        BIN,
+      ),
+    ).rejects.toBeInstanceOf(InvalidHostActionError);
+  });
   // simctl wedges on a busy simulator and never returns; without a deadline the child holds its
   // in-flight slot for the life of the process and eight of them silence the channel for good.
   it("gives up on a child that never exits", async () => {

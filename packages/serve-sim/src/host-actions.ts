@@ -24,12 +24,31 @@ export interface HostActionRequest {
 interface Invocation {
   file: string;
   args: string[];
+  timeoutMs?: number;
 }
 
 export class InvalidHostActionError extends Error {}
 
+/**
+ * Canonicalized up front: $TMPDIR itself sits behind a symlink (/var -> /private/var), and a path
+ * that arrives canonicalized can only be compared against a root in the same shape.
+ */
+const TMP_ROOT = ((): string => {
+  try {
+    return realpathSync(tmpdir());
+  } catch {
+    return tmpdir();
+  }
+})();
+
 /** Confining uploads here keeps a caller-supplied path off the filesystem. */
-const UPLOAD_DIR = join(tmpdir(), "serve-sim-uploads");
+const UPLOAD_DIR = join(TMP_ROOT, "serve-sim-uploads");
+/**
+ * Screenshots are staged here rather than written straight to the Desktop. ~/Desktop is
+ * TCC-protected: opening it on a host with nobody to answer the consent prompt blocks forever,
+ * and the prompt cannot be detected or timed out, so this server never opens it.
+ */
+const SCREENSHOT_DIR = join(TMP_ROOT, "serve-sim-screenshots");
 // Without a ceiling a caller could fill the disk, and a closed tab never cleans up after itself.
 const MAX_UPLOAD_DIR_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_UPLOAD_AGE_MS = 6 * 60 * 60 * 1000;
@@ -63,9 +82,22 @@ async function ensureUploadDirAsync(): Promise<void> {
   await chmod(UPLOAD_DIR, 0o700).catch(() => {});
 }
 
-/** Counted by name so unrelated Desktop files are ignored. */
-const MAX_DESKTOP_SCREENSHOTS = 200;
+async function ensureScreenshotDirAsync(): Promise<void> {
+  await mkdir(SCREENSHOT_DIR, { recursive: true, mode: 0o700 });
+  await chmod(SCREENSHOT_DIR, 0o700).catch(() => {});
+}
+
+/** Counted by name so anything else sharing the staging directory is ignored. */
+const MAX_STAGED_SCREENSHOTS = 200;
 const SCREENSHOT_PREFIX = "serve-sim-screenshot-";
+/** Staged copies are a cache; the one the operator keeps is on the Desktop. */
+const MAX_SCREENSHOT_AGE_MS = 6 * 60 * 60 * 1000;
+/**
+ * The Desktop copy runs in a child, so a consent prompt blocks that child rather than the server.
+ * It still needs its own deadline: a local copy takes milliseconds, and waiting out the full
+ * action budget on a headless host would stall the caller for two minutes for nothing.
+ */
+const DESKTOP_COPY_TIMEOUT_MS = 5_000;
 
 /**
  * Only names the ceiling above counts. Any other name would both slip the ceiling and let a link
@@ -78,12 +110,30 @@ const ScreenshotName = z
     "must be a serve-sim screenshot name",
   );
 
-async function desktopScreenshotBudgetExceededAsync(): Promise<boolean> {
+async function stagedScreenshotBudgetExceededAsync(): Promise<boolean> {
   try {
-    const entries = await readdir(join(homedir(), "Desktop"));
-    return entries.filter((e) => e.startsWith(SCREENSHOT_PREFIX)).length >= MAX_DESKTOP_SCREENSHOTS;
+    const entries = await readdir(SCREENSHOT_DIR);
+    return entries.filter((e) => e.startsWith(SCREENSHOT_PREFIX)).length >= MAX_STAGED_SCREENSHOTS;
   } catch {
     return false;
+  }
+}
+
+async function pruneStagedScreenshotsAsync(): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(SCREENSHOT_DIR);
+  } catch {
+    return;
+  }
+  const cutoff = Date.now() - MAX_SCREENSHOT_AGE_MS;
+  for (const entry of entries) {
+    const full = join(SCREENSHOT_DIR, entry);
+    try {
+      const info = await lstat(full);
+      if (info.mtimeMs < cutoff) await rm(full, { force: true });
+    } catch {
+    }
   }
 }
 
@@ -128,6 +178,39 @@ const BundleId = z.string().max(256).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "must
 /** An orientation or button name. Bounded rather than allowlisted, so a new button still works. */
 const Token = z.string().max(64).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "must be a plain identifier");
 
+/**
+ * macOS gates these behind a consent prompt. Opening one on a host with nobody to answer that
+ * prompt blocks in the kernel and never returns, and the block cannot be detected or timed out,
+ * so a path leading into one is refused before the filesystem is touched at all.
+ */
+const TCC_PROTECTED_DIRS = ["Desktop", "Documents", "Downloads"].map((dir) =>
+  join(homedir(), dir),
+);
+
+function leadsIntoProtectedLocation(path: string): boolean {
+  return TCC_PROTECTED_DIRS.some((dir) => path === dir || path.startsWith(dir + sep));
+}
+
+/**
+ * Every root here is one this server owns or Apple installs. None may be a TCC-protected location
+ * such as ~/Desktop, ~/Documents or ~/Downloads: canonicalizing a path opens it, and on a host
+ * with nobody to answer the consent prompt that open never returns, taking the server's thread
+ * with it. Resolved once, because a rejected path reaches this check on every request.
+ */
+const ALLOWED_ROOTS = [
+  join(homedir(), "Library", "Developer", "CoreSimulator", "Devices"),
+  // Apple's own apps live in the runtime root, not under a device's data container.
+  "/Library/Developer/CoreSimulator",
+  UPLOAD_DIR,
+  SCREENSHOT_DIR,
+].map((root) => {
+  try {
+    return realpathSync(root);
+  } catch {
+    return root;
+  }
+});
+
 /** A value passed straight to a program: a leading "-" would be read as a flag. */
 const Argument = z
   .string()
@@ -153,6 +236,9 @@ const Coordinate = z.number().finite();
 const ConfinedPath = Argument.transform((value) => {
   // realpath, not resolve: a symlink under an allowed root would otherwise point anywhere.
   const full = resolve(value);
+  // Canonicalizing opens the path, so this has to come first: returning the lexical form leaves it
+  // outside every allowed root, and the refine below rejects it without a syscall.
+  if (leadsIntoProtectedLocation(full)) return full;
   try {
     return realpathSync(full);
   } catch {
@@ -164,27 +250,10 @@ const ConfinedPath = Argument.transform((value) => {
       return full;
     }
   }
-}).refine((value) => {
-  const realRoot = (root: string) => {
-    try {
-      return realpathSync(root);
-    } catch {
-      return root;
-    }
-  };
-  const roots = [
-    join(homedir(), "Library", "Developer", "CoreSimulator", "Devices"),
-    // Apple's own apps live in the runtime root, not under a device's data container.
-    "/Library/Developer/CoreSimulator",
-    UPLOAD_DIR,
-  ].map(realRoot);
-  if (roots.some((root) => value === root || value.startsWith(root + sep))) return true;
-
-  // The Desktop holds the operator's own files, and the only thing here that belongs to this
-  // server is a screenshot it just wrote. Reads match what writes are already limited to.
-  const desktop = realRoot(join(homedir(), "Desktop"));
-  return dirname(value) === desktop && ScreenshotName.safeParse(basename(value)).success;
-}, "is outside the paths this preview may read");
+}).refine(
+  (value) => ALLOWED_ROOTS.some((root) => value === root || value.startsWith(root + sep)),
+  "is outside the paths this preview may read",
+);
 
 const FileSource = z.union([
   z.object({ uploadId: UploadId }),
@@ -249,10 +318,11 @@ const ACTION_SCHEMAS = {
   "app.install": z.object({ udid: Device }).and(FileSource),
   "app.iconPath": z.object({ appPath: ConfinedPath, candidates: z.array(FileName).min(1).max(32) }),
   "media.add": z.object({ udid: Device }).and(FileSource),
-  reveal: z.object({ path: ConfinedPath }),
+  // Finder shows the Desktop copy, which only `open` ever touches, so no path here is opened here.
+  reveal: z.union([z.object({ path: ConfinedPath }), z.object({ screenshot: ScreenshotName })]),
   "file.readBase64": z.object({ path: ConfinedPath }),
   "screenshot.capture": z.object({ udid: Device, fileName: ScreenshotName }),
-  "screenshot.thumbnail": z.object({ path: ConfinedPath }),
+  "screenshot.thumbnail": z.object({ fileName: ScreenshotName }),
   "upload.append": z.object({
     uploadId: UploadId,
     // Bounded here rather than trusting the socket's cap: a host may supply its own transport.
@@ -404,7 +474,8 @@ function buildInvocation(action: HostActionName, raw: unknown, binPath: string):
     }
     case "reveal": {
       const p = parseParams(action, raw);
-      return { file: "open", args: ["-R", p.path] };
+      const target = "screenshot" in p ? join(homedir(), "Desktop", p.screenshot) : p.path;
+      return { file: "open", args: ["-R", target] };
     }
     default:
       // Reaching here means an ACTION_SCHEMAS entry has no home in either dispatcher.
@@ -422,12 +493,13 @@ function redactHostPaths(text: string): string {
   return text.split(homedir()).join("~").replace(/\/(?:private\/)?var\/folders\/\S+/g, "<tmp>");
 }
 
-function runInvocation({ file, args }: Invocation): Promise<HostActionResult> {
+function runInvocation({ file, args, timeoutMs }: Invocation): Promise<HostActionResult> {
+  const deadlineMs = timeoutMs ?? actionTimeoutMs();
   return new Promise<HostActionResult>((resolve) => {
     execFile(
       file,
       args,
-      { maxBuffer: 16 * 1024 * 1024, timeout: actionTimeoutMs(), killSignal: "SIGKILL" },
+      { maxBuffer: 16 * 1024 * 1024, timeout: deadlineMs, killSignal: "SIGKILL" },
       (err, stdout, stderr) => {
         const code = (err as NodeJS.ErrnoException | null)?.code;
         // A killed child reports a signal rather than an exit code, and the only way it gets one
@@ -436,7 +508,7 @@ function runInvocation({ file, args }: Invocation): Promise<HostActionResult> {
           resolve({
             stdout: stdout.toString(),
             stderr:
-              `The simulator did not answer within ${actionTimeoutMs() / 1000}s and the request was ` +
+              `The simulator did not answer within ${deadlineMs / 1000}s and the request was ` +
               "stopped. The simulator may be busy or wedged; try again, and restart it if this repeats.",
             exitCode: 1,
           });
@@ -513,22 +585,40 @@ async function runInProcessAsync(
     // The page names the file but never the directory.
     case "screenshot.capture": {
       const p = parseParams(action, raw);
-      const target = join(homedir(), "Desktop", p.fileName);
+      await ensureScreenshotDirAsync();
+      await pruneStagedScreenshotsAsync();
       // Without a ceiling a link holder can loop screenshots until the disk is full.
-      if (await desktopScreenshotBudgetExceededAsync()) {
+      if (await stagedScreenshotBudgetExceededAsync()) {
         return {
           stdout: "",
           stderr:
-            "Too many serve-sim screenshots are already on the Desktop. Move or delete some, " +
-            "then take another.",
+            `More than ${MAX_STAGED_SCREENSHOTS} screenshots are still staged, so they are not ` +
+            "being cleared. Staged copies age out after six hours; take another once the oldest " +
+            "have gone, or restart the preview to clear them now.",
           exitCode: 1,
         };
       }
-      const result = await runInvocation({
+      const staged = join(SCREENSHOT_DIR, p.fileName);
+      const shot = await runInvocation({
         file: "xcrun",
-        args: ["simctl", "io", p.udid, "screenshot", target],
+        args: ["simctl", "io", p.udid, "screenshot", staged],
       });
-      return result.exitCode === 0 ? ok(target) : result;
+      if (shot.exitCode !== 0) return shot;
+      // The operator expects the file on the Desktop, but that is TCC-protected, so a child does
+      // the copy: a consent prompt then blocks the child, which the deadline reaps.
+      const copied = await runInvocation({
+        file: "cp",
+        args: [staged, join(homedir(), "Desktop", p.fileName)],
+        timeoutMs: DESKTOP_COPY_TIMEOUT_MS,
+      });
+      return {
+        stdout: staged,
+        stderr:
+          copied.exitCode === 0
+            ? ""
+            : "The screenshot was taken, but this host would not let it be copied to the Desktop.",
+        exitCode: 0,
+      };
     }
     // Scratch, so it is staged away from its source and removed even if sips fails part-way.
     case "screenshot.thumbnail": {
@@ -538,7 +628,7 @@ async function runInProcessAsync(
       try {
         const sips = await runInvocation({
           file: "sips",
-          args: ["-Z", "320", p.path, "--out", thumb],
+          args: ["-Z", "320", join(SCREENSHOT_DIR, p.fileName), "--out", thumb],
         });
         if (sips.exitCode !== 0) return sips;
         return await runInvocation({ file: "base64", args: ["-i", thumb] });

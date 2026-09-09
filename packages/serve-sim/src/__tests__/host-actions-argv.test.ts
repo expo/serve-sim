@@ -25,6 +25,9 @@ const SHIM = `#!/bin/sh
 } | tee -a "\${SERVE_SIM_ARGV_LOG:-/dev/null}"
 `;
 
+/** Both the shims and the log parser read this, so adding a tool cannot desync the two. */
+const SHIMMED = ["xcrun", "plutil", "open", "osascript", "sips", "base64", "cp", "serve-sim"];
+
 const UDID = "404F2659-7202-4450-8465-912BD2AB744B";
 const BUNDLE = "com.example.app";
 // Under an allowed root so ConfinedPath accepts it; never created, so nothing is written. The
@@ -32,6 +35,8 @@ const BUNDLE = "com.example.app";
 const UPLOADS = join(tmpdir(), "serve-sim-uploads");
 mkdirSync(UPLOADS, { recursive: true });
 const CONFINED = join(realpathSync(UPLOADS), "serve-sim-argv-fixture.png");
+const SHOT = "serve-sim-screenshot-shot.png";
+const STAGED = join(realpathSync(tmpdir()), "serve-sim-screenshots", SHOT);
 
 let shimDir: string;
 let serveSimBin: string;
@@ -40,7 +45,7 @@ let originalPath: string | undefined;
 
 beforeAll(() => {
   shimDir = mkdtempSync(join(tmpdir(), "serve-sim-argv-"));
-  for (const name of ["xcrun", "plutil", "open", "osascript", "sips", "base64", "serve-sim"]) {
+  for (const name of SHIMMED) {
     const p = join(shimDir, name);
     writeFileSync(p, SHIM);
     chmodSync(p, 0o755);
@@ -66,7 +71,7 @@ function loggedArgv(): string[][] {
   const lines = raw.split("\n");
   const runs: string[][] = [];
   for (const line of lines) {
-    if (["xcrun", "plutil", "open", "osascript", "sips", "base64", "serve-sim"].includes(line)) {
+    if (SHIMMED.includes(line)) {
       runs.push([line]);
     } else {
       runs[runs.length - 1]?.push(line);
@@ -142,6 +147,10 @@ describe("other host tools", () => {
 
   it("builds reveal", async () => {
     expect(await argv("reveal", { path: CONFINED })).toEqual(["open", "-R", CONFINED]);
+    // Named rather than pathed, so the Desktop location is built here and only `open` touches it.
+    expect(await argv("reveal", { screenshot: SHOT })).toEqual([
+      "open", "-R", join(homedir(), "Desktop", SHOT),
+    ]);
   });
 
   it("builds the watch home press as three -e scripts", async () => {
@@ -153,23 +162,30 @@ describe("other host tools", () => {
 });
 
 describe("in-process actions that still shell out", () => {
-  it("captures to the Desktop and echoes the written path", async () => {
+  it("stages the capture and leaves the Desktop copy to a child", async () => {
     const result = await runHostActionAsync(
-      { action: "screenshot.capture", params: { udid: UDID, fileName: "serve-sim-screenshot-shot.png" } },
+      { action: "screenshot.capture", params: { udid: UDID, fileName: SHOT } },
       serveSimBin,
     );
-    const target = join(homedir(), "Desktop", "serve-sim-screenshot-shot.png");
     expect(result.exitCode).toBe(0);
-    // The toast's reveal action reads this path back, so it has to be the file simctl was given.
-    expect(result.stdout.trim()).toBe(target);
-    expect(loggedArgv().at(-1)).toEqual(["xcrun", "simctl", "io", UDID, "screenshot", target]);
+    // The page reads this back for the drag-and-drop URL, so it has to be the file simctl wrote.
+    expect(result.stdout.trim()).toBe(STAGED);
+    const runs = loggedArgv();
+    expect(runs.filter((r) => r[0] === "xcrun").at(-1)).toEqual([
+      "xcrun", "simctl", "io", UDID, "screenshot", STAGED,
+    ]);
+    // Only a child may name a path inside ~/Desktop. The server opening it would never return on a
+    // host that cannot answer the consent prompt.
+    expect(runs.filter((r) => r[0] === "cp").at(-1)).toEqual([
+      "cp", STAGED, join(homedir(), "Desktop", SHOT),
+    ]);
   });
 
-  it("sizes a thumbnail and reads it back as base64", async () => {
-    await runHostActionAsync({ action: "screenshot.thumbnail", params: { path: CONFINED } }, serveSimBin);
+  it("sizes a thumbnail of the staged capture and reads it back as base64", async () => {
+    await runHostActionAsync({ action: "screenshot.thumbnail", params: { fileName: SHOT } }, serveSimBin);
     const runs = loggedArgv();
     const sips = runs.find((r) => r[0] === "sips")!;
-    expect(sips.slice(0, 5)).toEqual(["sips", "-Z", "320", CONFINED, "--out"]);
+    expect(sips.slice(0, 5)).toEqual(["sips", "-Z", "320", STAGED, "--out"]);
     expect(sips[5]).toMatch(/serve-sim-uploads\/thumb-[0-9a-f-]+\.png$/);
     // The scratch thumbnail is read back and then removed, whatever sips did.
     expect(runs.at(-1)?.slice(0, 2)).toEqual(["base64", "-i"]);

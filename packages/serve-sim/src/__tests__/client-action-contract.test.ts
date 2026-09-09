@@ -1,14 +1,18 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 
 import { mkdirSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
 import { InvalidHostActionError, runHostActionAsync } from "../host-actions";
+import { getPortHolders } from "../ports";
 
 const BIN = "true";
 const UDID = "404F2659-7202-4450-8465-912BD2AB744B";
 const BUNDLE = "com.example.app";
+
+// This one call has a real side effect: it starts a detached server that outlives the request.
+const DETACH_PORT = "3100";
 
 const UPLOADS = join(tmpdir(), "serve-sim-uploads");
 mkdirSync(UPLOADS, { recursive: true });
@@ -50,7 +54,7 @@ const CALLS: Array<[string, string, Record<string, unknown> | undefined]> = [
 
   // useSimStream.ts
   ["useSimStream", "server.detach", { udid: UDID }],
-  ["useSimStream", "server.detach", { udid: UDID, port: "3100" }],
+  ["useSimStream", "server.detach", { udid: UDID, port: DETACH_PORT }],
   ["useSimStream", "server.kill", {}],
   ["useSimStream", "button", { value: "home", udid: UDID }],
   ["useSimStream", "rotate", { udid: UDID, value: "landscape" }],
@@ -63,7 +67,12 @@ const CALLS: Array<[string, string, Record<string, unknown> | undefined]> = [
   // app-icon.ts + use-screenshot-toast.tsx
   ["app-icon", "app.iconPath", { appPath: STAGED, candidates: ["Icon@2x.png", "Icon.png"] }],
   ["app-icon", "file.readBase64", { path: STAGED }],
-  ["screenshot-toast", "screenshot.thumbnail", { path: STAGED }],
+  ["screenshot-toast", "screenshot.thumbnail", { fileName: "serve-sim-screenshot-1.png" }],
+  ["screenshot-toast", "reveal", { screenshot: "serve-sim-screenshot-1.png" }],
+
+  // app-detection-tool.tsx reveals a path inside the simulator container, not a named screenshot,
+  // so both arms of the reveal union are call sites.
+  ["app-detection", "reveal", { path: STAGED }],
 
   // drop.ts
   ["drop", "upload.append", { uploadId: "drop.ipa", data: btoa("x"), first: true }],
@@ -81,4 +90,16 @@ describe("params the preview client sends are accepted by the server", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     })).resolves.toBeDefined();
   });
+});
+
+// Without this the detached server holds its port for the rest of the session, and the next test
+// that wants it fails with "Port 3100 is already in use" — in a later file, or a later run.
+afterAll(() => {
+  for (const pid of getPortHolders(Number(DETACH_PORT))) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
 });

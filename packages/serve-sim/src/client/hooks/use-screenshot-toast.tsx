@@ -14,9 +14,12 @@ export type ScreenshotToast = {
   // "in" while the pill is showing, "out" once the dismiss timer fires — the
   // component plays the exit animation, then calls dismiss() to unmount.
   phase: "in" | "out";
-  // Absolute path on the host once the capture lands; used by "Open in Finder"
-  // and the drag-and-drop file URL.
+  // Absolute path of the staged copy on the host once the capture lands; used by
+  // the drag-and-drop file URL.
   path?: string;
+  // Name of the capture. "Open in Finder" reveals the Desktop copy by name, so the
+  // page never hands the host a path inside a TCC-protected directory.
+  fileName?: string;
   // Tunneled/LAN previews download into the browser instead of exposing a path
   // on the remote simulator host. Kept alive while the toast is mounted so the
   // thumbnail and "Download again" action can reuse it.
@@ -69,7 +72,7 @@ export function useScreenshotToast(deviceUdid?: string | null) {
 
   const reveal = useCallback(() => {
     const t = toastRef.current;
-    if (t?.path) void runHostAction("reveal", { path: t.path });
+    if (t?.fileName) void runHostAction("reveal", { screenshot: t.fileName });
     else if (t?.downloadUrl && t.downloadName) {
       triggerBrowserDownload(t.downloadUrl, t.downloadName);
     }
@@ -148,8 +151,8 @@ export function useScreenshotToast(deviceUdid?: string | null) {
         return;
       }
 
-      // The host resolves the Desktop path and hands back the absolute file it wrote, which the
-      // toast's reveal action needs.
+      // The host stages the capture in a directory it owns and hands back that path, which the
+      // drag-and-drop URL needs. The Desktop copy is the host's own last step.
       const res = await runHostAction(
         "screenshot.capture",
         { udid: deviceUdid, fileName },
@@ -161,14 +164,14 @@ export function useScreenshotToast(deviceUdid?: string | null) {
         return;
       }
 
-      render({ id, status: "saved", phase: "in", path }, SAVED_DISMISS_MS);
+      render({ id, status: "saved", phase: "in", path, fileName }, SAVED_DISMISS_MS);
 
       // Best-effort thumbnail: the host downscales, encodes and cleans up. Failures (sips
       // missing, etc.) just leave the placeholder.
       try {
         const tr = await runHostAction(
           "screenshot.thumbnail",
-          { path },
+          { fileName },
           { signal: captureController.signal },
         );
         const b64 = tr.stdout.replace(/\s+/g, "");

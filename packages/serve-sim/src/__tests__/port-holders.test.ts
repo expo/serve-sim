@@ -1,29 +1,25 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 
-import { type ChildProcess, spawn } from "child_process";
+import { spawn } from "child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 
-import { getPortHolders } from "../ports";
+import { findOwnListeners } from "../ports";
+import { recordState } from "./helpers";
 
-const INNOCENT_PORT = 48831;
-const HELPER_PORT = 48832;
-const SOURCE_PORT = 48833;
-const LOOKALIKE_PORT = 48834;
+const FOREIGN_PORT = 48831;
+const OURS_PORT = 48832;
+const STALE_PORT = 48833;
+const SPACED_PORT = 48834;
 
-let scratch: string | undefined;
-const children: ChildProcess[] = [];
-
-afterEach(() => {
-  while (children.length) children.pop()?.kill("SIGKILL");
-  if (scratch) rmSync(scratch, { recursive: true, force: true });
-  scratch = undefined;
-});
-
-/** A listener on loopback only, named so its command line does or does not look like ours. */
-async function listenAs(name: string, port: number): Promise<void> {
-  scratch ??= mkdtempSync(join(tmpdir(), "serve-sim-ports-"));
+/** A listener on loopback only. Its command line is deliberately varied; nothing should read it. */
+async function withListenerAsync(
+  name: string,
+  port: number,
+  run: (pid: number, scratch: string) => Promise<void>,
+): Promise<void> {
+  const scratch = mkdtempSync(join(tmpdir(), "serve-sim-ports-"));
   const script = join(scratch, name);
   mkdirSync(dirname(script), { recursive: true });
   writeFileSync(
@@ -31,41 +27,92 @@ async function listenAs(name: string, port: number): Promise<void> {
     `require("net").createServer(() => {}).listen(${port}, "127.0.0.1", () => console.log("up"));`,
   );
   const child = spawn(process.execPath, [script], { stdio: ["ignore", "pipe", "ignore"] });
-  children.push(child);
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${name} never listened`)), 5000);
-    child.stdout?.once("data", () => {
-      clearTimeout(timer);
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${name} never listened`)), 5000);
+      child.stdout?.once("data", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      child.once("error", reject);
     });
-    child.once("error", reject);
+    await run(child.pid!, scratch);
+  } finally {
+    child.kill("SIGKILL");
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+async function withRecordedListenerAsync(
+  name: string,
+  udid: string,
+  port: number,
+  recordedPort: number,
+  run: (pid: number) => Promise<void>,
+): Promise<void> {
+  await withListenerAsync(name, port, async (pid) => {
+    const forget = recordState(udid, pid, recordedPort);
+    try {
+      await run(pid);
+    } finally {
+      forget();
+    }
   });
 }
 
 describe("who serve-sim is willing to kill for a port", () => {
   // The preview picks the port, and a wildcard bind reports a loopback-held port as free, so
   // without an ownership check a request for someone else's port SIGKILLs whatever listens there.
-  it("does not target an unrelated process holding the port", async () => {
-    await listenAs("ngrok.js", INNOCENT_PORT);
-    expect(getPortHolders(INNOCENT_PORT)).toEqual([]);
+  it("does not target a process it never recorded", async () => {
+    await withListenerAsync("ngrok.js", FOREIGN_PORT, async () => {
+      expect(findOwnListeners(FOREIGN_PORT)).toEqual([]);
+    });
   }, 15_000);
 
-  it("still targets a stale serve-sim helper", async () => {
-    await listenAs("serve-sim.js", HELPER_PORT);
-    expect(getPortHolders(HELPER_PORT)).toHaveLength(1);
+  it("targets a helper it recorded on that port", async () => {
+    await withRecordedListenerAsync("helper.js", "PORTS-TEST-OURS", OURS_PORT, OURS_PORT, async (pid) => {
+      expect(findOwnListeners(OURS_PORT)).toEqual([pid]);
+    });
   }, 15_000);
 
-  // How the dev command and every simulator-backed e2e suite start the server. The ownership check
-  // used to miss this form, so a stale helper kept the default port and the next test that wanted
-  // it failed with "Port 3100 is already in use" — on CI, where teardown is slowest.
-  it("targets a stale helper started from source", async () => {
-    await listenAs("serve-sim/src/index.ts", SOURCE_PORT);
-    expect(getPortHolders(SOURCE_PORT)).toHaveLength(1);
+  it("does not target a recorded pid whose state names another port", async () => {
+    await withRecordedListenerAsync(
+      "helper.js",
+      "PORTS-TEST-STALE",
+      STALE_PORT,
+      STALE_PORT + 1,
+      async () => {
+        expect(findOwnListeners(STALE_PORT)).toEqual([]);
+      },
+    );
   }, 15_000);
 
-  // A checkout directory often carries the name; that alone must not grant us the right to kill it.
-  it("does not target a process whose path merely contains the name", async () => {
-    await listenAs("serve-sim-session-auth/tools/other.js", LOOKALIKE_PORT);
-    expect(getPortHolders(LOOKALIKE_PORT)).toEqual([]);
+  it("targets a helper whose path contains a space", async () => {
+    await withRecordedListenerAsync(
+      join("My Repos", "serve-sim", "dist", "serve-sim.js"),
+      "PORTS-TEST-SPACED",
+      SPACED_PORT,
+      SPACED_PORT,
+      async (pid) => {
+        expect(findOwnListeners(SPACED_PORT)).toEqual([pid]);
+      },
+    );
+  }, 15_000);
+
+  it("names a foreign holder by pid, without its command line", async () => {
+    await withListenerAsync("ngrok.js", FOREIGN_PORT, async (pid, scratch) => {
+      const said: string[] = [];
+      const real = console.log;
+      console.log = (...args: unknown[]) => void said.push(args.join(" "));
+      try {
+        findOwnListeners(FOREIGN_PORT);
+      } finally {
+        console.log = real;
+      }
+      const message = said.join("\n");
+      expect(message).toContain(String(pid));
+      expect(message).not.toContain("ngrok.js");
+      expect(message).not.toContain(scratch);
+    });
   }, 15_000);
 });

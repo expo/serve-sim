@@ -4,7 +4,10 @@ import {
   ScreenshotToast,
   shouldDismissScreenshotToastAfterDrag,
 } from "../client/components/screenshot-toast";
-import type { ScreenshotToast as ScreenshotToastState } from "../client/hooks/use-screenshot-toast";
+import {
+  revealParams,
+  type ScreenshotToast as ScreenshotToastState,
+} from "../client/hooks/use-screenshot-toast";
 
 const noop = () => {};
 
@@ -81,5 +84,80 @@ describe("ScreenshotToast drag image", () => {
     expect(html).toContain('aria-label="Open screenshot in Finder"');
     expect(html).toContain("Open in Finder");
     expect(html).toContain('draggable="true"');
+  });
+});
+
+describe("ScreenshotToast staged-only capture", () => {
+  const STAGED = "/Users/x/Library/Caches/serve-sim/screenshots/shot.png";
+  const MESSAGE =
+    "This host refused the Desktop copy (cp: Operation not permitted), which usually means " +
+    "Desktop access is denied for the process running this preview, so the screenshot stays " +
+    `staged at ${STAGED} for at least 6 hours.`;
+
+  test("shows the host's sentence when the Desktop has no copy", () => {
+    const html = render({
+      id: "1",
+      status: "saved",
+      phase: "in",
+      path: STAGED,
+      fileName: "shot.png",
+      stagedOnly: true,
+      message: MESSAGE,
+    });
+    expect(html).toContain("Screenshot Saved");
+    expect(html).toContain("Open in Finder");
+    expect(html).toContain(MESSAGE);
+  });
+
+  test("a copied capture renders no extra line", () => {
+    const html = render({
+      id: "1",
+      status: "saved",
+      phase: "in",
+      path: STAGED,
+      fileName: "shot.png",
+    });
+    expect(html).toContain("Open in Finder");
+    expect(html).not.toContain("stays staged");
+  });
+});
+
+describe("revealParams", () => {
+  test("a copied capture reveals the Desktop copy by name", () => {
+    expect(
+      revealParams({
+        id: "1",
+        status: "saved",
+        phase: "in",
+        path: "/Users/x/Library/Caches/serve-sim/screenshots/shot.png",
+        fileName: "shot.png",
+      }),
+    ).toEqual({ screenshot: "shot.png" });
+  });
+
+  test("a staged-only capture reveals the staged path", () => {
+    expect(
+      revealParams({
+        id: "1",
+        status: "saved",
+        phase: "in",
+        path: "/Users/x/Library/Caches/serve-sim/screenshots/shot.png",
+        fileName: "shot.png",
+        stagedOnly: true,
+        message: "This host would not let the screenshot be copied to the Desktop.",
+      }),
+    ).toEqual({ path: "/Users/x/Library/Caches/serve-sim/screenshots/shot.png" });
+  });
+
+  test("a browser download has nothing on the host to reveal", () => {
+    expect(
+      revealParams({
+        id: "1",
+        status: "saved",
+        phase: "in",
+        downloadUrl: "blob:https://preview.example/shot",
+        downloadName: "shot.png",
+      }),
+    ).toBeNull();
   });
 });

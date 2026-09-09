@@ -1,30 +1,40 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 
-import { mkdirSync, realpathSync } from "fs";
+import { mkdirSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { InvalidHostActionError, runHostActionAsync } from "../host-actions";
-import { getPortHolders } from "../ports";
+import { runHostActionAsync } from "../host-actions";
+import { EXIT_0_SHIM, UDID, installShims } from "./helpers";
 
 const BIN = "true";
-const UDID = "404F2659-7202-4450-8465-912BD2AB744B";
 const BUNDLE = "com.example.app";
-
-// This one call has a real side effect: it starts a detached server that outlives the request.
 const DETACH_PORT = "3100";
 
 const UPLOADS = join(tmpdir(), "serve-sim-uploads");
-mkdirSync(UPLOADS, { recursive: true });
-const STAGED = join(realpathSync(UPLOADS), "contract-fixture.bin");
+const STAGED = join(realpathSync(tmpdir()), "serve-sim-uploads", "contract-fixture.bin");
+// The path the server hands back from a capture: the toast drags it onto the simulator and "Open
+// in Finder" falls back to it when the Desktop has no copy.
+const SHOT = "serve-sim-screenshot-contract.png";
+const STAGED_SHOT = join(realpathSync(tmpdir()), "serve-sim-screenshots", SHOT);
 
-/**
- * The params each migrated tool actually builds, fed straight to the server's validator.
- *
- * The tools themselves are barely covered, and a schema that rejects a shape a tool sends fails at
- * runtime with nothing to catch it. These are the literal call sites, so a tightened schema that
- * no longer accepts one of them fails here instead of in the preview.
- */
+const SHIMMED = ["open", "xcrun", "cp", "sips", "base64", "plutil"];
+
+let shims: ReturnType<typeof installShims>;
+
+beforeAll(() => {
+  shims = installShims(Object.fromEntries(SHIMMED.map((name) => [name, EXIT_0_SHIM])));
+  mkdirSync(UPLOADS, { recursive: true });
+});
+
+afterAll(() => {
+  shims.restore();
+  // The xcrun shim never writes, so the reservation the capture staged is what is left behind.
+  rmSync(STAGED_SHOT, { force: true });
+});
+
+// The literal params each client call site builds. The tools themselves are barely covered, so a
+// schema tightened past one of these shapes fails here instead of in the preview.
 const CALLS: Array<[string, string, Record<string, unknown> | undefined]> = [
   // camera-tool.tsx
   ["camera-tool", "camera.listWebcams", undefined],
@@ -60,15 +70,16 @@ const CALLS: Array<[string, string, Record<string, unknown> | undefined]> = [
   ["useSimStream", "rotate", { udid: UDID, value: "landscape" }],
 
   // SimulatorToolbar.tsx
-  ["toolbar", "screenshot.capture", { udid: UDID, fileName: "serve-sim-screenshot-1.png" }],
+  ["toolbar", "screenshot.capture", { udid: UDID, fileName: SHOT }],
   ["toolbar", "appearance.get", { udid: UDID }],
   ["toolbar", "appearance.set", { udid: UDID, value: "dark" }],
 
   // app-icon.ts + use-screenshot-toast.tsx
   ["app-icon", "app.iconPath", { appPath: STAGED, candidates: ["Icon@2x.png", "Icon.png"] }],
   ["app-icon", "file.readBase64", { path: STAGED }],
-  ["screenshot-toast", "screenshot.thumbnail", { fileName: "serve-sim-screenshot-1.png" }],
-  ["screenshot-toast", "reveal", { screenshot: "serve-sim-screenshot-1.png" }],
+  ["screenshot-toast", "screenshot.thumbnail", { fileName: SHOT }],
+  ["screenshot-toast", "reveal", { screenshot: SHOT }],
+  ["screenshot-toast", "reveal", { path: STAGED_SHOT }],
 
   // app-detection-tool.tsx reveals a path inside the simulator container, not a named screenshot,
   // so both arms of the reveal union are call sites.
@@ -79,27 +90,13 @@ const CALLS: Array<[string, string, Record<string, unknown> | undefined]> = [
   ["drop", "upload.remove", { uploadId: "drop.ipa" }],
   ["drop", "app.install", { udid: UDID, uploadId: "drop.ipa" }],
   ["drop", "media.add", { udid: UDID, uploadId: "drop.mov" }],
+  // use-media-drop.ts: the toast dropped onto the simulator adds the staged capture in place.
+  ["drop", "media.add", { udid: UDID, path: STAGED_SHOT }],
 ];
 
 describe("params the preview client sends are accepted by the server", () => {
   it.each(CALLS)("%s: %s", async (_tool, action, params) => {
     const call = runHostActionAsync(params === undefined ? { action } : { action, params }, BIN);
-    // Execution may fail without a real simulator; only validation is under test here.
-    await expect(call.catch((err: unknown) => {
-      if (err instanceof InvalidHostActionError) throw err;
-      return { stdout: "", stderr: "", exitCode: 0 };
-    })).resolves.toBeDefined();
+    await expect(call).resolves.toHaveProperty("exitCode");
   });
-});
-
-// Without this the detached server holds its port for the rest of the session, and the next test
-// that wants it fails with "Port 3100 is already in use" — in a later file, or a later run.
-afterAll(() => {
-  for (const pid of getPortHolders(Number(DETACH_PORT))) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // already gone
-    }
-  }
 });

@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -11,9 +10,10 @@ import {
   writeFileSync,
 } from "fs";
 import { homedir, tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 
 import { runHostActionAsync } from "../host-actions";
+import { UDID, installShims, withActionTimeoutAsync, withShimsAsync } from "./helpers";
 
 // Every CLI-backed action builds an argument vector by hand, and a wrong flag or a swapped
 // positional would still exit 0 against a real tool. These shims report the argv they were handed,
@@ -25,48 +25,51 @@ const SHIM = `#!/bin/sh
 } | tee -a "\${SERVE_SIM_ARGV_LOG:-/dev/null}"
 `;
 
+// The real sips writes its --out file, and the thumbnail test asserts that file is gone afterwards,
+// so this shim has to leave one behind for that assertion to mean anything.
+const SIPS_SHIM = `${SHIM}while [ "$#" -gt 1 ]; do
+  [ "$1" = "--out" ] && : > "$2"
+  shift
+done
+`;
+
 /** Both the shims and the log parser read this, so adding a tool cannot desync the two. */
 const SHIMMED = ["xcrun", "plutil", "open", "osascript", "sips", "base64", "cp", "serve-sim"];
 
-const UDID = "404F2659-7202-4450-8465-912BD2AB744B";
+function shimBody(name: string): string {
+  return name === "sips" ? SIPS_SHIM : SHIM;
+}
+
 const BUNDLE = "com.example.app";
 // Under an allowed root so ConfinedPath accepts it; never created, so nothing is written. The
 // server canonicalizes the directory, so the expected argv uses the real path, not the lexical one.
 const UPLOADS = join(tmpdir(), "serve-sim-uploads");
-mkdirSync(UPLOADS, { recursive: true });
-const CONFINED = join(realpathSync(UPLOADS), "serve-sim-argv-fixture.png");
+const CONFINED = join(realpathSync(tmpdir()), "serve-sim-uploads", "serve-sim-argv-fixture.png");
 const SHOT = "serve-sim-screenshot-shot.png";
 const STAGED = join(realpathSync(tmpdir()), "serve-sim-screenshots", SHOT);
 
-let shimDir: string;
+let shims: ReturnType<typeof installShims>;
 let serveSimBin: string;
 let argvLog: string;
-let originalPath: string | undefined;
 
 beforeAll(() => {
-  shimDir = mkdtempSync(join(tmpdir(), "serve-sim-argv-"));
-  for (const name of SHIMMED) {
-    const p = join(shimDir, name);
-    writeFileSync(p, SHIM);
-    chmodSync(p, 0o755);
-  }
-  serveSimBin = join(shimDir, "serve-sim");
-  argvLog = join(shimDir, "argv.log");
+  shims = installShims(Object.fromEntries(SHIMMED.map((name) => [name, shimBody(name)])));
+  serveSimBin = join(shims.dir, "serve-sim");
+  argvLog = join(shims.dir, "argv.log");
   process.env.SERVE_SIM_ARGV_LOG = argvLog;
-  originalPath = process.env.PATH;
-  process.env.PATH = `${shimDir}:${process.env.PATH ?? ""}`;
+  mkdirSync(UPLOADS, { recursive: true });
 });
 
 afterAll(() => {
   delete process.env.SERVE_SIM_ARGV_LOG;
-  if (originalPath === undefined) delete process.env.PATH;
-  else process.env.PATH = originalPath;
-  rmSync(shimDir, { recursive: true, force: true });
+  shims.restore();
+  // The xcrun shim never writes, so the reservation the capture staged is what is left behind.
+  rmSync(STAGED, { force: true });
 });
 
 // Actions that replace stdout with their own result still leave their argv in the shim log.
 function loggedArgv(): string[][] {
-  const raw = readFileSync(argvLog, "utf8").trimEnd();
+  const raw = existsSync(argvLog) ? readFileSync(argvLog, "utf8").trimEnd() : "";
   if (!raw) return [];
   const lines = raw.split("\n");
   const runs: string[][] = [];
@@ -147,7 +150,6 @@ describe("other host tools", () => {
 
   it("builds reveal", async () => {
     expect(await argv("reveal", { path: CONFINED })).toEqual(["open", "-R", CONFINED]);
-    // Named rather than pathed, so the Desktop location is built here and only `open` touches it.
     expect(await argv("reveal", { screenshot: SHOT })).toEqual([
       "open", "-R", join(homedir(), "Desktop", SHOT),
     ]);
@@ -161,7 +163,7 @@ describe("other host tools", () => {
   });
 });
 
-describe("in-process actions that still shell out", () => {
+describe("procedures that shell out", () => {
   it("stages the capture and leaves the Desktop copy to a child", async () => {
     const result = await runHostActionAsync(
       { action: "screenshot.capture", params: { udid: UDID, fileName: SHOT } },
@@ -174,20 +176,113 @@ describe("in-process actions that still shell out", () => {
     expect(runs.filter((r) => r[0] === "xcrun").at(-1)).toEqual([
       "xcrun", "simctl", "io", UDID, "screenshot", STAGED,
     ]);
-    // Only a child may name a path inside ~/Desktop. The server opening it would never return on a
-    // host that cannot answer the consent prompt.
     expect(runs.filter((r) => r[0] === "cp").at(-1)).toEqual([
       "cp", STAGED, join(homedir(), "Desktop", SHOT),
     ]);
   });
 
+  // A copy that never returns is what a consent prompt looks like from the child's side. The client
+  // gives an action ten seconds, so the copy has to be reaped well inside that, and the capture is
+  // still a success: the file simctl wrote is staged, and stderr says where.
+  it("reaps a Desktop copy that hangs and still returns the staged path", async () => {
+    const fileName = "serve-sim-screenshot-hung-copy.png";
+    const staged = join(dirname(STAGED), fileName);
+    try {
+      // Tighter than the shipped two minutes, so a copy that fell back to the action deadline shows
+      // up as a missed bound rather than a test that ran out of time.
+      await withActionTimeoutAsync(9000, async () => {
+        await withShimsAsync({ cp: "#!/bin/sh\nexec sleep 600\n" }, async () => {
+          const started = Date.now();
+          const result = await runHostActionAsync(
+            { action: "screenshot.capture", params: { udid: UDID, fileName } },
+            serveSimBin,
+          );
+          expect(Date.now() - started).toBeLessThan(8_000);
+          expect(result.exitCode).toBe(0);
+          expect(result.stdout.trim()).toBe(staged);
+          expect(result.stderr).toContain(staged);
+          expect(result.stderr).toContain("did not finish within 5s");
+          expect(result.stderr).not.toContain("refused");
+        });
+      });
+    } finally {
+      rmSync(staged, { force: true });
+    }
+  }, 20_000);
+
+  it("reports a refused Desktop copy without failing the capture", async () => {
+    const fileName = "serve-sim-screenshot-refused-copy.png";
+    const staged = join(dirname(STAGED), fileName);
+    try {
+      await withShimsAsync({ cp: "#!/bin/sh\necho 'cp: Operation not permitted' >&2\nexit 1\n" }, async () => {
+        const result = await runHostActionAsync(
+          { action: "screenshot.capture", params: { udid: UDID, fileName } },
+          serveSimBin,
+        );
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout.trim()).toBe(staged);
+        expect(result.stderr).toContain(staged);
+        expect(result.stderr).toContain("refused the Desktop copy (cp: Operation not permitted)");
+        expect(result.stderr).not.toContain("did not finish within");
+      });
+    } finally {
+      rmSync(staged, { force: true });
+    }
+  });
+
+  it("drops the reservation and skips the Desktop copy when simctl fails", async () => {
+    const fileName = "serve-sim-screenshot-failed-capture.png";
+    const staged = join(dirname(STAGED), fileName);
+    const before = loggedArgv().length;
+    try {
+      await withShimsAsync({ xcrun: "#!/bin/sh\nexit 1\n" }, async () => {
+        const result = await runHostActionAsync(
+          { action: "screenshot.capture", params: { udid: UDID, fileName } },
+          serveSimBin,
+        );
+        expect(result.exitCode).not.toBe(0);
+      });
+      expect(loggedArgv().slice(before).some((r) => r[0] === "cp")).toBe(false);
+      expect(existsSync(staged)).toBe(false);
+    } finally {
+      rmSync(staged, { force: true });
+    }
+  });
+
+  // The caller names the file, so two captures can name the same one. Only the reservation is
+  // serialized; both simctl runs then race, and the loser's cleanup must not take the winner's
+  // screenshot with it. The shim's mkdir is the tie-break: the first run writes and exits 0, the
+  // second waits until that write has landed and exits 1. The opening sleep lets both reservations
+  // land first, since the second one truncates the file.
+  it("keeps a screenshot another capture of the same name wrote when this one fails", async () => {
+    const fileName = "serve-sim-screenshot-shared-name.png";
+    const staged = join(dirname(STAGED), fileName);
+    const lock = `${staged}.lock`;
+    const shim =
+      '#!/bin/sh\nsleep 0.2\nif mkdir "$5.lock" 2>/dev/null; then printf PNG > "$5"; exit 0; fi\n' +
+      "sleep 0.5\nexit 1\n";
+    try {
+      await withShimsAsync({ xcrun: shim }, async () => {
+        const request = { action: "screenshot.capture", params: { udid: UDID, fileName } };
+        const results = await Promise.all([
+          runHostActionAsync(request, serveSimBin),
+          runHostActionAsync(request, serveSimBin),
+        ]);
+        expect(results.map((r) => r.exitCode).sort()).toEqual([0, 1]);
+      });
+      expect(readFileSync(staged, "utf8")).toBe("PNG");
+    } finally {
+      rmSync(lock, { recursive: true, force: true });
+      rmSync(staged, { force: true });
+    }
+  });
+
   it("sizes a thumbnail of the staged capture and reads it back as base64", async () => {
     await runHostActionAsync({ action: "screenshot.thumbnail", params: { fileName: SHOT } }, serveSimBin);
     const runs = loggedArgv();
-    const sips = runs.find((r) => r[0] === "sips")!;
+    const sips = runs.filter((r) => r[0] === "sips").at(-1)!;
     expect(sips.slice(0, 5)).toEqual(["sips", "-Z", "320", STAGED, "--out"]);
     expect(sips[5]).toMatch(/serve-sim-uploads\/thumb-[0-9a-f-]+\.png$/);
-    // The scratch thumbnail is read back and then removed, whatever sips did.
     expect(runs.at(-1)?.slice(0, 2)).toEqual(["base64", "-i"]);
     expect(existsSync(sips[5]!)).toBe(false);
   });

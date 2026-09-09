@@ -1,14 +1,32 @@
 import { describe, expect, it } from "bun:test";
 
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "fs";
 import { open } from "fs/promises";
 import { homedir, tmpdir } from "os";
-import { join } from "path";
+import { basename, join, resolve, sep } from "path";
 
 import { InvalidHostActionError, runHostActionAsync } from "../host-actions";
+import { EXIT_0_SHIM, UDID, withActionTimeoutAsync, withShimsAsync } from "./helpers";
 
 const BIN = "true";
-const UDID = "404F2659-7202-4450-8465-912BD2AB744B";
+const PROTECTED = /is inside a location this host protects/;
+
+/** Both checks: exec-ws forwards the message only for this class, and the message names the guard. */
+async function expectProtectedAsync(path: string): Promise<void> {
+  const attempt = runHostActionAsync({ action: "file.readBase64", params: { path } }, BIN);
+  await expect(attempt).rejects.toBeInstanceOf(InvalidHostActionError);
+  await expect(attempt).rejects.toThrow(PROTECTED);
+}
 
 describe("what a preview link may spend on the host", () => {
   it("refuses an upload chunk larger than the cap", async () => {
@@ -51,8 +69,6 @@ describe("what a preview link may spend on the host", () => {
       ),
     ).rejects.toBeInstanceOf(InvalidHostActionError);
   });
-  // Any other name would slip the Desktop ceiling, which counts serve-sim's own screenshots, and
-  // simctl overwrites silently, so it would also replace an arbitrary file on the Desktop.
   it.each(["Thesis.docx", "notes.txt", "shot.png", "serve-sim-screenshot-x.jpg"])(
     "refuses to write a screenshot named %s",
     async (fileName) => {
@@ -61,8 +77,7 @@ describe("what a preview link may spend on the host", () => {
       ).rejects.toBeInstanceOf(InvalidHostActionError);
     },
   );
-  // Argument-typed fields reach the serve-sim CLI as positionals, so a leading dash would arrive
-  // as a flag. Device-typed fields are covered elsewhere; this is the Argument guard.
+  // Device-typed fields are covered elsewhere; this is the Argument guard.
   it("refuses a webcam name that would be read as a flag", async () => {
     await expect(
       runHostActionAsync(
@@ -111,14 +126,13 @@ describe("what a preview link may spend on the host", () => {
       for (const uploadId of ids) rmSync(join(dir, uploadId), { force: true });
     }
   });
-  // ~/Desktop, ~/Documents and ~/Downloads are TCC-protected. Canonicalizing a path inside one
-  // opens it, and on a host with nobody to answer the consent prompt that open blocks in the
-  // kernel forever and cannot be timed out, so these are refused before the filesystem is touched.
+  // These are TCC_PROTECTED_DIRS in host-paths.ts, refused before the filesystem is touched.
   //
-  // These assert the refusal, which is the contract. They cannot prove the refusal happens without
-  // the syscall: on a machine whose consent is already granted the open returns either way. Only a
-  // headless host separates the two, so CI is what guards the ordering — before this, that ordering
-  // was wrong and CI hung here for two hours.
+  // The guard has its own message, and these pin the refusal to it: without the guard the same
+  // paths are still refused, by the allowlist, with the same error class. What a local run cannot
+  // prove is that the refusal happens without the syscall: on a machine whose consent is already
+  // granted the open returns either way. Only a headless host separates the two, so CI is what
+  // guards the ordering — before this, that ordering was wrong and CI hung here for two hours.
   //
   // The screenshot name matters most: it is the one shape this server writes there, so it is the
   // one that would tempt someone to allow the directory back in.
@@ -129,64 +143,74 @@ describe("what a preview link may spend on the host", () => {
     ["Documents", "notes.txt"],
     ["Downloads", "installer.dmg"],
   ])("refuses to read ~/%s/%s", async (dir, name) => {
-    await expect(
-      runHostActionAsync(
-        { action: "file.readBase64", params: { path: join(homedir(), dir, name) } },
-        BIN,
-      ),
-    ).rejects.toBeInstanceOf(InvalidHostActionError);
+    await expectProtectedAsync(join(homedir(), dir, name));
   });
 
   it.each(["Desktop", "Documents", "Downloads"])("refuses ~/%s itself", async (dir) => {
-    await expect(
-      runHostActionAsync({ action: "file.readBase64", params: { path: join(homedir(), dir) } }, BIN),
-    ).rejects.toBeInstanceOf(InvalidHostActionError);
+    await expectProtectedAsync(join(homedir(), dir));
+  });
+
+  it("refuses a lowercase spelling of ~/Desktop", async () => {
+    await expectProtectedAsync(join(homedir().toLowerCase(), "desktop", "x.png"));
   });
 
   // The check runs on the resolved path, so a traversal that lands in a protected directory is
-  // caught even though the string it arrived as pointed somewhere allowed.
+  // caught even though the string it arrived as started under an allowed root. Built by hand: join
+  // would collapse the dots and read the home path as a relative segment, leaving a path that is
+  // refused for being outside every root rather than by this guard.
   it("refuses a traversal that resolves into a protected directory", async () => {
-    const escape = join(tmpdir(), "serve-sim-uploads", "..", "..", "..", "..");
-    await expect(
-      runHostActionAsync(
-        {
-          action: "file.readBase64",
-          params: { path: join(escape, homedir(), "Desktop", "serve-sim-screenshot-x.png") },
-        },
-        BIN,
-      ),
-    ).rejects.toBeInstanceOf(InvalidHostActionError);
+    const start = join(tmpdir(), "serve-sim-uploads");
+    const climb = "../".repeat(start.split(sep).filter(Boolean).length);
+    const traversal = `${start}/${climb}${homedir().slice(1)}/Desktop/serve-sim-screenshot-x.png`;
+    expect(resolve(traversal)).toBe(join(homedir(), "Desktop", "serve-sim-screenshot-x.png"));
+    await expectProtectedAsync(traversal);
   });
-  // simctl wedges on a busy simulator and never returns; without a deadline the child holds its
-  // in-flight slot for the life of the process and eight of them silence the channel for good.
-  it("gives up on a child that never exits", async () => {
-    const shimDir = mkdtempSync(join(tmpdir(), "serve-sim-hang-"));
+  // Staged copies are a cache and this prune is the only thing that empties it, so a prune that
+  // stopped firing would surface as a full disk rather than a failing action. The fresh file sits
+  // just inside the cutoff so an off-by-one on the comparison shows.
+  it("removes staged screenshots older than six hours and keeps a fresh one", async () => {
+    const staging = join(realpathSync(tmpdir()), "serve-sim-screenshots");
+    mkdirSync(staging, { recursive: true });
+    const stale = [0, 1].map((i) => join(staging, `serve-sim-screenshot-zz-prune-stale-${i}.png`));
+    const fresh = join(staging, "serve-sim-screenshot-zz-prune-fresh.png");
+    const captured = join(staging, "serve-sim-screenshot-zz-prune-next.png");
+    const cutoffSeconds = (Date.now() - 6 * 60 * 60 * 1000) / 1000;
     try {
-      const shim = join(shimDir, "xcrun");
-      writeFileSync(shim, "#!/bin/sh\nsleep 600\n");
-      chmodSync(shim, 0o755);
-      const originalPath = process.env.PATH;
-      const originalTimeout = process.env.SERVE_SIM_ACTION_TIMEOUT_MS;
-      process.env.PATH = `${shimDir}:${originalPath ?? ""}`;
-      // The shipped default is 2 minutes; the deadline is read per call so a test can shorten it.
-      process.env.SERVE_SIM_ACTION_TIMEOUT_MS = "3000";
-      try {
+      for (const file of stale) {
+        writeFileSync(file, "");
+        utimesSync(file, cutoffSeconds - 60, cutoffSeconds - 60);
+      }
+      writeFileSync(fresh, "");
+      utimesSync(fresh, cutoffSeconds + 60, cutoffSeconds + 60);
+
+      await withShimsAsync({ xcrun: EXIT_0_SHIM, cp: EXIT_0_SHIM }, async () => {
+        const result = await runHostActionAsync(
+          { action: "screenshot.capture", params: { udid: UDID, fileName: basename(captured) } },
+          BIN,
+        );
+        expect(result.exitCode).toBe(0);
+      });
+
+      for (const file of stale) expect(existsSync(file)).toBe(false);
+      expect(existsSync(fresh)).toBe(true);
+    } finally {
+      for (const file of [...stale, fresh, captured]) rmSync(file, { force: true });
+    }
+  });
+  // exec, so the deadline's SIGKILL reaps the sleep itself; a plain `sleep` would leave it running
+  // under init after its shell died.
+  it("gives up on a child that never exits", async () => {
+    await withActionTimeoutAsync(3000, async () => {
+      await withShimsAsync({ xcrun: "#!/bin/sh\nexec sleep 600\n" }, async () => {
         const started = Date.now();
         const result = await runHostActionAsync(
           { action: "appearance.get", params: { udid: UDID } },
           BIN,
         );
         expect(result.exitCode).toBe(1);
-        expect(result.stderr).toContain("did not answer within");
+        expect(result.stderr).toContain("did not finish within");
         expect(Date.now() - started).toBeLessThan(15_000);
-      } finally {
-        if (originalPath === undefined) delete process.env.PATH;
-        else process.env.PATH = originalPath;
-        if (originalTimeout === undefined) delete process.env.SERVE_SIM_ACTION_TIMEOUT_MS;
-        else process.env.SERVE_SIM_ACTION_TIMEOUT_MS = originalTimeout;
-      }
-    } finally {
-      rmSync(shimDir, { recursive: true, force: true });
-    }
+      });
+    });
   }, 40_000);
 });

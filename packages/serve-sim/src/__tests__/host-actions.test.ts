@@ -109,6 +109,29 @@ describe("runHostActionAsync validation", () => {
     }
   });
 
+  it("refuses a symlink whose target cannot be followed", async () => {
+    const link = join(tmpdir(), "serve-sim-uploads", `probe-dangling-${randomUUID()}.txt`);
+    symlinkSync(join(homedir(), `probe-gone-${randomUUID()}.txt`), link);
+
+    try {
+      const attempt = runHostActionAsync({ action: "file.readBase64", params: { path: link } }, BIN);
+      await expect(attempt).rejects.toBeInstanceOf(InvalidHostActionError);
+      await expect(attempt).rejects.toThrow(/is a link this server cannot follow/);
+    } finally {
+      rmSync(link, { force: true });
+    }
+  });
+
+  // An upload target does not exist until the first chunk lands, so a missing leaf is not a link.
+  it("accepts a path under an allowed root whose leaf does not exist yet", async () => {
+    const target = join(tmpdir(), "serve-sim-uploads", `probe-missing-${randomUUID()}.bin`);
+    const result = await runHostActionAsync(
+      { action: "camera.switch", params: { source: "file", target, udid: "U" } },
+      BIN,
+    );
+    expect(result.exitCode).toBe(0);
+  });
+
   // A file source is rendered into the preview stream, so it is confined like any other read.
   it("refuses a camera file source outside the allowed roots", async () => {
     await expect(

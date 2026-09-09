@@ -63,7 +63,7 @@ jobs:
             local waited=0
             while kill -0 "$pid" 2>/dev/null; do
               if [ "$waited" -ge 1200 ]; then
-                echo "::error::the test process stopped making progress; sampling and killing it"
+                echo "::error::the test process has run for 20 minutes; sampling and killing it"
                 sample "$pid" 3 -mayDie -file /tmp/sample.txt || true
                 awk '/^Binary Images:/{exit} {print}' /tmp/sample.txt | head -80 || true
                 kill -9 "$pid" 2>/dev/null

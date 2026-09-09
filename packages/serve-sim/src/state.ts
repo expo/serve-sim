@@ -30,6 +30,24 @@ export interface ServeSimDeviceState {
   streamUrl: string;
   wsUrl: string;
   streamSettings?: StreamSettings;
+  /** Present only under `--require-token`, so local subcommands can reach the gated socket. */
+  token?: string;
+}
+
+/** `--quiet` startup payload. Carries the session token only when the gate is on. */
+export function previewStartupPayload(
+  states: ServeSimDeviceState[],
+  token?: string,
+): Record<string, unknown> {
+  const view = (s: ServeSimDeviceState) => ({
+    url: s.url,
+    streamUrl: s.streamUrl,
+    wsUrl: s.wsUrl,
+    port: s.port,
+    device: s.device,
+  });
+  const base = states.length === 1 ? view(states[0]!) : { devices: states.map(view) };
+  return token ? { ...base, token } : base;
 }
 
 /**
@@ -68,8 +86,7 @@ export function writeServeSimState(state: ServeSimDeviceState): void {
   mkdirSync(STATE_DIR, { recursive: true });
   const file = stateFileForDevice(state.device);
   const tmp = `${file}.${process.pid}.tmp`;
-  // WebRTC state can contain short-lived TURN credentials. Keep the file
-  // readable only by the account running serve-sim.
+  // Holds TURN credentials and, when gated, the session token.
   writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
   renameSync(tmp, file);
 }

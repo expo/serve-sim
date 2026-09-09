@@ -2,14 +2,16 @@
 import { Command, InvalidArgumentError } from "commander";
 import { execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
 import { existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unlinkSync, writeFileSync } from "fs";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { networkInterfaces } from "os";
 import { join, resolve } from "path";
+import WebSocket from "ws";
 import {
   STATE_DIR,
   stateFileForDevice,
   listStateFiles,
   inProcessServeSimState,
+  previewStartupPayload,
   writeServeSimState,
   clearServeSimState,
   type ServeSimDeviceState,
@@ -18,6 +20,7 @@ import {
 } from "./state";
 import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from "./text-to-keys";
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
+import { isLoopbackHost } from "./middleware-utils";
 import { killPortHolder } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
@@ -184,6 +187,15 @@ function writeState(state: ServerState) {
   ensureStateDir();
   writeServeSimState(state);
   debugState("wrote state pid=%d device=%s port=%d", state.pid, state.device, state.port);
+}
+
+// `ws` rather than the global WebSocket: the package supports Node 20, where the global is
+// undefined, and a header keeps the token out of request URLs and proxy logs.
+function openHelperSocket(state: ServerState): WebSocket {
+  return new WebSocket(
+    state.wsUrl,
+    state.token ? { headers: { Authorization: `Bearer ${state.token}` } } : undefined,
+  );
 }
 
 function clearState(udid?: string) {
@@ -763,7 +775,7 @@ async function gesture(jsonStr: string, deviceArg?: string) {
   }
 
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(state.wsUrl);
+    const ws = openHelperSocket(state);
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
@@ -797,7 +809,7 @@ async function tap(xArg: string, yArg: string, deviceArg?: string) {
     process.exit(1);
   }
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(state.wsUrl);
+    const ws = openHelperSocket(state);
     ws.binaryType = "arraybuffer";
     const send = (type: "begin" | "end") => {
       const json = new TextEncoder().encode(JSON.stringify({ type, x, y }));
@@ -871,7 +883,7 @@ async function typeText(
     process.exit(1);
   }
 
-  await sendKeyEventsToWs(state.wsUrl, events);
+  await sendKeyEventsToWs(state.wsUrl, events, { token: state.token });
 }
 
 async function rotate(orientation: string, deviceArg?: string) {
@@ -895,7 +907,7 @@ async function rotate(orientation: string, deviceArg?: string) {
   }
 
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(state.wsUrl);
+    const ws = openHelperSocket(state);
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
@@ -938,7 +950,7 @@ async function button(buttonName = "home", deviceArg?: string) {
   const payload = hid ? { button: buttonName, ...hid } : { button: buttonName };
 
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(state.wsUrl);
+    const ws = openHelperSocket(state);
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
@@ -987,7 +999,7 @@ async function caDebug(option: string, stateRaw: string, deviceArg?: string) {
   }
 
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(stateFile.wsUrl);
+    const ws = openHelperSocket(stateFile);
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       const json = new TextEncoder().encode(JSON.stringify({ option: resolved, enabled }));
@@ -1012,7 +1024,7 @@ async function memoryWarning(deviceArg?: string) {
     process.exit(1);
   }
   return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(stateFile.wsUrl);
+    const ws = openHelperSocket(stateFile);
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       ws.send(new Uint8Array([0x09]));
@@ -1615,8 +1627,7 @@ function resolveTargetDevices(devices: string[]): string[] {
   if (booted) return [booted];
   const fallback = pickDefaultDevice();
   if (!fallback) {
-    console.error("No device specified and no available iOS simulator found.");
-    process.exit(1);
+    throw new Error("No device specified and no available iOS simulator found.");
   }
   return [fallback.udid];
 }
@@ -1630,26 +1641,45 @@ async function serve(
     stream?: StreamRuntimeOptions;
     metricsCorsOrigins?: string[];
     debugStreamPath?: string;
+    requireToken?: boolean;
+    quiet?: boolean;
   } = {},
 ) {
+  const quiet = !!options.quiet;
+  // Under --quiet the caller parses stdout, so a failure must be a JSON line there, not bare stderr.
+  const failStartup = (message: string): never => {
+    if (quiet) console.log(JSON.stringify({ error: message }));
+    else console.error(message);
+    process.exit(1);
+  };
   // Boot the target simulators; the preview server streams them in-process
   // (no spawned helper). Sessions are created lazily on the first stream request.
-  const targetDevices = resolveTargetDevices(devices);
-  if (devices.length === 0 && readAllStates().length === 0) {
-    console.log("Starting simulator stream...");
+  let targetDevices: string[];
+  try {
+    targetDevices = resolveTargetDevices(devices);
+    if (!quiet && devices.length === 0 && readAllStates().length === 0) {
+      console.log("Starting simulator stream...");
+    }
+    for (const udid of targetDevices) await ensureBooted(udid);
+  } catch (err) {
+    return failStartup(err instanceof Error ? err.message : String(err));
   }
-  for (const udid of targetDevices) await ensureBooted(udid);
   const targetDevice = targetDevices[0];
 
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
   // it can route helper/DevTools sockets through the single preview port.
+  // Minted here, not in the middleware, because the operator has to be told what it is.
+  const requirePreviewToken = !!options.requireToken;
+  const previewToken = randomBytes(32).toString("base64url");
   const middleware = simMiddleware({
     basePath: "/",
     device: targetDevice,
     streamSettings: options.stream,
     proxyHelpers: true,
     metricsCorsOrigins: options.metricsCorsOrigins ?? [],
+    execToken: previewToken,
+    requirePreviewToken,
   });
 
   // Try requested port; if busy and the user didn't pin it, scan forward.
@@ -1671,21 +1701,21 @@ async function serve(
   }
   if (!bound) {
     if ((lastErr as any)?.code === "EADDRINUSE") {
-      if (portExplicit) {
-        console.error(`Port ${servePort} is already in use. Pass a different --port or stop the other process.`);
-      } else {
-        console.error(`No available port found in range ${servePort}-${servePort + maxScan - 1}.`);
-      }
+      failStartup(
+        portExplicit
+          ? `Port ${servePort} is already in use. Pass a different --port or stop the other process.`
+          : `No available port found in range ${servePort}-${servePort + maxScan - 1}.`,
+      );
     } else {
-      console.error(`Failed to start preview server: ${(lastErr as any)?.message ?? lastErr}`);
+      failStartup(`Failed to start preview server: ${(lastErr as any)?.message ?? lastErr}`);
     }
-    process.exit(1);
   }
 
   // Record in-process state so the preview/grid enumerate these devices and the
   // CLI input subcommands can reach the same-origin /helper ws.
   for (const udid of targetDevices) {
-    writeState(inProcessServeSimState(udid, boundPort, "/", host, options.stream));
+    const state = inProcessServeSimState(udid, boundPort, "/", host, options.stream);
+    writeState(requirePreviewToken ? { ...state, token: previewToken } : state);
   }
   const clearAll = () => {
     for (const udid of targetDevices) {
@@ -1699,23 +1729,42 @@ async function serve(
       path: options.debugStreamPath,
       statsUrl: (device) =>
         `http://127.0.0.1:${boundPort}/helper/${encodeURIComponent(device)}/webrtc/stats`,
+      authToken: requirePreviewToken ? previewToken : undefined,
     });
     runStreamDebugLog(targetDevices, logger);
-      console.log(`  - Stream debug: recording to ${options.debugStreamPath}`);
+    if (!quiet) console.log(`  - Stream debug: recording to ${options.debugStreamPath}`);
   }
 
-  const exposedToLan = host !== "127.0.0.1" && host !== "localhost" && host !== "::1";
+  const exposedToLan = !isLoopbackHost(host);
   const networkIP = getLocalNetworkIP();
-  console.log("");
-  console.log(`  - Local:   http://localhost:${boundPort}`);
-  if (exposedToLan && networkIP) {
-    console.log(`  - Network: http://${networkIP}:${boundPort}`);
-  } else if (networkIP) {
-    console.log(`  - Network: \x1b[2muse --host 0.0.0.0 to expose on http://${networkIP}:${boundPort}\x1b[0m`);
+  const tokenQuery = requirePreviewToken ? `/?token=${previewToken}` : "";
+  if (quiet) {
+    const states = targetDevices.map((udid) =>
+      inProcessServeSimState(udid, boundPort, "/", host, options.stream),
+    );
+    console.log(
+      JSON.stringify(previewStartupPayload(states, requirePreviewToken ? previewToken : undefined)),
+    );
   } else {
-    console.log("  - Network: \x1b[2muse --host 0.0.0.0 to expose on the LAN\x1b[0m");
+    console.log("");
+    console.log(`  - Local:   http://localhost:${boundPort}${tokenQuery}`);
+    if (exposedToLan && networkIP) {
+      console.log(`  - Network: http://${networkIP}:${boundPort}${tokenQuery}`);
+      console.log("");
+      console.log(
+        requirePreviewToken
+          ? "  This server is listening on the network. The links above carry a token because anyone who " +
+            "has it can run commands on this machine."
+          : "  This server is listening on the network with no token required. Anyone who can reach it can " +
+            "run commands on this machine. Pass --require-token to gate it.",
+      );
+    } else if (networkIP) {
+      console.log(`  - Network: \x1b[2muse --host 0.0.0.0 to expose on http://${networkIP}:${boundPort}\x1b[0m`);
+    } else {
+      console.log("  - Network: \x1b[2muse --host 0.0.0.0 to expose on the LAN\x1b[0m");
+    }
+    console.log("");
   }
-  console.log("");
 
   // Exit cleanly on Ctrl+C
   process.on("SIGINT", () => process.exit(0));
@@ -1760,6 +1809,12 @@ program
       "LAN — only on trusted networks: the preview exposes a token-gated " +
       "shell-exec route.",
     "127.0.0.1",
+  )
+  .option(
+    "--require-token",
+    "Require the session token to open the preview or call /api, and print it in the startup link. Use " +
+      "it whenever the server is reachable from the network: the same token gates the route that runs " +
+      "shell commands.",
   )
   .option("--detach", "Spawn helper and exit (daemon mode)")
   .option("-q, --quiet", "Suppress human-readable output, JSON only")
@@ -1952,6 +2007,13 @@ Examples:
         process.exit(1);
       }
     }
+    if (opts.requireToken && (opts.detach || opts.preview === false)) {
+      console.error(
+        "--require-token needs the preview server, so drop --detach/--no-preview. It gates the " +
+          "network-exposed preview; those modes bind loopback only, where the token does nothing.",
+      );
+      process.exit(1);
+    }
     if (opts.detach) {
       const states = await detach(devices, startPort ?? 3100, stream, streamOptionsProvided);
       printStatesJSON(states);
@@ -1962,6 +2024,8 @@ Examples:
         stream,
         metricsCorsOrigins: opts.metricsCorsOrigin,
         debugStreamPath,
+        requireToken: !!opts.requireToken,
+        quiet: !!opts.quiet,
       });
     }
   });

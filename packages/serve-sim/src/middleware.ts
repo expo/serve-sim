@@ -4,7 +4,7 @@ import { execSync, spawn, exec, execFile, type ChildProcess, type ExecException 
 import { tmpdir } from "os";
 import { join } from "path";
 import { createServer as createNetServer } from "net";
-import { createHash, randomBytes, timingSafeEqual } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import type { IncomingMessage, ServerResponse } from "http";
 import type { Socket } from "net";
 // `ws` (kept external in the build) supplies a WebSocket *client* for the
@@ -24,6 +24,7 @@ import {
   sendCorsPreflight,
   type HidSocket,
 } from "./device-session";
+import { assertPreviewAccess, assertSessionAccess, assertUpgradeAccess, execAuthError } from "./session-auth";
 import {
   eventLogEventForCommand,
   readEventLog,
@@ -1475,6 +1476,8 @@ export interface SimMiddlewareOptions {
    * cross-origin pages cannot read it.
    */
   execToken?: string;
+  /** Off by default: a loopback-only server is already reachable to whoever is on the machine. */
+  requirePreviewToken?: boolean;
   /** Stream transport and codec settings for the preview. */
   streamSettings?: StreamSettings;
   /**
@@ -1505,20 +1508,6 @@ function httpStreamSettingsFromLegacyCodec(codec: string | undefined): StreamSet
     return { transport: "http", codec };
   }
   return undefined;
-}
-
-function safeEqualString(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
-}
-
-function isJsonContentType(value: string | undefined): boolean {
-  if (!value) return false;
-  // `application/json; charset=utf-8` etc. — only the media type matters.
-  const mediaType = value.split(";", 1)[0]!.trim().toLowerCase();
-  return mediaType === "application/json";
 }
 
 /**
@@ -1580,6 +1569,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   // can call /exec; cross-origin pages and LAN clients cannot, because they
   // can't read this value (it's only injected into the preview page's config).
   const execToken = options?.execToken ?? randomBytes(32).toString("base64url");
+  const requirePreviewToken = options?.requirePreviewToken ?? false;
   const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
 
   // Simulator-settings requests run in-process (just the underlying simctl /
@@ -1612,6 +1602,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
     return { ok: true };
   };
+/** Reachable without the session token: liveness probes cannot carry one. */
+  const UNGATED_PATHS = ["/healthz", "/readyz"];
 
   const connectMiddleware = (async (req: SimReq, res: SimRes, next?: SimNext) => {
     const rawUrl: string = req.url ?? "";
@@ -1620,6 +1612,14 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     const requestedDevice = queryDevice(rawUrl);
     const selectedDevice = requestedDevice ?? options?.device ?? null;
     const devtoolsFrontendBase = base === "/" ? "/devtools-frontend" : `${base}/devtools-frontend`;
+
+    // Gated as a whole rather than per route, so a new route is protected by default.
+    if (
+      !UNGATED_PATHS.some((path) => url === base + path)
+      && !assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })
+    ) {
+      return;
+    }
 
     const helperTarget = helperProxyTarget(rawUrl, helperPrefix);
     if (helperTarget) {
@@ -2409,39 +2409,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // page POSTing `text/plain` JSON to a dev server bound to a public iface)
     // and LAN attackers who can reach the port but can't read the token.
     if ((url === base + "/exec" || url === base + "/exec/") && req.method === "POST") {
-      // 1. Reject anything that isn't a JSON request, killing the
-      //    `enctype="text/plain"` CORS-simple form-POST path.
-      if (!isJsonContentType(req.headers["content-type"])) {
-        res.writeHead(415, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ stdout: "", stderr: "Unsupported Media Type", exitCode: 1 }));
-        return;
-      }
-      // 2. If the browser supplied an Origin, require it match this server.
-      //    Same-origin XHR from the preview page sets Origin to our own URL;
-      //    a cross-origin page's Origin won't match.
-      const origin = req.headers.origin;
-      if (origin) {
-        try {
-          const originHost = new URL(origin).host;
-          if (originHost !== req.headers.host) {
-            res.writeHead(403, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ stdout: "", stderr: "Cross-origin request blocked", exitCode: 1 }));
-            return;
-          }
-        } catch {
-          res.writeHead(403, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ stdout: "", stderr: "Invalid Origin", exitCode: 1 }));
-          return;
-        }
-      }
-      // 3. Require the per-session bearer token. Cross-origin pages cannot
-      //    read it from window.__SIM_PREVIEW__; non-browser callers must
-      //    have copied it from the CLI output.
-      const authHeader = req.headers.authorization ?? "";
-      const match = /^Bearer\s+(.+)$/i.exec(authHeader);
-      if (!match || !safeEqualString(match[1]!.trim(), execToken)) {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ stdout: "", stderr: "Unauthorized", exitCode: 1 }));
+      if (!assertSessionAccess(req, res, execToken, { requireJson: true, errorBody: execAuthError })) {
         return;
       }
       let body = "";
@@ -2531,6 +2499,18 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     if (next) return next();
   }) as ConnectMiddleware;
   connectMiddleware.handleUpgrade = (req: SimReq, socket: Socket, head: Buffer) => {
+    // Upgrades skip the HTTP request path, and the HID and devtools sockets carry no token of
+    // their own, so gate them here too.
+    if (
+      !assertUpgradeAccess(
+        { authorization: req.headers.authorization, cookie: req.headers.cookie },
+        execToken,
+        { required: requirePreviewToken },
+      )
+    ) {
+      socket.destroy();
+      return;
+    }
     const rawUrl = req.url ?? "";
     const selectedDevice = queryDevice(rawUrl) ?? options?.device ?? null;
     const helperTarget = helperProxyTarget(rawUrl, helperPrefix);
@@ -2586,13 +2566,29 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     onCommandResult: (command, result) => recordCommandEvent(command, result),
     onSseRequest(path, websocketRequest) {
       const url = new URL(path, websocketRequest.url);
+      // The exec channel already authenticated, so its fan-out carries the token past the gate.
       return fetchMiddleware(new Request(url, {
-        headers: { accept: "text/event-stream" },
+        headers: { accept: "text/event-stream", authorization: `Bearer ${execToken}` },
       }));
     },
   });
 
   fetchMiddleware.handleWebSocket = (request: Request, websocket: UpgradeHandlerWebSocket): boolean => {
+    // Embedded hosts forward accepted sockets and bypass the request gate. The exec channel
+    // re-checks the token in its first frame; the helper HID socket does not.
+    if (
+      !assertUpgradeAccess(
+        {
+          authorization: request.headers.get("authorization") ?? undefined,
+          cookie: request.headers.get("cookie") ?? undefined,
+        },
+        execToken,
+        { required: requirePreviewToken },
+      )
+    ) {
+      websocket.close();
+      return true;
+    }
     if (execWebSocketHandler(request, websocket)) return true;
     if (claimHelperHidSocket(request, websocket, {
       helperProxyTarget: (rawUrl) => helperProxyTarget(rawUrl, helperPrefix),

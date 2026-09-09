@@ -21,7 +21,7 @@ import {
 import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from "./text-to-keys";
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
 import { isLoopbackHost } from "./middleware-utils";
-import { killPortHolder } from "./ports";
+import { killOwnListeners } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
 import { permissions } from "./permissions";
@@ -398,8 +398,8 @@ async function startHelper(
 
   const host = "127.0.0.1";
   ensureStateDir();
+  killOwnListeners(port);
   clearState(udid); // don't read a stale state file from a previous run
-  killPortHolder(port);
 
   const logFile = join(STATE_DIR, `server-${udid}.log`);
   const logFd = openSync(logFile, "w");

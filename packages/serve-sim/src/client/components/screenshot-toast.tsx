@@ -137,7 +137,7 @@ export function ScreenshotToast({
               <span className="block size-4 rounded-full border-2 border-white/30 border-t-white animate-[grid-spin_0.8s_linear_infinite]" />
             )}
           </div>
-          <div className="flex flex-col leading-tight pointer-events-none">
+          <div className="flex flex-col min-w-0 leading-tight pointer-events-none">
             <span className="text-[13px] font-semibold text-white">
               {toast.status === "saving" ? "Saving Screenshot…" : "Screenshot Saved"}
             </span>
@@ -145,6 +145,9 @@ export function ScreenshotToast({
               <span className="text-[11px] text-white/60">
                 {isBrowserDownload ? "Download again" : "Open in Finder"}
               </span>
+            )}
+            {toast.status === "saved" && toast.stagedOnly && toast.message && (
+              <span className="mt-1 text-[11px] text-white/60 break-words">{toast.message}</span>
             )}
           </div>
           {toast.status === "saved" && (

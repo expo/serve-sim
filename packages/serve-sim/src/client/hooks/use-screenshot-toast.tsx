@@ -17,9 +17,11 @@ export type ScreenshotToast = {
   // Absolute path of the staged copy on the host once the capture lands; used by
   // the drag-and-drop file URL.
   path?: string;
-  // Name of the capture. "Open in Finder" reveals the Desktop copy by name, so the
-  // page never hands the host a path inside a TCC-protected directory.
+  // Name of the capture. "Open in Finder" reveals the Desktop copy by this name, unless the host
+  // kept only the staged file (see revealParams).
   fileName?: string;
+  // The host kept the capture at `path` and made no Desktop copy; `message` says why.
+  stagedOnly?: boolean;
   // Tunneled/LAN previews download into the browser instead of exposing a path
   // on the remote simulator host. Kept alive while the toast is mounted so the
   // thumbnail and "Download again" action can reuse it.
@@ -34,8 +36,23 @@ export type ScreenshotToast = {
 // the timer, so this only needs to be long enough to notice the pill — not to
 // read and act on it.
 const SAVED_DISMISS_MS = 3500;
+// A staged-only pill is the only place the host's sentence about the missing Desktop copy appears:
+// about forty words plus a path, so the reader has to be able to finish it.
+const STAGED_ONLY_DISMISS_MS = 12_000;
 const ERROR_DISMISS_MS = 4000;
 const CAPTURE_TIMEOUT_MS = 10_000;
+
+function savedDismissMs(toast: ScreenshotToast): number {
+  return toast.stagedOnly ? STAGED_ONLY_DISMISS_MS : SAVED_DISMISS_MS;
+}
+
+export function revealParams(
+  toast: ScreenshotToast,
+): { screenshot: string } | { path: string } | null {
+  if (toast.stagedOnly && toast.path) return { path: toast.path };
+  if (toast.fileName) return { screenshot: toast.fileName };
+  return null;
+}
 
 function timestampSlug(): string {
   // 2026-06-11T14-12-44-123 — filesystem-safe, sorts chronologically. Keep the
@@ -72,8 +89,10 @@ export function useScreenshotToast(deviceUdid?: string | null) {
 
   const reveal = useCallback(() => {
     const t = toastRef.current;
-    if (t?.fileName) void runHostAction("reveal", { screenshot: t.fileName });
-    else if (t?.downloadUrl && t.downloadName) {
+    if (!t) return;
+    const params = revealParams(t);
+    if (params) void runHostAction("reveal", params);
+    else if (t.downloadUrl && t.downloadName) {
       triggerBrowserDownload(t.downloadUrl, t.downloadName);
     }
   }, []);
@@ -151,8 +170,8 @@ export function useScreenshotToast(deviceUdid?: string | null) {
         return;
       }
 
-      // The host stages the capture in a directory it owns and hands back that path, which the
-      // drag-and-drop URL needs. The Desktop copy is the host's own last step.
+      // The host hands back the staged path, which the drag-and-drop URL needs; the Desktop copy
+      // is the host's own last step.
       const res = await runHostAction(
         "screenshot.capture",
         { udid: deviceUdid, fileName },
@@ -164,7 +183,11 @@ export function useScreenshotToast(deviceUdid?: string | null) {
         return;
       }
 
-      render({ id, status: "saved", phase: "in", path, fileName }, SAVED_DISMISS_MS);
+      const message = res.stderr.trim();
+      const saved: ScreenshotToast = message
+        ? { id, status: "saved", phase: "in", path, fileName, stagedOnly: true, message }
+        : { id, status: "saved", phase: "in", path, fileName };
+      render(saved, savedDismissMs(saved));
 
       // Best-effort thumbnail: the host downscales, encodes and cleans up. Failures (sips
       // missing, etc.) just leave the placeholder.
@@ -178,7 +201,7 @@ export function useScreenshotToast(deviceUdid?: string | null) {
         if (b64) {
           const current = toastRef.current;
           if (current?.id === id) {
-            render({ ...current, thumb: `data:image/png;base64,${b64}` }, SAVED_DISMISS_MS);
+            render({ ...current, thumb: `data:image/png;base64,${b64}` }, savedDismissMs(current));
           }
         }
       } catch {

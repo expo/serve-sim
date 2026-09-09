@@ -1,173 +1,47 @@
-import { execFile } from "child_process";
 import { randomUUID } from "crypto";
-import { appendFile, chmod, lstat, mkdir, readdir, rm, stat, writeFile } from "fs/promises";
-import { homedir, tmpdir } from "os";
-import { realpathSync } from "fs";
-import { basename, dirname, join, resolve, sep } from "path";
+import { appendFile, rm, stat, writeFile } from "fs/promises";
+import { join } from "path";
 import { z } from "zod";
+
+import {
+  type HostActionResult,
+  type Invocation,
+  createSerialQueue,
+  ensurePrivateDirAsync,
+  ok,
+  pruneStaleEntriesAsync,
+  runInvocation,
+} from "./host-actions-utils";
+import { Argument, ConfinedPath, DESKTOP_DIR, SCREENSHOT_DIR, UPLOAD_DIR } from "./host-paths";
+import { ScreenshotName, captureScreenshotAsync } from "./screenshot-store";
+
+export type { HostActionResult } from "./host-actions-utils";
 
 // The preview link is shareable, so this is a fixed set of actions rather than a shell: no value the
 // page sends ever reaches one. It bounds what a link holder can run on the host, not what they can
 // do to the simulator, so the session token remains the real boundary.
-
-export interface HostActionResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
 
 export interface HostActionRequest {
   action?: unknown;
   params?: unknown;
 }
 
-interface Invocation {
-  file: string;
-  args: string[];
-  timeoutMs?: number;
-}
-
 export class InvalidHostActionError extends Error {}
 
-/**
- * Canonicalized up front: $TMPDIR itself sits behind a symlink (/var -> /private/var), and a path
- * that arrives canonicalized can only be compared against a root in the same shape.
- */
-const TMP_ROOT = ((): string => {
-  try {
-    return realpathSync(tmpdir());
-  } catch {
-    return tmpdir();
-  }
-})();
-
-/** Confining uploads here keeps a caller-supplied path off the filesystem. */
-const UPLOAD_DIR = join(TMP_ROOT, "serve-sim-uploads");
-/**
- * Screenshots are staged here rather than written straight to the Desktop. ~/Desktop is
- * TCC-protected: opening it on a host with nobody to answer the consent prompt blocks forever,
- * and the prompt cannot be detected or timed out, so this server never opens it.
- */
-const SCREENSHOT_DIR = join(TMP_ROOT, "serve-sim-screenshots");
 // Without a ceiling a caller could fill the disk, and a closed tab never cleans up after itself.
 const MAX_UPLOAD_DIR_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_UPLOAD_AGE_MS = 6 * 60 * 60 * 1000;
-/**
- * `simctl` wedges on a busy or unwarmed simulator and never returns. Without a deadline a stuck
- * child holds its slot for the life of the process, so eight of them silence the channel for good.
- * Read per call so a slow host can raise it without a rebuild.
- */
-const DEFAULT_ACTION_TIMEOUT_MS = 120_000;
-
-function actionTimeoutMs(): number {
-  const configured = Number(process.env.SERVE_SIM_ACTION_TIMEOUT_MS);
-  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_ACTION_TIMEOUT_MS;
-}
 /** ~3MB of raw bytes, matching the client's 192KB slices with generous headroom. */
 const MAX_UPLOAD_CHUNK_BASE64 = 4 * 1024 * 1024;
 
 // Serialized so the budget check and the write cannot interleave: concurrent callers would
 // otherwise all read the same pre-write total and sail past the ceiling.
-let uploadQueue: Promise<unknown> = Promise.resolve();
-
-function queueUploadAsync<T>(work: () => Promise<T>): Promise<T> {
-  const result = uploadQueue.then(work, work);
-  uploadQueue = result.catch(() => {});
-  return result;
-}
-
-/** mkdir's mode only applies on creation, so a directory from an earlier run keeps its mode. */
-async function ensureUploadDirAsync(): Promise<void> {
-  await mkdir(UPLOAD_DIR, { recursive: true, mode: 0o700 });
-  await chmod(UPLOAD_DIR, 0o700).catch(() => {});
-}
-
-async function ensureScreenshotDirAsync(): Promise<void> {
-  await mkdir(SCREENSHOT_DIR, { recursive: true, mode: 0o700 });
-  await chmod(SCREENSHOT_DIR, 0o700).catch(() => {});
-}
-
-/** Counted by name so anything else sharing the staging directory is ignored. */
-const MAX_STAGED_SCREENSHOTS = 200;
-const SCREENSHOT_PREFIX = "serve-sim-screenshot-";
-/** Staged copies are a cache; the one the operator keeps is on the Desktop. */
-const MAX_SCREENSHOT_AGE_MS = 6 * 60 * 60 * 1000;
-/**
- * The Desktop copy runs in a child, so a consent prompt blocks that child rather than the server.
- * It still needs its own deadline: a local copy takes milliseconds, and waiting out the full
- * action budget on a headless host would stall the caller for two minutes for nothing.
- */
-const DESKTOP_COPY_TIMEOUT_MS = 5_000;
-
-/**
- * Only names the ceiling above counts. Any other name would both slip the ceiling and let a link
- * holder replace an arbitrary file on the operator's Desktop, since simctl overwrites silently.
- */
-const ScreenshotName = z
-  .string()
-  .regex(
-    new RegExp(`^${SCREENSHOT_PREFIX}[A-Za-z0-9._-]{1,100}\\.png$`),
-    "must be a serve-sim screenshot name",
-  );
-
-async function stagedScreenshotBudgetExceededAsync(): Promise<boolean> {
-  try {
-    const entries = await readdir(SCREENSHOT_DIR);
-    return entries.filter((e) => e.startsWith(SCREENSHOT_PREFIX)).length >= MAX_STAGED_SCREENSHOTS;
-  } catch {
-    return false;
-  }
-}
-
-async function pruneStagedScreenshotsAsync(): Promise<void> {
-  let entries: string[];
-  try {
-    entries = await readdir(SCREENSHOT_DIR);
-  } catch {
-    return;
-  }
-  const cutoff = Date.now() - MAX_SCREENSHOT_AGE_MS;
-  for (const entry of entries) {
-    const full = join(SCREENSHOT_DIR, entry);
-    try {
-      const info = await lstat(full);
-      if (info.mtimeMs < cutoff) await rm(full, { force: true });
-    } catch {
-    }
-  }
-}
-
-/** Drop abandoned uploads, then report what the directory still holds. */
-async function pruneUploadsAsync(): Promise<number> {
-  let total = 0;
-  let entries: string[];
-  try {
-    entries = await readdir(UPLOAD_DIR);
-  } catch {
-    return 0;
-  }
-  const cutoff = Date.now() - MAX_UPLOAD_AGE_MS;
-  for (const entry of entries) {
-    const full = join(UPLOAD_DIR, entry);
-    try {
-      const info = await lstat(full);
-      if (info.mtimeMs < cutoff) await rm(full, { force: true, recursive: true });
-      else total += info.size;
-    } catch {
-    }
-  }
-  return total;
-}
+const queueUploadAsync = createSerialQueue();
 
 const APPEARANCES = ["light", "dark"] as const;
 const PERMISSION_ACTIONS = ["grant", "revoke", "reset"] as const;
 const MIRROR_VALUES = ["on", "off"] as const;
 
-/**
- * Every value the preview page can send. The page is reachable through a shareable link, so each
- * field is pinned to the narrowest shape that still serves the UI: an enum, a bounded identifier, a
- * number, or a path under a root this server owns.
- */
 const Device = z
   .string()
   .max(256)
@@ -178,82 +52,13 @@ const BundleId = z.string().max(256).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "must
 /** An orientation or button name. Bounded rather than allowlisted, so a new button still works. */
 const Token = z.string().max(64).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "must be a plain identifier");
 
-/**
- * macOS gates these behind a consent prompt. Opening one on a host with nobody to answer that
- * prompt blocks in the kernel and never returns, and the block cannot be detected or timed out,
- * so a path leading into one is refused before the filesystem is touched at all.
- */
-const TCC_PROTECTED_DIRS = ["Desktop", "Documents", "Downloads"].map((dir) =>
-  join(homedir(), dir),
-);
-
-function leadsIntoProtectedLocation(path: string): boolean {
-  return TCC_PROTECTED_DIRS.some((dir) => path === dir || path.startsWith(dir + sep));
-}
-
-/**
- * Every root here is one this server owns or Apple installs. None may be a TCC-protected location
- * such as ~/Desktop, ~/Documents or ~/Downloads: canonicalizing a path opens it, and on a host
- * with nobody to answer the consent prompt that open never returns, taking the server's thread
- * with it. Resolved once, because a rejected path reaches this check on every request.
- */
-const ALLOWED_ROOTS = [
-  join(homedir(), "Library", "Developer", "CoreSimulator", "Devices"),
-  // Apple's own apps live in the runtime root, not under a device's data container.
-  "/Library/Developer/CoreSimulator",
-  UPLOAD_DIR,
-  SCREENSHOT_DIR,
-].map((root) => {
-  try {
-    return realpathSync(root);
-  } catch {
-    return root;
-  }
-});
-
-/** A value passed straight to a program: a leading "-" would be read as a flag. */
-const Argument = z
-  .string()
-  .min(1)
-  .max(4096)
-  .regex(/^[^\p{C}]+$/u, "must not contain control characters")
-  .refine((v) => !v.startsWith("-"), 'must not start with "-"');
-
 const UploadId = z
   .string()
   .regex(/^(?!\.)[A-Za-z0-9._-]{1,128}$/, "must be a short plain file name");
 
-/** A file name with no directory part, supplied by the caller from an app's Info.plist. */
 const FileName = z.string().regex(/^(?!\.)[^/\\\n]{1,255}$/, "must be a plain file name");
 
 const Coordinate = z.number().finite();
-
-/**
- * Roots a caller-named path may sit under. Everything the preview legitimately touches is a
- * simulator app container, a screenshot this server took, or a file it staged, so anything else is
- * out of scope for a shareable preview link. Resolved first, so traversal collapses before the check.
- */
-const ConfinedPath = Argument.transform((value) => {
-  // realpath, not resolve: a symlink under an allowed root would otherwise point anywhere.
-  const full = resolve(value);
-  // Canonicalizing opens the path, so this has to come first: returning the lexical form leaves it
-  // outside every allowed root, and the refine below rejects it without a syscall.
-  if (leadsIntoProtectedLocation(full)) return full;
-  try {
-    return realpathSync(full);
-  } catch {
-    // The leaf may not exist yet. Canonicalize the directory anyway, or a path under a symlinked
-    // root (/var -> /private/var) keeps its lexical form and misses the root it really sits in.
-    try {
-      return join(realpathSync(dirname(full)), basename(full));
-    } catch {
-      return full;
-    }
-  }
-}).refine(
-  (value) => ALLOWED_ROOTS.some((root) => value === root || value.startsWith(root + sep)),
-  "is outside the paths this preview may read",
-);
 
 const FileSource = z.union([
   z.object({ uploadId: UploadId }),
@@ -268,7 +73,6 @@ const ACTION_SCHEMAS = {
   "home.springboard": z.object({ udid: Device }),
   "home.watch": z.object({ udid: Device.optional() }),
   rotate: z.object({ udid: Device, value: Token }),
-  // udid is not part of the invocation; it is here so the session event log can file the press.
   button: z.object({ value: Token, udid: Device.optional() }),
   "server.detach": z.object({
     udid: Device.optional(),
@@ -276,7 +80,6 @@ const ACTION_SCHEMAS = {
   }),
   "server.kill": z.object({}),
   "camera.listWebcams": z.object({}),
-  // The union also makes the target required for "file" and optional for the rest.
   "camera.switch": z.discriminatedUnion("source", [
     z.object({ udid: Device, source: z.literal("file"), target: ConfinedPath }),
     z.object({ udid: Device, source: z.literal("webcam"), target: Argument.optional() }),
@@ -318,7 +121,6 @@ const ACTION_SCHEMAS = {
   "app.install": z.object({ udid: Device }).and(FileSource),
   "app.iconPath": z.object({ appPath: ConfinedPath, candidates: z.array(FileName).min(1).max(32) }),
   "media.add": z.object({ udid: Device }).and(FileSource),
-  // Finder shows the Desktop copy, which only `open` ever touches, so no path here is opened here.
   reveal: z.union([z.object({ path: ConfinedPath }), z.object({ screenshot: ScreenshotName })]),
   "file.readBase64": z.object({ path: ConfinedPath }),
   "screenshot.capture": z.object({ udid: Device, fileName: ScreenshotName }),
@@ -333,6 +135,26 @@ const ACTION_SCHEMAS = {
 } as const;
 
 type HostActionName = keyof typeof ACTION_SCHEMAS;
+
+/**
+ * Everything else is one child process, built by buildInvocation. These are file work done in this
+ * process, or a sequence of children with cleanup between them. Uploads arrive as base64 chunks,
+ * which would blow past ARG_MAX as arguments, so they are decoded and appended here instead.
+ */
+const PROCEDURE_ACTIONS = [
+  "upload.append",
+  "upload.remove",
+  "app.iconPath",
+  "screenshot.capture",
+  "screenshot.thumbnail",
+] as const satisfies readonly HostActionName[];
+
+type ProcedureAction = (typeof PROCEDURE_ACTIONS)[number];
+type InvocationAction = Exclude<HostActionName, ProcedureAction>;
+
+function isProcedureAction(action: HostActionName): action is ProcedureAction {
+  return PROCEDURE_ACTIONS.some((procedure) => procedure === action);
+}
 
 function isHostActionName(action: string): action is HostActionName {
   return Object.hasOwn(ACTION_SCHEMAS, action);
@@ -352,14 +174,13 @@ function parseParams<A extends HostActionName>(action: A, raw: unknown): ParamsF
   return result.data as ParamsFor<A>;
 }
 
-/** How the serve-sim CLI is invoked; a .ts/.js entrypoint needs its runtime in front. */
 function serveSimInvocation(binPath: string, args: string[]): Invocation {
   if (/\.ts$/.test(binPath)) return { file: "bun", args: [binPath, ...args] };
   if (/\.js$/.test(binPath)) return { file: "node", args: [binPath, ...args] };
   return { file: binPath, args };
 }
 
-function buildInvocation(action: HostActionName, raw: unknown, binPath: string): Invocation {
+function buildInvocation(action: InvocationAction, raw: unknown, binPath: string): Invocation {
   const serveSim = (args: string[]): Invocation => serveSimInvocation(binPath, args);
   const simctl = (args: string[]): Invocation => ({ file: "xcrun", args: ["simctl", ...args] });
 
@@ -403,8 +224,6 @@ function buildInvocation(action: HostActionName, raw: unknown, binPath: string):
     }
     case "button": {
       const p = parseParams(action, raw);
-      // Without -d the CLI resolves whichever state file it finds first, so a press lands on the
-      // wrong simulator whenever more than one is running.
       return serveSim(["button", p.value, ...(p.udid ? ["-d", p.udid] : [])]);
     }
     case "server.detach": {
@@ -416,8 +235,10 @@ function buildInvocation(action: HostActionName, raw: unknown, binPath: string):
       ]);
     }
     case "server.kill":
+      parseParams(action, raw);
       return serveSim(["--kill"]);
     case "camera.listWebcams":
+      parseParams(action, raw);
       return serveSim(["camera", "--list-webcams"]);
     case "camera.switch": {
       const p = parseParams(action, raw);
@@ -474,12 +295,17 @@ function buildInvocation(action: HostActionName, raw: unknown, binPath: string):
     }
     case "reveal": {
       const p = parseParams(action, raw);
-      const target = "screenshot" in p ? join(homedir(), "Desktop", p.screenshot) : p.path;
+      const target = "screenshot" in p ? join(DESKTOP_DIR, p.screenshot) : p.path;
       return { file: "open", args: ["-R", target] };
     }
-    default:
-      // Reaching here means an ACTION_SCHEMAS entry has no home in either dispatcher.
+    case "file.readBase64": {
+      const p = parseParams(action, raw);
+      return { file: "base64", args: ["-i", p.path] };
+    }
+    default: {
+      action satisfies never;
       throw new InvalidHostActionError(`unknown action ${String(action)}`);
+    }
   }
 }
 
@@ -487,79 +313,29 @@ function fileSourcePath(p: { uploadId: string } | { path: string }): string {
   return "uploadId" in p ? join(UPLOAD_DIR, p.uploadId) : p.path;
 }
 
-/** Child output is useful, but a stack trace prints the operator's checkout. Keep the message. */
-function redactHostPaths(text: string): string {
-  if (!text) return text;
-  return text.split(homedir()).join("~").replace(/\/(?:private\/)?var\/folders\/\S+/g, "<tmp>");
-}
-
-function runInvocation({ file, args, timeoutMs }: Invocation): Promise<HostActionResult> {
-  const deadlineMs = timeoutMs ?? actionTimeoutMs();
-  return new Promise<HostActionResult>((resolve) => {
-    execFile(
-      file,
-      args,
-      { maxBuffer: 16 * 1024 * 1024, timeout: deadlineMs, killSignal: "SIGKILL" },
-      (err, stdout, stderr) => {
-        const code = (err as NodeJS.ErrnoException | null)?.code;
-        // A killed child reports a signal rather than an exit code, and the only way it gets one
-        // here is the deadline above.
-        if ((err as NodeJS.ErrnoException & { signal?: string } | null)?.signal === "SIGKILL") {
-          resolve({
-            stdout: stdout.toString(),
-            stderr:
-              `The simulator did not answer within ${deadlineMs / 1000}s and the request was ` +
-              "stopped. The simulator may be busy or wedged; try again, and restart it if this repeats.",
-            exitCode: 1,
-          });
-          return;
-        }
-        resolve({
-          stdout: stdout.toString(),
-          // Never `err.message`: it embeds the absolute binary path and the full argv.
-          stderr:
-            redactHostPaths(stderr.toString()) ||
-            (typeof code === "string" ? `spawn failed (${code})` : ""),
-          exitCode: err ? (typeof code === "number" ? code : 1) : 0,
-        });
-      },
-    );
-  });
-}
-
-function ok(stdout = ""): HostActionResult {
-  return { stdout, stderr: "", exitCode: 0 };
-}
-
-/**
- * Actions handled without spawning anything. Uploads arrive as base64 chunks, which would blow past
- * ARG_MAX as arguments, so they are decoded and appended here instead.
- */
-async function runInProcessAsync(
-  action: HostActionName,
-  raw: unknown,
-): Promise<HostActionResult | null> {
+async function runProcedureAsync(action: ProcedureAction, raw: unknown): Promise<HostActionResult> {
   switch (action) {
     case "upload.append": {
       const p = parseParams(action, raw);
       const target = join(UPLOAD_DIR, p.uploadId);
       const chunk = Buffer.from(p.data, "base64");
       return await queueUploadAsync(async () => {
-      await ensureUploadDirAsync();
-      // Every chunk: appendFile creates the file too, so omitting `first` would skip the ceiling.
-      if ((await pruneUploadsAsync()) + chunk.length > MAX_UPLOAD_DIR_BYTES) {
-        return {
-          stdout: "",
-          stderr:
-            `The upload staging area is full (over ${Math.floor(MAX_UPLOAD_DIR_BYTES / 1024 ** 3)}GB). ` +
-            `Uploads are removed after ${MAX_UPLOAD_AGE_MS / 3_600_000} hours; retry once the ` +
-            "transfers in flight finish.",
-          exitCode: 1,
-        };
-      }
-      if (p.first === true) await writeFile(target, chunk);
-      else await appendFile(target, chunk);
-      return ok(target);
+        await ensurePrivateDirAsync(UPLOAD_DIR);
+        // Every chunk: appendFile creates the file too, so omitting `first` would skip the ceiling.
+        const held = await pruneStaleEntriesAsync(UPLOAD_DIR, MAX_UPLOAD_AGE_MS);
+        if (held + chunk.length > MAX_UPLOAD_DIR_BYTES) {
+          return {
+            stdout: "",
+            stderr:
+              `The upload staging area is full (over ${Math.floor(MAX_UPLOAD_DIR_BYTES / 1024 ** 3)}GB). ` +
+              `Uploads are removed after ${MAX_UPLOAD_AGE_MS / 3_600_000} hours; retry once the ` +
+              "transfers in flight finish.",
+            exitCode: 1,
+          };
+        }
+        if (p.first === true) await writeFile(target, chunk);
+        else await appendFile(target, chunk);
+        return ok(target);
       });
     }
     case "upload.remove": {
@@ -573,58 +349,18 @@ async function runInProcessAsync(
         const full = join(p.appPath, candidate);
         try {
           if ((await stat(full)).isFile()) return ok(full);
-        } catch {
-            }
+        } catch {}
       }
       return { stdout: "", stderr: "no icon found", exitCode: 1 };
     }
-    case "file.readBase64": {
-      const p = parseParams(action, raw);
-      return await runInvocation({ file: "base64", args: ["-i", p.path] });
-    }
-    // The page names the file but never the directory.
     case "screenshot.capture": {
       const p = parseParams(action, raw);
-      await ensureScreenshotDirAsync();
-      await pruneStagedScreenshotsAsync();
-      // Without a ceiling a link holder can loop screenshots until the disk is full.
-      if (await stagedScreenshotBudgetExceededAsync()) {
-        return {
-          stdout: "",
-          stderr:
-            `More than ${MAX_STAGED_SCREENSHOTS} screenshots are still staged, so they are not ` +
-            "being cleared. Staged copies age out after six hours; take another once the oldest " +
-            "have gone, or restart the preview to clear them now.",
-          exitCode: 1,
-        };
-      }
-      const staged = join(SCREENSHOT_DIR, p.fileName);
-      const shot = await runInvocation({
-        file: "xcrun",
-        args: ["simctl", "io", p.udid, "screenshot", staged],
-      });
-      if (shot.exitCode !== 0) return shot;
-      // The operator expects the file on the Desktop, but that is TCC-protected, so a child does
-      // the copy: a consent prompt then blocks the child, which the deadline reaps.
-      const copied = await runInvocation({
-        file: "cp",
-        args: [staged, join(homedir(), "Desktop", p.fileName)],
-        timeoutMs: DESKTOP_COPY_TIMEOUT_MS,
-      });
-      return {
-        stdout: staged,
-        stderr:
-          copied.exitCode === 0
-            ? ""
-            : "The screenshot was taken, but this host would not let it be copied to the Desktop.",
-        exitCode: 0,
-      };
+      return await captureScreenshotAsync(p);
     }
-    // Scratch, so it is staged away from its source and removed even if sips fails part-way.
     case "screenshot.thumbnail": {
       const p = parseParams(action, raw);
       const thumb = join(UPLOAD_DIR, `thumb-${randomUUID()}.png`);
-      await ensureUploadDirAsync();
+      await ensurePrivateDirAsync(UPLOAD_DIR);
       try {
         const sips = await runInvocation({
           file: "sips",
@@ -636,8 +372,10 @@ async function runInProcessAsync(
         await rm(thumb, { force: true });
       }
     }
-    default:
-      return null;
+    default: {
+      action satisfies never;
+      throw new InvalidHostActionError(`unknown action ${String(action)}`);
+    }
   }
 }
 
@@ -645,10 +383,15 @@ export async function runHostActionAsync(
   msg: HostActionRequest,
   binPath: string,
 ): Promise<HostActionResult> {
-  if (typeof msg.action !== "string" || !isHostActionName(msg.action)) {
-    throw new InvalidHostActionError(`unknown action ${String(msg.action)}`);
+  const { action, params } = msg;
+  if (typeof action !== "string" || !isHostActionName(action)) {
+    throw new InvalidHostActionError(`unknown action ${String(action)}`);
   }
-  const inProcess = await runInProcessAsync(msg.action, msg.params);
-  if (inProcess) return inProcess;
-  return await runInvocation(buildInvocation(msg.action, msg.params, binPath));
+  const result = isProcedureAction(action)
+    ? await runProcedureAsync(action, params)
+    : await runInvocation(buildInvocation(action, params, binPath));
+  // exec-ws spreads this straight into the reply, so only the three fields the page reads leave
+  // the process. `timedOut` steers the message a handler composes; the page has no use for it.
+  const { stdout, stderr, exitCode } = result;
+  return { stdout, stderr, exitCode };
 }

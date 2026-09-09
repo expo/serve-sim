@@ -1,9 +1,10 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { execSync, spawnSync } from "child_process";
 import { readFileSync } from "fs";
-import { tmpdir } from "os";
 import { join } from "path";
+import { stateDir } from "../state";
 import { parseDetachState } from "./detach-state";
+import { freePortAsync } from "./helpers";
 
 /**
  * Native e2e for `serve-sim type`.
@@ -23,7 +24,6 @@ import { parseDetachState } from "./detach-state";
  */
 
 const CLI_PATH = join(import.meta.dir, "../../src/index.ts");
-const STATE_DIR = join(tmpdir(), "serve-sim");
 
 function firstBootedIosSim(): string | null {
   try {
@@ -45,10 +45,10 @@ const describeWithSim = bootedUdid ? describe : describe.skip;
 describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, () => {
   let logFile: string;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe" }); } catch {}
 
-    const startPort = 40_000 + Math.floor(Math.random() * 20_000);
+    const startPort = await freePortAsync();
     const detach = spawnSync("bun", ["run", CLI_PATH, "--detach", "-p", String(startPort), bootedUdid!], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "inherit"],
@@ -63,7 +63,7 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
       );
     }
     const state = parseDetachState<{ device: string }>(detach.stdout);
-    logFile = join(STATE_DIR, `server-${state.device}.log`);
+    logFile = join(stateDir(), `server-${state.device}.log`);
   }, 60_000);
 
   afterAll(() => {

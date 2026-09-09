@@ -1,35 +1,28 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "fs";
-import { createServer as createNetServer } from "net";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { rmSync, writeFileSync } from "fs";
 import { spawn, type ChildProcess } from "child_process";
 import { simMiddleware, type ServeSimState, type WebKitBridge } from "../middleware";
 import { servePreview, type PreviewServer } from "../runtime";
-import { STATE_DIR, stateFileForDevice } from "../state";
-
-async function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createNetServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      if (!addr || typeof addr === "string") {
-        server.close();
-        reject(new Error("failed to allocate port"));
-        return;
-      }
-      const port = addr.port;
-      server.close(() => resolve(port));
-    });
-  });
-}
+import { stateFileForDevice } from "../state";
+import { freePortAsync, useTempStateDir } from "./helpers";
 
 describe("devtools proxy", () => {
   const udid = "DEVTOOLS-PROXY-DEVICE";
   const targetId = "sim:page:1";
-  const stateFile = stateFileForDevice(udid);
+  let tempState: ReturnType<typeof useTempStateDir>;
+  let stateFile: string;
   let cdp: ReturnType<typeof Bun.serve> | null = null;
   let preview: PreviewServer | null = null;
   let fakeHelperProcess: ChildProcess | null = null;
+
+  beforeAll(() => {
+    tempState = useTempStateDir();
+    stateFile = stateFileForDevice(udid);
+  });
+
+  afterAll(() => {
+    tempState?.restore();
+  });
 
   afterEach(() => {
     cdp?.stop(true);
@@ -44,7 +37,7 @@ describe("devtools proxy", () => {
   });
 
   test("lists targets through the preview origin and bridges CDP text frames", async () => {
-    const cdpPort = await freePort();
+    const cdpPort = await freePortAsync();
     let cdpSawText = false;
     cdp = Bun.serve({
       hostname: "127.0.0.1",
@@ -62,7 +55,6 @@ describe("devtools proxy", () => {
       },
     });
 
-    mkdirSync(STATE_DIR, { recursive: true });
     fakeHelperProcess = spawn("sleep", ["60"], { stdio: "ignore" });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(fakeHelperProcess.pid).toBeTruthy();
@@ -91,7 +83,7 @@ describe("devtools proxy", () => {
       },
     };
 
-    const previewPort = await freePort();
+    const previewPort = await freePortAsync();
     preview = await servePreview({
       port: previewPort,
       middleware: simMiddleware({

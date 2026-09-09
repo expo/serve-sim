@@ -1,4 +1,4 @@
-import { type ExecResult, shellEscape } from "./exec";
+import { runHostAction } from "./exec";
 
 export interface AppDetails {
   bundleId: string;
@@ -16,11 +16,10 @@ export interface AppDetails {
 }
 
 export async function fetchAppDetails(
-  exec: (cmd: string) => Promise<ExecResult>,
   udid: string,
   bundleId: string,
 ): Promise<Partial<AppDetails>> {
-  const ctn = await exec(`xcrun simctl get_app_container ${udid} ${shellEscape(bundleId)} app`);
+  const ctn = await runHostAction("app.container", { udid, bundleId });
   if (ctn.exitCode !== 0) {
     return { error: ctn.stderr.trim() || "App not found on simulator" };
   }
@@ -28,7 +27,7 @@ export async function fetchAppDetails(
   if (!appPath) return { error: "Empty app path" };
 
   // Read Info.plist as JSON. plutil -convert json -o - is available on macOS.
-  const plist = await exec(`plutil -convert json -o - ${shellEscape(appPath + "/Info.plist")}`);
+  const plist = await runHostAction("app.infoPlist", { path: `${appPath}/Info.plist` });
   let info: any = {};
   if (plist.exitCode === 0) {
     try { info = JSON.parse(plist.stdout); } catch {}
@@ -54,14 +53,10 @@ export async function fetchAppDetails(
       `${iconName}60x60@3x.png`,
       `${iconName}60x60@2x.png`,
     ];
-    const find = await exec(
-      `bash -c ${shellEscape(
-        candidates.map((c) => `[ -f ${shellEscape(appPath + "/" + c)} ] && echo ${shellEscape(appPath + "/" + c)} && exit 0`).join("; ") + "; exit 1",
-      )}`,
-    );
+    const find = await runHostAction("app.iconPath", { appPath, candidates });
     const iconPath = find.stdout.trim();
     if (iconPath) {
-      const b64 = await exec(`base64 -i ${shellEscape(iconPath)}`);
+      const b64 = await runHostAction("file.readBase64", { path: iconPath });
       if (b64.exitCode === 0) {
         iconDataUrl = `data:image/png;base64,${b64.stdout.replace(/\s+/g, "")}`;
       }
@@ -85,7 +80,6 @@ export async function fetchAppDetails(
 export const appIconCache = new Map<string, Promise<string | null> | string | null>();
 
 export function fetchAppIcon(
-  exec: (cmd: string) => Promise<ExecResult>,
   udid: string,
   bundleId: string,
 ): Promise<string | null> {
@@ -94,7 +88,7 @@ export function fetchAppIcon(
   if (existing !== undefined) {
     return Promise.resolve(existing as string | null | Promise<string | null>);
   }
-  const pending = fetchAppDetails(exec, udid, bundleId).then((d) => {
+  const pending = fetchAppDetails(udid, bundleId).then((d) => {
     const url = d.iconDataUrl ?? null;
     appIconCache.set(key, url);
     return url;

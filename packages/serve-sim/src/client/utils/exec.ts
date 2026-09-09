@@ -6,7 +6,7 @@ export interface ExecResult {
   exitCode: number;
 }
 
-// Everything the preview page asks of the host — shell execs, simulator
+// Everything the preview page asks of the host — simulator actions, simulator
 // settings, and the SSE side-channels — rides one WebSocket (`/exec-ws`).
 // Pooled fetches are not used: every tab holds long-lived HTTP streams
 // (MJPEG), and the browser's six-connections-per-origin cap let pooled
@@ -164,11 +164,19 @@ async function socketRequest(
   });
 }
 
-export async function execOnHost(
-  command: string,
+/**
+ * One simulator action, run by the host as a fixed program and argument array. A gated preview
+ * accepts only these: the link is shareable, so it must not also be a shell on the host machine.
+ */
+export async function runHostAction(
+  action: string,
+  params?: Record<string, string | number | boolean | string[] | undefined>,
   opts?: { signal?: AbortSignal },
 ): Promise<ExecResult> {
-  const reply = await socketRequest({ command }, opts?.signal);
+  const reply = await socketRequest({ action, params }, opts?.signal);
+  if (reply.error) {
+    return { stdout: "", stderr: reply.error, exitCode: 1 };
+  }
   return {
     stdout: reply.stdout ?? "",
     stderr: reply.stderr ?? "",
@@ -270,6 +278,3 @@ export function openHostEventStream(path: string): HostEventStream {
   return stream;
 }
 
-export function shellEscape(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
-}

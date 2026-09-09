@@ -106,7 +106,7 @@ export function clearDeviceOptionState(udid: string): void {
  * when the value isn't valid. Toggles accept the usual on/off synonyms.
  */
 export function normalizeUiValue(option: string, value: string): string | null {
-  const spec = UI_OPTIONS[option];
+  const spec = Object.hasOwn(UI_OPTIONS, option) ? UI_OPTIONS[option] : undefined;
   if (!spec) return null;
   const v = value.toLowerCase();
   if (spec.toggle) {
@@ -149,7 +149,7 @@ export function parseUiArgs(args: string[]): UiArgs {
   }
 
   const option = rest[0]!.toLowerCase();
-  if (!UI_OPTIONS[option]) {
+  if (!Object.hasOwn(UI_OPTIONS, option)) {
     return { command: "get", json, error: `unknown option: ${option}` };
   }
   if (rest.length === 1) {
@@ -241,7 +241,7 @@ function fromToggle(value: string): string {
 }
 
 export async function getUiOption(udid: string, option: string): Promise<string> {
-  const spec = UI_OPTIONS[option];
+  const spec = Object.hasOwn(UI_OPTIONS, option) ? UI_OPTIONS[option] : undefined;
   if (!spec) throw new Error(`unknown option: ${option}`);
   if (spec.via === "device") {
     return deviceOptionState.get(`${udid}:${option}`) ?? spec.default ?? "off";
@@ -254,7 +254,7 @@ export async function getUiOption(udid: string, option: string): Promise<string>
 }
 
 export async function setUiOption(udid: string, option: string, value: string): Promise<void> {
-  const spec = UI_OPTIONS[option];
+  const spec = Object.hasOwn(UI_OPTIONS, option) ? UI_OPTIONS[option] : undefined;
   if (!spec) throw new Error(`unknown option: ${option}`);
   if (spec.via === "device") {
     if (option === "hardware-keyboard") await setHardwareKeyboard(udid, value === "on");

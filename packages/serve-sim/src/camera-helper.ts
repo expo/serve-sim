@@ -1,9 +1,11 @@
 import { createHash } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { STATE_DIR } from "./state";
+import { stateDir } from "./state";
 
-export const CAMERA_STATE_DIR = join(STATE_DIR, "simcam");
+export function cameraStateDir(): string {
+  return join(stateDir(), "simcam");
+}
 const HELPER_TIMEOUT_MS = 3000;
 
 interface InjectedBundlesState {
@@ -28,11 +30,11 @@ export interface CameraStatusReply extends CameraHelperReply {
 }
 
 export function cameraHelperPidFile(udid: string): string {
-  return join(CAMERA_STATE_DIR, `${udid}.pid`);
+  return join(cameraStateDir(), `${udid}.pid`);
 }
 
 export function cameraHelperBundlesFile(udid: string): string {
-  return join(CAMERA_STATE_DIR, `${udid}.bundles.json`);
+  return join(cameraStateDir(), `${udid}.bundles.json`);
 }
 
 export function cameraHelperSocketFile(udid: string): string {

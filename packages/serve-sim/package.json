@@ -94,7 +94,8 @@
     "react-dom": "^19.0.0",
     "tailwindcss": "^4.1.7",
     "typescript": "^5.7.0",
-    "werift": "^0.24.4"
+    "werift": "^0.24.4",
+    "zod": "^4.5.4"
   },
   "dependencies": {
     "inspect-webkit": "^0.0.5",

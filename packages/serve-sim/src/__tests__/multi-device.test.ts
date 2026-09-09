@@ -1,24 +1,19 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from "fs";
+import { describe, it, expect, afterAll, beforeAll } from "bun:test";
+import { writeFileSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
-import { tmpdir } from "os";
 
-// Use a test-specific state dir to avoid conflicting with real state
-const TEST_STATE_DIR = join(tmpdir(), "serve-sim-test-" + process.pid);
-
-// We test the state module functions directly
-import { stateFileForDevice, listStateFiles, STATE_DIR } from "../state";
+import { stateFileForDevice, listStateFiles, stateDir } from "../state";
+import { useTempStateDir } from "./helpers";
 
 describe("multi-device state", () => {
-  const testDir = TEST_STATE_DIR;
+  let tempState: ReturnType<typeof useTempStateDir>;
 
-  beforeEach(() => {
-    // Create a temp dir that mimics the state dir structure
-    mkdirSync(testDir, { recursive: true });
+  beforeAll(() => {
+    tempState = useTempStateDir();
   });
 
-  afterEach(() => {
-    try { rmSync(testDir, { recursive: true }); } catch {}
+  afterAll(() => {
+    tempState?.restore();
   });
 
   it("stateFileForDevice returns unique paths per UDID", () => {
@@ -29,14 +24,12 @@ describe("multi-device state", () => {
     expect(file2).toContain("server-DDDD-EEEE-FFFF.json");
   });
 
-  it("stateFileForDevice produces path inside STATE_DIR", () => {
+  it("stateFileForDevice produces path inside the state directory", () => {
     const file = stateFileForDevice("TEST-UDID");
-    expect(file.startsWith(STATE_DIR)).toBe(true);
+    expect(file.startsWith(stateDir())).toBe(true);
   });
 
   it("multiple state files can coexist", () => {
-    // Write state files directly to the real state dir for listStateFiles
-    mkdirSync(STATE_DIR, { recursive: true });
     const udid1 = "TEST-1111-2222-3333-444444444444";
     const udid2 = "TEST-5555-6666-7777-888888888888";
     const file1 = stateFileForDevice(udid1);
@@ -50,7 +43,6 @@ describe("multi-device state", () => {
       const matching = files.filter(f => f.includes("TEST-"));
       expect(matching.length).toBeGreaterThanOrEqual(2);
 
-      // Both files contain correct data
       const data1 = JSON.parse(readFileSync(file1, "utf-8"));
       const data2 = JSON.parse(readFileSync(file2, "utf-8"));
       expect(data1.device).toBe(udid1);
@@ -64,9 +56,8 @@ describe("multi-device state", () => {
   });
 
   it("listStateFiles only returns server-*.json files", () => {
-    mkdirSync(STATE_DIR, { recursive: true });
     const validFile = stateFileForDevice("TEST-VALID-UDID");
-    const otherFile = join(STATE_DIR, "other-file.json");
+    const otherFile = join(stateDir(), "other-file.json");
 
     try {
       writeFileSync(validFile, "{}");
@@ -83,4 +74,3 @@ describe("multi-device state", () => {
     }
   });
 });
-

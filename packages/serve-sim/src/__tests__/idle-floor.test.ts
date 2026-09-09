@@ -1,9 +1,10 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { execSync, spawnSync } from "child_process";
 import { readdirSync, readFileSync } from "fs";
-import { tmpdir } from "os";
 import { join } from "path";
+import { stateDir } from "../state";
 import { parseDetachState } from "./detach-state";
+import { freePortAsync, killHelpersForDevice } from "./helpers";
 
 /**
  * Integration test for the idle-frame-floor guarantee.
@@ -100,13 +101,13 @@ function parseMjpegStream(buf: Buffer): { frames: ParsedFrame[]; rest: Buffer } 
 
 /** Dump every serve-sim helper log file so CI failures are self-explanatory. */
 function dumpHelperLogs(): string {
-  const stateDir = join(tmpdir(), "serve-sim");
+  const dir = stateDir();
   const out: string[] = [];
   try {
-    for (const f of readdirSync(stateDir)) {
+    for (const f of readdirSync(dir)) {
       if (!f.startsWith("server-") || !f.endsWith(".log")) continue;
       try {
-        const content = readFileSync(join(stateDir, f), "utf-8");
+        const content = readFileSync(join(dir, f), "utf-8");
         out.push(`── ${f} ──\n${content}`);
       } catch {}
     }
@@ -117,15 +118,19 @@ function dumpHelperLogs(): string {
 describeWithSim(`serve-sim idle frame floor (booted sim ${bootedUdid ?? "<skipped>"})`, () => {
   let streamUrl: string;
 
-  beforeAll(() => {
-    // Try kill any prior state — best effort.
-    try { execSync(`bun run ${CLI_PATH} --kill`, { stdio: "pipe" }); } catch {}
+  beforeAll(async () => {
+    // Scoped: an unscoped --kill SIGTERMs every serve-sim on the machine.
+    try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe" }); } catch {}
+    killHelpersForDevice(bootedUdid!);
+
+    // Its own port, so the run never has to reclaim the default 3100 from a neighbour.
+    const port = await freePortAsync();
 
     // stderr is inherited so any diagnostic from serve-sim or the Swift helper
     // lands directly in the test output — critical when the subprocess hangs
     // under CI and we need to know *where*. stdout stays captured so we can
     // still parse the JSON state blob.
-    const detach = spawnSync("bun", ["run", CLI_PATH, "--detach", bootedUdid!], {
+    const detach = spawnSync("bun", ["run", CLI_PATH, "--detach", bootedUdid!, "--port", String(port)], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "inherit"],
       timeout: 45_000,
@@ -150,7 +155,8 @@ describeWithSim(`serve-sim idle frame floor (booted sim ${bootedUdid ?? "<skippe
   }, 60_000);
 
   afterAll(() => {
-    try { execSync(`bun run ${CLI_PATH} --kill`, { stdio: "pipe" }); } catch {}
+    try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe" }); } catch {}
+    killHelpersForDevice(bootedUdid!);
   }, 30_000);
 
   test("first frame arrives quickly even on an idle simulator", async () => {

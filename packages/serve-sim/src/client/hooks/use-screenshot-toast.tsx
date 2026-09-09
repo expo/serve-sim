@@ -1,7 +1,7 @@
 import { useCallback, useRef } from "react";
 import { toast as sonnerToast } from "sonner";
 import { ScreenshotToast } from "../components/screenshot-toast";
-import { execOnHost, shellEscape } from "../utils/exec";
+import { runHostAction } from "../utils/exec";
 import {
   fetchScreenshotPng,
   isLoopbackPreviewHostname,
@@ -14,9 +14,14 @@ export type ScreenshotToast = {
   // "in" while the pill is showing, "out" once the dismiss timer fires — the
   // component plays the exit animation, then calls dismiss() to unmount.
   phase: "in" | "out";
-  // Absolute path on the host once the capture lands; used by "Open in Finder"
-  // and the drag-and-drop file URL.
+  // Absolute path of the staged copy on the host once the capture lands; used by
+  // the drag-and-drop file URL.
   path?: string;
+  // Name of the capture. "Open in Finder" reveals the Desktop copy by this name, unless the host
+  // kept only the staged file (see revealParams).
+  fileName?: string;
+  // The host kept the capture at `path` and made no Desktop copy; `message` says why.
+  stagedOnly?: boolean;
   // Tunneled/LAN previews download into the browser instead of exposing a path
   // on the remote simulator host. Kept alive while the toast is mounted so the
   // thumbnail and "Download again" action can reuse it.
@@ -31,8 +36,23 @@ export type ScreenshotToast = {
 // the timer, so this only needs to be long enough to notice the pill — not to
 // read and act on it.
 const SAVED_DISMISS_MS = 3500;
+// A staged-only pill is the only place the host's sentence about the missing Desktop copy appears:
+// about forty words plus a path, so the reader has to be able to finish it.
+const STAGED_ONLY_DISMISS_MS = 12_000;
 const ERROR_DISMISS_MS = 4000;
 const CAPTURE_TIMEOUT_MS = 10_000;
+
+function savedDismissMs(toast: ScreenshotToast): number {
+  return toast.stagedOnly ? STAGED_ONLY_DISMISS_MS : SAVED_DISMISS_MS;
+}
+
+export function revealParams(
+  toast: ScreenshotToast,
+): { screenshot: string } | { path: string } | null {
+  if (toast.stagedOnly && toast.path) return { path: toast.path };
+  if (toast.fileName) return { screenshot: toast.fileName };
+  return null;
+}
 
 function timestampSlug(): string {
   // 2026-06-11T14-12-44-123 — filesystem-safe, sorts chronologically. Keep the
@@ -69,8 +89,10 @@ export function useScreenshotToast(deviceUdid?: string | null) {
 
   const reveal = useCallback(() => {
     const t = toastRef.current;
-    if (t?.path) void execOnHost(`open -R ${shellEscape(t.path)}`);
-    else if (t?.downloadUrl && t.downloadName) {
+    if (!t) return;
+    const params = revealParams(t);
+    if (params) void runHostAction("reveal", params);
+    else if (t.downloadUrl && t.downloadName) {
       triggerBrowserDownload(t.downloadUrl, t.downloadName);
     }
   }, []);
@@ -148,34 +170,38 @@ export function useScreenshotToast(deviceUdid?: string | null) {
         return;
       }
 
-      // Resolve $HOME shell-side so the saved path comes back absolute — a "~"
-      // path would survive shellEscape() as a literal tilde and break the later
-      // `open -R`. The command echoes the path it wrote on success.
-      const file = `$HOME/Desktop/${fileName}`;
-      const capCmd =
-        `F="${file}"; xcrun simctl io ${shellEscape(deviceUdid)} screenshot "$F" && printf '%s' "$F"`;
-      const res = await execOnHost(capCmd, { signal: captureController.signal });
+      // The host hands back the staged path, which the drag-and-drop URL needs; the Desktop copy
+      // is the host's own last step.
+      const res = await runHostAction(
+        "screenshot.capture",
+        { udid: deviceUdid, fileName },
+        { signal: captureController.signal },
+      );
       const path = res.stdout.trim();
       if (res.exitCode !== 0 || !path) {
         render({ id, status: "error", phase: "in", message: res.stderr.trim() || "Screenshot failed" }, ERROR_DISMISS_MS);
         return;
       }
 
-      render({ id, status: "saved", phase: "in", path }, SAVED_DISMISS_MS);
+      const message = res.stderr.trim();
+      const saved: ScreenshotToast = message
+        ? { id, status: "saved", phase: "in", path, fileName, stagedOnly: true, message }
+        : { id, status: "saved", phase: "in", path, fileName };
+      render(saved, savedDismissMs(saved));
 
-      // Best-effort thumbnail: downscale to a temp PNG, base64 it back, then
-      // delete it. Failures (sips missing, etc.) just leave the placeholder.
-      const thumb = `/tmp/serve-sim-screenshot-thumb-${id}.png`;
+      // Best-effort thumbnail: the host downscales, encodes and cleans up. Failures (sips
+      // missing, etc.) just leave the placeholder.
       try {
-        const tr = await execOnHost(
-          `sips -Z 320 ${shellEscape(path)} --out ${shellEscape(thumb)} >/dev/null 2>&1 && base64 -i ${shellEscape(thumb)}; rm -f ${shellEscape(thumb)}`,
+        const tr = await runHostAction(
+          "screenshot.thumbnail",
+          { fileName },
           { signal: captureController.signal },
         );
         const b64 = tr.stdout.replace(/\s+/g, "");
         if (b64) {
           const current = toastRef.current;
           if (current?.id === id) {
-            render({ ...current, thumb: `data:image/png;base64,${b64}` }, SAVED_DISMISS_MS);
+            render({ ...current, thumb: `data:image/png;base64,${b64}` }, savedDismissMs(current));
           }
         }
       } catch {

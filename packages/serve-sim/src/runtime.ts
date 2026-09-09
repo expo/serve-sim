@@ -7,7 +7,13 @@ import { createConnection, createServer as createNetServer, type Server as NetSe
 import { WebSocketServer } from "ws";
 import { EXEC_WS_MAX_MESSAGE_BYTES } from "./exec-ws-utils";
 import { type UpgradeHandlerWebSocket } from "./middleware-utils";
-import { nodeRequestToWeb, writeWebResponse, type WebMiddleware } from "./runtime-utils";
+import {
+  RequestBodyTooLargeError,
+  nodeRequestToWeb,
+  readRequestBodyAsync,
+  writeWebResponse,
+  type WebMiddleware,
+} from "./runtime-utils";
 
 export function dirnameOf(metaUrl: string): string {
   return dirname(fileURLToPath(metaUrl));
@@ -160,10 +166,15 @@ export async function servePreview(opts: {
     },
     (req, res) => {
       void (async () => {
-        const request = nodeRequestToWeb(req, res);
+        const request = nodeRequestToWeb(req, res, await readRequestBodyAsync(req));
         const response = await opts.middleware(request);
         await writeWebResponse(req, res, response);
       })().catch((error) => {
+        if (error instanceof RequestBodyTooLargeError) {
+          if (!res.headersSent) res.writeHead(413, { "Content-Type": "text/plain" });
+          res.end("Payload Too Large");
+          return;
+        }
         console.error("Middleware error:", error);
         if (res.headersSent) {
           if (!res.destroyed) res.destroy(error instanceof Error ? error : undefined);

@@ -45,7 +45,7 @@ describe("selectServeSimState", () => {
 describe("previewConfigForState", () => {
   test("returns the full client config shape with device-scoped endpoints", () => {
     const state = states[1]!;
-    expect(previewConfigForState(state, "/preview", "/bin/serve-sim", "token-xyz")).toEqual({
+    expect(previewConfigForState(state, "/preview", "token-xyz")).toEqual({
       ...state,
       basePath: "/preview",
       logsEndpoint: "/preview/logs?device=DEVICE-B",
@@ -58,7 +58,6 @@ describe("previewConfigForState", () => {
       devtoolsEndpoint: "/preview/devtools?device=DEVICE-B",
       streamSettingsEndpoint: "http://127.0.0.1:3101/stream-settings",
       chrome: null,
-      serveSimBin: "/bin/serve-sim",
       gridApiEndpoint: "/preview/grid/api",
       gridCatalogEndpoint: "/preview/grid/api/catalog",
       gridStatusEndpoint: "/preview/grid/api/status",
@@ -73,20 +72,20 @@ describe("previewConfigForState", () => {
 
   test("omits stream settings when none are pinned", () => {
     expect(
-      "streamSettings" in previewConfigForState(states[0]!, "/preview", "/bin/serve-sim", "token-xyz"),
+      "streamSettings" in previewConfigForState(states[0]!, "/preview", "token-xyz"),
     ).toBe(false);
   });
 
   test("targets settings at the process that owns the rewritten stream", () => {
     const state = rewriteStateForRequestHost(states[0]!, "preview.example.test", "/preview", "https", true);
     expect(
-      previewConfigForState(state, "/preview", "/bin/serve-sim", "token-xyz").streamSettingsEndpoint,
+      previewConfigForState(state, "/preview", "token-xyz").streamSettingsEndpoint,
     ).toBe("https://preview.example.test/preview/helper/DEVICE-A/stream-settings");
   });
 
   test("pins the stream codec in the client config", () => {
     expect(
-      previewConfigForState(states[0]!, "/preview", "/bin/serve-sim", "token-xyz", {
+      previewConfigForState(states[0]!, "/preview", "token-xyz", {
         transport: "http",
         codec: "mjpeg",
       }).streamSettings,
@@ -97,7 +96,6 @@ describe("previewConfigForState", () => {
     const config = previewConfigForState(
       states[0]!,
       "/preview",
-      "/bin/serve-sim",
       "token-xyz",
       "mjpeg",
     );
@@ -107,7 +105,7 @@ describe("previewConfigForState", () => {
 
   test("passes WebRTC VP9 preference through to the client config", () => {
     expect(
-      previewConfigForState(states[0]!, "/preview", "/bin/serve-sim", "token-xyz", {
+      previewConfigForState(states[0]!, "/preview", "token-xyz", {
         transport: "webrtc",
         codec: "vp9",
       }).streamSettings,
@@ -116,7 +114,7 @@ describe("previewConfigForState", () => {
 
   test("builds the camera status endpoint correctly at the root mount", () => {
     expect(
-      previewConfigForState(states[0]!, "", "/bin/serve-sim", "token-xyz").cameraStatusEndpoint,
+      previewConfigForState(states[0]!, "", "token-xyz").cameraStatusEndpoint,
     ).toBe("/helper/DEVICE-A/camera/status");
   });
 });
@@ -264,5 +262,50 @@ describe("deviceNameFromBootedNames", () => {
 
   test("returns undefined when the udid is unknown", () => {
     expect(deviceNameFromBootedNames(names, "00000000-0000-0000-0000-000000000000")).toBeUndefined();
+  });
+});
+
+describe("previewConfigForState session token", () => {
+  // readServeSimStates reads every serve-sim state file on the host, and the page config is chosen
+  // by a caller-supplied ?device=, so spreading the state would hand one instance's session token
+  // to a visitor of another.
+  test("never echoes the state file's session token", () => {
+    const state: ServeSimState = {
+      device: "DEVICE-A",
+      pid: 1,
+      port: 3200,
+      url: "http://127.0.0.1:3200",
+      wsUrl: "ws://127.0.0.1:3200/ws",
+      streamUrl: "http://127.0.0.1:3200/stream",
+      token: "OTHER_INSTANCE_SECRET",
+    };
+
+    const config = previewConfigForState(state, "", "MY_OWN_TOKEN");
+
+    expect(JSON.stringify(config)).not.toContain("OTHER_INSTANCE_SECRET");
+  });
+
+  // The state file also holds short-lived TURN credentials, so only this server's own stream
+  // settings may reach the page.
+  test("never echoes another instance's TURN credentials", () => {
+    const state: ServeSimState = {
+      device: "DEVICE-A",
+      pid: 1,
+      port: 3200,
+      url: "http://127.0.0.1:3200",
+      wsUrl: "ws://127.0.0.1:3200/ws",
+      streamUrl: "http://127.0.0.1:3200/stream",
+      streamSettings: {
+        transport: "webrtc",
+        codec: "vp8",
+        iceServers: [
+          { urls: ["turns:turn.example.test:443"], username: "TURN_USER", credential: "TURN_SECRET" },
+        ],
+      },
+    };
+
+    const config = previewConfigForState(state, "", "MY_OWN_TOKEN");
+
+    expect(JSON.stringify(config)).not.toContain("TURN_SECRET");
   });
 });

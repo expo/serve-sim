@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { Command, InvalidArgumentError } from "commander";
-import { execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
+import { execFileSync, execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
 import { existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { createHash, randomBytes } from "crypto";
 import { networkInterfaces } from "os";
 import { join, resolve } from "path";
 import WebSocket from "ws";
 import {
-  STATE_DIR,
+  stateDir,
   stateFileForDevice,
   listStateFiles,
   inProcessServeSimState,
@@ -21,7 +21,7 @@ import {
 import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from "./text-to-keys";
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
 import { isLoopbackHost } from "./middleware-utils";
-import { killPortHolder } from "./ports";
+import { killOwnListeners } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
 import { permissions } from "./permissions";
@@ -30,7 +30,7 @@ import { debugCli, debugHelper, debugState } from "./debug";
 import type { EventLogEntry } from "./event-log";
 import { formatEventLogLine } from "./event-log-format";
 import {
-  CAMERA_STATE_DIR as SIMCAM_STATE_DIR,
+  cameraStateDir as simcamStateDir,
   cameraHelperBundlesFile as helperBundlesFile,
   cameraHelperPidFile as helperPidFile,
   cameraHelperSocketFile as helperSocketFile,
@@ -69,9 +69,7 @@ type ServerState = ServeSimDeviceState;
 
 type StreamRuntimeOptions = StreamSettings;
 function ensureStateDir() {
-  if (!existsSync(STATE_DIR)) {
-    mkdirSync(STATE_DIR, { recursive: true });
-  }
+  mkdirSync(stateDir(), { recursive: true });
 }
 
 function readState(udid?: string): ServerState | null {
@@ -398,10 +396,10 @@ async function startHelper(
 
   const host = "127.0.0.1";
   ensureStateDir();
+  killOwnListeners(port);
   clearState(udid); // don't read a stale state file from a previous run
-  killPortHolder(port);
 
-  const logFile = join(STATE_DIR, `server-${udid}.log`);
+  const logFile = join(stateDir(), `server-${udid}.log`);
   const logFd = openSync(logFile, "w");
   const { command, args } = reExecArgs(streamHelperArgs(udid, port, host, opts.stream));
   const child = nodeSpawn(command, args, {
@@ -705,7 +703,9 @@ async function eventLog(
 
   let payload: { events: EventLogEntry[] };
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: state.token ? { Authorization: `Bearer ${state.token}` } : undefined,
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     payload = await res.json() as { events: EventLogEntry[] };
   } catch (err) {
@@ -1106,7 +1106,7 @@ function recordInjectedBundle(udid: string, bundleId: string, helperPid: number)
   const existing = readInjectedBundles(udid);
   const bundleIds = existing.includes(bundleId) ? existing : [...existing, bundleId];
   const next = { helperPid, bundleIds };
-  if (!existsSync(SIMCAM_STATE_DIR)) mkdirSync(SIMCAM_STATE_DIR, { recursive: true });
+  mkdirSync(simcamStateDir(), { recursive: true });
   writeFileSync(helperBundlesFile(udid), JSON.stringify(next));
 }
 
@@ -1138,8 +1138,9 @@ function spawnCameraHelper(args: {
   width?: number;
   height?: number;
 }): number {
-  if (!existsSync(SIMCAM_STATE_DIR)) mkdirSync(SIMCAM_STATE_DIR, { recursive: true });
-  const logPath = join(SIMCAM_STATE_DIR, `${args.udid}.log`);
+  const camDir = simcamStateDir();
+  mkdirSync(camDir, { recursive: true });
+  const logPath = join(camDir, `${args.udid}.log`);
   const out = openSync(logPath, "a");
   const argv = [
     "--shm", args.shmName,
@@ -1393,7 +1394,7 @@ Examples:
     const terminated: string[] = [];
     for (const b of injectedBundles) {
       try {
-        execSync(`xcrun simctl terminate "${udid}" "${b}"`, { stdio: "ignore" });
+        execFileSync("xcrun", ["simctl", "terminate", udid, b], { stdio: "ignore" });
         terminated.push(b);
       } catch {}
     }
@@ -1561,12 +1562,12 @@ Examples:
   // we want to bring a new app into the set. Source-only hot-swaps go
   // through `camera switch`, not this path.
   try {
-    execSync(`xcrun simctl privacy "${udid}" grant camera "${bundleId}"`, {
+    execFileSync("xcrun", ["simctl", "privacy", udid, "grant", "camera", bundleId], {
       stdio: "ignore",
     });
   } catch {}
   try {
-    execSync(`xcrun simctl terminate "${udid}" "${bundleId}"`, { stdio: "ignore" });
+    execFileSync("xcrun", ["simctl", "terminate", udid, bundleId], { stdio: "ignore" });
   } catch {}
 
   const env = {
@@ -1578,7 +1579,7 @@ Examples:
 
   let stdoutBuf = "";
   try {
-    stdoutBuf = execSync(`xcrun simctl launch "${udid}" "${bundleId}"`, {
+    stdoutBuf = execFileSync("xcrun", ["simctl", "launch", udid, bundleId], {
       env,
       encoding: "utf-8",
     });

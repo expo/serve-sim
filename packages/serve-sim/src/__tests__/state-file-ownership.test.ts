@@ -3,7 +3,7 @@ import { execSync, spawnSync } from "child_process";
 import { existsSync, readFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { clearServeSimState, inProcessServeSimState, stateFileForDevice, writeServeSimState } from "../state";
-
+import { freePortAsync, useTempStateDir } from "./helpers";
 
 const CLI_PATH = join(import.meta.dir, "../../src/index.ts");
 
@@ -27,9 +27,23 @@ function statePid(file: string): number {
   return (JSON.parse(readFileSync(file, "utf-8")) as { pid: number }).pid;
 }
 
+let tempState: ReturnType<typeof useTempStateDir>;
+
+beforeAll(() => {
+  tempState = useTempStateDir();
+});
+
+afterAll(() => {
+  tempState?.restore();
+});
+
 describe("clearServeSimState", () => {
   const device = `OWNERSHIP-${process.pid}`;
-  const file = stateFileForDevice(device);
+  let file: string;
+
+  beforeAll(() => {
+    file = stateFileForDevice(device);
+  });
 
   afterEach(() => {
     try { unlinkSync(file); } catch {}
@@ -61,19 +75,20 @@ const bootedUdid = firstBootedIosSim();
 const describeWithSim = bootedUdid ? describe : describe.skip;
 
 describeWithSim(`serve-sim state ownership e2e (booted sim ${bootedUdid ?? "<skipped>"})`, () => {
-  const stateFile = stateFileForDevice(bootedUdid ?? "");
+  let stateFile: string;
   let predecessorPid = 0;
 
   function killAll(): void {
-    try { execSync(`bun run ${CLI_PATH} --kill`, { stdio: "pipe" }); } catch {}
+    try { execSync(`bun run ${CLI_PATH} --kill`, { stdio: "pipe", env: { ...process.env } }); } catch {}
   }
 
-  function startServer(): number {
-    const port = 41_000 + Math.floor(Math.random() * 20_000);
+  async function startServerAsync(): Promise<number> {
+    const port = await freePortAsync();
     const detach = spawnSync("bun", ["run", CLI_PATH, "--detach", "-p", String(port), bootedUdid!], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "inherit"],
       timeout: 45_000,
+      env: { ...process.env },
     });
     if (detach.status !== 0 || !detach.stdout) {
       throw new Error(
@@ -91,7 +106,10 @@ describeWithSim(`serve-sim state ownership e2e (booted sim ${bootedUdid ?? "<ski
     }
   }
 
-  beforeAll(killAll, 30_000);
+  beforeAll(() => {
+    stateFile = stateFileForDevice(bootedUdid!);
+    killAll();
+  }, 30_000);
 
   afterAll(() => {
     if (predecessorPid > 0) {
@@ -102,12 +120,12 @@ describeWithSim(`serve-sim state ownership e2e (booted sim ${bootedUdid ?? "<ski
   }, 30_000);
 
   test("a late-exiting server does not unlink its replacement's record", async () => {
-    predecessorPid = startServer();
+    predecessorPid = await startServerAsync();
 
     process.kill(predecessorPid, "SIGSTOP");
-    try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe" }); } catch {}
+    try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe", env: { ...process.env } }); } catch {}
 
-    const successorPid = startServer();
+    const successorPid = await startServerAsync();
     expect(successorPid).not.toBe(predecessorPid);
 
     process.kill(predecessorPid, "SIGCONT");

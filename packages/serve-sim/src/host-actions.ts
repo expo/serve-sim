@@ -1,19 +1,23 @@
-import { randomUUID } from "crypto";
-import { appendFile, rm, stat, writeFile } from "fs/promises";
+import { rm, stat } from "fs/promises";
 import { join } from "path";
 import { z } from "zod";
 
 import {
   type HostActionResult,
   type Invocation,
-  createSerialQueue,
-  ensurePrivateDirAsync,
   ok,
-  pruneStaleEntriesAsync,
   runInvocation,
 } from "./host-actions-utils";
-import { Argument, ConfinedPath, DESKTOP_DIR, SCREENSHOT_DIR, UPLOAD_DIR } from "./host-paths";
+import { Argument, ConfinedPath, DESKTOP_DIR, SCREENSHOT_DIR } from "./host-paths";
 import { ScreenshotName, captureScreenshotAsync } from "./screenshot-store";
+import {
+  UploadChunk,
+  UploadId,
+  appendUploadChunkAsync,
+  removeUploadAsync,
+  stagedUploadPath,
+  reserveThumbnailPathAsync,
+} from "./upload-store";
 
 export type { HostActionResult } from "./host-actions-utils";
 
@@ -28,16 +32,6 @@ export interface HostActionRequest {
 
 export class InvalidHostActionError extends Error {}
 
-// Without a ceiling a caller could fill the disk, and a closed tab never cleans up after itself.
-const MAX_UPLOAD_DIR_BYTES = 2 * 1024 * 1024 * 1024;
-const MAX_UPLOAD_AGE_MS = 6 * 60 * 60 * 1000;
-/** ~3MB of raw bytes, matching the client's 192KB slices with generous headroom. */
-const MAX_UPLOAD_CHUNK_BASE64 = 4 * 1024 * 1024;
-
-// Serialized so the budget check and the write cannot interleave: concurrent callers would
-// otherwise all read the same pre-write total and sail past the ceiling.
-const queueUploadAsync = createSerialQueue();
-
 const APPEARANCES = ["light", "dark"] as const;
 const PERMISSION_ACTIONS = ["grant", "revoke", "reset"] as const;
 const MIRROR_VALUES = ["on", "off"] as const;
@@ -51,10 +45,6 @@ const BundleId = z.string().max(256).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "must
 
 /** An orientation or button name. Bounded rather than allowlisted, so a new button still works. */
 const Token = z.string().max(64).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "must be a plain identifier");
-
-const UploadId = z
-  .string()
-  .regex(/^(?!\.)[A-Za-z0-9._-]{1,128}$/, "must be a short plain file name");
 
 const FileName = z.string().regex(/^(?!\.)[^/\\\n]{1,255}$/, "must be a plain file name");
 
@@ -128,7 +118,7 @@ const ACTION_SCHEMAS = {
   "upload.append": z.object({
     uploadId: UploadId,
     // Bounded here rather than trusting the socket's cap: a host may supply its own transport.
-    data: z.base64().min(1).max(MAX_UPLOAD_CHUNK_BASE64),
+    data: UploadChunk,
     first: z.boolean().optional(),
   }),
   "upload.remove": z.object({ uploadId: UploadId }),
@@ -310,38 +300,18 @@ function buildInvocation(action: InvocationAction, raw: unknown, binPath: string
 }
 
 function fileSourcePath(p: { uploadId: string } | { path: string }): string {
-  return "uploadId" in p ? join(UPLOAD_DIR, p.uploadId) : p.path;
+  return "uploadId" in p ? stagedUploadPath(p.uploadId) : p.path;
 }
 
 async function runProcedureAsync(action: ProcedureAction, raw: unknown): Promise<HostActionResult> {
   switch (action) {
     case "upload.append": {
       const p = parseParams(action, raw);
-      const target = join(UPLOAD_DIR, p.uploadId);
-      const chunk = Buffer.from(p.data, "base64");
-      return await queueUploadAsync(async () => {
-        await ensurePrivateDirAsync(UPLOAD_DIR);
-        // Every chunk: appendFile creates the file too, so omitting `first` would skip the ceiling.
-        const held = await pruneStaleEntriesAsync(UPLOAD_DIR, MAX_UPLOAD_AGE_MS);
-        if (held + chunk.length > MAX_UPLOAD_DIR_BYTES) {
-          return {
-            stdout: "",
-            stderr:
-              `The upload staging area is full (over ${Math.floor(MAX_UPLOAD_DIR_BYTES / 1024 ** 3)}GB). ` +
-              `Uploads are removed after ${MAX_UPLOAD_AGE_MS / 3_600_000} hours; retry once the ` +
-              "transfers in flight finish.",
-            exitCode: 1,
-          };
-        }
-        if (p.first === true) await writeFile(target, chunk);
-        else await appendFile(target, chunk);
-        return ok(target);
-      });
+      return await appendUploadChunkAsync(p);
     }
     case "upload.remove": {
       const p = parseParams(action, raw);
-      await rm(join(UPLOAD_DIR, p.uploadId), { force: true });
-      return ok();
+      return await removeUploadAsync(p.uploadId);
     }
     case "app.iconPath": {
       const p = parseParams(action, raw);
@@ -359,8 +329,7 @@ async function runProcedureAsync(action: ProcedureAction, raw: unknown): Promise
     }
     case "screenshot.thumbnail": {
       const p = parseParams(action, raw);
-      const thumb = join(UPLOAD_DIR, `thumb-${randomUUID()}.png`);
-      await ensurePrivateDirAsync(UPLOAD_DIR);
+      const thumb = await reserveThumbnailPathAsync();
       try {
         const sips = await runInvocation({
           file: "sips",

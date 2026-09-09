@@ -43,6 +43,7 @@ import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
 import { type WebMiddleware } from "./runtime-utils";
 import { connectToFetch, type ConnectMiddleware } from "./connect-to-fetch";
+import { createPermissionsHandler } from "./permissions-route";
 
 type SimReq = IncomingMessage;
 type SimRes = ServerResponse;
@@ -1589,6 +1590,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     return { ok: true };
   };
 
+  const handlePermissions = createPermissionsHandler();
   const connectMiddleware = (async (req: SimReq, res: SimRes, next?: SimNext) => {
     const rawUrl: string = req.url ?? "";
     const qIndex = rawUrl.indexOf("?");
@@ -2161,6 +2163,13 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         // Best-effort cleanup; the PNG is already in memory by now.
         await unlink(file).catch(() => {});
       }
+      return;
+    }
+
+    if (url === base + "/permissions") {
+      const udid = selectedDevice && isSimulatorUdid(selectedDevice) ? selectedDevice : null;
+      const query = new URLSearchParams(qIndex === -1 ? "" : rawUrl.slice(qIndex + 1));
+      await handlePermissions(req, res, udid, query);
       return;
     }
 

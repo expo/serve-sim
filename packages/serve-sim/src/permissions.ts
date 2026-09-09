@@ -89,6 +89,10 @@ export interface ParsedArgs {
 
 const BUNDLE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9.-]*$/;
 
+export function isBundleId(value: string): boolean {
+  return BUNDLE_ID_RE.test(value);
+}
+
 export function parsePermissionsArgs(
   args: string[],
 ): ParsedArgs | { error: string } {
@@ -525,6 +529,64 @@ function applyOne(
   } else {
     setLocation(udid, bundleId, verb, value);
   }
+}
+
+export type PermissionState = "granted" | "denied" | "limited" | "undetermined";
+export interface PermissionStatus {
+  id: string;
+  state: PermissionState;
+}
+
+/**
+ * One row per catalogue entry. TCC `auth_value` 0, 2, and 3 read as denied,
+ * granted, and limited; a missing row is undetermined. locationd
+ * `Authorization` 2 is denied, 3 and 4 are granted.
+ */
+export function permissionStates(
+  tcc: Record<string, number>,
+  location: { Authorization: number } | null,
+  notifications: { allowsNotifications: boolean } | null,
+): PermissionStatus[] {
+  const stateFor = (id: string): PermissionState => {
+    if (id === "notifications") {
+      if (!notifications) return "undetermined";
+      return notifications.allowsNotifications ? "granted" : "denied";
+    }
+    if (id === "location") {
+      const auth = location?.Authorization;
+      if (auth === 2) return "denied";
+      return auth === 3 || auth === 4 ? "granted" : "undetermined";
+    }
+    const auth = tcc[id];
+    if (auth === 0) return "denied";
+    if (auth === 2) return "granted";
+    return auth === 3 ? "limited" : "undetermined";
+  };
+  return allPermissionNames().map((id) => ({ id, state: stateFor(id) }));
+}
+
+export function listPermissions(udid: string, bundleId: string): PermissionStatus[] {
+  return permissionStates(
+    readTcc(udid, bundleId),
+    readLocation(udid, bundleId),
+    readNotifications(udid, bundleId),
+  );
+}
+
+/** `permission` is a catalogue name, or `all` together with `reset`. */
+export function applyPermission(
+  udid: string,
+  bundleId: string,
+  permission: string,
+  verb: Exclude<Verb, "list">,
+): void {
+  if (permission === "all") {
+    if (verb !== "reset") throw new Error('"all" is only valid with reset');
+    for (const name of allPermissionNames()) applyOne(udid, "reset", name, undefined, bundleId);
+    return;
+  }
+  if (!resolvePermission(permission)) throw new Error(`Unknown permission: ${permission}`);
+  applyOne(udid, verb, permission, undefined, bundleId);
 }
 
 export async function permissions(args: string[]): Promise<void> {

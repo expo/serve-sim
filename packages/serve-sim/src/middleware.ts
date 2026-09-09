@@ -31,7 +31,7 @@ import {
   recordEventLogEvent,
   subscribeEventLog,
 } from "./event-log";
-import { inProcessServeSimState, writeServeSimState, type ServeSimDeviceState, type StreamSettings } from "./state";
+import { inProcessServeSimState, stateDir, writeServeSimState, type ServeSimDeviceState, type StreamSettings } from "./state";
 import { debugMw } from "./debug";
 import {
   resolveDevicePlaceholderAsset,
@@ -55,7 +55,6 @@ export type SimMiddleware = WebMiddleware & {
 
 // Injected at build time as a base64-encoded string via `define`
 declare const __PREVIEW_HTML_B64__: string;
-const STATE_DIR = join(tmpdir(), "serve-sim");
 // Last logged result of a GET /api selection, used to suppress the
 // once-every-poll duplicate debugMw lines (the UI polls /api every ~2s).
 let lastApiLogKey: string | undefined;
@@ -362,7 +361,7 @@ function getPreferredDeviceUdid(): string | null {
 export async function readServeSimStates(): Promise<ServeSimState[]> {
   let files: string[];
   try {
-    files = readdirSync(STATE_DIR).filter(
+    files = readdirSync(stateDir()).filter(
       (f) => f.startsWith("server-") && f.endsWith(".json"),
     );
   } catch {
@@ -371,7 +370,7 @@ export async function readServeSimStates(): Promise<ServeSimState[]> {
   const booted = await getBootedUdids();
   const states: ServeSimState[] = [];
   for (const f of files) {
-    const path = join(STATE_DIR, f);
+    const path = join(stateDir(), f);
     try {
       const state: ServeSimState = JSON.parse(readFileSync(path, "utf-8"));
       try {
@@ -1859,7 +1858,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           watcherRetry = null;
           if (closed || res.writableEnded || watcher) return;
           try {
-            watcher = watch(STATE_DIR, onFsEvent);
+            watcher = watch(stateDir(), onFsEvent);
             watcher.on("error", () => {
               watcher?.close();
               watcher = null;
@@ -2329,7 +2328,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           watcherRetry = null;
           if (closed || res.writableEnded || watcher) return;
           try {
-            watcher = watch(STATE_DIR, onFsEvent);
+            watcher = watch(stateDir(), onFsEvent);
             watcher.on("error", () => {
               watcher?.close();
               watcher = null;

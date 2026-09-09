@@ -9,16 +9,13 @@ export type {
   WebRtcStreamCodec,
 } from "./stream-settings";
 
-/** Directory where serve-sim stores runtime state. */
-export const STATE_DIR = join(tmpdir(), "serve-sim");
+/** Directory where serve-sim stores runtime state. Override with `SERVE_SIM_STATE_DIR`. */
+export function stateDir(): string {
+  return process.env.SERVE_SIM_STATE_DIR || join(tmpdir(), "serve-sim");
+}
 
-/** Path to the serve-sim server state file (JSON with pid, port, URLs).
- *  @deprecated Use `stateFileForDevice(udid)` for multi-device support. Kept for backward compat. */
-export const STATE_FILE = join(STATE_DIR, "server.json");
-
-/** Per-device state file: `/tmp/serve-sim/server-{udid}.json` */
 export function stateFileForDevice(udid: string): string {
-  return join(STATE_DIR, `server-${udid}.json`);
+  return join(stateDir(), `server-${udid}.json`);
 }
 
 /** Runtime record for a device streamed in-process by a preview server. */
@@ -83,7 +80,7 @@ export function inProcessServeSimState(
  *  Writes atomically (temp file + rename) so a concurrent reader never observes
  *  a truncated or partially-written file. */
 export function writeServeSimState(state: ServeSimDeviceState): void {
-  mkdirSync(STATE_DIR, { recursive: true });
+  mkdirSync(stateDir(), { recursive: true });
   const file = stateFileForDevice(state.device);
   const tmp = `${file}.${process.pid}.tmp`;
   // Holds TURN credentials and, when gated, the session token.
@@ -106,9 +103,10 @@ export function clearServeSimState(udid: string, ownerPid: number): void {
 /** List all per-device state files in the state directory. */
 export function listStateFiles(): string[] {
   try {
-    return readdirSync(STATE_DIR)
+    const dir = stateDir();
+    return readdirSync(dir)
       .filter((f) => f.startsWith("server-") && f.endsWith(".json"))
-      .map((f) => join(STATE_DIR, f));
+      .map((f) => join(dir, f));
   } catch {
     return [];
   }

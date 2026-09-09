@@ -7,7 +7,7 @@ import { networkInterfaces } from "os";
 import { join, resolve } from "path";
 import WebSocket from "ws";
 import {
-  STATE_DIR,
+  stateDir,
   stateFileForDevice,
   listStateFiles,
   inProcessServeSimState,
@@ -30,7 +30,7 @@ import { debugCli, debugHelper, debugState } from "./debug";
 import type { EventLogEntry } from "./event-log";
 import { formatEventLogLine } from "./event-log-format";
 import {
-  CAMERA_STATE_DIR as SIMCAM_STATE_DIR,
+  cameraStateDir as simcamStateDir,
   cameraHelperBundlesFile as helperBundlesFile,
   cameraHelperPidFile as helperPidFile,
   cameraHelperSocketFile as helperSocketFile,
@@ -69,9 +69,7 @@ type ServerState = ServeSimDeviceState;
 
 type StreamRuntimeOptions = StreamSettings;
 function ensureStateDir() {
-  if (!existsSync(STATE_DIR)) {
-    mkdirSync(STATE_DIR, { recursive: true });
-  }
+  mkdirSync(stateDir(), { recursive: true });
 }
 
 function readState(udid?: string): ServerState | null {
@@ -401,7 +399,7 @@ async function startHelper(
   killOwnListeners(port);
   clearState(udid); // don't read a stale state file from a previous run
 
-  const logFile = join(STATE_DIR, `server-${udid}.log`);
+  const logFile = join(stateDir(), `server-${udid}.log`);
   const logFd = openSync(logFile, "w");
   const { command, args } = reExecArgs(streamHelperArgs(udid, port, host, opts.stream));
   const child = nodeSpawn(command, args, {
@@ -1108,7 +1106,7 @@ function recordInjectedBundle(udid: string, bundleId: string, helperPid: number)
   const existing = readInjectedBundles(udid);
   const bundleIds = existing.includes(bundleId) ? existing : [...existing, bundleId];
   const next = { helperPid, bundleIds };
-  if (!existsSync(SIMCAM_STATE_DIR)) mkdirSync(SIMCAM_STATE_DIR, { recursive: true });
+  mkdirSync(simcamStateDir(), { recursive: true });
   writeFileSync(helperBundlesFile(udid), JSON.stringify(next));
 }
 
@@ -1140,8 +1138,9 @@ function spawnCameraHelper(args: {
   width?: number;
   height?: number;
 }): number {
-  if (!existsSync(SIMCAM_STATE_DIR)) mkdirSync(SIMCAM_STATE_DIR, { recursive: true });
-  const logPath = join(SIMCAM_STATE_DIR, `${args.udid}.log`);
+  const camDir = simcamStateDir();
+  mkdirSync(camDir, { recursive: true });
+  const logPath = join(camDir, `${args.udid}.log`);
   const out = openSync(logPath, "a");
   const argv = [
     "--shm", args.shmName,

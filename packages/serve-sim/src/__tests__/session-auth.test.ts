@@ -72,6 +72,95 @@ describe("assertPreviewAccess", () => {
     expect(sent.headers?.["Set-Cookie"]).toContain("SameSite=Lax");
   });
 
+  test("trades a framed preview's query token for a cookie the embedded page can send", () => {
+    const { sent, res: r } = res();
+    expect(
+      assertPreviewAccess(
+        req(
+          {
+            "sec-fetch-dest": "iframe",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "cross-site",
+            "x-forwarded-proto": "https",
+          },
+          `/?token=${TOKEN}`,
+        ),
+        r,
+        TOKEN,
+        { required: true, basePath: "/" },
+      ),
+    ).toBe(false);
+
+    expect(sent.status).toBe(302);
+    expect(sent.headers?.Location).toBe("/");
+    expect(sent.headers?.["Set-Cookie"]).toContain("SameSite=None");
+    expect(sent.headers?.["Set-Cookie"]).toContain("Secure");
+    expect(sent.headers?.["Set-Cookie"]).toContain("Partitioned");
+  });
+
+  test("keeps a plain-http frame on Lax, because SameSite=None without Secure is dropped", () => {
+    const { sent, res: r } = res();
+    assertPreviewAccess(
+      req({ "sec-fetch-dest": "iframe", "sec-fetch-mode": "navigate" }, `/?token=${TOKEN}`),
+      r,
+      TOKEN,
+      { required: true, basePath: "/" },
+    );
+
+    expect(sent.status).toBe(302);
+    expect(sent.headers?.["Set-Cookie"]).toContain("SameSite=Lax");
+    expect(sent.headers?.["Set-Cookie"]).not.toContain("Secure");
+    expect(sent.headers?.["Set-Cookie"]).not.toContain("Partitioned");
+  });
+
+  test("accepts the cookie on the framed navigation that follows the token redirect", () => {
+    const { res: r } = res();
+    expect(
+      assertPreviewAccess(
+        req({
+          cookie: `${accessCookieName(TOKEN)}=${encodeURIComponent(TOKEN)}`,
+          "sec-fetch-site": "cross-site",
+          "sec-fetch-dest": "iframe",
+          "sec-fetch-mode": "navigate",
+        }),
+        r,
+        TOKEN,
+        { required: true, basePath: "/" },
+      ),
+    ).toBe(true);
+  });
+
+  test("still refuses a cross-site frame that carries no token", () => {
+    const { sent, res: r } = res();
+    expect(
+      assertPreviewAccess(
+        req({
+          "sec-fetch-dest": "iframe",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "cross-site",
+        }),
+        r,
+        TOKEN,
+        { required: true, basePath: "/" },
+      ),
+    ).toBe(false);
+    expect(sent.status).toBe(401);
+  });
+
+  test("keeps a top-level https navigation on Lax, so an ordinary link does not widen the cookie", () => {
+    const { sent, res: r } = res();
+    assertPreviewAccess(
+      req({ "sec-fetch-dest": "document", "x-forwarded-proto": "https" }, `/?token=${TOKEN}`),
+      r,
+      TOKEN,
+      { required: true, basePath: "/" },
+    );
+
+    expect(sent.headers?.["Set-Cookie"]).toContain("SameSite=Lax");
+    expect(sent.headers?.["Set-Cookie"]).toContain("Secure");
+    expect(sent.headers?.["Set-Cookie"]).not.toContain("Partitioned");
+  });
+
   test("serves a cross-origin SSE/API query token directly, without a cookie redirect", () => {
     const { sent, res: r } = res();
     expect(

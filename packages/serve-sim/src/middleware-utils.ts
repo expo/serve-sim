@@ -194,3 +194,19 @@ export function corsAllowOriginHeaders(
   }
   return {};
 }
+
+/**
+ * Who may frame a gated preview. Browsers that ignore the Partitioned cookie attribute would
+ * otherwise let any site embed one and drive it. Values that are not origins are dropped, so a
+ * stray `*` or `;` cannot widen the policy.
+ */
+export function frameAncestorsPolicy(allowedOrigins: string[]): string {
+  const origins = allowedOrigins.flatMap((origin) => {
+    try {
+      return [new URL(origin).origin];
+    } catch {
+      return [];
+    }
+  });
+  return ["frame-ancestors", "'self'", ...origins].join(" ");
+}

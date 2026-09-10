@@ -51,7 +51,16 @@ describeIfSim("serve-sim --require-token (built CLI)", () => {
   beforeAll(async () => {
     const port = await freePortAsync();
     baseUrl = `http://127.0.0.1:${port}`;
-    server = spawn("node", [CLI, "--require-token", "--quiet", "--port", String(port), udid!], {
+    server = spawn("node", [
+      CLI,
+      "--require-token",
+      "--quiet",
+      "--frame-ancestor",
+      "https://expo.test",
+      "--port",
+      String(port),
+      udid!,
+    ], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     server.stdout?.on("data", (chunk: Buffer) => {
@@ -149,6 +158,40 @@ describeIfSim("serve-sim --require-token (built CLI)", () => {
     // Only the built bundle can answer this: the HTML is a build-time constant.
     expect(page.status).toBe(200);
     expect(await page.text()).toContain("<html");
+  });
+
+  test("frames the preview from a cookie the embedding site can send, and says who may embed", async () => {
+    const redirect = await fetch(`${baseUrl}/?token=${token}`, {
+      headers: {
+        accept: "text/html",
+        "sec-fetch-dest": "iframe",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "cross-site",
+        "x-forwarded-proto": "https",
+      },
+      redirect: "manual",
+    });
+    expect(redirect.status).toBe(302);
+
+    const setCookie = redirect.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("SameSite=None");
+    expect(setCookie).toContain("Secure");
+    expect(setCookie).toContain("Partitioned");
+
+    const page = await fetch(`${baseUrl}/`, {
+      headers: {
+        cookie: setCookie.split(";")[0]!,
+        accept: "text/html",
+        "sec-fetch-dest": "iframe",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "cross-site",
+      },
+    });
+
+    expect(page.status).toBe(200);
+    expect(page.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'self' https://expo.test",
+    );
   });
 
   test("closes a control socket that never presents the token", async () => {

@@ -63,13 +63,23 @@ function isHttpsRequest(headers: SessionAuthReq["headers"]): boolean {
   return false;
 }
 
-function accessCookie(sessionToken: string, basePath: string, secure: boolean): string {
+// A cross-site frame never receives a Lax cookie. Partitioned keys the cookie to the embedding
+// site, so another site's frame gets none of it and third-party-cookie blocking still stores it.
+// Both need Secure, so a plain-http server stays on Lax.
+function accessCookie(
+  sessionToken: string,
+  basePath: string,
+  secure: boolean,
+  embedded: boolean,
+): string {
+  const partitioned = secure && embedded;
   return [
     `${accessCookieName(sessionToken)}=${encodeURIComponent(sessionToken)}`,
     "HttpOnly",
-    "SameSite=Lax",
+    partitioned ? "SameSite=None" : "SameSite=Lax",
     `Path=${basePath || "/"}`,
     ...(secure ? ["Secure"] : []),
+    ...(partitioned ? ["Partitioned"] : []),
   ].join("; ");
 }
 
@@ -93,15 +103,22 @@ function isDocumentNavigation(headers: SessionAuthReq["headers"]): boolean {
   return (headerValue(headers["accept"]) ?? "").includes("text/html");
 }
 
+function isEmbeddedNavigation(req: SessionAuthReq): boolean {
+  return isNavigation(req) && headerValue(req.headers["sec-fetch-dest"]) === "iframe";
+}
+
+function isNavigation(req: SessionAuthReq): boolean {
+  const method = (req.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") return false;
+  const mode = headerValue(req.headers["sec-fetch-mode"]);
+  return mode === undefined || mode === "navigate";
+}
+
 // A Lax cookie only rides a cross-site request when it is one of these, and that page cannot read
 // the response. The hop after the token redirect still reports cross-site, so without this the
 // dashboard link 401s on first load.
 function isTopLevelNavigation(req: SessionAuthReq): boolean {
-  const method = (req.method ?? "GET").toUpperCase();
-  if (method !== "GET" && method !== "HEAD") return false;
-  const mode = headerValue(req.headers["sec-fetch-mode"]);
-  if (mode !== undefined && mode !== "navigate") return false;
-  return isDocumentNavigation(req.headers);
+  return isNavigation(req) && isDocumentNavigation(req.headers);
 }
 
 // Returns false when the request has been answered and must stop.
@@ -116,16 +133,18 @@ export function assertPreviewAccess(
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const fromQuery = url.searchParams.get("token");
   if (fromQuery && safeEqualString(fromQuery, sessionToken)) {
-    // A page load trades the token for a cookie so it leaves the address bar. A cross-origin
-    // API/SSE caller can send neither header nor cookie, so it is served the query token directly.
-    if (!isDocumentNavigation(req.headers)) {
+    const embedded = isEmbeddedNavigation(req);
+    // A page load trades the token for a cookie so it leaves the URL and the page's own requests
+    // carry it. A cross-origin API/SSE caller can send neither header nor cookie, so it is served
+    // the query token directly.
+    if (!isDocumentNavigation(req.headers) && !embedded) {
       return true;
     }
     url.searchParams.delete("token");
     res.writeHead(302, {
       // A leading "//" would be read as an absolute cross-origin URL by the browser.
       Location: `${url.pathname.replace(/^\/+/, "/")}${url.search}`,
-      "Set-Cookie": accessCookie(sessionToken, opts.basePath, isHttpsRequest(req.headers)),
+      "Set-Cookie": accessCookie(sessionToken, opts.basePath, isHttpsRequest(req.headers), embedded),
       "Cache-Control": "no-store, private",
     });
     res.end();
@@ -138,7 +157,7 @@ export function assertPreviewAccess(
   if (
     fromCookie &&
     safeEqualString(fromCookie, sessionToken) &&
-    (isSameOriginRequest(req.headers) || isTopLevelNavigation(req))
+    (isSameOriginRequest(req.headers) || isTopLevelNavigation(req) || isEmbeddedNavigation(req))
   ) {
     return true;
   }
@@ -146,8 +165,8 @@ export function assertPreviewAccess(
   res.writeHead(401, { "Content-Type": "text/plain", "Cache-Control": "no-store, private" });
   res.end(
     "Unauthorized. This serve-sim was started with --require-token, so the preview needs the access " +
-      "token it printed at startup. Open the URL it logged, which carries `?token=`, or send the token " +
-      "as `Authorization: Bearer <token>`.\n",
+      "token it printed at startup. Open the preview link the CLI logged, which carries the token, " +
+      "or send the token as `Authorization: Bearer <token>`.\n",
   );
   return false;
 }

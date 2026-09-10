@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { MAX_HAR_ENTRIES, toHarEntry } from "./har";
 import { compactNdjsonAndStreamHar, emptyHarText } from "./har-stream";
 import type { CapturedBody, CapturedRequest, CaptureEvent, CaptureStore } from "./store";
-import { STATE_DIR } from "../state";
+import { stateDir } from "../state";
 
 export const NETWORK_CAPTURE_FILENAME = "network-capture.json";
 export const CAPTURE_HAR_FILENAME = "capture.har";
@@ -19,7 +19,7 @@ export const CAPTURE_HAR_FILENAME = "capture.har";
 export const CAPTURE_ENTRIES_FILENAME = "capture.entries.ndjson";
 
 export function captureDirForDevice(udid: string): string {
-  return join(STATE_DIR, `capture-${udid}`);
+  return join(stateDir(), `capture-${udid}`);
 }
 
 const CAPTURE_DIR_PREFIX = "capture-";
@@ -41,7 +41,7 @@ export function sweepAbandonedCaptureDirs(
     deps.list ??
     (() => {
       try {
-        return readdirSync(STATE_DIR);
+        return readdirSync(stateDir());
       } catch {
         return [];
       }
@@ -52,7 +52,7 @@ export function sweepAbandonedCaptureDirs(
   for (const name of list()) {
     if (!name.startsWith(CAPTURE_DIR_PREFIX) || keep.has(name)) continue;
     try {
-      remove(join(STATE_DIR, name));
+      remove(join(stateDir(), name));
       swept++;
     } catch {
       // Another process may be sweeping the same directory.

@@ -40,18 +40,24 @@ function sameOrigin(req: IncomingMessage): boolean {
   }
 }
 
-/** Resolves `null` when the body exceeds the cap. */
+/** Resolves `null` when the body exceeds the cap or the connection drops. */
 function readBody(req: IncomingMessage): Promise<string | null> {
   return new Promise((resolve) => {
-    let body = "";
+    const chunks: Buffer[] = [];
+    let bytes = 0;
     req.on("data", (chunk: Buffer | string) => {
-      body += typeof chunk === "string" ? chunk : chunk.toString();
-      if (body.length > MAX_BODY_BYTES) {
+      const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      bytes += buffer.byteLength;
+      if (bytes > MAX_BODY_BYTES) {
         resolve(null);
         req.destroy();
+        return;
       }
+      chunks.push(buffer);
     });
-    req.on("end", () => resolve(body));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", () => resolve(null));
+    req.on("aborted", () => resolve(null));
   });
 }
 
@@ -82,7 +88,9 @@ export function createPermissionsHandler(
     query: URLSearchParams,
   ): Promise<void> => {
     if (req.method !== "GET" && req.method !== "POST") {
-      return failure(res, 405, "method not allowed");
+      res.writeHead(405, { Allow: "GET, POST", "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "method not allowed" }));
+      return;
     }
     if (!udid) return failure(res, 400, "device must be a simulator UDID");
     if (req.method === "GET") {
@@ -110,8 +118,7 @@ export function createPermissionsHandler(
       return failure(res, 400, "bundleId is invalid");
     }
     if (!isAction(action)) return failure(res, 400, "action must be grant, revoke, or reset");
-    const known = typeof id === "string" && (resolvePermission(id) || (id === "all" && action === "reset"));
-    if (!known) {
+    if (typeof id !== "string" || !(resolvePermission(id) || (id === "all" && action === "reset"))) {
       return failure(
         res,
         400,
@@ -119,7 +126,7 @@ export function createPermissionsHandler(
       );
     }
     try {
-      deps.apply(udid, bundleId, id as string, action);
+      deps.apply(udid, bundleId, id, action);
     } catch (error) {
       return failure(res, 500, message(error));
     }

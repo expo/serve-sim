@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   allPermissionNames,
   parsePermissionsArgs,
+  permissionStates,
   resolvePermission,
 } from "../permissions";
 
@@ -161,5 +162,32 @@ describe("parsePermissionsArgs", () => {
     expect(
       parsePermissionsArgs(["grant", "location", "com.foo.bar", "--value", "sometimes"]),
     ).toEqual({ error: expect.stringContaining("Invalid --value") });
+  });
+});
+
+describe("permissionStates", () => {
+  test("maps TCC, locationd, and BulletinBoard readings onto one state union", () => {
+    const states = Object.fromEntries(
+      permissionStates(
+        { camera: 2, microphone: 0, photos: 3 },
+        { Authorization: 4 },
+        { allowsNotifications: false },
+      ).map(({ id, state }) => [id, state]),
+    );
+    expect(states).toMatchObject({
+      camera: "granted",
+      microphone: "denied",
+      photos: "limited",
+      contacts: "undetermined",
+      location: "granted",
+      notifications: "denied",
+    });
+    expect(Object.keys(states)).toEqual(allPermissionNames());
+  });
+
+  test("reads absent rows as undetermined", () => {
+    const states = permissionStates({}, null, null);
+    expect(new Set(states.map(({ state }) => state))).toEqual(new Set(["undetermined"]));
+    expect(permissionStates({}, { Authorization: 2 }, null).find(({ id }) => id === "location")?.state).toBe("denied");
   });
 });

@@ -538,9 +538,8 @@ export interface PermissionStatus {
 }
 
 /**
- * One row per catalogue entry. TCC `auth_value` 0, 2, and 3 read as denied,
- * granted, and limited; a missing row is undetermined. locationd
- * `Authorization` 2 is denied, 3 and 4 are granted.
+ * TCC `auth_value` 0, 2, and 3 read as denied, granted, and limited; a missing
+ * row is undetermined. locationd `Authorization` 2 is denied, 3 and 4 are granted.
  */
 export function permissionStates(
   tcc: Record<string, number>,
@@ -573,7 +572,6 @@ export function listPermissions(udid: string, bundleId: string): PermissionStatu
   );
 }
 
-/** `permission` is a catalogue name, or `all` together with `reset`. */
 export function applyPermission(
   udid: string,
   bundleId: string,

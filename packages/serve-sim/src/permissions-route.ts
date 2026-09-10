@@ -40,7 +40,6 @@ function sameOrigin(req: IncomingMessage): boolean {
   }
 }
 
-/** Resolves `null` when the body exceeds the cap or the connection drops. */
 function readBody(req: IncomingMessage): Promise<string | null> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];

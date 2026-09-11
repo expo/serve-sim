@@ -1182,7 +1182,6 @@ async function serve(
   if (capture) await startNetworkCapture(targetDevices, options.networkCaptureFields, quiet);
 
   const { simMiddleware } = await import("./middleware");
-  const execToken = randomBytes(32).toString("base64url");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
   // it can route helper/DevTools sockets through the single preview port.
   // Minted here, not in the middleware, because the operator has to be told what it is.
@@ -1878,7 +1877,8 @@ registerCapability(cameraCapability);
       );
       if (!state.token) {
         console.error(
-          "This serve-sim session has no execToken in state (restart serve-sim). Capture HTTP routes require it.",
+          "This serve-sim session recorded no access token, so the capture routes cannot be reached. "  +
+            "Restart serve-sim to mint one.",
         );
         process.exit(1);
       }

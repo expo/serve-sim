@@ -149,6 +149,8 @@ describe("capture counts", () => {
       idleFrames: 40,
       offeredFrames: null,
       forwardedFrames: null,
+      arrivalFrames: null,
+      repeatFrames: null,
       pumpRestarts: null,
       captureCpuCopies: null,
       pollTicks: null,
@@ -167,7 +169,7 @@ describe("capture counts", () => {
 });
 
 describe("frame flow counts", () => {
-  test("keeps capture deliveries and paced submissions as distinct stages", () => {
+  test("keeps capture deliveries and submissions as distinct stages", () => {
     const stats = readSenderStats({
       sessions: [],
       capture: { screenFrames: 900, idleFrames: 40, offeredFrames: 880, forwardedFrames: 300 },
@@ -175,6 +177,19 @@ describe("frame flow counts", () => {
 
     expect(stats.capture?.offeredFrames).toBe(880);
     expect(stats.capture?.forwardedFrames).toBe(300);
+  });
+
+  test("splits submissions into fresh arrivals and repeats of the retained frame", () => {
+    const stats = readSenderStats({
+      sessions: [],
+      capture: {
+        screenFrames: 900, idleFrames: 40, offeredFrames: 880, forwardedFrames: 3_600,
+        arrivalFrames: 880, repeatFrames: 2_720,
+      },
+    });
+
+    expect(stats.capture?.arrivalFrames).toBe(880);
+    expect(stats.capture?.repeatFrames).toBe(2_720);
   });
 });
 

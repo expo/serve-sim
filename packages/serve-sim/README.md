@@ -118,12 +118,14 @@ Starting with `--transport webrtc` locks the preview to WebRTC for the lifetime
 of the server. The UI exposes only WebRTC codec and encoder controls, the
 settings API rejects HTTP-only controls, and the MJPEG/AVCC endpoints return
 `409 stream_transport_locked` instead of opening tunneled screen streams.
-While a peer is connected, one absolute-cadence publisher continuously submits
-the latest captured frame at the configured `--video-fps`. SimulatorKit change
-callbacks are supplemented by a 60 Hz IOSurface seed poll; that poll is a
-fallback cadence, not a capture FPS ceiling. The libwebrtc
-source adapter uses a 1,000 FPS safety ceiling and the RTP sender has no separate
-FPS cap, so neither can phase-collide with the publisher cadence.
+While a peer is connected, every fresh capture is submitted to the encoder the
+moment it arrives; a repeat chain re-sends the latest frame at the configured
+`--video-fps` whenever nothing new arrived for one interval, so an idle screen
+still streams at a steady cadence. SimulatorKit change callbacks are
+supplemented by a 60 Hz IOSurface seed poll; that poll is a fallback cadence,
+not a capture FPS ceiling. The libwebrtc source adapter uses a 1,000 FPS safety
+ceiling and the RTP sender has no separate FPS cap, so neither can
+phase-collide with the submissions.
 Multiple WebRTC viewers can use the same simulator simultaneously. They share
 one SimulatorKit capture source, while each viewer has an independent peer
 connection, encoder, congestion controller, and helper WebSocket. HTTP streams

@@ -104,20 +104,27 @@ monotonic capture timestamp.
 
 `CaptureEngine` fans frames out synchronously to consumers. Each encoder keeps a
 single newest pending frame, so a slow consumer cannot create latency by
-building a backlog. `WebRTCPublisher` retains the newest captured frame and uses
-one absolute-cadence pump as the only configured FPS controller. After the first
-frame, it continuously resubmits that retained buffer with fresh presentation
-timestamps; new captures replace it without building a backlog. The libwebrtc
-source adapter uses a 1,000 FPS safety ceiling and RTP senders have no additional
-FPS cap, avoiding independently phased frame droppers. The publisher pre-scales
-accepted pixel buffers to the configured maximum dimension and only accepts
-frames while at least one peer is connected. Its shared video source fans each
-submission out to every peer connection; libwebrtc maintains an independent
-sender, encoder, bitrate estimate, and packet stream per viewer.
+building a backlog. `WebRTCPublisher` submits every fresh capture to libwebrtc
+the moment it arrives and retains it as the newest frame. A chained timer runs
+as the repeat fallback at the configured `--video-fps`: whenever no fresh frame
+has gone out for one interval, it re-submits the retained frame with a fresh
+presentation timestamp, so an idle or slowly changing screen still gives the
+encoder, the bandwidth estimate and the receiver's jitter buffer a steady
+cadence. Fresh frames are never held for a slot — the earlier hold-for-slot pump
+added 0–16.7 ms per frame, measured as 10–15 ms at p50 tap-to-frame. The
+libwebrtc source adapter uses a 1,000 FPS safety ceiling and RTP senders have no
+additional FPS cap, avoiding independently phased frame droppers. The publisher
+pre-scales accepted pixel buffers to the configured maximum dimension and only
+accepts frames while at least one peer is connected. Its shared video source
+fans each submission out to every peer connection; libwebrtc maintains an
+independent sender, encoder, bitrate estimate, and packet stream per viewer.
 
-The pump is hardened against hostile host timing, because a production trace
-showed it silently degrading to send-on-arrival on a virtualized macOS VM
-(forwarded ≈ offered instead of ~60/s):
+`/webrtc/stats` reports the split: `arrivalFrames` (fresh captures sent on
+arrival) and `repeatFrames` (repeat-chain re-sends). While a peer is connected,
+arrivals track `offeredFrames`, and repeats fill the rest of the cadence.
+
+The repeat chain is hardened against hostile host timing, because a production
+trace showed an earlier pump silently degrading on a virtualized macOS VM:
 
 - Each chain tick is armed as a strict, zero-leeway `DispatchSourceTimer`, which
   opts out of the timer coalescing that stretched `asyncAfter` wake-ups. At most
@@ -125,10 +132,10 @@ showed it silently degrading to send-on-arrival on a virtualized macOS VM
 - A late tick advances to the next cadence slot but never skips slots; a stall
   longer than an interval re-anchors to the present instead of draining a
   catch-up burst. Consistently late timers therefore cost phase, not rate.
-- Arrivals watch chain liveness. If a scheduled pump has not ticked for four
-  intervals, the next capture arrival restarts the chain under a fresh
-  generation. Restarts are counted and exposed as `pumpRestarts` in
-  `/webrtc/stats`; a nonzero value means the host starved or dropped timers.
+- Arrivals watch chain liveness. If a scheduled chain has not ticked for four
+  intervals, the next capture arrival (which is still sent) restarts the chain
+  under a fresh generation. Restarts are counted and exposed as `pumpRestarts`
+  in `/webrtc/stats`; a nonzero value means the host starved or dropped timers.
 - The publisher holds a `latencyCritical` `ProcessInfo` activity while it
   exists, so macOS does not apply App Nap-style throttling to the detached
   daemon.

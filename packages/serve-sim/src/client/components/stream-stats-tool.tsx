@@ -107,7 +107,9 @@ function CaptureRows({ capture }: { capture: CaptureCounts }) {
         <Cell label="Screen frames" value={compact(capture.screenFrames)} />
         <Cell label="Idle frames" value={compact(capture.idleFrames)} />
         <Cell label="Capture deliveries" value={compact(capture.offeredFrames)} />
-        <Cell label="Pacer submissions" value={compact(capture.forwardedFrames)} />
+        <Cell label="Submissions" value={compact(capture.forwardedFrames)} />
+        <Cell label="Sent on arrival" value={compact(capture.arrivalFrames)} />
+        <Cell label="Repeats" value={compact(capture.repeatFrames)} />
       </div>
     </div>
   );

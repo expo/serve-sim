@@ -55,6 +55,7 @@ runs.
 | same, run 2 | 22.8 ms | 34.7 | 38.2 | 79.9 | — | 0.33 ms |
 | send on arrival, `--max-dimension 1280` (588x1280) | 26.7 ms | 32.7 | 32.7 | 44.0 | 0.87 ms | 0.60 ms |
 | send on arrival, `--max-dimension 0` (1206x2622) | 27.1 ms | 42.7 | 42.7 | 58.6 | 2.26 ms | 1.94 ms |
+| `webrtc-send-on-arrival` branch build, production flags | 24.8 ms | 32.3 | 37.3 | 82.0 | 0.59 ms | 0.32 ms |
 
 Sending fresh frames on arrival is the default from the `webrtc-send-on-arrival`
 change onward; the rows above compare it against the 0.1.51 hold-for-slot pump.

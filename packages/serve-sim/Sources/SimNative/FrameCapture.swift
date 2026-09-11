@@ -19,10 +19,12 @@ private struct ScreenCallbackBlocks {
 /// Headless simulator frame capture via direct IOSurface access.
 ///
 /// Uses SimulatorKit frame callbacks (via a private Objective-C protocol)
-/// plus an IOSurface seed poll. Some virtualized SimulatorKit runtimes deliver
-/// frame callbacks well below the display cadence; polling catches those
-/// surface changes without duplicating unchanged frames. Maintains a 5fps idle
-/// floor for late-joining clients.
+/// plus an IOSurface seed poll (240 Hz by default, `SERVE_SIM_CAPTURE_POLL_HZ`
+/// to override). Some virtualized SimulatorKit runtimes deliver frame
+/// callbacks well below the display cadence; polling catches those surface
+/// changes without duplicating unchanged frames, and at 240 Hz a change waits
+/// at most ~4 ms to be noticed. Maintains a 5fps idle floor for late-joining
+/// clients.
 ///
 /// Pipeline: IOSurface (shared memory) → CVPixelBuffer (zero-copy) → H.264 encode
 actor FrameCapture {
@@ -90,7 +92,7 @@ actor FrameCapture {
 
         try wireUpFramebuffer()
         startSurfacePoller()
-        print("[capture] Frame callbacks registered + 60Hz IOSurface poll + 5fps idle floor")
+        print("[capture] Frame callbacks registered + \(SimulatorCapturePollPolicy.pollsPerSecond)Hz IOSurface poll + 5fps idle floor")
     }
 
     /// Find all framebuffer display descriptors, register callbacks on each,

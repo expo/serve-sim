@@ -1616,7 +1616,6 @@ export function handleLogsRequest(
   );
 }
 
-/** The list carries the line count; `/crashes/<id>` carries the lines. */
 function summarize(record: CrashRecord): CrashSummary {
   const { frames: _frames, occurrences, ...rest } = record;
   const newest = occurrences[occurrences.length - 1];
@@ -1627,21 +1626,28 @@ function summarize(record: CrashRecord): CrashSummary {
   };
 }
 
-/** Arms collection for the selected device and reaps the caches of devices that went away. */
-async function collectCrashesFor(selectedDevice: string | null): Promise<ServeSimState | null> {
+/** A reader keeps the tail alive, so a crash during this stream still has lines before it. */
+function holdDeviceTail(buffers: LogBufferCache, udid: string): () => void {
+  return buffers.ensure(udid).subscribeBatch(() => {});
+}
+
+async function selectDeviceAndReap(selectedDevice: string | null): Promise<ServeSimState | null> {
   const states = await readServeSimStates();
   const state = selectServeSimState(states, selectedDevice);
-  if (!state) return null;
   const live = states.map((s) => s.device);
   crashRuntime.prune(live);
   logBufferCache.prune(live);
+  return state;
+}
+
+async function collectCrashesFor(selectedDevice: string | null): Promise<ServeSimState | null> {
+  const state = await selectDeviceAndReap(selectedDevice);
+  if (!state) return null;
   void crashRuntime.start({ deferToRetry: true }).catch(() => {});
-  // The tail can only hold lines the buffer already had, and `/logs` may never be opened.
   logBufferCache.ensure(state.device);
   return state;
 }
 
-/** JSON by default; SSE on `Accept: text/event-stream`. */
 export function handleCrashesRequest(
   req: SimReq,
   res: SimRes,
@@ -1687,12 +1693,9 @@ export function handleCrashesRequest(
     }
   );
   stream.onClose(unsubscribe);
-  // A reader holds the device tail open, so a crash during this stream still has lines before it.
-  stream.onClose(logBuffers.ensure(udid).subscribeBatch(() => {}));
+  stream.onClose(holdDeviceTail(logBuffers, udid));
 
   stream.write(`data: {"type":"meta","meta":${lastMeta}}\n\n`);
-  // One authoritative list, so a reader that reconnects replaces its rows instead of merging
-  // into a set this device no longer has.
   stream.write(
     "data: " + JSON.stringify({ type: "list", crashes: crashes.map(summarize) }) + "\n\n"
   );
@@ -2621,19 +2624,14 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         );
         return;
       }
-      const state = await collectCrashesFor(selectedDevice);
+      const state = await selectDeviceAndReap(selectedDevice);
       const occurrenceParam = new URL(rawUrl, "http://127.0.0.1").searchParams.get("occurrence");
       await handleCrashReportRequest(req, res, state, id, occurrenceParam);
       return;
     }
 
     if (url === base + "/logs") {
-      const states = await readServeSimStates();
-      const state = selectServeSimState(states, selectedDevice);
-      const liveDevices = states.map((s) => s.device);
-      logBufferCache.prune(liveDevices);
-      crashRuntime.prune(liveDevices);
-      handleLogsRequest(req, res, state, rawUrl);
+      handleLogsRequest(req, res, await selectDeviceAndReap(selectedDevice), rawUrl);
       return;
     }
 
@@ -2782,7 +2780,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       `${base}/appstate`,
       `${base}/logs`,
       `${base}/crashes`,
-      `${base}/crashes/`,
       `${base}/metrics`,
       `${base}/ax`,
     ],

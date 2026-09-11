@@ -1,8 +1,6 @@
 // An `.ips` is two documents concatenated: a one-line JSON header, then a JSON body.
 
-/** Simulator binaries report platform 7. */
 const IPS_SIMULATOR_PLATFORM = 7;
-/** bug_type 309 is a process crash; other values are spins, jetsams, and analytics. */
 const IPS_CRASH_BUG_TYPE = "309";
 const MAX_FRAMES = 24;
 
@@ -30,13 +28,11 @@ export interface CrashReport {
   deviceUdid: string | null;
   bundleId: string | null;
   appName: string | null;
-  /** Executable name; matches the emitter in device-log lines. */
   procName: string | null;
   appVersion: string | null;
   buildVersion: string | null;
   pid: number | null;
   capturedAt: string | null;
-  /** `capturedAt` as epoch ms. Apple's format is not ISO-8601, so parse it once here. */
   capturedAtMs: number | null;
   exceptionType: string | null;
   signal: string | null;
@@ -150,7 +146,6 @@ function readFrames(body: Record<string, unknown>): CrashFrame[] {
       symbol: readString(frame, "symbol"),
       imageOffset: readNumber(frame, "imageOffset"),
       imageUuid: readString(image, "uuid"),
-      // Both paths carry the same `/Users/USER` redaction, so a prefix match holds.
       appOwned: Boolean(bundleRoot && imagePath?.startsWith(bundleRoot)),
     });
   }
@@ -179,7 +174,6 @@ export function parseCrashReport(raw: string): CrashReport | null {
   const allFrames = readFrames(body);
   const culprit = allFrames.find((frame) => frame.appOwned) ?? allFrames[0];
   const culpritFrame = culprit ? describeFrame(culprit) : null;
-  // An unsymbolicated offset moves every rebuild, so it must not key the signature.
   const culpritKey = !culprit
     ? ""
     : culprit.symbol

@@ -256,8 +256,7 @@ export function matchInstalledAppByDisplayName(
 
 // Cache simctl's booted-device set briefly so per-request cost stays bounded.
 // The middleware runs inside the user's dev server (Metro etc.) and
-// readServeSimStates() is called on every /api, every page load, and every
-// poll from the logs drawer, so the window has to outlast the poll interval.
+// The window has to outlast the logs drawer's poll interval.
 const BOOTED_CACHE_TTL_MS = 5_000;
 let bootedSnapshot: {
   at: number;
@@ -1565,8 +1564,6 @@ export function handleLogsRequest(
   const wantsFollow = booleanParam(params, "follow");
 
   if (wantsJson) {
-    // Peek leaves simctl off. `follow` is the 2s UI poll: start the child, then
-    // idle-timeout kills it if the drawer stops asking.
     const buffer = wantsFollow ? cache.ensure(state.device) : cache.peek(state.device);
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     if (!buffer) {

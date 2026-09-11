@@ -522,7 +522,6 @@ export function CameraTool({
             )}
           </div>
 
-
           <div className="flex flex-col gap-1.5" data-camera-source-menu>
           <div className="flex items-stretch gap-1.5">
             <div>

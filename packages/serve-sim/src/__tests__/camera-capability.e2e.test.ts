@@ -4,7 +4,7 @@ import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } 
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { armTrampoline, isCapabilityEnabled, removeTrampolineSync } from "../launch-manager";
+import { clearLaunchState, armTrampoline, isCapabilityEnabled, removeTrampolineSync } from "../launch-manager";
 import { e2eDevice, readInsert, requireE2E } from "./e2e-preconditions";
 
 const PKG_DIR = join(import.meta.dir, "../..");
@@ -60,6 +60,7 @@ beforeAll(async () => {
   if (!ready) return;
   cli(["disable"]);
   removeTrampolineSync(udid!);
+  clearLaunchState(udid!);
   const second = join(scratch, "Second.app");
   cpSync(FIXTURE, second, { recursive: true });
   execFileSync("plutil", ["-replace", "CFBundleIdentifier", "-string", SECOND_APP, join(second, "Info.plist")]);
@@ -73,7 +74,7 @@ beforeAll(async () => {
 
 afterAll(() => {
   if (ready) {
-    try { cli(["disable"]); } finally { removeTrampolineSync(udid!); }
+    try { cli(["disable"]); } finally { removeTrampolineSync(udid!); clearLaunchState(udid!); }
     for (const app of [APP, SECOND_APP]) {
       try { simctl(["uninstall", udid!, app]); } catch {}
     }
@@ -125,4 +126,17 @@ describe.skipIf(!ready)("device-wide camera lifecycle", () => {
       expect(readInsert(udid!)).toContain("libServeSimTrampoline.dylib");
     }
   }, 180_000);
+  test("queued cached frames do not arrive after disconnect", async () => {
+    try { simctl(["terminate", udid!, APP]); } catch {}
+    cli(["enable", "--file", red]);
+    const suspended = lines(APP, "queue-suspended").length;
+    const drained = lines(APP, "queue-drained").length;
+    const samples = lines(APP, "queued-sample").length;
+    simctl(["launch", udid!, APP, "-ServeSimFixtureQueuedFrames"]);
+    await waitFor(() => lines(APP, "queue-suspended").length > suspended);
+    cli(["disable"]);
+    await waitFor(() => lines(APP, "queue-drained").length > drained);
+    expect(lines(APP, "queued-sample").length).toBe(samples);
+  }, 60_000);
+
 });

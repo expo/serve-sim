@@ -41,11 +41,25 @@ static void RecordURLContexts(NSSet<UIOpenURLContext *> *contexts) {
 
 @end
 
+@interface QueuedFrameRecorder : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
+@end
+
+@implementation QueuedFrameRecorder
+- (void)captureOutput:(AVCaptureOutput *)output
+ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
+        fromConnection:(AVCaptureConnection *)connection {
+  dispatch_async(dispatch_get_main_queue(), ^{ Record(@"queued-sample", @""); });
+}
+@end
+
 @interface FixtureSceneDelegate : UIResponder <UIWindowSceneDelegate, AVCaptureVideoDataOutputSampleBufferDelegate>
 @property(nonatomic, strong) UIWindow *window;
 @property(nonatomic, strong) AVCaptureSession *session;
 @property(nonatomic, strong) AVCaptureVideoPreviewLayer *preview;
 @property(nonatomic, copy) NSString *lastPixel;
+@property(nonatomic, strong) AVCaptureVideoDataOutput *queuedOutput;
+@property(nonatomic, strong) QueuedFrameRecorder *queuedRecorder;
+@property(nonatomic, strong) dispatch_queue_t queuedFrames;
 @end
 
 @implementation FixtureSceneDelegate
@@ -82,6 +96,14 @@ static void RecordURLContexts(NSSet<UIOpenURLContext *> *contexts) {
     [self.preview removeFromSuperlayer];
     self.preview = nil;
     self.lastPixel = nil;
+    if (self.queuedFrames) {
+      dispatch_queue_t queue = self.queuedFrames;
+      self.queuedFrames = nil;
+      dispatch_resume(queue);
+      dispatch_async(queue, ^{
+        dispatch_async(dispatch_get_main_queue(), ^{ Record(@"queue-drained", @""); });
+      });
+    }
   }];
   // Opening the camera later than the trampoline's load delay, to tell a
   // capability that arrived late from one that never arrived.
@@ -142,6 +164,14 @@ static void RecordURLContexts(NSSet<UIOpenURLContext *> *contexts) {
       + (CVPixelBufferGetHeight(pixelBuffer) / 2) * CVPixelBufferGetBytesPerRow(pixelBuffer)
       + (CVPixelBufferGetWidth(pixelBuffer) / 2) * 4;
   Record(@"sample", @"");
+  if (!self.queuedOutput && [NSProcessInfo.processInfo.arguments containsObject:@"-ServeSimFixtureQueuedFrames"]) {
+    self.queuedOutput = [AVCaptureVideoDataOutput new];
+    self.queuedRecorder = [QueuedFrameRecorder new];
+    self.queuedFrames = dispatch_queue_create("fixture.queued-frames", DISPATCH_QUEUE_SERIAL);
+    dispatch_suspend(self.queuedFrames);
+    [self.queuedOutput setSampleBufferDelegate:self.queuedRecorder queue:self.queuedFrames];
+    Record(@"queue-suspended", @"");
+  }
   NSString *value = [NSString stringWithFormat:@"%u,%u,%u", pixel[2], pixel[1], pixel[0]];
   if (![value isEqualToString:self.lastPixel]) {
     Record(@"frame", value);

@@ -16,7 +16,7 @@ import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
 import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./metrics-sampler";
 import { foregroundTracker, type ForegroundApp, type ForegroundTrackerCache } from "./foreground-tracker";
-import { corsAllowOriginHeaders } from "./middleware-utils";
+import { corsAllowOriginHeaders, frameAncestorsPolicy } from "./middleware-utils";
 import {
   closeDeviceSession,
   getDeviceSession,
@@ -1501,6 +1501,7 @@ export interface SimMiddlewareOptions {
    * same-origin + token-gated regardless. Loopback is always allowed.
    */
   metricsCorsOrigins?: string[];
+  frameAncestors?: string[];
   /** @deprecated Use `streamSettings: { transport: "http", codec }`. */
   codec?: string;
   /**
@@ -1586,6 +1587,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const execToken = options?.execToken ?? randomBytes(32).toString("base64url");
   const requirePreviewToken = options?.requirePreviewToken ?? false;
   const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
+  const frameAncestors = options?.frameAncestors ?? [];
 
   // Simulator-settings requests run in-process (just the underlying simctl /
   // ax-tool spawn) instead of round-tripping a full `node <cli>` exec per
@@ -1721,6 +1723,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
+        ...(requirePreviewToken
+          ? { "Content-Security-Policy": frameAncestorsPolicy(frameAncestors) }
+          : {}),
       });
       res.end(html);
       return;

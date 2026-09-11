@@ -1641,6 +1641,7 @@ async function serve(
   options: {
     stream?: StreamRuntimeOptions;
     metricsCorsOrigins?: string[];
+    frameAncestors?: string[];
     debugStreamPath?: string;
     requireToken?: boolean;
     quiet?: boolean;
@@ -1679,6 +1680,7 @@ async function serve(
     streamSettings: options.stream,
     proxyHelpers: true,
     metricsCorsOrigins: options.metricsCorsOrigins ?? [],
+    frameAncestors: options.frameAncestors ?? [],
     execToken: previewToken,
     requirePreviewToken,
   });
@@ -1892,6 +1894,13 @@ program
       "server and --transport webrtc.",
   )
   .option(
+    "--frame-ancestor <origin>",
+    "Allow this origin to embed the preview in a frame (repeatable). Only applies with " +
+      "--require-token; an ungated preview sends no frame policy.",
+    (value: string, prev: string[]) => [...prev, value],
+    [] as string[],
+  )
+  .option(
     "--metrics-cors-origin <origin>",
     "Allow this origin to read the /metrics stream cross-origin (repeatable). " +
       "Loopback origins are always allowed.",
@@ -2024,6 +2033,7 @@ Examples:
       await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, {
         stream,
         metricsCorsOrigins: opts.metricsCorsOrigin,
+        frameAncestors: opts.frameAncestor,
         debugStreamPath,
         requireToken: !!opts.requireToken,
         quiet: !!opts.quiet,

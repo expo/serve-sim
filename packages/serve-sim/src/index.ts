@@ -1090,6 +1090,43 @@ function resolveTargetDevices(devices: string[]): string[] {
   return [fallback.udid];
 }
 
+/**
+ * Point a device's future app launches at the capture proxy.
+ *
+ * An app only loads the capture library if it was inserted at launch, so this has to run before anything
+ * launches an app on the device, not when the preview server comes up.
+ */
+async function startNetworkCapture(
+  udids: string[],
+  fields: string[] | undefined,
+  quiet: boolean,
+): Promise<void> {
+  const capture = await import("./capture");
+  capture.captureRuntime.setServerEnabled(true);
+  // Set once, so the panel's reboot and a sidebar boot capture the same fields as the CLI asked for.
+  capture.captureRuntime.setFields(capture.resolveCaptureFields(fields));
+  for (const udid of udids) {
+    if (capture.captureRuntime.metaFor(udid).attachment === "capturing") continue;
+    try {
+      const meta = await capture.captureRuntime.enableForDevice(udid);
+      if (quiet) continue;
+      console.log(
+        `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from third-party apps on ` +
+          "this device is recorded for the whole boot session (Apple system apps like Safari are left unproxied); " +
+          "HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
+      );
+    } catch (error) {
+      const reason =
+        error instanceof capture.CaptureEnableError
+          ? error.meta.attachError
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      console.error(`Network capture could not start for ${udid}. ${reason ?? ""}`);
+    }
+  }
+}
+
 async function serve(
   servePort: number,
   devices: string[],
@@ -1127,32 +1164,8 @@ async function serve(
   }
   const targetDevice = targetDevices[0];
 
-  // Capture is applied to the device, not to a viewer, so it belongs here: after the device is up and
-  // before anything can launch an app on it.
   const capture = options.networkCapture ? await import("./capture") : null;
-  if (capture) {
-    capture.captureRuntime.setServerEnabled(true);
-    // Set once, so the panel's reboot and a sidebar boot capture the same fields as the CLI asked for.
-    capture.captureRuntime.setFields(capture.resolveCaptureFields(options.networkCaptureFields));
-    for (const udid of targetDevices) {
-      try {
-        const meta = await capture.captureRuntime.enableForDevice(udid);
-        console.log(
-          `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from third-party apps on ` +
-            "this device is recorded for the whole boot session (Apple system apps like Safari are left unproxied); " +
-            "HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
-        );
-      } catch (error) {
-        const reason =
-          error instanceof capture.CaptureEnableError
-            ? error.meta.attachError
-            : error instanceof Error
-              ? error.message
-              : String(error);
-        console.error(`Network capture could not start for ${udid}. ${reason ?? ""}`);
-      }
-    }
-  }
+  if (capture) await startNetworkCapture(targetDevices, options.networkCaptureFields, quiet);
 
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
@@ -1612,6 +1625,13 @@ Examples:
         process.exit(1);
       }
     }
+    if (opts.networkCapture && (opts.detach || opts.preview === false)) {
+      console.error(
+        "--network-capture needs the preview server, so drop --detach/--no-preview. The proxy and its " +
+          "recordings live in that process; these modes exit and would leave nothing capturing.",
+      );
+      process.exit(1);
+    }
     if (opts.requireToken && (opts.detach || opts.preview === false)) {
       console.error(
         "--require-token needs the preview server, so drop --detach/--no-preview. It gates the " +
@@ -1620,6 +1640,14 @@ Examples:
       process.exit(1);
     }
     let targets = devices;
+    // Capture is armed before the run mode starts, so every path out of here has to disarm it again.
+    let captureStarted = false;
+    const stopNetworkCapture = async () => {
+      if (!captureStarted) return;
+      captureStarted = false;
+      const capture = await import("./capture");
+      await capture.captureRuntime.disableAll().catch(() => {});
+    };
     if (!opts.detach) {
       try {
         targets = resolveTargetDevices(devices);
@@ -1633,6 +1661,7 @@ Examples:
           for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
             process.on(signal, async () => {
               sessionStopping = true;
+              await stopNetworkCapture();
               await disarmDevicesArmedHereAsync();
               if (process.listenerCount(signal) > 1) return;
               process.exit(0);
@@ -1649,6 +1678,12 @@ Examples:
             if (sessionStopping) return;
           }
         }
+        // Before any launch: an app carries the capture library only if it was inserted at launch.
+        if (opts.networkCapture) {
+          await startNetworkCapture(targets, opts.networkCaptureField, !!opts.quiet);
+          captureStarted = true;
+          if (sessionStopping) return;
+        }
         for (const udid of launchesBeforeStreaming ? targets : []) {
           if (sessionStopping) return;
           if (bundleId) {
@@ -1661,12 +1696,14 @@ Examples:
                 `Requested ${missing.join(", ")} but ${missing.length === 1 ? "it" : "they"} ` +
                   `did not apply on ${udid}. See the message above for why.`,
               );
+              await stopNetworkCapture();
               process.exit(1);
             }
           }
         }
       } catch (error) {
         console.error(error instanceof Error ? error.message : error);
+        await stopNetworkCapture();
         process.exit(1);
       }
     }

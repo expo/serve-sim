@@ -3,19 +3,14 @@ import type { CrashSummary } from "../../crash/store";
 import {
   applyCrashFrame,
   EMPTY_CRASH_LIST,
-  parseCrashFrame,
   type CrashListState,
 } from "../utils/crash-stream";
 import { crashDetailUrl, formatCrashAgo } from "../utils/crash-format";
-import { openHostEventStream } from "../utils/exec";
+import { watchCrashes } from "../utils/watch-crashes";
 import { simAuthHeaders, simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
 import { CrashDetailModal, type SelectedOccurrence } from "./crash-detail-modal";
 
-
-function authorizedFetch(url: string): Promise<Response> {
-  return fetch(url, { headers: simAuthHeaders() });
-}
 
 type CrashDetail = {
   record: CrashSummary;
@@ -31,7 +26,6 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
   const [now, setNow] = useState(() => Date.now());
   const [pendingIndex, setPendingIndex] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [evicted, setEvicted] = useState(false);
   const fetchGenRef = useRef(0);
   const requestedRef = useRef<number | null>(null);
   const confirmedRef = useRef<number | null>(null);
@@ -51,17 +45,14 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
 
   useEffect(() => {
     setList(EMPTY_CRASH_LIST);
-    setEvicted(false);
-    const stream = openHostEventStream(streamPath);
-    stream.onmessage = ({ data }) => {
-      const frame = parseCrashFrame(data);
-      if (!frame) return;
-      setLoadError(null);
-      setList((prev) => applyCrashFrame(prev, frame));
-    };
-    stream.onerror = () =>
-      setLoadError("Lost contact with serve-sim. Showing the last crash list read.");
-    return () => stream.close();
+    return watchCrashes(
+      streamPath,
+      (frame) => {
+        setLoadError(null);
+        setList((prev) => applyCrashFrame(prev, frame));
+      },
+      () => setLoadError("Lost contact with serve-sim. Showing the last crash list read."),
+    );
   }, [streamPath]);
 
   const loadDetail = useCallback(
@@ -75,7 +66,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
         setLoadError("Could not load that crash.");
       };
       try {
-        const response = await authorizedFetch(crashDetailUrl(path, id, occurrence));
+        const response = await fetch(crashDetailUrl(path, id, occurrence), { headers: simAuthHeaders() });
         if (!response.ok) {
           revert();
           return;
@@ -96,12 +87,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
   useEffect(() => {
     if (!detail) return;
     const listed = list.crashes.find((crash) => crash.id === detail.record.id);
-    // The device dropped this crash to stay under its cap, so nothing can refresh it now.
-    if (!listed) {
-      setEvicted(true);
-      return;
-    }
-    setEvicted(false);
+    if (!listed) return;
     const remapped = listed.occurrenceTimes.findIndex(
       (stamp) => stamp.rawPath === detail.occurrence.rawPath
     );
@@ -152,6 +138,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
   };
 
   const crashes = list.crashes;
+  const evicted = detail !== null && !crashes.some((crash) => crash.id === detail.record.id);
   const unavailable = list.meta?.status === "unavailable";
 
   return (

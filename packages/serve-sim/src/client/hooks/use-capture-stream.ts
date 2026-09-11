@@ -9,6 +9,7 @@ import {
   type CapturedBody,
   type CapturedRequest,
 } from "../../capture/store";
+import { runHostAction } from "../utils/exec";
 import { openHostEventStream } from "../utils/exec";
 
 export type { CaptureMeta, CaptureAttachment, CapturedBody, CapturedRequest };
@@ -38,15 +39,12 @@ export function useCaptureStream(
   const [errored, setErrored] = useState(false);
 
   const clear = useCallback(() => {
-    setRequests([]);
-    const base = path.split("?")[0]!;
     const device = new URL(path, "http://local").searchParams.get("device");
-    const clearUrl = `${base}/clear${device ? `?device=${encodeURIComponent(device)}` : ""}`;
-    void fetch(clearUrl, {
-      method: "POST",
-      headers: captureAuthHeaders({ json: true }),
-      body: "{}",
-    }).catch(() => {});
+    if (!device) return;
+    // Emptied only once the host confirms, so the panel cannot show a cleared list over a full store.
+    void runHostAction("capture.clear", { udid: device }).then((result) => {
+      if (result.exitCode === 0) setRequests([]);
+    });
   }, [path]);
 
   useEffect(() => {

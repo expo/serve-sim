@@ -13,7 +13,7 @@ export function crashDetailUrl(listPath: string, id: string, occurrence?: number
   const params = new URLSearchParams(search);
   if (occurrence !== undefined) params.set("occurrence", String(occurrence));
   const qs = params.toString();
-  return `${pathname}/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`;
+  return `${pathname?.replace(/\/+$/, "")}/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`;
 }
 
 export type StackRow =
@@ -68,4 +68,10 @@ export function collapseSystemFrames(frames: CrashFrame[]): StackRow[] {
 export function formatOccurrenceClock(ms: number | null, fallback: string): string {
   if (ms === null) return fallback;
   return new Date(ms).toLocaleString();
+}
+
+export function crashStreamUrl(path: string, collectTail: boolean): string {
+  const url = new URL(path, "http://127.0.0.1");
+  url.searchParams.set("tail", collectTail ? "1" : "0");
+  return `${url.pathname}${url.search}`;
 }

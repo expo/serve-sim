@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CrashMeta } from "../../crash/runtime";
 import type { CrashSummary } from "../../crash/store";
+import {
+  applyCrashFrame,
+  EMPTY_CRASH_LIST,
+  parseCrashFrame,
+  type CrashListState,
+} from "../utils/crash-stream";
 import { crashDetailUrl, formatCrashAgo } from "../utils/crash-format";
 import { openHostEventStream } from "../utils/exec";
 import { simAuthHeaders, simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
 import { CrashDetailModal, type SelectedOccurrence } from "./crash-detail-modal";
-
-type CrashFrame =
-  | { type: "meta"; meta: CrashMeta }
-  | { type: "crash" | "recurred"; record: CrashSummary };
 
 
 function authorizedFetch(url: string): Promise<Response> {
@@ -25,8 +26,7 @@ type CrashDetail = {
 
 export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndpoint?: string }) {
   const [open, setOpen] = useState(false);
-  const [meta, setMeta] = useState<CrashMeta | null>(null);
-  const [crashes, setCrashes] = useState<CrashSummary[]>([]);
+  const [list, setList] = useState<CrashListState>(EMPTY_CRASH_LIST);
   const [detail, setDetail] = useState<CrashDetail | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [pendingIndex, setPendingIndex] = useState<number | null>(null);
@@ -47,27 +47,13 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
   }, []);
 
   useEffect(() => {
-    setMeta(null);
-    setCrashes([]);
+    setList(EMPTY_CRASH_LIST);
     const stream = openHostEventStream(path);
     stream.onmessage = ({ data }) => {
-      let frame: CrashFrame;
-      try {
-        frame = JSON.parse(data) as CrashFrame;
-      } catch {
-        return;
-      }
+      const frame = parseCrashFrame(data);
+      if (!frame) return;
       setLoadError(null);
-      if (frame.type === "meta") {
-        setMeta(frame.meta);
-        return;
-      }
-      // Newest first, matching the order the backlog replays in.
-      setCrashes((prev) =>
-        [frame.record, ...prev.filter((crash) => crash.id !== frame.record.id)].sort(
-          (a, b) => b.lastSeen - a.lastSeen
-        )
-      );
+      setList((prev) => applyCrashFrame(prev, frame));
     };
     stream.onerror = () =>
       setLoadError("Lost contact with serve-sim. Showing the last crash list read.");
@@ -105,7 +91,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
 
   useEffect(() => {
     if (!detail) return;
-    const listed = crashes.find((crash) => crash.id === detail.record.id);
+    const listed = list.crashes.find((crash) => crash.id === detail.record.id);
     if (!listed) return;
     const remapped = listed.occurrenceTimes.findIndex(
       (stamp) => stamp.rawPath === detail.occurrence.rawPath
@@ -138,7 +124,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
           }
         : prev
     );
-  }, [crashes, detail, loadDetail]);
+  }, [list, detail, loadDetail]);
 
   const selectOccurrence = (index: number): void => {
     if (!detail) return;
@@ -157,7 +143,8 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
     return true;
   };
 
-  const unavailable = meta?.status === "unavailable";
+  const crashes = list.crashes;
+  const unavailable = list.meta?.status === "unavailable";
 
   return (
     <CollapsibleSection
@@ -188,7 +175,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
         </p>
       )}
       {unavailable ? (
-        <p className="text-[11px] leading-relaxed text-amber-300/80">{meta?.statusError}</p>
+        <p className="text-[11px] leading-relaxed text-amber-300/80">{list.meta?.statusError}</p>
       ) : crashes.length === 0 ? (
         <p className="text-[11px] text-white/40">
           No crashes. A report shows up a few seconds after a crash.

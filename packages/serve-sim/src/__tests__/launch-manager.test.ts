@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { spawn } from "child_process";
 import { join } from "path";
 
 import {
@@ -12,10 +13,17 @@ import {
   listCapabilities,
   readLaunchState,
   releaseLaunchState,
+  releaseSessionSync,
+  releaseSession,
+  stopLaunchSession,
+  enableCapabilities,
+  applyDefaultCapabilities,
   renderCapabilityConfig,
 } from "../launch-manager";
+import { registerCapability, clearRegisteredCapabilities } from "../capabilities";
+import { launchAppAsync } from "../launch-app";
 import { stateDir } from "../state";
-import { useTempStateDir } from "./helpers";
+import { useTempStateDir, withShimsAsync } from "./helpers";
 
 const UDID = "LAUNCH-MANAGER-TEST-" + process.pid;
 
@@ -169,22 +177,6 @@ describe("config size limit", () => {
   });
 });
 
-describe("childLaunchEnv", () => {
-  test("inserts the capability dylib and the capability loader into the launched app", () => {
-    const env = childLaunchEnv("/opt/injector.dylib", { SIMCAM_SHM_NAME: "/shm" });
-    const inserted = env.SIMCTL_CHILD_DYLD_INSERT_LIBRARIES!.split(":");
-
-    expect(inserted).toContain("/opt/injector.dylib");
-    expect(inserted.some((path) => path.endsWith("libServeSimCapabilityLoader.dylib"))).toBe(true);
-  });
-
-  test("prefixes the capability environment so simctl passes it to the app", () => {
-    expect(childLaunchEnv("/opt/injector.dylib", { SIMCAM_SHM_NAME: "/shm" })).toMatchObject({
-      SIMCTL_CHILD_SIMCAM_SHM_NAME: "/shm",
-    });
-  });
-});
-
 describe("config field separators", () => {
   test("a value carrying a separator is refused", () => {
     for (const value of ["a\tb", "a\nb", "a;b"]) {
@@ -331,5 +323,195 @@ describe("releaseLaunchState", () => {
     );
 
     expect(listCapabilities(UDID)).toEqual([]);
+  });
+});
+
+
+describe("session cleanup", () => {
+  test("keeps another armed session even with no capabilities", () => {
+    writeRawState(JSON.stringify({
+      launchArgs: [], capabilities: {}, sessionPids: [process.pid, process.ppid],
+    }));
+    expect(releaseLaunchState(UDID, process.pid)).toBe(true);
+    expect(readLaunchState(UDID)?.sessionPids).toEqual([process.ppid]);
+    expect(listCapabilities(UDID)).toEqual([]);
+  });
+
+  test("releases only our host resources and preserves persistent capabilities", () => {
+    const capability = (name: string, ownerPid: number | null) => ({
+      name, ownerPid, bundleId: null, scope: "allApps", dylib: "/probe.dylib",
+    });
+    writeRawState(JSON.stringify({
+      launchArgs: [], sessionPids: [process.pid, process.ppid],
+      capabilities: {
+        ours: capability("ours", process.pid),
+        theirs: capability("theirs", process.ppid),
+        persistent: capability("persistent", null),
+      },
+    }));
+    const released: string[] = [];
+    releaseSessionSync(UDID, process.pid, (record) => released.push(record.name));
+    expect(released).toEqual(["ours"]);
+    expect(listCapabilities(UDID)).toEqual(["persistent", "theirs"]);
+  });
+
+  test("does not deadlock exit cleanup against its own active update", () => {
+    const lock = join(stateDir(), `launch-${UDID}.lock`);
+    writeRawState(JSON.stringify({ launchArgs: [], capabilities: {} }));
+    writeFileSync(lock, String(process.pid));
+    try {
+      expect(() => releaseLaunchState(UDID, process.pid)).toThrow("while this process is updating");
+      expect(readLaunchState(UDID)).not.toBeNull();
+    } finally {
+      unlinkSync(lock);
+    }
+  });
+
+  test("waits for a concurrent update before deciding what to release", async () => {
+    const lock = join(stateDir(), `launch-${UDID}.lock`);
+    const target = join(stateDir(), `launch-${UDID}.json`);
+    const ready = join(stateDir(), "cleanup-lock-ready");
+    writeRawState(JSON.stringify({ launchArgs: [], capabilities: {
+      sentinel: { name: "sentinel", scope: "allApps", dylib: "/probe.dylib", ownerPid: null },
+    } }));
+    const script = `
+      const fs = require("fs");
+      fs.writeFileSync(${JSON.stringify(lock)}, String(process.pid), { flag: "wx" });
+      fs.writeFileSync(${JSON.stringify(ready)}, "ready");
+      setTimeout(() => {
+        fs.writeFileSync(${JSON.stringify(target)}, JSON.stringify({
+          launchArgs: [], capabilities: { camera: {
+            name: "camera", scope: "allApps", dylib: "/camera.dylib", ownerPid: null,
+          } },
+        }));
+        fs.unlinkSync(${JSON.stringify(lock)});
+      }, 300);
+    `;
+    const child = spawn(process.execPath, ["-e", script], { stdio: "ignore" });
+    const exited = new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`writer exited ${code}`)));
+    });
+    const deadline = Date.now() + 3000;
+    while (!existsSync(ready) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    try {
+      expect(existsSync(ready)).toBe(true);
+      releaseSessionSync(UDID, process.pid, () => {});
+      expect(listCapabilities(UDID)).toEqual(["camera"]);
+      await exited;
+    } finally {
+      child.kill();
+    }
+  });
+});
+
+
+describe("graceful launch shutdown", () => {
+  test("awaits an active launch transaction before releasing its capabilities", async () => {
+    writeRawState(JSON.stringify({ launchArgs: [], capabilities: {}, sessionPids: [process.ppid] }));
+    await withShimsAsync({ xcrun: "#!/bin/sh\nsleep 0.15\nexit 0\n" }, async () => {
+      const released: string[] = [];
+      const update = enableCapabilities(UDID, null, [{
+        name: "camera", scope: "allApps", dylib: "/camera.dylib",
+      }], { relaunch: false });
+      const shutdown = releaseSession(UDID, process.pid, (record) => released.push(record.name));
+      await Promise.all([update, shutdown]);
+      expect(released).toEqual(["camera"]);
+      expect(listCapabilities(UDID)).toEqual([]);
+      expect(readLaunchState(UDID)?.sessionPids).toEqual([process.ppid]);
+    });
+  });
+
+  test("--kill waits for owner cleanup and preserves another live session", async () => {
+    const marker = join(stateDir(), "owner-cleaned");
+    const manager = join(import.meta.dir, "../launch-manager.ts");
+    const child = spawn(process.execPath, ["-e", `
+      const { releaseSessionSync } = await import(${JSON.stringify(manager)});
+      const fs = require("fs");
+      process.on("SIGTERM", () => setTimeout(() => {
+        releaseSessionSync(${JSON.stringify(UDID)}, process.pid, (record) => {
+          fs.writeFileSync(${JSON.stringify(marker)}, record.name);
+        });
+        process.exit(0);
+      }, 100));
+      setInterval(() => {}, 1000);
+      console.log("ready");
+    `], { stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once("error", reject);
+        child.stdout?.once("data", () => resolve());
+      });
+      writeRawState(JSON.stringify({
+        launchArgs: [], sessionPids: [child.pid, process.pid],
+        capabilities: { camera: { name: "camera", scope: "allApps", dylib: "/camera.dylib", ownerPid: child.pid } },
+      }));
+      const fallback: string[] = [];
+      await stopLaunchSession(UDID, child.pid!, (record) => fallback.push(record.name));
+      expect(readFileSync(marker, "utf-8")).toBe("camera");
+      expect(fallback).toEqual([]);
+      expect(readLaunchState(UDID)?.sessionPids).toEqual([process.pid]);
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+
+  test("--kill releases a dead owner's resources without removing persistent ones", async () => {
+    const dead = 999_999;
+    writeRawState(JSON.stringify({
+      launchArgs: [], sessionPids: [process.pid],
+      capabilities: {
+        camera: { name: "camera", scope: "allApps", dylib: "/camera.dylib", ownerPid: dead },
+        probe: { name: "probe", scope: "allApps", dylib: "/probe.dylib", ownerPid: null },
+      },
+    }));
+    const released: string[] = [];
+    await stopLaunchSession(UDID, dead, (record) => released.push(record.name));
+    expect(released).toEqual(["camera"]);
+    expect(listCapabilities(UDID)).toEqual(["probe"]);
+    expect(readLaunchState(UDID)?.sessionPids).toEqual([process.pid]);
+  });
+});
+
+
+describe("startup capability loading", () => {
+  test("defaults do not restart a remembered app and explicit launch starts once", async () => {
+    const log = join(stateDir(), "simctl-startup-calls");
+    const quotedLog = "'" + log.replaceAll("'", "'\\''") + "'";
+    clearRegisteredCapabilities();
+    registerCapability({ name: "camera", defaultEnabled: false, scope: "allApps", async setEnabled() {
+      return { dylib: "/camera.dylib" };
+    } });
+    try {
+      await withShimsAsync({ xcrun: `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quotedLog}\nexit 0\n` }, async () => {
+        writeRawState(JSON.stringify({ bundleId: "remembered.app", launchArgs: [], capabilities: {} }));
+        await applyDefaultCapabilities(UDID, null, { enable: ["camera"] });
+        const calls = () => readFileSync(log, "utf-8").split("\n");
+        expect(calls().filter((line) => /^simctl (launch|terminate) /.test(line))).toEqual([]);
+        await launchAppAsync(UDID, { bundleId: "explicit.app", launchArgs: [], capabilities: { enable: ["camera"] } });
+        expect(calls().filter((line) => line.startsWith("simctl launch "))).toEqual([`simctl launch ${UDID} explicit.app`]);
+        expect(calls().filter((line) => line.startsWith("simctl terminate "))).toEqual([`simctl terminate ${UDID} explicit.app`]);
+      });
+    } finally {
+      clearRegisteredCapabilities();
+    }
+  });
+});
+
+describe("childLaunchEnv", () => {
+  test("inserts the capability dylib and the capability loader into the launched app", () => {
+    const env = childLaunchEnv("/opt/injector.dylib", { SIMCAM_SHM_NAME: "/shm" });
+    const inserted = env.SIMCTL_CHILD_DYLD_INSERT_LIBRARIES!.split(":");
+
+    expect(inserted).toContain("/opt/injector.dylib");
+    expect(inserted.some((path) => path.endsWith("libServeSimCapabilityLoader.dylib"))).toBe(true);
+  });
+
+  test("prefixes the capability environment so simctl passes it to the app", () => {
+    expect(childLaunchEnv("/opt/injector.dylib", { SIMCAM_SHM_NAME: "/shm" })).toMatchObject({
+      SIMCTL_CHILD_SIMCAM_SHM_NAME: "/shm",
+    });
   });
 });

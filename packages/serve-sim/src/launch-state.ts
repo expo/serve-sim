@@ -23,6 +23,7 @@ export interface RecordedCapability extends Capability {
 }
 
 export interface LaunchState {
+  sessionPids?: number[];
   bundleId?: string;
   launchArgs: string[];
   capabilities: Record<string, RecordedCapability>;
@@ -42,7 +43,7 @@ export function ownerIsGone(ownerPid: number | null): boolean {
   }
 }
 
-export function readLaunchState(udid: string): LaunchState | null {
+export function readLaunchState(udid: string, retainOwnerPid?: number): LaunchState | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(stateFile(udid), "utf-8"));
@@ -50,18 +51,21 @@ export function readLaunchState(udid: string): LaunchState | null {
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) return null;
-  const { bundleId, launchArgs, capabilities } = parsed as Partial<LaunchState>;
+  const { bundleId, launchArgs, capabilities, sessionPids } = parsed as Partial<LaunchState>;
   return {
     ...(typeof bundleId === "string" && bundleId ? { bundleId } : {}),
     launchArgs: Array.isArray(launchArgs)
       ? launchArgs.filter((arg): arg is string => typeof arg === "string")
       : [],
-    capabilities: recordedCapabilities(capabilities),
+    capabilities: recordedCapabilities(capabilities, retainOwnerPid),
+    ...(Array.isArray(sessionPids) ? { sessionPids: sessionPids.filter(
+      (pid) => Number.isInteger(pid) && pid > 0 && !ownerIsGone(pid),
+    ) } : {}),
   };
 }
 
 // Discard malformed records and capabilities whose owner has exited.
-function recordedCapabilities(value: unknown): Record<string, RecordedCapability> {
+function recordedCapabilities(value: unknown, retainOwnerPid?: number): Record<string, RecordedCapability> {
   if (typeof value !== "object" || value === null) return {};
   const kept: Record<string, RecordedCapability> = {};
   for (const [key, record] of Object.entries(value)) {
@@ -71,7 +75,7 @@ function recordedCapabilities(value: unknown): Record<string, RecordedCapability
       continue;
     }
     const owner = typeof ownerPid === "number" ? ownerPid : null;
-    if (ownerIsGone(owner)) continue;
+    if (owner !== retainOwnerPid && ownerIsGone(owner)) continue;
     kept[key] = {
       ...(record as RecordedCapability),
       bundleId: typeof bundleId === "string" ? bundleId : null,

@@ -114,6 +114,7 @@ describeIfSim("serve-sim --require-token (built CLI)", () => {
       "/metrics",
       "/logs",
       "/crashes",
+      "/crashes/INC-1",
       `/helper/${udid}/camera/status`,
     ]) {
       const response = await fetch(`${baseUrl}${path}`, { redirect: "manual" });

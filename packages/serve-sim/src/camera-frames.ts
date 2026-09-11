@@ -10,7 +10,6 @@ export const MAX_CAMERA_FRAME_BYTES = 8 * 1024 * 1024;
 
 interface FrameStream {
   udid: string;
-  owner: symbol;
   socket: net.Socket;
   ready: boolean;
   draining: boolean;
@@ -28,14 +27,13 @@ function drop(stream: FrameStream): void {
   stream.socket.destroy();
 }
 
-function openStream(udid: string, owner: symbol): FrameStream | null {
+function openStream(udid: string): FrameStream | null {
   const socketPath = cameraHelperSocketFile(udid);
   if (!existsSync(socketPath)) return null;
 
   const socket = net.createConnection(socketPath);
   const stream: FrameStream = {
     udid,
-    owner,
     socket,
     ready: false,
     draining: false,
@@ -106,7 +104,7 @@ export function ownsCameraFrameStream(udid: string, owner: symbol): boolean {
 
 export function writeCameraFrame(udid: string, frame: Buffer, owner: symbol): boolean {
   if (!ownsCameraFrameStream(udid, owner) || frame.length === 0 || frame.length > MAX_CAMERA_FRAME_BYTES) return false;
-  const stream = streams.get(udid) ?? openStream(udid, owner);
+  const stream = streams.get(udid) ?? openStream(udid);
   if (!stream) return false;
 
   clearTimeout(stream.idle);

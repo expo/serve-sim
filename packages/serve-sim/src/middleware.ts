@@ -1566,30 +1566,15 @@ export function handleLogsRequest(
   if (wantsJson) {
     const buffer = wantsFollow ? cache.ensure(state.device) : cache.peek(state.device);
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-    if (!buffer) {
-      res.end(
-        JSON.stringify({
-          device: state.device,
-          latestSeq: 0,
-          oldestSeq: 0,
-          bufferedBytes: 0,
-          status: "stopped",
-          streamError: null,
-          lines: [],
-        })
-      );
-      return;
-    }
-    const lines = buffer.read({ since, limit });
     res.end(
       JSON.stringify({
         device: state.device,
-        latestSeq: buffer.latestSeq,
-        oldestSeq: buffer.oldestSeq,
-        bufferedBytes: buffer.byteLength,
-        status: buffer.status,
-        streamError: buffer.error,
-        lines,
+        latestSeq: buffer?.latestSeq ?? 0,
+        oldestSeq: buffer?.oldestSeq ?? 0,
+        bufferedBytes: buffer?.byteLength ?? 0,
+        status: buffer?.status ?? "stopped",
+        streamError: buffer?.error ?? null,
+        lines: buffer?.read({ since, limit }) ?? [],
       })
     );
     return;

@@ -1,5 +1,5 @@
 import { existsSync, unlinkSync } from "fs";
-import { join } from "path";
+import { basename, join } from "path";
 import {
   capabilitiesToApply,
   capabilityDefinition,
@@ -92,11 +92,17 @@ export function devicesArmedHere(): string[] {
 
 // DYLD_INSERT_LIBRARIES is a colon-separated list. Another tool may already
 // have one set, so add and remove only our own entry.
+function isCapabilityLoaderPath(path: string): boolean {
+  const name = basename(path);
+  // Recognize sessions started before the capability-loader rename.
+  return name === CAPABILITY_LOADER_NAME || name === "libServeSimTrampoline.dylib";
+}
+
 function withoutOurs(current: string): string[] {
   return current
     .split(":")
     .map((entry) => entry.trim())
-    .filter((entry) => entry !== "" && !entry.endsWith(CAPABILITY_LOADER_NAME));
+    .filter((entry) => entry !== "" && !isCapabilityLoaderPath(entry));
 }
 
 async function readInsert(udid: string): Promise<string> {
@@ -159,7 +165,7 @@ export async function disarmStaleCapabilityLoader(udid: string): Promise<void> {
   const ours = current
     .split(":")
     .map((entry) => entry.trim())
-    .find((entry) => entry.endsWith(CAPABILITY_LOADER_NAME));
+    .find(isCapabilityLoaderPath);
   if (!ours || existsSync(ours)) return;
   await removeCapabilityLoader(udid);
 }
@@ -319,7 +325,7 @@ export async function enableCapabilities(
   const dylib = capabilityLoaderPath();
   if (!existsSync(dylib)) {
     throw new Error(
-      `CapabilityLoader not built: ${dylib} is missing. Run \`bun run packages/serve-sim/build.ts\` ` +
+      `Capability loader not built: ${dylib} is missing. Run \`bun run packages/serve-sim/build.ts\` ` +
         `to build the native artifacts, then retry.`,
     );
   }

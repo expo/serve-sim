@@ -12,35 +12,17 @@ import { join, resolve } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 
+import { e2eDevice, requireE2E } from "./e2e-preconditions";
+
 const BUNDLE_ID = "dev.expo.serve-sim.simnet-probe";
 const PROBE_HOST = "simnet-probe.test";
 const DYLIB = resolve(import.meta.dir, "../../dist/simnet/libSimNetProxy.dylib");
 const BUILD_SCRIPT = resolve(import.meta.dir, "fixtures/SimNetProbe/build.sh");
 
-function firstBootedIosSim(): string | null {
-  try {
-    const raw = execFileSync("xcrun", ["simctl", "list", "devices", "booted", "-j"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    const parsed: { devices?: Record<string, { udid?: string }[]> } = JSON.parse(raw);
-    for (const devices of Object.values(parsed.devices ?? {})) {
-      for (const device of devices) if (device.udid) return device.udid;
-    }
-  } catch {
-    // No Xcode, or no booted device; the suite skips.
-  }
-  return null;
-}
-
-const udid = firstBootedIosSim();
+const udid = e2eDevice();
 const canRun = !!udid && existsSync(DYLIB);
 const describeOrSkip = canRun ? describe : describe.skip;
-if (!canRun) {
-  console.warn(
-    `[simnet-injection.e2e] skipping: ${udid ? "run the build first, dist/simnet is missing" : "no booted iOS simulator"}`,
-  );
-}
+requireE2E("simnet injection", canRun);
 
 interface Probe {
   port: number;

@@ -4,12 +4,12 @@ import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } 
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { clearLaunchState, armTrampoline, isCapabilityEnabled, removeTrampolineSync } from "../launch-manager";
+import { clearLaunchState, armCapabilityLoader, isCapabilityEnabled, removeCapabilityLoaderSync } from "../launch-manager";
 import { e2eDevice, readInsert, requireE2E } from "./e2e-preconditions";
 
 const PKG_DIR = join(import.meta.dir, "../..");
 const CLI = join(PKG_DIR, "dist/serve-sim.js");
-const FIXTURE = join(PKG_DIR, "dist/trampoline/ServeSimLaunchFixture.app");
+const FIXTURE = join(PKG_DIR, "dist/capability-loader/ServeSimLaunchFixture.app");
 const APP = "dev.expo.serve-sim.launch-fixture";
 const SECOND_APP = "dev.expo.serve-sim.camera-second";
 const udid = e2eDevice();
@@ -59,7 +59,7 @@ const blue = image("blue.bmp", 0, 255);
 beforeAll(async () => {
   if (!ready) return;
   cli(["disable"]);
-  removeTrampolineSync(udid!);
+  removeCapabilityLoaderSync(udid!);
   clearLaunchState(udid!);
   const second = join(scratch, "Second.app");
   cpSync(FIXTURE, second, { recursive: true });
@@ -69,12 +69,12 @@ beforeAll(async () => {
     try { simctl(["uninstall", udid!, app!]); } catch {}
     simctl(["install", udid!, bundle!]);
   }
-  await armTrampoline(udid!);
+  await armCapabilityLoader(udid!);
 }, 120_000);
 
 afterAll(() => {
   if (ready) {
-    try { cli(["disable"]); } finally { removeTrampolineSync(udid!); clearLaunchState(udid!); }
+    try { cli(["disable"]); } finally { removeCapabilityLoaderSync(udid!); clearLaunchState(udid!); }
     for (const app of [APP, SECOND_APP]) {
       try { simctl(["uninstall", udid!, app]); } catch {}
     }
@@ -91,7 +91,7 @@ describe.skipIf(!ready)("device-wide camera lifecycle", () => {
     expect(springboardPid()).toBe(pid);
     expect(isCapabilityEnabled(udid!, "camera")).toBe(true);
     cli(["disable"]);
-    expect(readInsert(udid!)).toContain("libServeSimTrampoline.dylib");
+    expect(readInsert(udid!)).toContain("libServeSimCapabilityLoader.dylib");
   }, 30_000);
 
   test("two running apps disconnect and reconnect to a new image without relaunching", async () => {
@@ -123,7 +123,7 @@ describe.skipIf(!ready)("device-wide camera lifecycle", () => {
         expect(lines(app, "sample").length).toBe(samples);
       }
       expect(springboardPid()).toBe(springboard);
-      expect(readInsert(udid!)).toContain("libServeSimTrampoline.dylib");
+      expect(readInsert(udid!)).toContain("libServeSimCapabilityLoader.dylib");
     }
   }, 180_000);
   test("queued cached frames do not arrive after disconnect", async () => {

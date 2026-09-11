@@ -87,7 +87,7 @@ function accessCookie(
 
 // A cookie rides along on any same-site page's requests, so cookie auth must also prove the
 // origin. A bearer or query token is presented deliberately and needs no such check.
-function isSameOriginRequest(headers: SessionAuthReq["headers"]): boolean {
+export function isSameOriginRequest(headers: SessionAuthReq["headers"]): boolean {
   const site = headerValue(headers["sec-fetch-site"]);
   if (site !== undefined) return site === "same-origin" || site === "none";
   const origin = headerValue(headers.origin);
@@ -234,6 +234,28 @@ export function upgradeAuthHeaders(
   const headers: SessionAuthReq["headers"] = {};
   for (const name of UPGRADE_AUTH_HEADERS) headers[name] = read(name);
   return headers;
+}
+
+// Capture responses carry decrypted traffic, so a bearer alone is not enough: a cross-origin page
+// holding a leaked token must not read them, and a state-changing POST must not be CORS-simple.
+export function assertCaptureAccess(req: SessionAuthReq, res: SessionAuthRes): boolean {
+  if (!isSameOriginRequest(req.headers)) {
+    res.writeHead(403, { "Content-Type": "application/json", "Cache-Control": "no-store, private" });
+    res.end(JSON.stringify({ error: "Network capture is same-origin only." }));
+    return false;
+  }
+  if ((req.method ?? "GET").toUpperCase() === "POST") {
+    const contentType = headerValue(req.headers["content-type"]) ?? "";
+    if (!contentType.split(";")[0]!.trim().toLowerCase().endsWith("json")) {
+      res.writeHead(415, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store, private",
+      });
+      res.end(JSON.stringify({ error: "Network capture commands must be sent as application/json." }));
+      return false;
+    }
+  }
+  return true;
 }
 
 // No `?token=` fallback, so this credential never reaches a request URL or a proxy log.

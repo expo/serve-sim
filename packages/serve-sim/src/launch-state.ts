@@ -18,12 +18,7 @@ export interface Capability {
 export interface RecordedCapability extends Capability {
   /** The app to relaunch, when one was named. Never narrows what loads. */
   bundleId: string | null;
-  /**
-   * The process that enabled it, whose exit releases it. A capability enabled
-   * for a stream goes when that stream does. `serve-sim camera` exits right
-   * away and records null, so its capability survives until an explicit
-   * disable.
-   */
+  /** Null keeps the capability alive after a one-shot command exits. */
   ownerPid: number | null;
 }
 

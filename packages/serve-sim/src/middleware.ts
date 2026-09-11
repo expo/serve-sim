@@ -43,7 +43,7 @@ import {
 } from "./devicekit-chrome";
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
 import { crashRuntime, type CrashRuntime } from "./crash/runtime";
-import type { CrashRecord, CrashSummary } from "./crash/store";
+import { summarizeCrash, type CrashStreamFrame } from "./crash/protocol";
 import { logBufferCache, type LogBufferCache, type LogLine } from "./log-buffer";
 import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware-utils";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
@@ -1616,16 +1616,6 @@ export function handleLogsRequest(
   );
 }
 
-function summarize(record: CrashRecord): CrashSummary {
-  const { frames: _frames, occurrences, ...rest } = record;
-  const newest = occurrences[occurrences.length - 1];
-  return {
-    ...rest,
-    logTailLines: newest?.logTail.length ?? 0,
-    occurrenceCount: occurrences.length,
-  };
-}
-
 /** A reader keeps the tail alive, so a crash during this stream still has lines before it. */
 function holdDeviceTail(buffers: LogBufferCache, udid: string): () => void {
   return buffers.ensure(udid).subscribeBatch(() => {});
@@ -1666,7 +1656,7 @@ export function handleCrashesRequest(
   if (!wantsStream) {
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     res.end(
-      JSON.stringify({ meta: runtime.meta(), crashes: runtime.listFor(udid).map(summarize) })
+      JSON.stringify({ meta: runtime.meta(), crashes: runtime.listFor(udid).map(summarizeCrash) })
     );
     return;
   }
@@ -1684,8 +1674,8 @@ export function handleCrashesRequest(
   const { crashes, unsubscribe } = runtime.subscribe(
     udid,
     (event) => {
-      const frame =
-        event.type === "evicted" ? event : { type: event.type, record: summarize(event.record) };
+      const frame: CrashStreamFrame =
+        event.type === "evicted" ? event : { type: event.type, record: summarizeCrash(event.record) };
       stream.write("data: " + JSON.stringify(frame) + "\n\n");
     },
     () => {
@@ -1697,7 +1687,7 @@ export function handleCrashesRequest(
 
   stream.write(`data: {"type":"meta","meta":${lastMeta}}\n\n`);
   stream.write(
-    "data: " + JSON.stringify({ type: "list", crashes: crashes.map(summarize) }) + "\n\n"
+    "data: " + JSON.stringify({ type: "list", crashes: crashes.map(summarizeCrash) }) + "\n\n"
   );
 }
 
@@ -1750,7 +1740,7 @@ export async function handleCrashReportRequest(
   res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   res.end(
     JSON.stringify({
-      record: summarize(record),
+      record: summarizeCrash(record),
       occurrence: { ...occurrence, index: requested, total },
       report,
       reportError,

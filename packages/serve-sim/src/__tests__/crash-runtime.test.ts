@@ -779,6 +779,30 @@ describe("createCrashRuntime meta", () => {
     runtime.stop();
   });
 
+  test("holds a request-driven start to the backoff after a failure", async () => {
+    let attempts = 0;
+    const runtime = createCrashRuntime({
+      reportsDir: "/reports",
+      retryDelayMs: 10_000,
+      ensureDir: () => {},
+      watchDir: () => {
+        attempts += 1;
+        throw new Error("EPERM");
+      },
+      readReport: async () => "",
+      readDir: async () => [],
+      statFile: async () => ({ mtimeMs: 0 }),
+      now: () => clock,
+      onError: () => {},
+    });
+
+    await runtime.start();
+    for (let i = 0; i < 5; i++) await runtime.start({ deferToRetry: true });
+
+    expect(attempts).toBe(1);
+    runtime.stop();
+  });
+
   test("recovers on a restart after a failure", () => {
     const runtime = makeRuntime();
     runtime.start();

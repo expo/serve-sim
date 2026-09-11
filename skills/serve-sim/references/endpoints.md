@@ -117,8 +117,11 @@ Without that flag a loopback server is ungated, on the grounds that it is
 already reachable by whoever is on the machine. Expose serve-sim on a network
 only with the flag, or behind an authenticated proxy.
 
-`EventSource` cannot send an `Authorization` header, so the SSE forms of `/logs`
-and `/crashes` need a client that can, such as `curl` or `fetch`.
+A gated SSE or API caller can authenticate three ways: `Authorization: Bearer
+<token>`, the access cookie from a page that already traded its link token, or
+`?token=<token>` on the request itself, which the gate accepts for anything that
+is not a document navigation. The preview reads both streams over the control
+socket, which authenticates once at the upgrade.
 
 Every route takes `?device=<udid>` and falls back to the first registered
 simulator without it, which is the wrong one as soon as two are running.
@@ -127,6 +130,10 @@ A crash report lands a few seconds after the process dies, so an empty
 `crashes` array shortly after a crash means "not yet", not "nothing happened".
 The `meta.reportDelaySeconds` field carries that bound, and `meta.status` says
 whether collection is running at all.
+
+A stream opens with a `meta` frame and one `list` frame holding the current
+records, then sends `crash`, `recurred` and `evicted` frames as they happen. A
+reader that reconnects gets a fresh `list` and should replace its rows with it.
 
 Repeats of the same crash collapse into one record, and the newest few are kept
 as `occurrences`. The list omits them and reports `occurrenceCount` and

@@ -35,7 +35,9 @@ export type CrashSummary = Omit<CrashRecord, "frames" | "occurrences"> & {
 
 export type LogTailSource = "none" | "buffer-rolled-past" | "no-app-lines" | "app-windowed";
 
-export type CrashEvent = { type: "crash" | "recurred"; record: CrashRecord };
+export type CrashEvent =
+  | { type: "crash" | "recurred"; record: CrashRecord }
+  | { type: "evicted"; id: string };
 
 type Listener = (event: CrashEvent) => void;
 
@@ -143,10 +145,12 @@ export class CrashStore {
       if (entry[1].lastSeen < oldest[1].lastSeen) oldest = entry;
     }
     this.bySignature.delete(oldest[0]);
+    this.emit({ type: "evicted", id: oldest[1].id });
   }
 
   private emit(event: CrashEvent): void {
-    const delivered: CrashEvent = { type: event.type, record: snapshot(event.record) };
+    const delivered: CrashEvent =
+      event.type === "evicted" ? event : { type: event.type, record: snapshot(event.record) };
     for (const listener of this.listeners) {
       try {
         listener(delivered);

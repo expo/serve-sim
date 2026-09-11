@@ -1635,7 +1635,7 @@ async function collectCrashesFor(selectedDevice: string | null): Promise<ServeSi
   const live = states.map((s) => s.device);
   crashRuntime.prune(live);
   logBufferCache.prune(live);
-  void crashRuntime.start().catch(() => {});
+  void crashRuntime.start({ deferToRetry: true }).catch(() => {});
   // The tail can only hold lines the buffer already had, and `/logs` may never be opened.
   logBufferCache.ensure(state.device);
   return state;
@@ -1678,9 +1678,9 @@ export function handleCrashesRequest(
   const { crashes, unsubscribe } = runtime.subscribe(
     udid,
     (event) => {
-      stream.write(
-        "data: " + JSON.stringify({ type: event.type, record: summarize(event.record) }) + "\n\n"
-      );
+      const frame =
+        event.type === "evicted" ? event : { type: event.type, record: summarize(event.record) };
+      stream.write("data: " + JSON.stringify(frame) + "\n\n");
     },
     () => {
       if (stream.isOpen()) res.end();
@@ -1691,10 +1691,11 @@ export function handleCrashesRequest(
   stream.onClose(logBuffers.ensure(udid).subscribeBatch(() => {}));
 
   stream.write(`data: {"type":"meta","meta":${lastMeta}}\n\n`);
-  for (const record of crashes) {
-    if (!stream.isOpen()) break;
-    stream.write("data: " + JSON.stringify({ type: "crash", record: summarize(record) }) + "\n\n");
-  }
+  // One authoritative list, so a reader that reconnects replaces its rows instead of merging
+  // into a set this device no longer has.
+  stream.write(
+    "data: " + JSON.stringify({ type: "list", crashes: crashes.map(summarize) }) + "\n\n"
+  );
 }
 
 export async function handleCrashReportRequest(
@@ -2781,6 +2782,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       `${base}/appstate`,
       `${base}/logs`,
       `${base}/crashes`,
+      `${base}/crashes/`,
       `${base}/metrics`,
       `${base}/ax`,
     ],

@@ -169,16 +169,21 @@ describe("handleCrashesRequest", () => {
     expect(payload.meta.statusError).toContain("not being collected");
   });
 
-  test("streams SSE with meta before the replayed backlog", async () => {
+  test("streams SSE with meta before the authoritative list", async () => {
     const runtime = await runtimeWithCrash();
     const res = fakeRes();
     handleCrashesRequest(fakeReq({ accept: "text/event-stream" }), res, state, runtime);
 
     expect(res.headers_["Content-Type"]).toBe("text/event-stream");
     const metaAt = res.body_.indexOf('"type":"meta"');
-    const crashAt = res.body_.indexOf('"type":"crash"');
+    const listAt = res.body_.indexOf('"type":"list"');
     expect(metaAt).toBeGreaterThanOrEqual(0);
-    expect(crashAt).toBeGreaterThan(metaAt);
+    expect(listAt).toBeGreaterThan(metaAt);
+
+    const frame = JSON.parse(res.body_.slice(listAt - 1, res.body_.indexOf("\n\n", listAt))) as {
+      crashes: { id: string }[];
+    };
+    expect(frame.crashes.map((crash) => crash.id)).toEqual(["INC-1"]);
   });
 
   test("keeps a device tail reader for the life of the stream", async () => {

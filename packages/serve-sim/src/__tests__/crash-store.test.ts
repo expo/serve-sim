@@ -132,8 +132,25 @@ describe("CrashStore", () => {
     clock = 2_000;
     store.record(report({ pid: 2 }), "/tmp/b.ips");
 
+    const recurred = events[1];
     expect(events.map((event) => event.type)).toEqual(["crash", "recurred"]);
-    expect(events[1]?.record.count).toBe(2);
+    expect(recurred?.type === "recurred" && recurred.record.count).toBe(2);
+  });
+
+  test("tells readers which crash it dropped to stay under the cap", () => {
+    const events: CrashEvent[] = [];
+    store.subscribe((event) => events.push(event));
+
+    const ids: string[] = [];
+    for (let index = 0; index <= MAX_CRASHES; index++) {
+      clock = 1_000 + index;
+      ids.push(store.record(report({ culpritFrame: `Demo F${index}()` }), "/tmp/x.ips").id);
+    }
+
+    const evicted = events.filter((event) => event.type === "evicted");
+    expect(evicted).toHaveLength(1);
+    expect(evicted[0]).toEqual({ type: "evicted", id: ids[0]! });
+    expect(store.list()).toHaveLength(MAX_CRASHES);
   });
 
   test("still evicts when the clock is not a finite number", () => {
@@ -148,7 +165,7 @@ describe("CrashStore", () => {
     const source = report();
     const returned = store.record(source, "/tmp/a.ips");
 
-    source.frames.push({ image: "late", symbol: "late", imageOffset: 0, appOwned: false });
+    source.frames.push({ image: "late", symbol: "late", imageOffset: 0, imageUuid: null, appOwned: false });
     returned.count = 999;
 
     const stored = store.get(returned.id);

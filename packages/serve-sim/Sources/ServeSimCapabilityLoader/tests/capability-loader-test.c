@@ -2,7 +2,50 @@
 // so the static helpers are reachable; the constructor is a no-op here because
 // TMPDIR is not an app container.
 
+#include <dispatch/dispatch.h>
+#include <Block.h>
+#include <dlfcn.h>
+
+static dispatch_block_t scheduled[128];
+static size_t scheduled_count;
+static unsigned dlopen_count;
+
+static void test_dispatch_after(dispatch_time_t when, dispatch_queue_t queue, dispatch_block_t block) {
+  (void)when;
+  (void)queue;
+  if (scheduled_count == 128) __builtin_trap();
+  scheduled[scheduled_count++] = Block_copy(block);
+}
+
+static void *test_dlopen(const char *path, int flags) {
+  dlopen_count++;
+  return dlopen(path, flags);
+}
+
+#define dispatch_after test_dispatch_after
+#define dlopen test_dlopen
 #include "../serve-sim-capability-loader.c"
+#undef dispatch_after
+#undef dlopen
+
+static void run_scheduled(void) {
+  size_t count = scheduled_count;
+  dispatch_block_t ready[128];
+  memcpy(ready, scheduled, count * sizeof ready[0]);
+  scheduled_count = 0;
+  for (size_t i = 0; i < count; i++) {
+    ready[i]();
+    Block_release(ready[i]);
+  }
+}
+
+static void free_load(struct Load *load) {
+  for (size_t i = 0; i < MAX_CAPABILITIES; i++) {
+    free(load->capabilities[i].dylib);
+    free(load->capabilities[i].env);
+  }
+  free(load);
+}
 
 #include <sys/stat.h>
 
@@ -150,16 +193,14 @@ static void test_apply_env(void) {
   CHECK(apply_env(bad_name) != 0, "a pair setenv refuses is reported as a failure");
 }
 
-// Runs the load loop against a config, and returns what it wrote to stderr.
-// load_capabilities frees its argument and only skips the dlopen for lines it
-// rejects, so this exercises every branch the constructor would reach.
+// Runs immediate and scheduled loads and captures their diagnostics.
 static char *load_and_capture(const char *config_body) {
   static char captured[4096];
   char log_path[1024];
   snprintf(log_path, sizeof log_path, "/tmp/serve-sim-capability-loader-test-%d-stderr", getpid());
 
   char *config_path = write_temp("load-config", config_body, strlen(config_body));
-  struct Load *load = malloc(sizeof *load);
+  struct Load *load = calloc(1, sizeof *load);
   if (load == NULL) abort();
   snprintf(load->exec_path, sizeof load->exec_path, "%s",
            "/devices/UDID/data/Containers/Bundle/Application/ABC/Fixture.app/Fixture");
@@ -174,7 +215,8 @@ static char *load_and_capture(const char *config_body) {
   close(sink);
 
   load_capabilities(load);
-  free(load);
+  run_scheduled();
+  free_load(load);
 
   fflush(stderr);
   if (dup2(saved, STDERR_FILENO) < 0) abort();
@@ -232,6 +274,16 @@ static void test_load_capabilities(void) {
           "a capability with no delay is loaded before a delayed one");
   }
 
+  char many[MAX_CONFIG_BYTES] = "";
+  snprintf(line, sizeof line, "all\t%s\t\n", SERVE_SIM_TEST_DYLIB);
+  for (size_t i = 0; i < MAX_CAPABILITIES; i++) strcat(many, line);
+  out = load_and_capture(many);
+  CHECK(strstr(out, "ignoring the rest") == NULL, "exactly 64 applicable entries do not warn");
+  strcat(many, line);
+  out = load_and_capture(many);
+  CHECK(strstr(out, "more than 64 capabilities apply; ignoring the rest") != NULL,
+        "extra applicable entries report truncation");
+
   char oversized[MAX_CONFIG_BYTES + 16];
   memset(oversized, 'x', sizeof oversized);
   oversized[sizeof oversized - 1] = '\0';
@@ -240,11 +292,51 @@ static void test_load_capabilities(void) {
         "a config over the limit loads nothing");
 }
 
+static void test_delayed_reload(void) {
+  struct Load *load = calloc(1, sizeof *load);
+  if (load == NULL) abort();
+  char line[4096];
+  snprintf(line, sizeof line, "all\t%s\tSERVE_SIM_DELAY_TEST=old\t10000\n", SERVE_SIM_TEST_DYLIB);
+  char *path = write_temp("delayed", line, strlen(line));
+  snprintf(load->config_path, sizeof load->config_path, "%s", path);
+  unsigned before = dlopen_count;
+  load_capabilities(load);
+  CHECK(scheduled_count == 1, "delayed load returns with a scheduled callback");
+  CHECK(dlopen_count == before, "delay does not load synchronously");
+  load_capabilities(load);
+  CHECK(scheduled_count == 1, "unchanged config does not duplicate pending loads");
+
+  snprintf(line, sizeof line, "all\t%s\tSERVE_SIM_DELAY_TEST=new\t10000\n", SERVE_SIM_TEST_DYLIB);
+  FILE *file = fopen(path, "w");
+  if (!file) abort();
+  fputs(line, file);
+  fclose(file);
+  run_scheduled();
+  CHECK(dlopen_count == before, "pending callback refuses reconfigured contents");
+  CHECK(scheduled_count == 1, "replacement gets its own delay");
+  run_scheduled();
+  CHECK(dlopen_count == before + 1, "replacement loads once");
+  CHECK(strcmp(getenv("SERVE_SIM_DELAY_TEST"), "new") == 0, "only the replacement environment applies");
+  load_capabilities(load);
+  CHECK(scheduled_count == 0 && dlopen_count == before + 1, "loaded capability is not scheduled or dlopened again");
+  free_load(load);
+
+  load = calloc(1, sizeof *load);
+  if (load == NULL) abort();
+  snprintf(load->config_path, sizeof load->config_path, "%s", path);
+  load_capabilities(load);
+  unlink(path);
+  run_scheduled();
+  CHECK(dlopen_count == before + 1, "removing config cancels a pending load even before a watch event");
+  free_load(load);
+}
+
 int main(void) {
   test_read_config();
   test_capability_applies();
   test_apply_env();
   test_load_capabilities();
+  test_delayed_reload();
   remove_temps();
   if (failures == 0) fprintf(stdout, "ok\n");
   return failures == 0 ? 0 : 1;

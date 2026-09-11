@@ -178,4 +178,3 @@ describe("describeFailure", () => {
     expect(describeFailure("something entirely new")).toBe("something entirely new");
   });
 });
-

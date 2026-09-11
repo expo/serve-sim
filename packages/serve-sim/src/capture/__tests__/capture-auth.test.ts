@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { simMiddleware } from "../../middleware";
+import { useTempStateDir } from "../../__tests__/helpers";
 
 const TOKEN = "capture-token-xyz";
 
@@ -18,6 +19,14 @@ async function withMiddleware(
 }
 
 describe("network-capture auth", () => {
+  let stateDir: ReturnType<typeof useTempStateDir>;
+  beforeAll(() => {
+    stateDir = useTempStateDir();
+  });
+  afterAll(() => {
+    stateDir.restore();
+  });
+
   test("rejects unauthenticated SSE", async () => {
     await withMiddleware(async (_origin, request) => {
       const r = await request("/network-capture");

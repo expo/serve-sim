@@ -39,7 +39,6 @@ import {
 } from "./launch-manager";
 import { bootInjectedLibraries } from "./capture";
 import { parseCaptureFields } from "./capture/fields";
-import { isLoopbackHost } from "./middleware-utils";
 import { killOwnListeners } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";

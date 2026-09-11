@@ -7,7 +7,7 @@ import {
 } from "../client/utils/crash-format";
 
 function frame(appOwned: boolean, symbol = "sym"): CrashFrame {
-  return { image: appOwned ? "Demo" : "libsystem", symbol, imageOffset: 0, appOwned };
+  return { image: appOwned ? "Demo" : "libsystem", symbol, imageOffset: 0, imageUuid: null, appOwned };
 }
 
 describe("crashDetailUrl", () => {

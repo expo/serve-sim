@@ -191,10 +191,10 @@ describe("CrashStore", () => {
   });
 
   test("keeps each repeat as its own occurrence, newest last", () => {
-    const firstFrames = [{ image: "Demo", symbol: "old()", imageOffset: 1, appOwned: true }];
+    const firstFrames = [{ image: "Demo", symbol: "old()", imageOffset: 1, imageUuid: null, appOwned: true }];
     const secondFrames = [
-      { image: "libsystem_kernel.dylib", symbol: "__pthread_kill", imageOffset: 2, appOwned: false },
-      { image: "Demo", symbol: "old()", imageOffset: 1, appOwned: true },
+      { image: "libsystem_kernel.dylib", symbol: "__pthread_kill", imageOffset: 2, imageUuid: null, appOwned: false },
+      { image: "Demo", symbol: "old()", imageOffset: 1, imageUuid: null, appOwned: true },
     ];
     store.record(report({ pid: 1, frames: firstFrames }), "/tmp/a.ips", ["first tail"], "app-windowed");
     clock = 2_000;
@@ -224,7 +224,7 @@ describe("CrashStore", () => {
 
   test("returns copies of occurrences, not the stored arrays", () => {
     const returned = store.record(
-      report({ frames: [{ image: "Demo", symbol: "boot()", imageOffset: 0, appOwned: true }] }),
+      report({ frames: [{ image: "Demo", symbol: "boot()", imageOffset: 0, imageUuid: null, appOwned: true }] }),
       "/tmp/a.ips",
       ["line"],
       "app-windowed"
@@ -234,12 +234,13 @@ describe("CrashStore", () => {
       image: "late",
       symbol: "late()",
       imageOffset: 1,
+      imageUuid: null,
       appOwned: false,
     });
 
     expect(store.list()[0]?.occurrences[0]?.logTail).toEqual(["line"]);
     expect(store.list()[0]?.occurrences[0]?.frames).toEqual([
-      { image: "Demo", symbol: "boot()", imageOffset: 0, appOwned: true },
+      { image: "Demo", symbol: "boot()", imageOffset: 0, imageUuid: null, appOwned: true },
     ]);
   });
 

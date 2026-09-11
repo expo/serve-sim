@@ -297,6 +297,8 @@ function wireExecSocket(
               (action === "camera.inject" || action === "camera.switch")) {
             stoppedCameras.delete(params.udid);
           }
+        } catch (e) {
+          console.error("serve-sim action result hook failed:", e);
         } finally {
           if (closed) opts.onCameraClose?.(cameraOwner);
         }

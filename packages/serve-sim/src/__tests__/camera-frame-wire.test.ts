@@ -159,8 +159,9 @@ test("an action finishing after socket close releases its newly claimed camera o
 
 
 for (const closed of [false, true]) {
-  test(`reports action callback failures with socket ${closed ? "closed" : "open"}`, async () => {
-    const action = spyOn(hostActions, "runHostActionAsync").mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
+  test(`logs action callback failures with socket ${closed ? "closed" : "open"}`, async () => {
+    const result = { stdout: "", stderr: "", exitCode: 0 };
+    const action = spyOn(hostActions, "runHostActionAsync").mockResolvedValue(result);
     const log = spyOn(console, "error").mockImplementation(() => {});
     const failure = new Error("camera claim failed");
     let claimed: symbol | undefined;
@@ -185,12 +186,12 @@ for (const closed of [false, true]) {
       })), false);
       if (closed) socket.close();
       await Bun.sleep(0);
-      expect(log).toHaveBeenCalledWith("serve-sim action camera.inject failed:", failure);
+      expect(log).toHaveBeenCalledWith("serve-sim action result hook failed:", failure);
       if (closed) {
         expect(claimed).toBeUndefined();
         expect(closes).toBe(2);
       } else {
-        expect(socket.sent.at(-1)).toEqual({ id: 1, error: "action failed" });
+        expect(socket.sent.at(-1)).toEqual({ id: 1, ...result });
       }
     } finally {
       socket.close();

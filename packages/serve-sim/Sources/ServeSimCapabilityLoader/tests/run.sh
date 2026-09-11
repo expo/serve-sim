@@ -29,13 +29,17 @@ xcrun clang \
 # clang --analyze exits 0 even when it reports, and -Werror does not change that,
 # so the findings themselves are the signal.
 ANALYSIS="$OUT_DIR/analysis.txt"
-xcrun clang \
+if ! xcrun clang \
     --analyze \
     -Xclang -analyzer-output=text \
     -std=c11 \
     -Wall -Wextra -Wconversion -Wshadow \
     -o "$OUT_DIR/analysis" \
-    "$HERE/../serve-sim-capability-loader.c" > "$ANALYSIS" 2>&1 || true
+    "$HERE/../serve-sim-capability-loader.c" > "$ANALYSIS" 2>&1; then
+  cat "$ANALYSIS"
+  echo "clang analyzer failed" >&2
+  exit 1
+fi
 
 if [ -s "$ANALYSIS" ]; then
   echo "analyzer findings:"

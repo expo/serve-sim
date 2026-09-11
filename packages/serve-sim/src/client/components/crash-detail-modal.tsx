@@ -6,7 +6,12 @@ import type { CrashOccurrence, CrashSummary } from "../../crash/store";
 import { collapseSystemFrames, formatCrashAgo, formatOccurrenceClock } from "../utils/crash-format";
 import { useCopy } from "../hooks/use-copy";
 import { formatLogClock, parseDeviceLogJson } from "../utils/device-log-format";
+import { useResizableCenteredWidth } from "../hooks/use-resizable-width";
 import { LevelGlyph } from "./level-glyph";
+
+const CRASH_DETAIL_DEFAULT_WIDTH = 720;
+const CRASH_DETAIL_MIN_WIDTH = 360;
+const CRASH_DETAIL_MAX_WIDTH = 1_400;
 
 function messageOf(raw: string): string {
   return parseDeviceLogJson(raw)?.message ?? raw;
@@ -124,6 +129,16 @@ export function CrashDetailModal({
   const [tab, setTab] = useState<"stack" | "log">("stack");
   const [copied, copy] = useCopy();
   const panelRef = useRef<HTMLDivElement>(null);
+  const {
+    width,
+    onPointerDown: onResizePointerDown,
+    onKeyDown: onResizeKeyDown,
+  } = useResizableCenteredWidth(
+    "serve-sim:crash-detail-width",
+    CRASH_DETAIL_DEFAULT_WIDTH,
+    CRASH_DETAIL_MIN_WIDTH,
+    CRASH_DETAIL_MAX_WIDTH,
+  );
   const ago = formatCrashAgo(occurrence.capturedAtMs, now);
   const clock = formatOccurrenceClock(occurrence.capturedAtMs, occurrence.capturedAt ?? "unknown time");
   const frames = occurrence.frames;
@@ -142,7 +157,11 @@ export function CrashDetailModal({
       if (e.key === "Tab") {
         const root = panelRef.current;
         if (!root) return;
-        const focusable = [...root.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+        const focusable = [
+          ...root.querySelectorAll<HTMLElement>(
+            'button:not(:disabled), [tabindex]:not([tabindex="-1"])',
+          ),
+        ];
         if (focusable.length === 0) return;
         const first = focusable[0]!;
         const last = focusable[focusable.length - 1]!;
@@ -188,8 +207,23 @@ export function CrashDetailModal({
         aria-label="Crash report"
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[80vh] w-[min(720px,90vw)] flex-col rounded-[12px] bg-panel border border-white/12 shadow-[0_16px_48px_rgba(0,0,0,0.6)]"
+        className="relative flex max-h-[80vh] flex-col rounded-[12px] bg-panel border border-white/12 shadow-[0_16px_48px_rgba(0,0,0,0.6)]"
+        style={{ width, maxWidth: "calc(100vw - 3rem)" }}
       >
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize crash report"
+          aria-valuemin={CRASH_DETAIL_MIN_WIDTH}
+          aria-valuemax={CRASH_DETAIL_MAX_WIDTH}
+          aria-valuenow={Math.round(width)}
+          tabIndex={0}
+          onPointerDown={onResizePointerDown}
+          onKeyDown={onResizeKeyDown}
+          className="group absolute inset-y-0 right-0 z-10 flex w-4 translate-x-1/2 cursor-col-resize touch-none items-center justify-center outline-none"
+        >
+          <span className="h-8 w-1 rounded-full bg-white/15 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 group-active:opacity-100" />
+        </div>
         <header className="flex items-start justify-between gap-3 border-b border-white/8 px-4 py-3">
           <div>
             <p className="flex items-center gap-2">

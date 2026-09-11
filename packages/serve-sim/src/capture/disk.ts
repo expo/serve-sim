@@ -294,6 +294,8 @@ export class CaptureDiskAccumulator {
   private async rebuildHarIfDirty(): Promise<void> {
     if (!this.harDirty) return;
     this.enqueue(async () => {
+      // Cleared before the compact reads: a request that finishes during it stays dirty.
+      this.harDirty = false;
       await this.flushPendingEntries();
       this.diskEntryCount = await compactNdjsonAndStreamHar(
         this.entriesPath,
@@ -301,7 +303,6 @@ export class CaptureDiskAccumulator {
         this.creatorVersion,
         this.maxEntries,
       );
-      this.harDirty = false;
       this.lastWriteError = null;
     });
     await this.writeChain;

@@ -1,6 +1,6 @@
+import { e2eDevice } from "./e2e-preconditions";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "child_process";
-import { execSync } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
 import { RTCPeerConnection, RTCRtpCodecParameters } from "werift";
@@ -21,19 +21,6 @@ const PKG_DIR = join(import.meta.dir, "../..");
 const CLI = join(PKG_DIR, "dist/serve-sim.js");
 const MAX_DIMENSION = 1280;
 
-function bootedUdid(): string | null {
-  try {
-    const out = execSync("xcrun simctl list devices booted -j", { encoding: "utf-8" });
-    const data = JSON.parse(out) as {
-      devices: Record<string, Array<{ udid: string; state: string }>>;
-    };
-    for (const [runtime, devices] of Object.entries(data.devices)) {
-      if (!/iOS/i.test(runtime)) continue;
-      for (const d of devices) if (d.state === "Booted") return d.udid;
-    }
-  } catch {}
-  return null;
-}
 
 async function waitFor(check: () => boolean | Promise<boolean>, budgetMs: number): Promise<boolean> {
   const deadline = Date.now() + budgetMs;
@@ -107,7 +94,7 @@ async function negotiateAndMeasure(offerUrl: string): Promise<{ width: number; h
   }
 }
 
-const udid = bootedUdid();
+const udid = e2eDevice();
 const describeIfSim = udid && existsSync(CLI) ? describe : describe.skip;
 
 describeIfSim("WebRTC resolution cap", () => {

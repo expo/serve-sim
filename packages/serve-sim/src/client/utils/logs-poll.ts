@@ -14,6 +14,7 @@ export function logsSnapshotUrl(endpoint: string, since: number): string {
   url.searchParams.set("follow", "1");
   url.searchParams.set("limit", String(since > 0 ? LOGS_POLL_LIMIT : LOGS_REPLAY_LIMIT));
   if (since > 0) url.searchParams.set("since", String(since));
+  else url.searchParams.delete("since");
   return `${url.pathname}${url.search}`;
 }
 
@@ -49,13 +50,17 @@ export function startLogsPoll(
   }
 ): () => void {
   let stopped = false;
+  let activeRequest: AbortController | null = null;
 
   const sample = async (): Promise<void> => {
     const since = opts.getSince();
+    const controller = new AbortController();
+    activeRequest = controller;
+    const timeout = setTimeout(() => controller.abort(), LOGS_POLL_MS * 3);
     try {
       const response = await fetch(logsSnapshotUrl(endpoint, since), {
         headers: { Accept: "application/json", ...simAuthHeaders() },
-        signal: AbortSignal.timeout(LOGS_POLL_MS * 3),
+        signal: controller.signal,
       });
       if (stopped) return;
       if (!response.ok) {
@@ -74,12 +79,16 @@ export function startLogsPoll(
       if (fresh.length > 0) opts.onBatch(fresh);
     } catch {
       if (!stopped) opts.onError?.(/* errored */ true);
+    } finally {
+      clearTimeout(timeout);
+      activeRequest = null;
     }
   };
 
   const stopPolling = startExclusivePoll(sample, LOGS_POLL_MS);
   return () => {
     stopped = true;
+    activeRequest?.abort();
     stopPolling();
   };
 }

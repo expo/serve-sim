@@ -2,11 +2,11 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT_DIR="${1:-$HERE/../../dist/trampoline}"
+OUT_DIR="${1:-$HERE/../../dist/capability-loader}"
 mkdir -p "$OUT_DIR"
 
 SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-DYLIB="$OUT_DIR/libServeSimTrampoline.dylib"
+DYLIB="$OUT_DIR/libServeSimCapabilityLoader.dylib"
 
 xcrun --sdk iphonesimulator clang \
     -arch arm64 \
@@ -15,16 +15,16 @@ xcrun --sdk iphonesimulator clang \
     -dynamiclib \
     -O2 \
     -Wall -Wextra -Werror -Wconversion -Wshadow \
-    -install_name "@rpath/libServeSimTrampoline.dylib" \
+    -install_name "@rpath/libServeSimCapabilityLoader.dylib" \
     -o "$DYLIB" \
-    "$HERE/serve-sim-trampoline.c"
+    "$HERE/serve-sim-capability-loader.c"
 
 # This image is inserted into every process in the simulator. Anything beyond
 # libSystem crash-loops system daemons, so fail the build rather than ship it.
 LINKED="$(otool -L "$DYLIB" | grep $'^\t' | awk '{print $1}' | sort -u)"
-UNEXPECTED="$(echo "$LINKED" | grep -v -e '^@rpath/libServeSimTrampoline\.dylib$' -e '^/usr/lib/libSystem\.B\.dylib$' || true)"
+UNEXPECTED="$(echo "$LINKED" | grep -v -e '^@rpath/libServeSimCapabilityLoader\.dylib$' -e '^/usr/lib/libSystem\.B\.dylib$' || true)"
 if [ -n "$UNEXPECTED" ]; then
-  echo "Trampoline links more than libSystem:" >&2
+  echo "CapabilityLoader links more than libSystem:" >&2
   echo "$UNEXPECTED" >&2
   exit 1
 fi

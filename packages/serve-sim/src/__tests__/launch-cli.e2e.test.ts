@@ -9,7 +9,7 @@ import { e2eDevice, readInsert, requireE2E } from "./e2e-preconditions";
 
 const PKG_DIR = join(import.meta.dir, "../..");
 const CLI = join(PKG_DIR, "dist/serve-sim.js");
-const FIXTURE = join(PKG_DIR, "dist/trampoline/ServeSimLaunchFixture.app");
+const FIXTURE = join(PKG_DIR, "dist/capability-loader/ServeSimLaunchFixture.app");
 const APP = "dev.expo.serve-sim.launch-fixture";
 
 const udid = e2eDevice();
@@ -118,7 +118,7 @@ describe.skipIf(!ready)("serve-sim launch flags", () => {
     ).toBe(true);
   }, 240_000);
 
-  test("a launch that fails does not leave the trampoline inserted", async () => {
+  test("a launch that fails does not leave the capability loader inserted", async () => {
     const port = await freePortAsync();
     const result = spawnSync(
       "node",

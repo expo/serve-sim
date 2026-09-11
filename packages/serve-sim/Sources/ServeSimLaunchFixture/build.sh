@@ -2,7 +2,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT_DIR="${1:-$HERE/../../dist/trampoline}"
+OUT_DIR="${1:-$HERE/../../dist/capability-loader}"
 mkdir -p "$OUT_DIR"
 
 SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"

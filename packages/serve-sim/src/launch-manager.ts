@@ -36,7 +36,7 @@ export {
   capabilityConfigPath,
 } from "./capability-config";
 
-const TRAMPOLINE_NAME = "libServeSimTrampoline.dylib";
+const CAPABILITY_LOADER_NAME = "libServeSimCapabilityLoader.dylib";
 const INSERT = "DYLD_INSERT_LIBRARIES";
 const CONFIG_VAR = "SERVE_SIM_CAPABILITIES_CONFIG";
 const TERMINATE_TIMEOUT_MS = 15_000;
@@ -61,14 +61,14 @@ export function releaseLaunchState(udid: string, ownerPid: number): boolean {
   return true;
 }
 
-export function trampolineDir(): string {
-  return join(dirnameOf(import.meta.url), "..", "dist", "trampoline");
+export function capabilityLoaderDir(): string {
+  return join(dirnameOf(import.meta.url), "..", "dist", "capability-loader");
 }
 
 /**
  * `SIMCTL_CHILD_*` variables reach the app simctl launches. The insert has to
  * carry the capability dylib itself, so a swizzle is in place before the app's
- * own code runs, and the trampoline, because simctl's value replaces the
+ * own code runs, and the capability loader, because simctl's value replaces the
  * device-wide one for this process and would otherwise drop every other
  * capability.
  */
@@ -77,7 +77,7 @@ export function childLaunchEnv(
   capabilityEnv: Record<string, string>,
 ): Record<string, string> {
   return {
-    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: [dylib, trampolinePath()].join(":"),
+    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: [dylib, capabilityLoaderPath()].join(":"),
     ...Object.fromEntries(
       Object.entries(capabilityEnv).map(([key, value]) => [`SIMCTL_CHILD_${key}`, value]),
     ),
@@ -96,7 +96,7 @@ function withoutOurs(current: string): string[] {
   return current
     .split(":")
     .map((entry) => entry.trim())
-    .filter((entry) => entry !== "" && !entry.endsWith(TRAMPOLINE_NAME));
+    .filter((entry) => entry !== "" && !entry.endsWith(CAPABILITY_LOADER_NAME));
 }
 
 async function readInsert(udid: string): Promise<string> {
@@ -110,24 +110,24 @@ async function armInsert(udid: string, dylib: string): Promise<void> {
   armedHere.add(udid);
 }
 
-export function trampolinePath(): string {
-  return join(trampolineDir(), TRAMPOLINE_NAME);
+export function capabilityLoaderPath(): string {
+  return join(capabilityLoaderDir(), CAPABILITY_LOADER_NAME);
 }
 
-export async function armTrampoline(udid: string): Promise<void> {
-  const dylib = trampolinePath();
+export async function armCapabilityLoader(udid: string): Promise<void> {
+  const dylib = capabilityLoaderPath();
   if (!existsSync(dylib)) return;
   try {
     await armInsert(udid, dylib);
   } catch (error) {
     console.error(
-      `Could not arm the capability trampoline on ${udid}, so capabilities will not load this ` +
+      `Could not arm the capability loader on ${udid}, so capabilities will not load this ` +
         `session: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 }
 
-export function removeTrampolineSync(udid: string): void {
+export function removeCapabilityLoaderSync(udid: string): void {
   try {
     simctlSync(["spawn", udid, "launchctl", "unsetenv", CONFIG_VAR], 15_000);
     const current = simctlSync(["spawn", udid, "launchctl", "getenv", INSERT], 15_000);
@@ -138,7 +138,7 @@ export function removeTrampolineSync(udid: string): void {
     simctlSync(clear, 15_000);
   } catch (error) {
     console.error(
-      `Could not disarm the capability trampoline on ${udid}; it is still inserted into every ` +
+      `Could not disarm the capability loader on ${udid}; it is still inserted into every ` +
         `app that simulator starts. Clear it with: xcrun simctl spawn ${udid} launchctl unsetenv ` +
         `DYLD_INSERT_LIBRARIES (${error instanceof Error ? error.message : String(error)})`,
     );
@@ -147,11 +147,11 @@ export function removeTrampolineSync(udid: string): void {
   armedHere.delete(udid);
 }
 
-export async function disarmStaleTrampoline(udid: string): Promise<void> {
+export async function disarmStaleCapabilityLoader(udid: string): Promise<void> {
   const current = await simctl(["spawn", udid, "launchctl", "getenv", INSERT], 15_000).catch(() => null);
   if (current === null) {
     console.error(
-      `Could not read the current insert on ${udid}, so a stale trampoline from an earlier ` +
+      `Could not read the current insert on ${udid}, so a stale capability loader from an earlier ` +
         `session cannot be cleaned up. Capabilities may not load until it is.`,
     );
     return;
@@ -159,12 +159,12 @@ export async function disarmStaleTrampoline(udid: string): Promise<void> {
   const ours = current
     .split(":")
     .map((entry) => entry.trim())
-    .find((entry) => entry.endsWith(TRAMPOLINE_NAME));
+    .find((entry) => entry.endsWith(CAPABILITY_LOADER_NAME));
   if (!ours || existsSync(ours)) return;
-  await removeTrampoline(udid);
+  await removeCapabilityLoader(udid);
 }
 
-export async function removeTrampoline(udid: string): Promise<void> {
+export async function removeCapabilityLoader(udid: string): Promise<void> {
   await simctl(["spawn", udid, "launchctl", "unsetenv", CONFIG_VAR], 15_000).catch(
     () => undefined,
   );
@@ -189,9 +189,9 @@ export async function launchApp(
     const previous = readLaunchState(udid);
     const state: LaunchState = { bundleId, launchArgs, capabilities: previous?.capabilities ?? {} };
     const config = renderCapabilityConfig(state);
-    // The trampoline reads its config once, as the process starts, so both the
+    // The capability loader reads its config once, as the process starts, so both the
     // insert and the config have to be in place before the launch they apply to.
-    if (Object.keys(state.capabilities).length > 0) await armTrampoline(udid);
+    if (Object.keys(state.capabilities).length > 0) await armCapabilityLoader(udid);
     writeLaunchState(udid, state);
     commitCapabilityConfig(udid, config);
     if (restart) {
@@ -316,10 +316,10 @@ export async function enableCapabilities(
   { relaunch = true, ownerPid = process.pid }: EnableOptions = {},
 ): Promise<void> {
   if (capabilities.length === 0) return;
-  const dylib = trampolinePath();
+  const dylib = capabilityLoaderPath();
   if (!existsSync(dylib)) {
     throw new Error(
-      `Trampoline not built: ${dylib} is missing. Run \`bun run packages/serve-sim/build.ts\` ` +
+      `CapabilityLoader not built: ${dylib} is missing. Run \`bun run packages/serve-sim/build.ts\` ` +
         `to build the native artifacts, then retry.`,
     );
   }

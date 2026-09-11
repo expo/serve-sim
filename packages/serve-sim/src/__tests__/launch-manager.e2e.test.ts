@@ -16,7 +16,7 @@ import {
   listCapabilities,
 } from "../launch-manager";
 
-const DIST = join(import.meta.dir, "../../dist/trampoline");
+const DIST = join(import.meta.dir, "../../dist/capability-loader");
 const PROBE = join(DIST, "libServeSimProbe.dylib");
 const FIXTURE = join(DIST, "ServeSimLaunchFixture.app");
 const MARKER = join(tmpdir(), `serve-sim-probe-e2e-${process.pid}.txt`);

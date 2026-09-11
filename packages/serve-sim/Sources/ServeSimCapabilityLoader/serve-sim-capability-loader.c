@@ -232,7 +232,7 @@ static void watch_config(struct Load *load) {
 
 // getenv and access are safe in a constructor; the dlopen is not.
 __attribute__((constructor))
-static void serve_sim_trampoline_init(void) {
+static void serve_sim_capability_loader_init(void) {
   const char *tmp = getenv("TMPDIR");
   if (tmp == NULL || strstr(tmp, "/Containers/Data/Application/") == NULL) return;
 

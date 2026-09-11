@@ -1,11 +1,6 @@
+import type { CrashStreamFrame } from "../../crash/protocol";
 import type { CrashMeta } from "../../crash/runtime";
 import type { CrashSummary } from "../../crash/store";
-
-export type CrashStreamFrame =
-  | { type: "meta"; meta: CrashMeta }
-  | { type: "list"; crashes: CrashSummary[] }
-  | { type: "crash" | "recurred"; record: CrashSummary }
-  | { type: "evicted"; id: string };
 
 export type CrashListState = { meta: CrashMeta | null; crashes: CrashSummary[] };
 

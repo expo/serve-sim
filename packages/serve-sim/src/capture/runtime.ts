@@ -130,6 +130,14 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
         store.publishMeta(meta);
       };
 
+      // disableForDevice tore down whatever existed when it ran, so anything started after that point is
+      // this call's alone to undo.
+      const assertStillOurs = () => {
+        if (byUdid.get(udid) !== session) {
+          throw new Error("Capture was turned off for this device while it was starting.");
+        }
+      };
+
       try {
         const proxy = await startProxy(store, {
           fields: policy,
@@ -142,21 +150,33 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
         });
         session.proxy = proxy;
         meta.proxyAddress = proxy.address;
+        assertStillOurs();
 
         await trustCa(udid, await proxy.caPem());
+        assertStillOurs();
 
         await inject(udid, proxy.portFile);
+        assertStillOurs();
+        // The proxy can die during the two steps above. Overwriting the failure it published with
+        // "capturing" reports a dead proxy as a healthy one.
+        if (meta.attachment === "failed") {
+          throw new Error(meta.attachError ?? "The capture proxy stopped while capture was starting.");
+        }
         meta.attachment = "capturing";
       } catch (error) {
         meta.attachment = "failed";
         meta.attachError = error instanceof Error ? error.message : String(error);
-        try {
-          await clearInjection(udid);
-        } catch (clearError) {
-          console.warn(
-            `Network capture: clearing injection after failed enable for ${udid}:`,
-            clearError instanceof Error ? clearError.message : clearError,
-          );
+        const successor = byUdid.get(udid);
+        // A successor armed the device after this call was superseded, so its injection is not ours to clear.
+        if (!successor || successor === session) {
+          try {
+            await clearInjection(udid);
+          } catch (clearError) {
+            console.warn(
+              `Network capture: clearing injection after failed enable for ${udid}:`,
+              clearError instanceof Error ? clearError.message : clearError,
+            );
+          }
         }
         try {
           await session.proxy?.close();

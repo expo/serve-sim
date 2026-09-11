@@ -20,7 +20,7 @@ import {
   isHeicLikeFile,
   cameraSourceErrorMessage,
 } from "../utils/camera";
-import { type CameraMediaPreviewProps, CameraTestPatternHint, CameraStatusPill, CameraMediaPreview, CameraInlineBanner } from "./camera-tool-ui";
+import { type CameraMediaPreviewProps, CameraStatusPill, CameraMediaPreview, CameraInlineBanner } from "./camera-tool-ui";
 
 type CamMirror = "on" | "off";
 
@@ -448,9 +448,7 @@ export function CameraTool({
         className="flex flex-col gap-2.5"
       >
           <p className="m-0 text-[10px] leading-[1.5] text-white/45">
-            Enable connects the selected camera feed to all apps. Disable disconnects
-            it without restarting apps. Choose media or a webcam, or use the
-            test-pattern feed.
+            Choose an image, video, or camera, then enable it for all apps.
           </p>
 
           <input
@@ -503,7 +501,6 @@ export function CameraTool({
             )}
           </div>
 
-          {isPlaceholder && !uploading && <CameraTestPatternHint />}
 
           <div className="flex items-stretch gap-1.5">
             <div className="relative" data-camera-source-menu>

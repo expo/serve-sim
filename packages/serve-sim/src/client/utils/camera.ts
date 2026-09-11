@@ -25,9 +25,9 @@ export async function requestCameraStatus(
     const response = await request(endpoint, { cache: "no-store" });
     if (!response.ok) return null;
     const value = await response.json() as unknown;
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? value as CameraStatusResponse
-      : null;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    if (!("alive" in value) || typeof value.alive !== "boolean") return null;
+    return value as CameraStatusResponse;
   } catch {
     return null;
   }

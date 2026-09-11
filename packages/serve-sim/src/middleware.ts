@@ -14,6 +14,7 @@ import type { Socket } from "net";
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
+import { claimCameraFrameStream, closeCameraFrameStream, closeCameraFrameStreams, ownsCameraFrameStream, writeCameraFrame } from "./camera-frames";
 import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./metrics-sampler";
 import { foregroundTracker, type ForegroundApp, type ForegroundTrackerCache } from "./foreground-tracker";
 import { corsAllowOriginHeaders } from "./middleware-utils";
@@ -2555,8 +2556,25 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       `${base}/ax`,
     ],
     onUiRequest: handleUiRequest,
+    onCameraFrame: (udid, frame, owner) => {
+      if (!isSimulatorUdid(udid) || !ownsCameraFrameStream(udid, owner)) return false;
+      writeCameraFrame(udid, frame, owner);
+      return true;
+    },
+    onCameraClose: closeCameraFrameStreams,
+    onCameraStop: closeCameraFrameStream,
     serveSimBinPath: serveSimBinPath(),
-    onActionResult: (action, params, result) => recordActionEvent(action, params, result),
+    onActionResult: (action, params, result, owner) => {
+      if (result.exitCode === 0 && typeof params?.udid === "string" &&
+          (action === "camera.inject" || action === "camera.switch" || action === "camera.stopWebcam")) {
+        if (action !== "camera.stopWebcam" && params.source === "stream") {
+          claimCameraFrameStream(params.udid, owner);
+        } else {
+          closeCameraFrameStream(params.udid);
+        }
+      }
+      recordActionEvent(action, params, result);
+    },
     onSseRequest(path, websocketRequest) {
       const url = new URL(path, websocketRequest.url);
       // The exec channel already authenticated, so its fan-out carries the token past the gate.

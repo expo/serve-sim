@@ -523,15 +523,16 @@ export function CameraTool({
           </div>
 
 
+          <div className="flex flex-col gap-1.5" data-camera-source-menu>
           <div className="flex items-stretch gap-1.5">
-            <div className="relative" data-camera-source-menu>
+            <div>
               <button
                 onClick={() => {
                   if (!sourceMenuOpen && !webcamLoading) void refreshWebcams();
                   setSourceMenuOpen((value) => !value);
                 }}
                 disabled={isBusy}
-                className="h-full min-h-[36px] w-10 flex items-center justify-center bg-transparent border border-white/12 text-white/85 rounded-[7px] cursor-pointer p-0 hover:bg-white/[0.06] hover:border-white/20 hover:text-white"
+                className="h-full min-h-[36px] px-2 flex items-center justify-center gap-1.5 bg-transparent border border-white/12 text-white/85 rounded-[7px] cursor-pointer hover:bg-white/[0.06] hover:border-white/20 hover:text-white"
                 aria-haspopup="menu"
                 aria-expanded={sourceMenuOpen}
                 title={
@@ -541,13 +542,58 @@ export function CameraTool({
                 }
                 aria-label="Choose camera source"
               >
-                <Images size={20} strokeWidth={2} />
+                <Images size={18} strokeWidth={2} />
+                <span className="text-[12px]">Source</span>
               </button>
+
+
+            </div>
+
+            <button
+              onClick={canCancelEnable ? cancelBrowserRequest : enabled ? disableCamera : enableCamera}
+              disabled={primaryDisabled}
+              className={[
+                "flex-1 flex items-center justify-center gap-1.5 py-2 px-2.5 border-none rounded-[7px] text-[12px] font-semibold cursor-pointer disabled:opacity-50 min-h-[36px]",
+                enabled
+                  ? "bg-white/[0.16] text-white enabled:hover:bg-white/[0.22]"
+                  : "bg-success-emerald text-[#062018] enabled:hover:brightness-[1.08]",
+              ].join(" ")}
+              title={
+                enabled ? "Disconnect the camera from all apps" :
+                "Enable the selected camera feed for all apps"
+              }
+              aria-pressed={enabled}
+              aria-label={canCancelEnable ? "Cancel" : enabled ? "Disable" : "Enable"}
+            >
+              {enabled ? <StopGlyph /> : <PlayGlyph />}
+              <span>{canCancelEnable ? "Cancel" : pendingPrimary === "enable" ? "Enabling…" : pendingPrimary === "disable" ? "Disabling…" : enabled ? "Disable" : "Enable"}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={toggleMirror}
+              disabled={mirrorDisabled}
+              className={`flex items-center justify-center w-10 min-h-[36px] border rounded-[7px] font-[inherit] disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.97] ${
+                mirror === "on"
+                  ? "bg-white border-white text-[#0a0a0c] cursor-pointer enabled:hover:bg-white/[0.88] enabled:hover:border-white/[0.88] enabled:hover:text-[#0a0a0c]"
+                  : "bg-white/[0.04] border-white/8 text-white/85 cursor-pointer enabled:hover:bg-white/[0.09] enabled:hover:border-[rgba(255,255,255,0.18)] enabled:hover:text-white"
+              }`}
+              aria-label={`Mirror: ${mirror} — tap to toggle`}
+              title={
+                mirrorDisabled
+                  ? "Mirror toggle available once a source is streaming"
+                  : `Mirror: ${mirror} — click to toggle`
+              }
+              aria-pressed={mirror === "on"}
+            >
+              <FlipHorizontal2 size={20} strokeWidth={2} fill={mirror === "on" ? "currentColor" : "none"} />
+            </button>
+          </div>
 
               {sourceMenuOpen && (
                 <div
                   role="menu"
-                  className="absolute top-[calc(100%+6px)] left-0 z-10 min-w-[200px] flex flex-col gap-px p-1 bg-panel border border-white/8 rounded-[7px] shadow-[0_8px_24px_rgba(0,0,0,0.4)]"
+                  className="w-full flex flex-col gap-px p-1 bg-panel border border-white/8 rounded-[7px] shadow-[0_8px_24px_rgba(0,0,0,0.4)]"
                 >
                   <button
                     role="menuitem"
@@ -599,47 +645,6 @@ export function CameraTool({
                   })}
                 </div>
               )}
-            </div>
-
-            <button
-              onClick={canCancelEnable ? cancelBrowserRequest : enabled ? disableCamera : enableCamera}
-              disabled={primaryDisabled}
-              className={[
-                "flex-1 flex items-center justify-center gap-1.5 py-2 px-2.5 border-none rounded-[7px] text-[12px] font-semibold cursor-pointer disabled:opacity-50 min-h-[36px]",
-                enabled
-                  ? "bg-white/[0.16] text-white enabled:hover:bg-white/[0.22]"
-                  : "bg-success-emerald text-[#062018] enabled:hover:brightness-[1.08]",
-              ].join(" ")}
-              title={
-                enabled ? "Disconnect the camera from all apps" :
-                "Enable the selected camera feed for all apps"
-              }
-              aria-pressed={enabled}
-              aria-label={canCancelEnable ? "Cancel" : enabled ? "Disable" : "Enable"}
-            >
-              {enabled ? <StopGlyph /> : <PlayGlyph />}
-              <span>{canCancelEnable ? "Cancel" : pendingPrimary === "enable" ? "Enabling…" : pendingPrimary === "disable" ? "Disabling…" : enabled ? "Disable" : "Enable"}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={toggleMirror}
-              disabled={mirrorDisabled}
-              className={`flex items-center justify-center w-10 min-h-[36px] border rounded-[7px] font-[inherit] disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.97] ${
-                mirror === "on"
-                  ? "bg-white border-white text-[#0a0a0c] cursor-pointer enabled:hover:bg-white/[0.88] enabled:hover:border-white/[0.88] enabled:hover:text-[#0a0a0c]"
-                  : "bg-white/[0.04] border-white/8 text-white/85 cursor-pointer enabled:hover:bg-white/[0.09] enabled:hover:border-[rgba(255,255,255,0.18)] enabled:hover:text-white"
-              }`}
-              aria-label={`Mirror: ${mirror} — tap to toggle`}
-              title={
-                mirrorDisabled
-                  ? "Mirror toggle available once a source is streaming"
-                  : `Mirror: ${mirror} — click to toggle`
-              }
-              aria-pressed={mirror === "on"}
-            >
-              <FlipHorizontal2 size={20} strokeWidth={2} fill={mirror === "on" ? "currentColor" : "none"} />
-            </button>
           </div>
 
           {warning && <CameraInlineBanner kind="warning" message={warning} />}

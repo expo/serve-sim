@@ -20,7 +20,6 @@
 - (void)stopPumping;
 @end
 
-void SimCamFrameSourceLoadImage(void);
 void SimCamFrameSourceOpenShmIfRequested(void);
 
 BOOL SimCamFrameSourceIsShmAttached(void);

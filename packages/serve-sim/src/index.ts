@@ -1733,7 +1733,12 @@ async function serve(
       try { clearServeSimState(udid, process.pid); } catch {}
     }
   };
-  process.on("exit", clearAll);
+  process.on("exit", () => {
+    // This process owns the device tails and the crash watcher; `follow` never mounts them.
+    try { logBufferCache.stopAll(); } catch {}
+    try { crashRuntime.stop(); } catch {}
+    clearAll();
+  });
 
   if (options.debugStreamPath) {
     const logger = startStreamDebugLog({

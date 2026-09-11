@@ -14,12 +14,19 @@ import {
 } from "./capability-config";
 import {
   type Capability,
+  type RecordedCapability,
   type LaunchState,
   readLaunchState,
   clearLaunchState,
   writeLaunchState,
+  ownerIsGone,
 } from "./launch-state";
-import { withLaunchStateLock } from "./launch-state-lock";
+import {
+  withLaunchStateLock,
+  withLaunchStateLockSync,
+  waitForLaunchUpdates,
+  LOCK_POLL_MS,
+} from "./launch-state-lock";
 import { dirnameOf } from "./runtime";
 import { simctl, simctlSync } from "./simctl";
 
@@ -35,30 +42,83 @@ export {
   renderCapabilityConfig,
   capabilityConfigPath,
 } from "./capability-config";
+export { waitForLaunchUpdates } from "./launch-state-lock";
 
 const CAPABILITY_LOADER_NAME = "libServeSimCapabilityLoader.dylib";
 const INSERT = "DYLD_INSERT_LIBRARIES";
 const CONFIG_VAR = "SERVE_SIM_CAPABILITIES_CONFIG";
 const TERMINATE_TIMEOUT_MS = 15_000;
 
-/**
- * Drops this process's capability records and reports whether any remain, so a
- * session that armed a device does not disarm it under another one still using it.
- */
-export function releaseLaunchState(udid: string, ownerPid: number): boolean {
-  const previous = readLaunchState(udid);
+function releaseLaunchStateUnlocked(
+  udid: string, ownerPid: number, onRelease?: (capability: RecordedCapability) => void,
+): boolean {
+  const previous = readLaunchState(udid, ownerPid);
   if (!previous) return false;
   const kept = Object.fromEntries(
     Object.entries(previous.capabilities).filter(([, record]) => record.ownerPid !== ownerPid),
   );
-  if (Object.keys(kept).length === 0) {
+  const sessionPids = previous.sessionPids?.filter((pid) => pid !== ownerPid);
+  for (const record of Object.values(previous.capabilities)) {
+    if (record.ownerPid === ownerPid) onRelease?.(record);
+  }
+  if (Object.keys(kept).length === 0 && !sessionPids?.length) {
     clearLaunchState(udid);
     return false;
   }
-  const state: LaunchState = { ...previous, capabilities: kept };
+  const state: LaunchState = { ...previous, capabilities: kept, ...(sessionPids ? { sessionPids } : {}) };
   writeLaunchState(udid, state);
   commitCapabilityConfig(udid, renderCapabilityConfig(state));
   return true;
+}
+
+export function releaseLaunchState(udid: string, ownerPid: number): boolean {
+  return withLaunchStateLockSync(udid, () => releaseLaunchStateUnlocked(udid, ownerPid));
+}
+
+export function releaseSessionSync(
+  udid: string,
+  ownerPid: number,
+  onRelease: (capability: RecordedCapability) => void,
+): void {
+  withLaunchStateLockSync(udid, () => {
+    const othersRemain = releaseLaunchStateUnlocked(udid, ownerPid, onRelease);
+    if (!othersRemain) removeCapabilityLoaderSync(udid);
+    armedHere.delete(udid);
+  });
+}
+
+export async function releaseSession(
+  udid: string,
+  ownerPid: number,
+  onRelease: (capability: RecordedCapability) => void,
+): Promise<void> {
+  await waitForLaunchUpdates();
+  await withLaunchStateLock(udid, async () => {
+    const othersRemain = releaseLaunchStateUnlocked(udid, ownerPid, onRelease);
+    if (!othersRemain) removeCapabilityLoaderSync(udid);
+    armedHere.delete(udid);
+  });
+}
+
+export async function stopLaunchSession(
+  udid: string,
+  ownerPid: number,
+  onRelease: (capability: RecordedCapability) => void,
+): Promise<void> {
+  if (!Number.isInteger(ownerPid) || ownerPid <= 0 || ownerPid === process.pid) {
+    throw new Error(`Cannot stop session with invalid owner pid ${ownerPid}.`);
+  }
+  try { process.kill(ownerPid, "SIGTERM"); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+  const deadline = Date.now() + 60_000;
+  while (!ownerIsGone(ownerPid)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Session ${ownerPid} on ${udid} did not stop within 60 seconds. Its launch state was preserved; wait for shutdown to finish and retry.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS));
+  }
+  await releaseSession(udid, ownerPid, onRelease);
 }
 
 export function capabilityLoaderDir(): string {
@@ -123,8 +183,16 @@ export function capabilityLoaderPath(): string {
 export async function armCapabilityLoader(udid: string): Promise<void> {
   const dylib = capabilityLoaderPath();
   if (!existsSync(dylib)) return;
+  armedHere.add(udid);
   try {
-    await armInsert(udid, dylib);
+    await withLaunchStateLock(udid, async () => {
+      const previous = readLaunchState(udid) ?? { launchArgs: [], capabilities: {} };
+      await armInsert(udid, dylib);
+      writeLaunchState(udid, {
+        ...previous,
+        sessionPids: [...new Set([...(previous.sessionPids ?? []), process.pid])],
+      });
+    });
   } catch (error) {
     console.error(
       `Could not arm the capability loader on ${udid}, so capabilities will not load this ` +
@@ -193,11 +261,10 @@ export async function launchApp(
 ): Promise<void> {
   await withLaunchStateLock(udid, async () => {
     const previous = readLaunchState(udid);
-    const state: LaunchState = { bundleId, launchArgs, capabilities: previous?.capabilities ?? {} };
+    const state: LaunchState = { ...previous, bundleId, launchArgs, capabilities: previous?.capabilities ?? {} };
     const config = renderCapabilityConfig(state);
-    // The capability loader reads its config once, as the process starts, so both the
-    // insert and the config have to be in place before the launch they apply to.
-    if (Object.keys(state.capabilities).length > 0) await armCapabilityLoader(udid);
+    // Publish the config before launching the app.
+    if (Object.keys(state.capabilities).length > 0) await armInsert(udid, capabilityLoaderPath());
     writeLaunchState(udid, state);
     commitCapabilityConfig(udid, config);
     if (restart) {
@@ -212,10 +279,6 @@ export async function openUrlInApp(udid: string, bundleId: string, openUrl: stri
   await simctl(["openurl", udid, openUrl]);
 }
 
-/**
- * Runs a definition's own state change and stamps the fields the manager owns,
- * so a definition cannot resolve to a different name or scope than it declared.
- */
 async function prepare(
   definition: CapabilityDefinition,
   context: CapabilityContext,
@@ -237,7 +300,6 @@ async function prepare(
   };
 }
 
-/** Turns a registered capability on or off, including its host-side work. */
 export async function setCapabilityEnabled(
   udid: string,
   name: string,
@@ -256,20 +318,22 @@ export async function setCapabilityEnabled(
   const definition = capabilityDefinition(name);
   const context: CapabilityContext = { udid, bundleId, options, enabled };
 
-  if (!enabled) {
-    await definition.setEnabled(context);
-    await disableCapability(udid, bundleId, name, { relaunch: false });
-    return;
-  }
+  await withLaunchStateLock(udid, async () => {
+    if (!enabled) {
+      await definition.setEnabled(context);
+      await disableCapabilityUnlocked(udid, bundleId, name, { relaunch: false });
+      return;
+    }
 
-  const capability = await prepare(definition, context);
-  if (!capability) {
-    throw new Error(
-      `Capability ${name} declined to start on ${udid}. It reported nothing to load, so there ` +
-        `is nothing to enable. Check the message above for why.`,
-    );
-  }
-  await enableCapabilities(udid, bundleId, [capability], { relaunch, ownerPid });
+    const capability = await prepare(definition, context);
+    if (!capability) {
+      throw new Error(
+        `Capability ${name} declined to start on ${udid}. It reported nothing to load, so there ` +
+          `is nothing to enable. Check the message above for why.`,
+      );
+    }
+    await enableCapabilitiesUnlocked(udid, bundleId, [capability], { relaunch, ownerPid });
+  });
 }
 
 export async function applyDefaultCapabilities(
@@ -277,23 +341,25 @@ export async function applyDefaultCapabilities(
   bundleId: string | null,
   overrides: CapabilityOverrides = {},
 ): Promise<string[]> {
-  const definitions = capabilitiesToApply(overrides);
-  const resolved: Capability[] = [];
-  for (const definition of definitions) {
-    const capability = await prepare(definition, { udid, bundleId, options: {}, enabled: true });
-    if (!capability) continue;
-    resolved.push(capability);
-  }
-  await enableCapabilities(udid, bundleId, resolved);
-  const applied = resolved.map((capability) => capability.name);
+  return withLaunchStateLock(udid, async () => {
+    const definitions = capabilitiesToApply(overrides);
+    const resolved: Capability[] = [];
+    for (const definition of definitions) {
+      const capability = await prepare(definition, { udid, bundleId, options: {}, enabled: true });
+      if (!capability) continue;
+      resolved.push(capability);
+    }
+    await enableCapabilitiesUnlocked(udid, bundleId, resolved, { relaunch: false });
+    const applied = resolved.map((capability) => capability.name);
 
-  for (const name of overrides.enable ?? []) {
-    if (applied.includes(name)) continue;
-    console.error(
-      `Capability ${name} was requested but did not apply on ${udid}.`,
-    );
-  }
-  return applied;
+    for (const name of overrides.enable ?? []) {
+      if (applied.includes(name)) continue;
+      console.error(
+        `Capability ${name} was requested but did not apply on ${udid}.`,
+      );
+    }
+    return applied;
+  });
 }
 
 export function isCapabilityEnabled(udid: string, name: string): boolean {
@@ -319,6 +385,15 @@ export async function enableCapabilities(
   udid: string,
   bundleId: string | null,
   capabilities: Capability[],
+  options: EnableOptions = {},
+): Promise<void> {
+  await withLaunchStateLock(udid, () => enableCapabilitiesUnlocked(udid, bundleId, capabilities, options));
+}
+
+async function enableCapabilitiesUnlocked(
+  udid: string,
+  bundleId: string | null,
+  capabilities: Capability[],
   { relaunch = true, ownerPid = process.pid }: EnableOptions = {},
 ): Promise<void> {
   if (capabilities.length === 0) return;
@@ -330,24 +405,22 @@ export async function enableCapabilities(
     );
   }
 
-  return await withLaunchStateLock(udid, async () => {
-    const previous = readLaunchState(udid);
-    const added = Object.fromEntries(
-      capabilities.map((capability) => [
-        capability.name,
-        { ...capability, bundleId, ownerPid },
-      ]),
-    );
-    const state: LaunchState = {
-      ...(previous ?? { launchArgs: [], capabilities: {} }),
-      capabilities: { ...(previous?.capabilities ?? {}), ...added },
-    };
-    const config = renderCapabilityConfig(state);
-    await armInsert(udid, dylib);
-    writeLaunchState(udid, state);
-    commitCapabilityConfig(udid, config);
-    if (relaunch) await relaunchTarget(udid, bundleId, state);
-  });
+  const previous = readLaunchState(udid);
+  const added = Object.fromEntries(
+    capabilities.map((capability) => [
+      capability.name,
+      { ...capability, bundleId, ownerPid },
+    ]),
+  );
+  const state: LaunchState = {
+    ...(previous ?? { launchArgs: [], capabilities: {} }),
+    capabilities: { ...(previous?.capabilities ?? {}), ...added },
+  };
+  const config = renderCapabilityConfig(state);
+  await armInsert(udid, dylib);
+  writeLaunchState(udid, state);
+  commitCapabilityConfig(udid, config);
+  if (relaunch) await relaunchTarget(udid, bundleId, state);
 }
 
 /** null when the check itself failed, which is not the same as "not running". */
@@ -391,21 +464,28 @@ export async function disableCapability(
   udid: string,
   bundleId: string | null,
   name: string,
+  options: EnableOptions = {},
+): Promise<void> {
+  await withLaunchStateLock(udid, () => disableCapabilityUnlocked(udid, bundleId, name, options));
+}
+
+async function disableCapabilityUnlocked(
+  udid: string,
+  bundleId: string | null,
+  name: string,
   { relaunch = true }: EnableOptions = {},
 ): Promise<void> {
-  await withLaunchStateLock(udid, async () => {
-    const previous = readLaunchState(udid);
-    if (!previous) return;
-    if (!(name in previous.capabilities)) return;
-    const rest = Object.fromEntries(
-      Object.entries(previous.capabilities).filter(([key]) => key !== name),
-    );
-    const state: LaunchState = { ...previous, capabilities: rest };
-    const config = renderCapabilityConfig(state);
-    writeLaunchState(udid, state);
-    commitCapabilityConfig(udid, config);
-    if (relaunch) await relaunchTarget(udid, bundleId, state);
-  });
+  const previous = readLaunchState(udid);
+  if (!previous) return;
+  if (!(name in previous.capabilities)) return;
+  const rest = Object.fromEntries(
+    Object.entries(previous.capabilities).filter(([key]) => key !== name),
+  );
+  const state: LaunchState = { ...previous, capabilities: rest };
+  const config = renderCapabilityConfig(state);
+  writeLaunchState(udid, state);
+  commitCapabilityConfig(udid, config);
+  if (relaunch) await relaunchTarget(udid, bundleId, state);
 }
 
 const URL_SCHEME_APPROVAL_DOMAIN = "com.apple.launchservices.schemeapproval";

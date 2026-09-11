@@ -2,14 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CrashMeta } from "../../crash/runtime";
 import type { CrashSummary } from "../../crash/store";
 import { crashDetailUrl, formatCrashAgo } from "../utils/crash-format";
-import { startExclusivePoll } from "../utils/exclusive-poll";
+import { openHostEventStream } from "../utils/exec";
 import { simAuthHeaders, simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
 import { CrashDetailModal, type SelectedOccurrence } from "./crash-detail-modal";
 
-type CrashListPayload = { meta: CrashMeta; crashes: CrashSummary[] };
+type CrashFrame =
+  | { type: "meta"; meta: CrashMeta }
+  | { type: "crash" | "recurred"; record: CrashSummary };
 
-const POLL_INTERVAL_MS = 5_000;
 
 function authorizedFetch(url: string): Promise<Response> {
   return fetch(url, { headers: simAuthHeaders() });
@@ -24,7 +25,8 @@ type CrashDetail = {
 
 export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndpoint?: string }) {
   const [open, setOpen] = useState(false);
-  const [payload, setPayload] = useState<CrashListPayload | null>(null);
+  const [meta, setMeta] = useState<CrashMeta | null>(null);
+  const [crashes, setCrashes] = useState<CrashSummary[]>([]);
   const [detail, setDetail] = useState<CrashDetail | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [pendingIndex, setPendingIndex] = useState<number | null>(null);
@@ -45,19 +47,31 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
   }, []);
 
   useEffect(() => {
-    return startExclusivePoll(async () => {
+    setMeta(null);
+    setCrashes([]);
+    const stream = openHostEventStream(path);
+    stream.onmessage = ({ data }) => {
+      let frame: CrashFrame;
       try {
-        const response = await authorizedFetch(path);
-        if (!response.ok) {
-          setLoadError(`The crash list request failed (${response.status}). Showing the last one read.`);
-          return;
-        }
-        setPayload((await response.json()) as CrashListPayload);
-        setLoadError(null);
+        frame = JSON.parse(data) as CrashFrame;
       } catch {
-        setLoadError("Lost contact with serve-sim. Showing the last crash list read.");
+        return;
       }
-    }, POLL_INTERVAL_MS);
+      setLoadError(null);
+      if (frame.type === "meta") {
+        setMeta(frame.meta);
+        return;
+      }
+      // Newest first, matching the order the backlog replays in.
+      setCrashes((prev) =>
+        [frame.record, ...prev.filter((crash) => crash.id !== frame.record.id)].sort(
+          (a, b) => b.lastSeen - a.lastSeen
+        )
+      );
+    };
+    stream.onerror = () =>
+      setLoadError("Lost contact with serve-sim. Showing the last crash list read.");
+    return () => stream.close();
   }, [path]);
 
   const loadDetail = useCallback(
@@ -90,8 +104,8 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
   );
 
   useEffect(() => {
-    if (!detail || !payload) return;
-    const listed = payload.crashes.find((crash) => crash.id === detail.record.id);
+    if (!detail) return;
+    const listed = crashes.find((crash) => crash.id === detail.record.id);
     if (!listed) return;
     const remapped = listed.occurrenceTimes.findIndex(
       (stamp) => stamp.rawPath === detail.occurrence.rawPath
@@ -124,7 +138,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
           }
         : prev
     );
-  }, [payload, detail, loadDetail]);
+  }, [crashes, detail, loadDetail]);
 
   const selectOccurrence = (index: number): void => {
     if (!detail) return;
@@ -143,8 +157,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
     return true;
   };
 
-  const crashes = payload?.crashes ?? [];
-  const unavailable = payload?.meta.status === "unavailable";
+  const unavailable = meta?.status === "unavailable";
 
   return (
     <CollapsibleSection
@@ -175,7 +188,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
         </p>
       )}
       {unavailable ? (
-        <p className="text-[11px] leading-relaxed text-amber-300/80">{payload?.meta.statusError}</p>
+        <p className="text-[11px] leading-relaxed text-amber-300/80">{meta?.statusError}</p>
       ) : crashes.length === 0 ? (
         <p className="text-[11px] text-white/40">
           No crashes. A report shows up a few seconds after a crash.

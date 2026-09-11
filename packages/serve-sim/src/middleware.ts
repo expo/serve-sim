@@ -2472,7 +2472,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     if (url === base + "/crashes" || url === base + "/crashes/") {
       const state = await collectCrashesFor(selectedDevice);
-      handleCrashesRequest(req, res, state);
+      handleCrashesRequest(req, res, state, rawUrl);
       return;
     }
 

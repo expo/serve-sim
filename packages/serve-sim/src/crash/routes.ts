@@ -1,3 +1,4 @@
+import { booleanParam } from "../request-params";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import type { ServeSimDeviceState } from "../state";
@@ -15,6 +16,7 @@ export function handleCrashesRequest(
   req: IncomingMessage,
   res: ServerResponse,
   state: ServeSimDeviceState | null,
+  rawUrl = "",
   runtime: CrashRuntime = crashRuntime,
   logBuffers: LogBufferCache = logBufferCache
 ): void {
@@ -56,7 +58,10 @@ export function handleCrashesRequest(
     }
   );
   stream.onClose(unsubscribe);
-  stream.onClose(holdDeviceTail(logBuffers, udid));
+  // Only a reader that is watching for new crashes pays for keeping the device tail alive.
+  if (booleanParam(new URL(rawUrl, "http://127.0.0.1").searchParams, "tail")) {
+    stream.onClose(holdDeviceTail(logBuffers, udid));
+  }
 
   stream.write(`data: {"type":"meta","meta":${lastMeta}}\n\n`);
   stream.write(

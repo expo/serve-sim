@@ -31,15 +31,18 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
   const [now, setNow] = useState(() => Date.now());
   const [pendingIndex, setPendingIndex] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const fetchGen = useRef(0);
-  const requested = useRef<number | null>(null);
-  const confirmed = useRef<number | null>(null);
-  const reloadedFor = useRef<string | null>(null);
+  const [evicted, setEvicted] = useState(false);
+  const fetchGenRef = useRef(0);
+  const requestedRef = useRef<number | null>(null);
+  const confirmedRef = useRef<number | null>(null);
+  const reloadedForRef = useRef<string | null>(null);
 
   const path = useMemo(
     () => crashesEndpoint ?? `${simEndpoint("crashes")}?device=${encodeURIComponent(udid)}`,
     [crashesEndpoint, udid]
   );
+  // Watching costs a device log tail, so ask for one only while the section is showing crashes.
+  const streamPath = open ? `${path}${path.includes("?") ? "&" : "?"}tail=1` : path;
 
   useEffect(() => {
     const tick = setInterval(() => setNow(Date.now()), 10_000);
@@ -48,7 +51,8 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
 
   useEffect(() => {
     setList(EMPTY_CRASH_LIST);
-    const stream = openHostEventStream(path);
+    setEvicted(false);
+    const stream = openHostEventStream(streamPath);
     stream.onmessage = ({ data }) => {
       const frame = parseCrashFrame(data);
       if (!frame) return;
@@ -58,16 +62,16 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
     stream.onerror = () =>
       setLoadError("Lost contact with serve-sim. Showing the last crash list read.");
     return () => stream.close();
-  }, [path]);
+  }, [streamPath]);
 
   const loadDetail = useCallback(
     async (id: string, occurrence?: number): Promise<void> => {
-      const gen = ++fetchGen.current;
+      const gen = ++fetchGenRef.current;
       setLoadError(null);
       const revert = (): void => {
-        if (gen !== fetchGen.current) return;
-        requested.current = confirmed.current;
-        setPendingIndex(confirmed.current);
+        if (gen !== fetchGenRef.current) return;
+        requestedRef.current = confirmedRef.current;
+        setPendingIndex(confirmedRef.current);
         setLoadError("Could not load that crash.");
       };
       try {
@@ -77,9 +81,9 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
           return;
         }
         const next = (await response.json()) as CrashDetail;
-        if (gen !== fetchGen.current) return;
-        requested.current = next.occurrence.index;
-        confirmed.current = next.occurrence.index;
+        if (gen !== fetchGenRef.current) return;
+        requestedRef.current = next.occurrence.index;
+        confirmedRef.current = next.occurrence.index;
         setPendingIndex(next.occurrence.index);
         setDetail(next);
       } catch {
@@ -92,15 +96,19 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
   useEffect(() => {
     if (!detail) return;
     const listed = list.crashes.find((crash) => crash.id === detail.record.id);
-    if (!listed) return;
+    // The device dropped this crash to stay under its cap, so nothing can refresh it now.
+    if (!listed) {
+      setEvicted(true);
+      return;
+    }
+    setEvicted(false);
     const remapped = listed.occurrenceTimes.findIndex(
       (stamp) => stamp.rawPath === detail.occurrence.rawPath
     );
-    // The occurrence being read aged out of the retained window; show the newest one instead.
-    // A list payload older than the open detail can miss it too, so reload once per report.
+    // A list older than the open detail misses it too, so reload at most once per report.
     if (remapped === -1) {
-      if (reloadedFor.current === detail.occurrence.rawPath) return;
-      reloadedFor.current = detail.occurrence.rawPath;
+      if (reloadedForRef.current === detail.occurrence.rawPath) return;
+      reloadedForRef.current = detail.occurrence.rawPath;
       void loadDetail(detail.record.id, listed.occurrenceCount - 1);
       return;
     }
@@ -112,8 +120,8 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
     ) {
       return;
     }
-    if (requested.current === detail.occurrence.index) requested.current = remapped;
-    if (confirmed.current === detail.occurrence.index) confirmed.current = remapped;
+    if (requestedRef.current === detail.occurrence.index) requestedRef.current = remapped;
+    if (confirmedRef.current === detail.occurrence.index) confirmedRef.current = remapped;
     setPendingIndex((pending) => (pending === detail.occurrence.index ? remapped : pending));
     setDetail((prev) =>
       prev && prev.record.id === listed.id
@@ -129,16 +137,16 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
   const selectOccurrence = (index: number): void => {
     if (!detail) return;
     if (index < 0 || index >= detail.occurrence.total) return;
-    if (index === requested.current) return;
-    requested.current = index;
+    if (index === requestedRef.current) return;
+    requestedRef.current = index;
     setPendingIndex(index);
     void loadDetail(detail.record.id, index);
   };
 
   const stepOccurrence = (delta: number): boolean => {
-    const index = (requested.current ?? detail?.occurrence.index ?? 0) + delta;
+    const index = (requestedRef.current ?? detail?.occurrence.index ?? 0) + delta;
     if (!detail || index < 0 || index >= detail.occurrence.total) return false;
-    if (index === requested.current) return false;
+    if (index === requestedRef.current) return false;
     selectOccurrence(index);
     return true;
   };
@@ -229,13 +237,17 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
           reportError={detail.reportError}
           now={now}
           pendingIndex={pendingIndex ?? detail.occurrence.index}
-          loadError={loadError}
+          loadError={
+            evicted
+              ? "This crash aged out of the device's list. What is shown is the last copy read."
+              : loadError
+          }
           onSelectOccurrence={selectOccurrence}
           onStepOccurrence={stepOccurrence}
           onClose={() => {
-            fetchGen.current += 1;
-            requested.current = null;
-            confirmed.current = null;
+            fetchGenRef.current += 1;
+            requestedRef.current = null;
+            confirmedRef.current = null;
             setPendingIndex(null);
             setLoadError(null);
             setDetail(null);

@@ -1,4 +1,4 @@
-export type CamSource = "placeholder" | "image" | "video" | "webcam";
+export type CamSource = "placeholder" | "image" | "video" | "webcam" | "browser";
 export interface CamWebcam { id: string; name: string }
 
 export type CameraPillState = "ready" | "active" | "disconnected";
@@ -7,6 +7,7 @@ export const CAMERA_POLL_INTERVAL_MS = 3000;
 
 interface CameraStatusResponse {
   alive?: boolean;
+  connected?: boolean;
   source?: string;
   arg?: string;
   mirror?: string;

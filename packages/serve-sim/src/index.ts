@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command, InvalidArgumentError } from "commander";
-import { execFileSync, execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
+import { execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
 import { existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { createHash, randomBytes } from "crypto";
 import { networkInterfaces } from "os";
@@ -25,6 +25,7 @@ import { launchAppAsync } from "./launch-app";
 import {
   assertKnownCapabilities,
   hasDefaultCapabilities,
+  registerCapability,
 } from "./capabilities";
 import {
   applyDefaultCapabilities,
@@ -35,6 +36,7 @@ import {
   releaseSession,
   stopLaunchSession,
   waitForLaunchUpdates,
+  setCapabilityEnabled,
 } from "./launch-manager";
 import { killOwnListeners } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
@@ -51,7 +53,6 @@ import {
   cameraHelperSocketFile as helperSocketFile,
   isCameraHelperAlive as isHelperAlive,
   readCameraStatus,
-  readInjectedCameraBundles as readInjectedBundles,
   sendCameraHelperCommand as sendHelperCommand,
 } from "./camera-helper";
 import { parseIceUrlList, streamHelperArgs, streamSettingsEqual } from "./stream-runtime-args";
@@ -1148,16 +1149,17 @@ function shmNameForUdid(udid: string): string {
   return `/serve-sim-cam-${short}`;
 }
 
-function recordInjectedBundle(udid: string, bundleId: string, helperPid: number): void {
-  const existing = readInjectedBundles(udid);
-  const bundleIds = existing.includes(bundleId) ? existing : [...existing, bundleId];
-  const next = { helperPid, bundleIds };
-  mkdirSync(simcamStateDir(), { recursive: true });
-  writeFileSync(helperBundlesFile(udid), JSON.stringify(next));
-}
-
 function clearInjectedBundles(udid: string): void {
   try { unlinkSync(helperBundlesFile(udid)); } catch {}
+}
+
+function readHelperPid(udid: string): number | null {
+  try {
+    const pid = Number(readFileSync(helperPidFile(udid), "utf-8").trim());
+    return Number.isFinite(pid) ? pid : null;
+  } catch {
+    return null;
+  }
 }
 
 function stopExistingHelper(udid: string) {
@@ -1333,16 +1335,6 @@ async function ensureHelperWithSource(opts: {
   return { helperPid: pid, shmName, relaunched: true };
 }
 
-/**
- * `serve-sim camera <bundle-id> [-d udid] [source-options] [--build]`
- *
- * Launches a simulator app with SimCameraInjector loaded via
- * DYLD_INSERT_LIBRARIES. The host-side helper streams BGRA frames into a
- * POSIX shared-memory region the dylib mmaps; this function picks the source
- * (placeholder / webcam / image), spawns or reuses the helper, and then
- * launches the app. If the helper is already running, source changes are
- * hot-swapped through its control socket without relaunching the app.
- */
 async function camera(args: string[]) {
   let deviceArg: string | undefined;
   let filePath: string | undefined;
@@ -1371,6 +1363,10 @@ async function camera(args: string[]) {
     if (a === "--list-webcams") { listWebcams = true; continue; }
     if (a === "--stop-webcam") { stopWebcam = true; continue; }
     if (a === "--build") { forceBuild = true; continue; }
+    if (a === "--restart") {
+      console.error("Camera controls no longer restart apps. Open the app normally after starting the serve-sim session.");
+      process.exit(1);
+    }
     if (a === "--quiet" || a === "-q") { quiet = true; continue; }
     if (a === "--mirror") {
       const next = args[i + 1];
@@ -1383,18 +1379,16 @@ async function camera(args: string[]) {
     }
     if (a === "--no-mirror") { mirror = "off"; continue; }
     if (a === "--help" || a === "-h") {
-      console.log(`Usage: serve-sim camera <bundle-id> [-d udid] [source-options] [--build]
+      console.log(`Usage: serve-sim camera enable [-d udid] [source-options] [--build]
        serve-sim camera switch <placeholder|webcam|file> [arg] [-d udid]
        serve-sim camera mirror <auto|on|off> [-d udid]
        serve-sim camera --list-webcams
-       serve-sim camera --stop-webcam [-d udid]
+       serve-sim camera disable [-d udid]
 
-Launches the simulator app with a synthetic camera feed injected. The
-host helper streams BGRA frames (default: an animated placeholder) into
-shared memory; the dylib swizzles AVFoundation so the app reads them.
-
-If the helper is already running for the device, source flags hot-swap
-the feed without relaunching the app.
+Enables one synthetic camera feed for all apps on the simulator. Start a
+serve-sim session before opening apps so they carry the capability loader.
+Enable, disable, source changes, and mirroring never restart apps or change
+camera permissions. Disable disconnects the camera in running apps.
 
 Source options (pick one; default is placeholder):
   -f, --file <path>          Image or video file (kind auto-detected)
@@ -1412,11 +1406,11 @@ Other:
   -q, --quiet                JSON-only output
 
 Examples:
-  serve-sim camera com.acme.MyApp                            # placeholder feed
-  serve-sim camera com.acme.MyApp --webcam                   # default webcam
-  serve-sim camera com.acme.MyApp --webcam "MacBook Pro Camera"
-  serve-sim camera com.acme.MyApp --file ~/Pictures/face.png # static image
-  serve-sim camera com.acme.MyApp --file ~/Movies/loop.mp4   # looping video
+  serve-sim camera enable                            # placeholder feed
+  serve-sim camera enable --webcam                   # default webcam
+  serve-sim camera enable --webcam "MacBook Pro Camera"
+  serve-sim camera enable --file ~/Pictures/face.png # static image
+  serve-sim camera enable --file ~/Movies/loop.mp4   # looping video
   serve-sim camera switch webcam                             # hot-swap to webcam
   serve-sim camera switch placeholder                        # back to placeholder
   serve-sim camera switch ~/Movies/loop.mp4                  # hot-swap to file
@@ -1433,23 +1427,12 @@ Examples:
     return;
   }
 
-  if (stopWebcam) {
+  if (stopWebcam || filtered[0] === "disable") {
     const udid = deviceArg ? resolveDevice(deviceArg) : findBootedDevice();
     if (!udid) { console.error("No booted simulator."); process.exit(1); }
-    const injectedBundles = readInjectedBundles(udid);
-    const terminated: string[] = [];
-    for (const b of injectedBundles) {
-      try {
-        execFileSync("xcrun", ["simctl", "terminate", udid, b], { stdio: "ignore" });
-        terminated.push(b);
-      } catch {}
-    }
-    stopExistingHelper(udid);
-    if (quiet) console.log(JSON.stringify({ udid, stopped: true, terminated }));
-    else {
-      console.log(`Stopped camera helper for ${udid}`);
-      if (terminated.length > 0) console.log(`Terminated injected apps: ${terminated.join(", ")}`);
-    }
+    await setCapabilityEnabled(udid, "camera", { enabled: false, relaunch: false });
+    if (quiet) console.log(JSON.stringify({ udid, stopped: true, enabled: false }));
+    else console.log(`Camera disconnected on ${udid}`);
     return;
   }
 
@@ -1464,7 +1447,7 @@ Examples:
       process.exit(1);
     }
     if (!isHelperAlive(udid)) {
-      console.error("camera helper not running for this device — run `serve-sim camera <bundle-id>` first.");
+      console.error("camera helper not running for this device — run `serve-sim camera enable` first.");
       process.exit(1);
     }
     try {
@@ -1515,7 +1498,7 @@ Examples:
     }
     if ((wanted === "image" || wanted === "video") && arg) arg = resolve(arg);
     if (!isHelperAlive(udid)) {
-      console.error("camera helper not running for this device — run `serve-sim camera <bundle-id>` first.");
+      console.error("camera helper not running for this device — run `serve-sim camera enable` first.");
       process.exit(1);
     }
     try {
@@ -1545,9 +1528,8 @@ Examples:
     return;
   }
 
-  const bundleId = filtered[0];
-  if (!bundleId) {
-    console.error("Usage: serve-sim camera <bundle-id> [--image <path>] [-d udid]");
+  if (filtered.length > 1) {
+    console.error("Use camera enable [-d udid] [--file path] to enable the device-wide camera.");
     process.exit(1);
   }
 
@@ -1555,15 +1537,6 @@ Examples:
   if (!udid) {
     console.error("No booted simulator. Boot one or pass -d <udid|name>.");
     process.exit(1);
-  }
-
-  let dylib = forceBuild ? null : locateCameraDylib();
-  if (!dylib) {
-    try { dylib = buildCameraDylib(); }
-    catch (e: any) {
-      console.error(`Failed to obtain camera dylib: ${e?.message ?? e}`);
-      process.exit(1);
-    }
   }
 
   if (filePath && webcam) {
@@ -1588,78 +1561,53 @@ Examples:
     console.error(e?.message ?? String(e));
     process.exit(1);
   }
-  const helperRes = await ensureHelperWithSource({ udid, source, forceBuild });
-  const shmName = helperRes.shmName;
-  const helperPid = helperRes.helperPid;
+  const wasStreaming = isHelperAlive(udid);
+  try {
+    await setCapabilityEnabled(udid, "camera", {
+      bundleId: null,
+      ownerPid: null,
+      relaunch: false,
+      options: {
+        kind: source.kind,
+        ...(source.arg ? { arg: source.arg } : {}),
+        mirror,
+        ...(forceBuild ? { forceBuild: "1" } : {}),
+      },
+      enabled: true,
+    });
+  } catch (e: any) {
+    console.error(e?.message ?? String(e));
+    process.exit(1);
+  }
+  const shmName = shmNameForUdid(udid);
+  const helperPid = readHelperPid(udid);
 
   // Mirror lives in the shm header so it can hot-swap. Push every time —
   // the dylib watches the byte each frame and re-applies the layer
   // transform when it differs from the last seen value.
-  if (mirror !== "auto" || !helperRes.relaunched) {
+  if (mirror !== "auto" || wasStreaming) {
     try {
       await sendHelperCommand(udid, { action: "setMirror", mode: mirror });
     } catch {} // non-fatal; dylib falls back to env or default
   }
 
-  // Always (re)launch the named bundle with the dylib. The helper feeds a
-  // single shm region keyed by udid, so multiple apps on the same simulator
-  // can attach to the same camera stream — but each one has to be launched
-  // with DYLD_INSERT_LIBRARIES, which means a terminate+relaunch every time
-  // we want to bring a new app into the set. Source-only hot-swaps go
-  // through `camera switch`, not this path.
-  try {
-    execFileSync("xcrun", ["simctl", "privacy", udid, "grant", "camera", bundleId], {
-      stdio: "ignore",
-    });
-  } catch {}
-  try {
-    execFileSync("xcrun", ["simctl", "terminate", udid, bundleId], { stdio: "ignore" });
-  } catch {}
-
-  const env = {
-    ...process.env,
-    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: dylib,
-    SIMCTL_CHILD_SIMCAM_SHM_NAME: shmName,
-    ...(mirror !== "auto" ? { SIMCTL_CHILD_SIMCAM_MIRROR_MODE: mirror } : {}),
-  };
-
-  let stdoutBuf = "";
-  try {
-    stdoutBuf = execFileSync("xcrun", ["simctl", "launch", udid, bundleId], {
-      env,
-      encoding: "utf-8",
-    });
-  } catch (e: any) {
-    console.error(`simctl launch failed: ${e?.stderr ?? e?.message ?? e}`);
-    process.exit(1);
-  }
-
-  const pidMatch = stdoutBuf.trim().match(/:\s*(\d+)\s*$/);
-  const pid = pidMatch ? Number(pidMatch[1]) : null;
-
-  if (helperPid) recordInjectedBundle(udid, bundleId, helperPid);
-
   const result = {
     udid,
-    bundleId,
-    pid,
-    dylib,
+    enabled: true,
     source: source.kind,
     arg: source.arg ?? null,
     shm: shmName,
     helperPid,
     mirror,
     hotSwapped: false,
-    helperRelaunched: helperRes.relaunched,
+    helperRelaunched: !wasStreaming,
   };
   if (quiet) {
     console.log(JSON.stringify(result));
   } else {
-    const verb = helperRes.relaunched ? "Injected" : "Attached";
-    console.log(`📷 ${verb} camera into ${bundleId} (pid ${pid ?? "?"}) on ${udid}`);
+    console.log(`Camera enabled for all apps on ${udid}`);
     console.log(`   source: ${source.kind}${source.arg ? ` (${source.arg})` : ""}`);
     if (helperPid) console.log(`   helper pid: ${helperPid}  (shm ${shmName})`);
-    console.log(`   dylib: ${dylib}`);
   }
 }
 
@@ -2276,7 +2224,7 @@ program
 // still appear in `--help` and route to those parsers verbatim.
 program
   .command("camera")
-  .description("Inject a synthetic camera feed and launch an app (see `camera --help`)")
+  .description("Enable a device-wide camera feed without restarting apps (see `camera --help`)")
   .allowUnknownOption(true)
   .helpOption(false)
   .argument("[args...]")
@@ -2298,5 +2246,32 @@ program
   .argument("[args...]")
   .action((args: string[]) => uiSettings(args));
 
+registerCapability({
+  name: "camera",
+  defaultEnabled: false,
+  scope: "allApps",
+  loadDelayMs: 0,
+  async setEnabled({ udid, options, enabled }) {
+    if (!enabled) {
+      stopExistingHelper(udid);
+      return null;
+    }
+    const forceBuild = options.forceBuild === "1";
+    const dylib = (forceBuild ? null : locateCameraDylib()) ?? buildCameraDylib();
+    const source: ResolvedSource = options.arg
+      ? { kind: (options.kind ?? "placeholder") as CamSourceKind, arg: options.arg }
+      : { kind: (options.kind ?? "placeholder") as CamSourceKind };
+    const { shmName } = await ensureHelperWithSource({ udid, source, forceBuild });
+    return {
+      dylib,
+      env: {
+        SIMCAM_SHM_NAME: shmName,
+        ...(options.mirror && options.mirror !== "auto"
+          ? { SIMCAM_MIRROR_MODE: options.mirror }
+          : {}),
+      },
+    };
+  },
+});
 
 await program.parseAsync(process.argv);

@@ -83,22 +83,22 @@ describe("selectCameraPrimaryKind", () => {
     })).toBe("play");
   });
 
-  test("helper alive but no real source picked: Play (not Stop)", () => {
+  test("helper alive with placeholder: Stop", () => {
     expect(selectCameraPrimaryKind({
       bundleId: "com.example.app",
       injected: true,
       source: "placeholder",
       foregroundIsInjected: true,
-    })).toBe("play");
+    })).toBe("stop");
   });
 
-  test("helper alive with real source, foreground app not yet injected: Inject", () => {
+  test("helper alive in another foreground app: Stop", () => {
     expect(selectCameraPrimaryKind({
       bundleId: "com.example.app",
       injected: true,
       source: "webcam",
       foregroundIsInjected: false,
-    })).toBe("attach");
+    })).toBe("stop");
   });
 
   test("helper alive with real source, foreground app injected: Stop", () => {

@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <stdatomic.h>
 #include <errno.h>
+#include <signal.h>
 #include <string.h>
 
 #pragma mark - Source globals
@@ -30,6 +31,12 @@ static SimCamShmHeader *gShmHeader = NULL;
 static SimCamSurfaceTable *gSurfaceTable = NULL;
 static IOSurfaceRef gSurfaces[SIMCAM_SURFACE_RING];  // resolved from global IDs
 static uint64_t gLastSeenSeq = 0;
+static _Atomic bool gConnected = false;
+static _Atomic uint64_t gConnectionGeneration = 0;
+
+BOOL SimCamDeviceIsConnected(void) {
+    return atomic_load_explicit(&gConnected, memory_order_acquire);
+}
 
 #pragma mark - Last-frame cache
 
@@ -176,20 +183,22 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
     [_layers addObject:layer];
     [_lock unlock];
     BOOL mirror = SimCamShouldMirror(SimCamPositionOf(layer));
+    uint64_t generation = atomic_load(&gConnectionGeneration);
     CGImageRef primed = SimCamAcquireCachedCGImage();
-    if (!primed && gSourceCGImage && !gShmHeader) {
+    if (!primed && gSourceCGImage && !SimCamDeviceIsConnected()) {
         primed = CGImageRetain(gSourceCGImage);
     }
     dispatch_async(dispatch_get_main_queue(), ^{
         layer.contentsGravity = kCAGravityResizeAspectFill;
         if (mirror) layer.transform = CATransform3DMakeScale(-1.f, 1.f, 1.f);
         if (primed) {
-            layer.contents = (__bridge id)primed;
+            if (SimCamDeviceIsConnected() && generation == atomic_load(&gConnectionGeneration))
+                layer.contents = (__bridge id)primed;
             CGImageRelease(primed);
         }
     });
     simcam_log(@"addPreviewLayer %p (mirror=%d, primed=%s, shm=%s)",
-        layer, (int)mirror, primed ? "yes" : "no", gShmHeader ? "yes" : "no");
+        layer, (int)mirror, primed ? "yes" : "no", SimCamDeviceIsConnected() ? "yes" : "no");
     [self startPumpingIfNeeded];
 }
 
@@ -209,7 +218,14 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
     });
 }
 
-- (void)pushFrameToLayers:(CVPixelBufferRef)pb {
+- (void)disconnectPreviewLayers {
+    [_lock lock];
+    NSArray *layers = _layers.allObjects;
+    [_lock unlock];
+    for (AVCaptureVideoPreviewLayer *layer in layers) layer.contents = nil;
+}
+
+- (void)pushFrameToLayers:(CVPixelBufferRef)pb generation:(uint64_t)generation {
     if (!pb) return;
     NSArray *layerSnapshot;
     [_lock lock]; layerSnapshot = _layers.allObjects; [_lock unlock];
@@ -231,6 +247,7 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
     }
     dispatch_async(dispatch_get_main_queue(), ^{
         for (AVCaptureVideoPreviewLayer *l in layerSnapshot) {
+            if (!SimCamDeviceIsConnected() || generation != atomic_load(&gConnectionGeneration)) continue;
             l.contents = (__bridge id)cg;
         }
         CGImageRelease(cg);
@@ -245,6 +262,8 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
 // pixel buffer keeps the surface in use, so the host writer renders into a
 // different ring slot until we release it.
 - (CVPixelBufferRef)newPixelBufferFromSurfaceForceFresh:(BOOL)force CF_RETURNS_RETAINED {
+    @synchronized([SimCamRegistry class]) {
+    if (!SimCamDeviceIsConnected()) return NULL;
     if (!gShmHeader || !gSurfaceTable) return NULL;
     if (gShmHeader->magic != SIMCAM_SHM_MAGIC) return NULL;
     uint64_t seqA = atomic_load_explicit(&gShmHeader->frameSeq, memory_order_acquire);
@@ -274,9 +293,11 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
     }
     gLastSeenSeq = seqA;
     return pb;
+    }
 }
 
 - (CVPixelBufferRef)currentPixelBuffer CF_RETURNS_RETAINED {
+    if (!SimCamDeviceIsConnected()) return NULL;
     CVPixelBufferRef pb = [self newPixelBufferFromSurfaceForceFresh:YES];
     if (!pb) pb = [self newPixelBufferFromImage];
     return pb;
@@ -350,6 +371,8 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
 }
 
 - (CMSampleBufferRef)newSampleBufferAtTime:(CMTime)pts CF_RETURNS_RETAINED {
+    @synchronized([SimCamRegistry class]) {
+    if (!SimCamDeviceIsConnected()) return NULL;
     CVPixelBufferRef pb = [self newPixelBufferFromSurface];
     if (!pb) pb = [self newPixelBufferFromImage];
     if (pb) {
@@ -380,6 +403,7 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
     if (fd) CFRelease(fd);
     CVPixelBufferRelease(pb);
     return sb;
+    }
 }
 
 - (void)startPumpingIfNeeded {
@@ -393,6 +417,8 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
     __block uint8_t lastMirrorByte = SIMCAM_MIRROR_UNSET;
     dispatch_source_set_event_handler(_timer, ^{
         __strong __typeof(weakSelf) self = weakSelf; if (!self) return;
+        @synchronized([SimCamRegistry class]) {
+        if (!SimCamDeviceIsConnected()) return;
         if (gShmHeader) {
             uint8_t m = gShmHeader->mirrorMode;
             if (m != lastMirrorByte) {
@@ -411,11 +437,13 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
                 }
             }
         }
+        }
+        uint64_t generation = atomic_load(&gConnectionGeneration);
         CMTime pts = CMTimeMake(frameIdx++, (int32_t)kFrameRate);
         CMSampleBufferRef sb = [self newSampleBufferAtTime:pts];
         if (!sb) return;
         CVImageBufferRef pb = CMSampleBufferGetImageBuffer(sb);
-        if (gShmHeader || gLastFramePB) [self pushFrameToLayers:pb];
+        [self pushFrameToLayers:pb generation:generation];
         NSArray *snapshot;
         [self->_lock lock]; snapshot = [self->_entries copy]; [self->_lock unlock];
         BOOL anyDead = NO;
@@ -430,7 +458,7 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
             __weak SimCamWeakRef *weakRef = ref;
             dispatch_async(q, ^{
                 id<AVCaptureVideoDataOutputSampleBufferDelegate> d = weakRef.target;
-                if (d && [d respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+                if (SimCamDeviceIsConnected() && generation == atomic_load(&gConnectionGeneration) && d && [d respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
                     AVCaptureConnection *conn = SimCamFakeConnectionForOutput(out);
                     [d captureOutput:out didOutputSampleBuffer:sb fromConnection:conn];
                 }
@@ -470,7 +498,7 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
 #pragma mark - Source loaders
 
 BOOL SimCamFrameSourceIsShmAttached(void) {
-    return gShmHeader != NULL;
+    return SimCamDeviceIsConnected();
 }
 
 void SimCamFrameSourceLoadImage(void) {
@@ -514,10 +542,7 @@ void SimCamFrameSourceOpenShmIfRequested(void) {
     const char *shmName = getenv("SIMCAM_SHM_NAME");
     if (!shmName || !*shmName) return;
     int fd = shm_open(shmName, O_RDONLY, 0);
-    if (fd < 0) {
-        simcam_log(@"shm_open(%s) failed: %s", shmName, strerror(errno));
-        return;
-    }
+    if (fd < 0) return;
     size_t size = (size_t)SimCamControlSize();
     struct stat st;
     if (fstat(fd, &st) < 0 || (size_t)st.st_size < size) {
@@ -532,7 +557,9 @@ void SimCamFrameSourceOpenShmIfRequested(void) {
         return;
     }
     SimCamShmHeader *hdr = (SimCamShmHeader *)map;
-    if (hdr->magic != SIMCAM_SHM_MAGIC) {
+    if (hdr->magic != SIMCAM_SHM_MAGIC || hdr->version != 3 ||
+        !atomic_load_explicit(&hdr->active, memory_order_acquire) ||
+        hdr->ownerPid == 0 || kill((pid_t)hdr->ownerPid, 0) != 0) {
         simcam_log(@"shm magic mismatch: 0x%x", hdr->magic);
         munmap(map, size);
         return;
@@ -574,4 +601,59 @@ void SimCamFrameSourceOpenShmIfRequested(void) {
     kFrameHeight = hdr->height;
     simcam_log(@"shm \"%s\" attached (%ux%u, %u/%u IOSurfaces resolved)",
                shmName, hdr->width, hdr->height, resolved, count);
+}
+
+static void SimCamCloseSource(void) {
+    if (gShmHeader) munmap(gShmHeader, (size_t)SimCamControlSize());
+    gShmHeader = NULL;
+    gSurfaceTable = NULL;
+    gLastSeenSeq = 0;
+    for (uint32_t i = 0; i < SIMCAM_SURFACE_RING; i++) {
+        if (gSurfaces[i]) CFRelease(gSurfaces[i]);
+        gSurfaces[i] = NULL;
+    }
+    NSLock *lock = SimCamFrameCacheLock();
+    [lock lock];
+    if (gLastFramePB) CVPixelBufferRelease(gLastFramePB);
+    if (gLastFrameCGImage) CGImageRelease(gLastFrameCGImage);
+    gLastFramePB = NULL;
+    gLastFrameCGImage = NULL;
+    [lock unlock];
+}
+
+static void SimCamRefreshDevice(void) {
+    BOOL connected;
+    BOOL changed;
+    @synchronized([SimCamRegistry class]) {
+        BOOL wasConnected = SimCamDeviceIsConnected();
+        if (gShmHeader && (!atomic_load_explicit(&gShmHeader->active, memory_order_acquire) ||
+                          kill((pid_t)gShmHeader->ownerPid, 0) != 0)) {
+            atomic_store_explicit(&gConnected, false, memory_order_release);
+            SimCamCloseSource();
+        }
+        if (!gShmHeader && !wasConnected) SimCamFrameSourceOpenShmIfRequested();
+        connected = gShmHeader != NULL;
+        changed = wasConnected != connected;
+        atomic_store_explicit(&gConnected, connected, memory_order_release);
+        if (changed) atomic_fetch_add(&gConnectionGeneration, 1);
+    }
+    if (!changed) return;
+    if (!connected) [[SimCamRegistry shared] disconnectPreviewLayers];
+    NSNotificationName name = connected ? AVCaptureDeviceWasConnectedNotification
+                                        : AVCaptureDeviceWasDisconnectedNotification;
+    for (NSNumber *position in @[@(AVCaptureDevicePositionBack), @(AVCaptureDevicePositionFront)]) {
+        AVCaptureDevice *device = SimCamFakeDeviceForPosition((AVCaptureDevicePosition)position.intValue);
+        [NSNotificationCenter.defaultCenter postNotificationName:name object:device];
+    }
+}
+
+void SimCamStartDeviceMonitor(void) {
+    static dispatch_source_t monitor;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        monitor = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(monitor, DISPATCH_TIME_NOW, NSEC_PER_SEC / 5, NSEC_PER_MSEC * 20);
+        dispatch_source_set_event_handler(monitor, ^{ SimCamRefreshDevice(); });
+        dispatch_resume(monitor);
+    });
 }

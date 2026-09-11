@@ -2,7 +2,6 @@ import { Ban, ChevronDown, ChevronRight, Folder, Radio, TriangleAlert } from "lu
 import { useMemo, useState, type ReactNode } from "react";
 
 import {
-  captureAuthHeaders,
   fetchCapturedBody,
   useCaptureStream,
   type CaptureAttachment,
@@ -10,6 +9,7 @@ import {
   type CapturedBody,
   type CapturedRequest,
 } from "../hooks/use-capture-stream";
+import { runHostAction } from "../utils/exec";
 import { formatRate } from "../utils/format-metrics";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
@@ -111,21 +111,14 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
     setRebooting(true);
     setRebootError(null);
     try {
-      const response = await fetch(
-        `${bodyBase}/reboot?device=${encodeURIComponent(udid)}&enabled=${enable ? "1" : "0"}`,
-        { method: "POST", headers: captureAuthHeaders({ json: true }), body: "{}" },
-      );
-      if (!response.ok) {
+      const result = await runHostAction("capture.reboot", { udid, enabled: enable });
+      if (result.exitCode !== 0) {
         // Shutdown can succeed before boot fails, so silence here leaves the panel describing a device
         // that is now off.
-        const detail = await response
-          .json()
-          .then((body: { error?: string }) => body.error)
-          .catch(() => null);
-        setRebootError(detail ?? `The device could not be rebooted (HTTP ${response.status}).`);
+        setRebootError(result.stderr || "The device could not be rebooted.");
         return;
       }
-      setMeta((await response.json()) as CaptureMeta);
+      setMeta(JSON.parse(result.stdout) as CaptureMeta);
       setStreamKey((key) => key + 1);
     } catch (error) {
       setRebootError(

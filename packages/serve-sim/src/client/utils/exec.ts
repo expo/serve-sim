@@ -190,9 +190,12 @@ async function socketRequest(
   });
 }
 
+const CAMERA_DEVICE_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
 export function stopCameraFrames(udid: string): void {
   const ws = openSocket;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!CAMERA_DEVICE_ID.test(udid)) return;
   const device = new TextEncoder().encode(udid);
   const message = new Uint8Array(2 + device.length);
   message[0] = 2;
@@ -207,8 +210,8 @@ export function sendCameraFrame(udid: string, frame: Uint8Array): CameraFrameSen
   const ws = openSocket;
   if (!ws || ws.readyState !== WebSocket.OPEN) return "disconnected";
   if (ws.bufferedAmount > 512 * 1024) return "dropped";
+  if (!CAMERA_DEVICE_ID.test(udid) || !frame.length || frame.length > 8 * 1024 * 1024) return "dropped";
   const device = new TextEncoder().encode(udid);
-  if (!device.length || device.length > 64 || !frame.length || frame.length > 8 * 1024 * 1024) return "dropped";
   const message = new Uint8Array(2 + device.length + frame.length);
   message[0] = 1;
   message[1] = device.length;

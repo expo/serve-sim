@@ -158,6 +158,49 @@ test("an action finishing after socket close releases its newly claimed camera o
 });
 
 
+for (const closed of [false, true]) {
+  test(`reports action callback failures with socket ${closed ? "closed" : "open"}`, async () => {
+    const action = spyOn(hostActions, "runHostActionAsync").mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
+    const log = spyOn(console, "error").mockImplementation(() => {});
+    const failure = new Error("camera claim failed");
+    let claimed: symbol | undefined;
+    let closes = 0;
+    const socket = new TestSocket();
+    try {
+      createExecWebSocketHandler({
+        path: "/exec-ws",
+        execToken: "camera-test",
+        onActionResult: (_action, _params, _result, owner) => {
+          claimed = owner;
+          throw failure;
+        },
+        onCameraClose: (owner) => {
+          closes++;
+          if (claimed === owner) claimed = undefined;
+        },
+      })(new Request("http://localhost/exec-ws"), socket);
+      socket.emit("message", Buffer.from('{"token":"camera-test"}'), false);
+      socket.emit("message", Buffer.from(JSON.stringify({
+        id: 1, action: "camera.inject", params: { udid: UDID, source: "stream" },
+      })), false);
+      if (closed) socket.close();
+      await Bun.sleep(0);
+      expect(log).toHaveBeenCalledWith("serve-sim action camera.inject failed:", failure);
+      if (closed) {
+        expect(claimed).toBeUndefined();
+        expect(closes).toBe(2);
+      } else {
+        expect(socket.sent.at(-1)).toEqual({ id: 1, error: "action failed" });
+      }
+    } finally {
+      socket.close();
+      action.mockRestore();
+      log.mockRestore();
+    }
+  });
+}
+
+
 test("ownership loss notifies once, while accepted frames and delivery drops do not notify", async () => {
   const action = spyOn(hostActions, "runHostActionAsync").mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
   const socket = new TestSocket();

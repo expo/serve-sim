@@ -20,17 +20,6 @@ export function CameraStatusPill({ state }: { state: CameraPillState }) {
   );
 }
 
-export function CameraTestPatternHint() {
-  return (
-    <p
-      className="m-0 text-center text-[10px] leading-[1.5] text-white/45"
-      data-camera-test-pattern-hint
-    >
-      Test-pattern feed
-    </p>
-  );
-}
-
 export interface CameraMediaPreviewProps {
   mode: "placeholder" | "file" | "webcam" | "uploading";
   fileName: string | null;

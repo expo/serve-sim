@@ -491,7 +491,6 @@ void SimCamFrameSourceOpenShmIfRequested(void) {
     if (hdr->magic != SIMCAM_SHM_MAGIC || hdr->version != 3 ||
         !atomic_load_explicit(&hdr->active, memory_order_acquire) ||
         hdr->ownerPid == 0 || kill((pid_t)hdr->ownerPid, 0) != 0) {
-        simcam_log(@"shm magic mismatch: 0x%x", hdr->magic);
         munmap(map, size);
         return;
     }

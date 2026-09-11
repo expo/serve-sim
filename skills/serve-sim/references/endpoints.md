@@ -68,7 +68,7 @@ mounts it at `/`. Prefix the paths below with that configured base.
 | `GET` | `/api/event-log` | Recent normalized simulator input events. |
 | `GET` | `/api/event-log/events` | SSE event-log updates. |
 | `GET` | `/logs` | Simulator console log (NDJSON). SSE by default, replaying the buffered backlog before live lines; JSON on `Accept: application/json` or `?snapshot`. The preview's Logs drawer polls the JSON form; the browser console dump is opt in with `?logs=1` on the preview URL. |
-| `GET` | `/crashes` | Crash reports for the device, with collection health. JSON by default; SSE on `Accept: text/event-stream`. A browser `EventSource` carries the access cookie, but a caller holding only the token needs a client that can set a header. |
+| `GET` | `/crashes` | Crash reports for the device, with collection health. JSON by default; SSE on `Accept: text/event-stream`, which the preview reads over the control socket. |
 | `GET` | `/crashes/<id>` | One crash record, one of its occurrences, and that occurrence's full `.ips`. |
 | `GET` | `/ax` | SSE accessibility snapshots. |
 | `POST` | `/exec` | Host command execution; requires JSON, same-origin checks, and bearer token. |

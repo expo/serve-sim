@@ -1,4 +1,4 @@
-# The capability trampoline
+# The capability loader
 
 How serve-sim gets code into apps running on a simulator, and why it is shaped
 this way. This is the source of truth; the code should follow it, and where the
@@ -19,7 +19,7 @@ a process starts. Two facts follow, and they shape everything else:
 - **A device-wide insert reaches every process, not just apps.** Setting it with
   `launchctl setenv` means daemons and system services load it too.
 
-## Why a trampoline at all
+## Why a capability loader at all
 
 The second fact is the reason this indirection exists. A capability dylib links
 real frameworks: the camera injector pulls in UIKit, AVFoundation, CoreMedia and
@@ -27,18 +27,18 @@ others. Inserting *that* device-wide crash-loops system daemons. This was
 observed as GSSCred crash-looping when an inserted image linked Foundation.
 
 So the inserted image must be inert and dependency-free, and something else must
-load the real work. That is the trampoline:
+load the real work. That is the capability loader:
 
 ```
-launchctl setenv DYLD_INSERT_LIBRARIES  →  libServeSimTrampoline.dylib   (libSystem only)
+launchctl setenv DYLD_INSERT_LIBRARIES  →  libServeSimCapabilityLoader.dylib   (libSystem only)
                                               ↓ reads a config file
                                            dlopen(libSimCameraInjector.dylib)   (UIKit, AVFoundation, …)
 ```
 
-The trampoline links **only libSystem**. It is the one dylib in the insert. Every
+The capability loader links **only libSystem**. It is the one dylib in the insert. Every
 capability is loaded by it, never inserted alongside it.
 
-## What the trampoline does
+## What the capability loader does
 
 1. Its constructor runs, before `main`, in every process the simulator starts.
 2. It refuses to do anything unless `TMPDIR` sits under
@@ -90,7 +90,7 @@ serve-sim. One capability per line, tab-separated:
   0. Capabilities are loaded soonest-first, so one capability's delay never holds
   up another's.
 
-The trampoline reads at most 64KB and loads at most 64 capabilities, and says so
+The capability loader reads at most 64KB and loads at most 64 capabilities, and says so
 on stderr rather than truncating silently.
 
 ## Scopes, and what a capability may assume
@@ -116,7 +116,7 @@ Two things mitigate this, and neither is perfect:
   are installed. That is AVFoundation's hot-plug signal, so an app that watches
   for cameras appearing, which is standard practice for camera UIs, picks it up
   without restarting.
-- A command that targets one app can restart it, which puts the trampoline in at
+- A command that targets one app can restart it, which puts the capability loader in at
   `exec` and removes the timing question for that app.
 
 An app that asks once at launch and never listens again can only be reached by
@@ -127,7 +127,7 @@ restarting it. That is a property of the app, not something serve-sim can fix.
 The insert is machine-wide state on the simulator, so it must be owned by
 something that reliably removes it:
 
-- The session arms the trampoline before apps launch, even with no capabilities
+- The session arms the capability loader before apps launch, even with no capabilities
   enabled. Stopping the camera leaves it armed until session teardown.
 - Re-executed stream helpers carry `SERVE_SIM_STREAM_HELPER=1` and skip arming,
   because they can outlive the session that owns the insert.
@@ -135,7 +135,7 @@ something that reliably removes it:
   `SIGINT`/`SIGTERM`/`SIGHUP`. The signal handlers disarm directly, because
   spawning `simctl` from an exit handler does not always finish.
 - `--detach` keeps what it arms, since its session outlives the command.
-- On startup, a trampoline left behind by an earlier session whose dylib no
+- On startup, a capability loader left behind by an earlier session whose dylib no
   longer exists is cleaned up.
 - Capability records carry the pid that enabled them. A record with no owner
   (`null`) outlives the command that created it; a record owned by a session is
@@ -147,9 +147,9 @@ something that reliably removes it:
 Recorded so the gap between this document and the code is visible rather than
 forgotten:
 
-- **The per-launch path inserts the capability dylib alongside the trampoline.**
+- **The per-launch path inserts the capability dylib alongside the capability loader.**
   `childLaunchEnv` puts both in `SIMCTL_CHILD_DYLD_INSERT_LIBRARIES`. It should
-  insert the trampoline alone and let it load the capability, so there is one
+  insert the capability loader alone and let it load the capability, so there is one
   loading path rather than two.
 - `+[AVCaptureDevice defaultDeviceWithMediaType:]` is not swizzled, only the
   `deviceType:mediaType:position:` form, so an app using the older API sees no

@@ -138,7 +138,7 @@ describe("config size limit", () => {
   test("a capability set that would not fit is refused", () => {
     expect(() =>
       renderCapabilityConfig({ launchArgs: [], capabilities: huge }),
-    ).toThrow("The trampoline would load nothing");
+    ).toThrow("The capability loader would load nothing");
   });
 
   test("a capability set that fits is rendered", () => {
@@ -158,9 +158,9 @@ describe("config size limit", () => {
     ).toBe("all\t/small.dylib\t\t0\n");
   });
 
-  test("refuses a config the trampoline could not read", () => {
+  test("refuses a config the capability loader could not read", () => {
     const source = readFileSync(
-      join(import.meta.dir, "../../Sources/ServeSimTrampoline/serve-sim-trampoline.c"),
+      join(import.meta.dir, "../../Sources/ServeSimCapabilityLoader/serve-sim-capability-loader.c"),
       "utf-8",
     );
     const compiled = source.match(/#define MAX_CONFIG_BYTES \((\d+) \* (\d+)\)/);
@@ -170,12 +170,12 @@ describe("config size limit", () => {
 });
 
 describe("childLaunchEnv", () => {
-  test("inserts the capability dylib and the trampoline into the launched app", () => {
+  test("inserts the capability dylib and the capability loader into the launched app", () => {
     const env = childLaunchEnv("/opt/injector.dylib", { SIMCAM_SHM_NAME: "/shm" });
     const inserted = env.SIMCTL_CHILD_DYLD_INSERT_LIBRARIES!.split(":");
 
     expect(inserted).toContain("/opt/injector.dylib");
-    expect(inserted.some((path) => path.endsWith("libServeSimTrampoline.dylib"))).toBe(true);
+    expect(inserted.some((path) => path.endsWith("libServeSimCapabilityLoader.dylib"))).toBe(true);
   });
 
   test("prefixes the capability environment so simctl passes it to the app", () => {
@@ -241,7 +241,7 @@ describe("querying what is enabled", () => {
 });
 
 describe("capability scopes", () => {
-  test("each scope writes the token the trampoline matches on", () => {
+  test("each scope writes the token the capability loader matches on", () => {
     const config = formatCapabilityConfig({
       clipboard: {
         name: "clipboard",

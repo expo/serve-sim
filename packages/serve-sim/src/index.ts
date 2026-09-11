@@ -28,13 +28,13 @@ import {
 } from "./capabilities";
 import {
   applyDefaultCapabilities,
-  armTrampoline,
+  armCapabilityLoader,
   clearLaunchState,
   devicesArmedHere,
-  disarmStaleTrampoline,
+  disarmStaleCapabilityLoader,
   releaseLaunchState,
-  removeTrampoline,
-  removeTrampolineSync,
+  removeCapabilityLoader,
+  removeCapabilityLoaderSync,
 } from "./launch-manager";
 import { killOwnListeners } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
@@ -373,10 +373,10 @@ async function ensureBooted(udid: string): Promise<void> {
     }
   }
 
-  // Only clean up a trampoline an earlier session left behind. Arming belongs to
+  // Only clean up a capability loader an earlier session left behind. Arming belongs to
   // launchApp and enableCapabilities: this runs in the stream helper too, and a
   // helper arming after its parent disarmed would leave the insert set.
-  await disarmStaleTrampoline(udid);
+  await disarmStaleCapabilityLoader(udid);
 }
 
 /**
@@ -389,7 +389,7 @@ function disarmDevicesArmedHere(): void {
     let othersRemain = false;
     try { othersRemain = releaseLaunchState(udid, process.pid); } catch {}
     if (othersRemain) continue;
-    try { removeTrampolineSync(udid); } catch {}
+    try { removeCapabilityLoaderSync(udid); } catch {}
   }
 }
 
@@ -709,7 +709,7 @@ async function killStreams(deviceArg?: string): Promise<void> {
     try { process.kill(state.pid, "SIGTERM"); } catch {}
     clearState(udid);
     clearLaunchState(udid);
-    await removeTrampoline(udid);
+    await removeCapabilityLoader(udid);
     console.log(JSON.stringify({ disconnected: true, device: state.device }));
   } else {
     const states = readAllStates();
@@ -721,7 +721,7 @@ async function killStreams(deviceArg?: string): Promise<void> {
     for (const state of states) {
       try { process.kill(state.pid, "SIGTERM"); } catch {}
       clearLaunchState(state.device);
-      await removeTrampoline(state.device);
+      await removeCapabilityLoader(state.device);
       devices.push(state.device);
     }
     clearState();
@@ -2141,7 +2141,7 @@ Examples:
     if (!opts.detach) {
       try {
         targets = resolveTargetDevices(devices);
-        // The trampoline is armed for the whole session, not when a capability
+        // The capability loader is armed for the whole session, not when a capability
         // turns on: an app only carries it if it was inserted at launch, so
         // arming late means the app it was armed for cannot receive anything
         // until it restarts. It loads nothing on its own, so an app that never
@@ -2161,7 +2161,7 @@ Examples:
         }
         for (const udid of targets) await ensureBooted(udid);
         if (process.env[STREAM_HELPER_ENV] !== "1") {
-          for (const udid of targets) await armTrampoline(udid);
+          for (const udid of targets) await armCapabilityLoader(udid);
         }
         for (const udid of launchesBeforeStreaming ? targets : []) {
           if (bundleId) {

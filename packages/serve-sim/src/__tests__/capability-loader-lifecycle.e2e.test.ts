@@ -5,22 +5,22 @@ import { join } from "path";
 
 import { e2eDevice, readInsert, requireE2E } from "./e2e-preconditions";
 import {
-  armTrampoline,
+  armCapabilityLoader,
   capabilityConfigPath,
-  disarmStaleTrampoline,
-  removeTrampoline,
-  removeTrampolineSync,
-  trampolineDir,
+  disarmStaleCapabilityLoader,
+  removeCapabilityLoader,
+  removeCapabilityLoaderSync,
+  capabilityLoaderDir,
 } from "../launch-manager";
 
 // The insert is device-wide state, so every test here asserts it is gone again.
 
-const TRAMPOLINE = join(trampolineDir(), "libServeSimTrampoline.dylib");
+const CAPABILITY_LOADER = join(capabilityLoaderDir(), "libServeSimCapabilityLoader.dylib");
 
 const udid = e2eDevice();
-const ready = udid !== null && existsSync(TRAMPOLINE);
+const ready = udid !== null && existsSync(CAPABILITY_LOADER);
 
-requireE2E("trampoline lifecycle", ready);
+requireE2E("capability loader lifecycle", ready);
 
 function setInsert(value: string): void {
   execFileSync(
@@ -38,7 +38,7 @@ function unsetInsert(): void {
   );
 }
 
-// removeTrampolineSync only drops our own dylib, which is the point of it, so it
+// removeCapabilityLoaderSync only drops our own dylib, which is the point of it, so it
 // cannot undo an insert these tests set to something else. Put the device back
 // the way it was found instead; other sessions share it.
 let initialInsert: string | null = null;
@@ -51,67 +51,67 @@ function restoreInsert(): void {
 beforeAll(() => {
   if (!ready) return;
   initialInsert = readInsert(udid!);
-  removeTrampolineSync(udid!);
+  removeCapabilityLoaderSync(udid!);
 }, 60_000);
 
 afterEach(() => {
   if (!ready) return;
-  removeTrampolineSync(udid!);
+  removeCapabilityLoaderSync(udid!);
   restoreInsert();
 });
 
 afterAll(() => {
   if (!ready) return;
-  removeTrampolineSync(udid!);
+  removeCapabilityLoaderSync(udid!);
   restoreInsert();
 });
 
-describe.skipIf(!ready)("trampoline lifecycle", () => {
-  test("arming inserts the trampoline device-wide", async () => {
-    await armTrampoline(udid!);
-    expect(readInsert(udid!)).toBe(TRAMPOLINE);
+describe.skipIf(!ready)("capability loader lifecycle", () => {
+  test("arming inserts the capability loader device-wide", async () => {
+    await armCapabilityLoader(udid!);
+    expect(readInsert(udid!)).toBe(CAPABILITY_LOADER);
   }, 60_000);
 
   test("removing it leaves nothing inserted and no config behind", async () => {
-    await armTrampoline(udid!);
+    await armCapabilityLoader(udid!);
     writeFileSync(capabilityConfigPath(udid!), "\t/opt/probe.dylib\t\n");
 
-    await removeTrampoline(udid!);
+    await removeCapabilityLoader(udid!);
 
     expect(readInsert(udid!)).toBe("");
     expect(existsSync(capabilityConfigPath(udid!))).toBe(false);
   }, 60_000);
 
   test("an exit handler can clear it without awaiting", async () => {
-    await armTrampoline(udid!);
+    await armCapabilityLoader(udid!);
     writeFileSync(capabilityConfigPath(udid!), "\t/opt/probe.dylib\t\n");
 
-    removeTrampolineSync(udid!);
+    removeCapabilityLoaderSync(udid!);
 
     expect(readInsert(udid!)).toBe("");
     expect(existsSync(capabilityConfigPath(udid!))).toBe(false);
   }, 60_000);
 
-  test("a trampoline left by a session whose build is gone is cleared", async () => {
-    setInsert(join(trampolineDir(), "gone", "libServeSimTrampoline.dylib"));
+  test("a capability loader left by a session whose build is gone is cleared", async () => {
+    setInsert(join(capabilityLoaderDir(), "gone", "libServeSimCapabilityLoader.dylib"));
 
-    await disarmStaleTrampoline(udid!);
+    await disarmStaleCapabilityLoader(udid!);
 
     expect(readInsert(udid!)).toBe("");
   }, 60_000);
 
-  test("a trampoline that still exists is left alone", async () => {
-    await armTrampoline(udid!);
+  test("a capability loader that still exists is left alone", async () => {
+    await armCapabilityLoader(udid!);
 
-    await disarmStaleTrampoline(udid!);
+    await disarmStaleCapabilityLoader(udid!);
 
-    expect(readInsert(udid!)).toBe(TRAMPOLINE);
+    expect(readInsert(udid!)).toBe(CAPABILITY_LOADER);
   }, 60_000);
 
   test("an insert that is not ours is left alone", async () => {
     setInsert("/usr/lib/libSomethingElse.dylib");
 
-    await disarmStaleTrampoline(udid!);
+    await disarmStaleCapabilityLoader(udid!);
 
     expect(readInsert(udid!)).toBe("/usr/lib/libSomethingElse.dylib");
   }, 60_000);

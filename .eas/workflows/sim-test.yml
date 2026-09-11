@@ -39,6 +39,10 @@ jobs:
         run: bash Sources/build-test-fixtures.sh
         working_directory: packages/serve-sim
 
+      - name: Test capability loader
+        run: bun run test:capability-loader
+        working_directory: packages/serve-sim
+
       # Packed before the tests run so the tarball exists even when they fail:
       # a build is often worth trying on a device precisely because the tests
       # did not settle the question.

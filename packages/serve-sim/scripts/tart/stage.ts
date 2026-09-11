@@ -20,7 +20,7 @@ function simpbFiles(pkgDir: string): string[] {
 export async function stageGuest(guest: TartGuest): Promise<void> {
   const { pkgDir } = guest.config;
   await guest.ssh(
-    `rm -rf ${GUEST_SIMPB} ${GUEST_PKG}/src ${GUEST_PKG}/dist ${GUEST_PKG}/node_modules && mkdir -p ${GUEST_SIMPB} ${GUEST_PKG}`,
+    `rm -rf ${GUEST_SIMPB} ${GUEST_PKG}/src ${GUEST_PKG}/dist ${GUEST_PKG}/Sources ${GUEST_PKG}/node_modules && mkdir -p ${GUEST_SIMPB} ${GUEST_PKG}`,
   );
 
   const binaries = simpbFiles(pkgDir);
@@ -30,7 +30,9 @@ export async function stageGuest(guest: TartGuest): Promise<void> {
     await guest.tarTo(join(pkgDir, "dist", "simpb"), ["PasteboardFixture.app"], GUEST_SIMPB);
   }
 
-  const extras = ["bun.lock", "bun.lockb", "dev.ts", "dist"].filter((name) => existsSync(join(pkgDir, name)));
+  const extras = ["bun.lock", "bun.lockb", "dev.ts", "dist", "Sources"].filter((name) =>
+    existsSync(join(pkgDir, name)),
+  );
   await guest.tarTo(pkgDir, ["src", "package.json", ...extras], GUEST_PKG);
 }
 

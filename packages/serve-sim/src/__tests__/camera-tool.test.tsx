@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   CameraStatusPill,
-  CameraTestPatternHint,
   CameraMediaPreview,
   CameraInlineBanner,
 } from "../client/components/camera-tool-ui";
@@ -38,9 +37,12 @@ describe("requestCameraStatus", () => {
   test("returns null for failed or malformed responses", async () => {
     const failedRequest = async () => new Response("no", { status: 503 });
     const malformedRequest = async () => Response.json(["not", "an", "object"]);
+    const errorBodyRequest = async () => Response.json({ error: "temporarily unavailable" });
 
     expect(await requestCameraStatus("/status", failedRequest)).toBeNull();
     expect(await requestCameraStatus("/status", malformedRequest)).toBeNull();
+    expect(await requestCameraStatus("/status", errorBodyRequest)).toBeNull();
+    expect(await requestCameraStatus("/status", async () => Response.json({ alive: false }))).toEqual({ alive: false });
   });
 });
 
@@ -210,18 +212,6 @@ describe("CameraStatusPill — UI state matrix", () => {
     const html = renderToStaticMarkup(<CameraStatusPill state="disconnected" />);
     expect(html).toContain("Disconnected");
     expect(html).not.toContain("Active");
-  });
-});
-
-describe("CameraTestPatternHint (placeholder state, no source)", () => {
-  test("renders a visible 'Test-pattern feed' label", () => {
-    const html = renderToStaticMarkup(<CameraTestPatternHint />);
-    expect(html).toContain("Test-pattern feed");
-  });
-
-  test("uses subdued typography without low-opacity icons (text-only label)", () => {
-    const html = renderToStaticMarkup(<CameraTestPatternHint />);
-    expect(html).not.toContain("<svg");
   });
 });
 

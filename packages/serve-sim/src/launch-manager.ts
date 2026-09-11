@@ -1,16 +1,12 @@
-import { execFile, execFileSync } from "child_process";
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "fs";
+import { simctl, simctlSync } from "./simctl";
+import { type Capability, type LaunchState, readLaunchState, clearLaunchState, writeLaunchState } from "./launch-state";
+import { withLaunchStateLock } from "./launch-state-lock";
+import { capabilityConfigPath, commitCapabilityConfig, renderCapabilityConfig } from "./capability-config";
+
+export { type Capability, type RecordedCapability, readLaunchState, clearLaunchState } from "./launch-state";
+export { MAX_CONFIG_BYTES, formatCapabilityConfig, renderCapabilityConfig, capabilityConfigPath } from "./capability-config";
+import { existsSync, unlinkSync } from "fs";
 import { join } from "path";
-import { promisify } from "util";
 
 import {
   capabilitiesToApply,
@@ -18,109 +14,13 @@ import {
   type CapabilityContext,
   type CapabilityDefinition,
   type CapabilityOverrides,
-  type CapabilityScope,
 } from "./capabilities";
 import { dirnameOf } from "./runtime";
-import { stateDir } from "./state";
-
-const execFileAsync = promisify(execFile);
 
 const TRAMPOLINE_NAME = "libServeSimTrampoline.dylib";
 const INSERT = "DYLD_INSERT_LIBRARIES";
 const CONFIG_VAR = "SERVE_SIM_CAPABILITIES_CONFIG";
-// Same value as MAX_CONFIG_BYTES in Sources/ServeSimTrampoline/serve-sim-trampoline.c.
-export const MAX_CONFIG_BYTES = 64 * 1024;
 const TERMINATE_TIMEOUT_MS = 15_000;
-
-/** The scope tokens the trampoline matches on. */
-const SCOPE_TOKEN: Record<CapabilityScope, string> = { userApps: "user", allApps: "all" };
-
-function isCapabilityScope(value: unknown): value is CapabilityScope {
-  return value === "userApps" || value === "allApps";
-}
-
-export interface Capability {
-  name: string;
-  dylib: string;
-  env?: Record<string, string>;
-  scope: CapabilityScope;
-  loadDelayMs?: number;
-}
-
-export interface RecordedCapability extends Capability {
-  /** The app to relaunch, when one was named. Never narrows what loads. */
-  bundleId: string | null;
-  /**
-   * The process that enabled it, whose exit releases it. A capability enabled
-   * for a stream goes when that stream does. `serve-sim camera` exits right
-   * away and records null, so its capability survives until an explicit
-   * disable.
-   */
-  ownerPid: number | null;
-}
-
-interface LaunchState {
-  bundleId?: string;
-  launchArgs: string[];
-  capabilities: Record<string, RecordedCapability>;
-}
-
-function stateFile(udid: string): string {
-  return join(stateDir(), `launch-${udid}.json`);
-}
-
-function ownerIsGone(ownerPid: number | null): boolean {
-  if (ownerPid === null) return false;
-  try {
-    process.kill(ownerPid, 0);
-    return false;
-  } catch {
-    return true;
-  }
-}
-
-export function readLaunchState(udid: string): LaunchState | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(stateFile(udid), "utf-8"));
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== "object" || parsed === null) return null;
-  const { bundleId, launchArgs, capabilities } = parsed as Partial<LaunchState>;
-  return {
-    ...(typeof bundleId === "string" && bundleId ? { bundleId } : {}),
-    launchArgs: Array.isArray(launchArgs)
-      ? launchArgs.filter((arg): arg is string => typeof arg === "string")
-      : [],
-    capabilities: recordedCapabilities(capabilities),
-  };
-}
-
-/**
- * Keeps the records that are still usable. A malformed one would reach
- * formatCapabilityConfig and throw there instead of here, and one whose owner
- * died is a leftover nobody will disable.
- */
-function recordedCapabilities(value: unknown): Record<string, RecordedCapability> {
-  if (typeof value !== "object" || value === null) return {};
-  const kept: Record<string, RecordedCapability> = {};
-  for (const [key, record] of Object.entries(value)) {
-    if (typeof record !== "object" || record === null) continue;
-    const { name, dylib, scope, bundleId, ownerPid } = record as Partial<RecordedCapability>;
-    if (typeof name !== "string" || typeof dylib !== "string" || !isCapabilityScope(scope)) {
-      continue;
-    }
-    const owner = typeof ownerPid === "number" ? ownerPid : null;
-    if (ownerIsGone(owner)) continue;
-    kept[key] = {
-      ...(record as RecordedCapability),
-      bundleId: typeof bundleId === "string" ? bundleId : null,
-      ownerPid: owner,
-    };
-  }
-  return kept;
-}
 
 /**
  * Drops this process's capability records and reports whether any remain, so a
@@ -142,147 +42,8 @@ export function releaseLaunchState(udid: string, ownerPid: number): boolean {
   return true;
 }
 
-export function clearLaunchState(udid: string): void {
-  try { unlinkSync(stateFile(udid)); } catch {}
-}
-
-function writeLaunchState(udid: string, state: LaunchState): void {
-  if (!existsSync(stateDir())) mkdirSync(stateDir(), { recursive: true });
-  const target = stateFile(udid);
-  const temp = `${target}.${process.pid}.tmp`;
-  writeFileSync(temp, JSON.stringify(state));
-  renameSync(temp, target);
-}
-
 export function trampolineDir(): string {
   return join(dirnameOf(import.meta.url), "..", "dist", "trampoline");
-}
-
-function assertNoSeparators(what: string, value: string): void {
-  const found = [...value].find((character) => character === "\t" || character === "\n" || character === ";");
-  if (found !== undefined) {
-    throw new Error(
-      `${what} contains ${JSON.stringify(found)}, which separates fields in the capability ` +
-        `config the trampoline reads. Remove it, or pass the value through a file instead.`,
-    );
-  }
-}
-
-export function formatCapabilityConfig(
-  capabilities: Record<string, RecordedCapability>,
-): string {
-  const lines = Object.values(capabilities).map((capability) => {
-    assertNoSeparators(`Dylib path for ${capability.name}`, capability.dylib);
-    const env = Object.entries(capability.env ?? {})
-      .map(([key, value]) => {
-        assertNoSeparators(`Environment name ${key} for ${capability.name}`, key);
-        assertNoSeparators(`Environment value for ${key} in ${capability.name}`, value);
-        if (key.includes("=")) {
-          throw new Error(
-            `Environment name ${JSON.stringify(key)} for ${capability.name} contains "=", which ` +
-              `separates the name from the value. Rename it.`,
-          );
-        }
-        return `${key}=${value}`;
-      })
-      .join(";");
-    return [SCOPE_TOKEN[capability.scope], capability.dylib, env, capability.loadDelayMs ?? 0].join(
-      "\t",
-    );
-  });
-  return lines.length > 0 ? `${lines.join("\n")}\n` : "";
-}
-
-export function renderCapabilityConfig(state: LaunchState): string {
-  const contents = formatCapabilityConfig(state.capabilities);
-  const size = Buffer.byteLength(contents, "utf8");
-  if (size >= MAX_CONFIG_BYTES - 1) {
-    throw new Error(
-      `Capability config is ${size} bytes, over the ${MAX_CONFIG_BYTES} byte limit the trampoline ` +
-        `can read. The trampoline would load nothing. Disable capabilities you are not using, or ` +
-        `shorten the environment values passed to them.`,
-    );
-  }
-  return contents;
-}
-
-export function capabilityConfigPath(udid: string): string {
-  return join(stateDir(), `capabilities-${udid}.conf`);
-}
-
-function commitCapabilityConfig(udid: string, contents: string): void {
-  mkdirSync(stateDir(), { recursive: true });
-  const target = capabilityConfigPath(udid);
-  const temp = `${target}.${process.pid}.tmp`;
-  writeFileSync(temp, contents);
-  renameSync(temp, target);
-}
-
-const LOCK_TIMEOUT_MS = 10_000;
-const LOCK_POLL_MS = 50;
-
-function lockFile(udid: string): string {
-  return join(stateDir(), `launch-${udid}.lock`);
-}
-
-function lockHolderIsGone(path: string): boolean {
-  let contents: string;
-  try {
-    contents = readFileSync(path, "utf-8").trim();
-  } catch {
-    return true;
-  }
-  // Empty means another process created the file and has not written its pid
-  // yet. That is held, not stale.
-  if (contents === "") return false;
-  const pid = Number(contents);
-  if (!Number.isFinite(pid) || pid <= 0) return true;
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch {
-    return true;
-  }
-}
-
-async function withLaunchStateLock<T>(udid: string, fn: () => Promise<T>): Promise<T> {
-  if (!existsSync(stateDir())) mkdirSync(stateDir(), { recursive: true });
-  const path = lockFile(udid);
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
-  let fd: number | undefined;
-
-  while (fd === undefined) {
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `Timed out waiting to update the launch state for ${udid}. Another serve-sim command ` +
-          `is holding ${path}. Wait for it to finish, or remove that file if nothing is running.`,
-      );
-    }
-    try {
-      fd = openSync(path, "wx");
-      writeFileSync(fd, String(process.pid));
-    } catch {
-      if (lockHolderIsGone(path)) {
-        try { unlinkSync(path); } catch {}
-      }
-      await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS));
-    }
-  }
-
-  try {
-    return await fn();
-  } finally {
-    closeSync(fd);
-    try { unlinkSync(path); } catch {}
-  }
-}
-
-async function simctl(args: string[], timeout = 30_000): Promise<string> {
-  const { stdout } = await execFileAsync("xcrun", ["simctl", ...args], {
-    encoding: "utf8",
-    timeout,
-  });
-  return stdout.trim();
 }
 
 /**
@@ -349,20 +110,13 @@ export async function armTrampoline(udid: string): Promise<void> {
 
 export function removeTrampolineSync(udid: string): void {
   try {
-    execFileSync("xcrun", ["simctl", "spawn", udid, "launchctl", "unsetenv", CONFIG_VAR], {
-      stdio: "ignore",
-      timeout: 15_000,
-    });
-    const current = execFileSync(
-      "xcrun",
-      ["simctl", "spawn", udid, "launchctl", "getenv", INSERT],
-      { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 15_000 },
-    ).trim();
+    simctlSync(["spawn", udid, "launchctl", "unsetenv", CONFIG_VAR], 15_000);
+    const current = simctlSync(["spawn", udid, "launchctl", "getenv", INSERT], 15_000);
     const rest = withoutOurs(current).join(":");
     const clear = rest === ""
-      ? ["simctl", "spawn", udid, "launchctl", "unsetenv", INSERT]
-      : ["simctl", "spawn", udid, "launchctl", "setenv", INSERT, rest];
-    execFileSync("xcrun", clear, { stdio: "ignore", timeout: 15_000 });
+      ? ["spawn", udid, "launchctl", "unsetenv", INSERT]
+      : ["spawn", udid, "launchctl", "setenv", INSERT, rest];
+    simctlSync(clear, 15_000);
   } catch (error) {
     console.error(
       `Could not disarm the capability trampoline on ${udid}; it is still inserted into every ` +

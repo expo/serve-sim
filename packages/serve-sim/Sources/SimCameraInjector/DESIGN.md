@@ -1,10 +1,10 @@
 # Device-wide camera lifecycle
 
 The camera has `allApps` scope. One selected source feeds every eligible app
-carrying the serve-sim trampoline. There is no foreground-app target.
+carrying the serve-sim capability loader. There is no foreground-app target.
 
 Enable starts or updates the host helper and publishes the camera capability.
-The trampoline loads the injector on the app's main queue. The injector installs
+The capability loader loads the injector on the app's main queue. The injector installs
 its methods once and monitors the helper every 200 ms on the main queue.
 
 Disable stops the helper and removes the capability record. Loaded injectors
@@ -26,7 +26,7 @@ The real permission APIs remain unchanged, including denied/not-determined
 states. No permission-spoofing changes from the separate browser-webcam branch
 are included here.
 
-An app started before the serve-sim session cannot acquire the trampoline in
+An app started before the serve-sim session cannot acquire the capability loader in
 place. An app that ignores AVFoundation device-change notifications may need to
 reopen its camera UI. Neither limitation justifies an automatic restart.
 

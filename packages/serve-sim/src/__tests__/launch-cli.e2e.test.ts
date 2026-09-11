@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
 import { cameraHelperPidFile } from "../camera-helper";
-import { launchApp, readLaunchState, removeTrampolineSync } from "../launch-manager";
+import { launchApp, readLaunchState, removeCapabilityLoaderSync } from "../launch-manager";
 import { freePortAsync, killHelpersForDevice, useTempStateDir } from "./helpers";
 import { e2eDevice, readInsert, requireE2E } from "./e2e-preconditions";
 

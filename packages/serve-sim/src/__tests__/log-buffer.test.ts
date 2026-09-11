@@ -477,6 +477,24 @@ describe("createLogBufferCache", () => {
     cache.stopAll();
   });
 
+  test("releases a child that keeps dying once the readers are gone", async () => {
+    const cache = makeCache(15);
+    const buffer = cache.ensure("UDID-1");
+    buffer.subscribeBatch(() => {})();
+
+    for (let i = 0; i < 3; i++) {
+      spawned.at(-1)!.emit("exit");
+      await new Promise((resolve) => setTimeout(resolve, 12));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const spawnsAfterRelease = spawned.length;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(buffer.status).toBe("stopped");
+    expect(spawned).toHaveLength(spawnsAfterRelease);
+    cache.stopAll();
+  });
+
   test("a later ensure keeps a poll-only stream from idling", async () => {
     const cache = makeCache(30);
     cache.ensure("UDID-1");

@@ -250,8 +250,14 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     }
   };
 
-  async function start(): Promise<void> {
+  async function start(opts: { deferToRetry?: boolean } = {}): Promise<void> {
     if (watcher || gaveUp) return;
+    // A request-driven start defers to the backoff; an explicit one retries now.
+    if (opts.deferToRetry && retryTimer) return;
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
     try {
       // ReportCrash only creates this directory on the first crash — the one we'd miss.
       ensureDir(reportsDir);

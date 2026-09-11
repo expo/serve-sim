@@ -21,6 +21,7 @@ interface CrashFrame {
   image: string;
   symbol: string | null;
   imageOffset: number | null;
+  imageUuid: string | null;
   appOwned: boolean;
 }
 
@@ -148,6 +149,7 @@ function readFrames(body: Record<string, unknown>): CrashFrame[] {
       image: readString(image, "name") ?? "unknown",
       symbol: readString(frame, "symbol"),
       imageOffset: readNumber(frame, "imageOffset"),
+      imageUuid: readString(image, "uuid"),
       // Both paths carry the same `/Users/USER` redaction, so a prefix match holds.
       appOwned: Boolean(bundleRoot && imagePath?.startsWith(bundleRoot)),
     });
@@ -178,7 +180,11 @@ export function parseCrashReport(raw: string): CrashReport | null {
   const culprit = allFrames.find((frame) => frame.appOwned) ?? allFrames[0];
   const culpritFrame = culprit ? describeFrame(culprit) : null;
   // An unsymbolicated offset moves every rebuild, so it must not key the signature.
-  const culpritKey = culprit?.symbol ? `${culprit.image} ${culprit.symbol}` : "";
+  const culpritKey = !culprit
+    ? ""
+    : culprit.symbol
+      ? `${culprit.image} ${culprit.symbol}`
+      : `${culprit.image} ${culprit.imageUuid ?? ""}+${culprit.imageOffset ?? ""}`;
 
   const exceptionType = readString(exception, "type");
   const signal = readString(exception, "signal");

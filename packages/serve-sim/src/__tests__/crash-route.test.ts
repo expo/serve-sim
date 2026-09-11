@@ -16,7 +16,15 @@ function bundleRoot(udid: string): string {
   );
 }
 
-function ips(udid = UDID, symbol = "AppDelegate.boot()"): string {
+function ips({
+  udid = UDID,
+  symbol = "AppDelegate.boot()",
+  capturedAt = "2026-08-04 23:14:07.8433 -0700",
+}: {
+  udid?: string;
+  symbol?: string;
+  capturedAt?: string;
+} = {}): string {
   const root = bundleRoot(udid);
   const header = {
     app_name: "Demo",
@@ -29,7 +37,7 @@ function ips(udid = UDID, symbol = "AppDelegate.boot()"): string {
     procName: "Demo",
     procPath: `${root}/Demo`,
     pid: 42,
-    captureTime: "2026-08-04 23:14:07.8433 -0700",
+    captureTime: capturedAt,
     exception: { type: "EXC_CRASH", signal: "SIGABRT" },
     termination: { indicator: "Abort trap: 6" },
     faultingThread: 0,
@@ -81,7 +89,6 @@ function fakeRes(): FakeRes {
 
 const state = inProcessServeSimState(UDID, 4000);
 
-/** A runtime with one crash already collected. Every fs call is faked. */
 async function runtimeWithCrash(): Promise<CrashRuntime> {
   let emit: (eventType: string, filename: string | null) => void = () => {};
   const runtime = createCrashRuntime({
@@ -102,7 +109,6 @@ async function runtimeWithCrash(): Promise<CrashRuntime> {
   return runtime;
 }
 
-/** Two crashes that share a signature, so they collapse into one record. */
 async function runtimeWithRepeat(): Promise<CrashRuntime> {
   let emit: (eventType: string, filename: string | null) => void = () => {};
   const runtime = createCrashRuntime({
@@ -112,7 +118,10 @@ async function runtimeWithRepeat(): Promise<CrashRuntime> {
       emit = listener;
       return { close: () => {} };
     },
-    readReport: async () => ips(),
+    readReport: async (path) =>
+      path.endsWith("Demo-2.ips")
+        ? ips({ capturedAt: "2026-08-04 23:15:07.8433 -0700" })
+        : ips(),
     readDir: async () => [],
     statFile: async () => ({ mtimeMs: 0 }),
     onError: () => {},
@@ -136,7 +145,7 @@ describe("handleCrashesRequest", () => {
   test("returns JSON with the crash list and collection meta", async () => {
     const runtime = await runtimeWithCrash();
     const res = fakeRes();
-    handleCrashesRequest(fakeReq(), res, state, runtime);
+    handleCrashesRequest(fakeReq(), res, state, "", runtime);
 
     expect(res.statusCode_).toBe(200);
     expect(res.headers_["Content-Type"]).toBe("application/json");
@@ -147,6 +156,14 @@ describe("handleCrashesRequest", () => {
     expect(payload.crashes[0].culpritFrame).toBe("Demo AppDelegate.boot()");
     expect(payload.crashes[0].logTail).toBeUndefined();
     expect(payload.crashes[0].logTailLines).toBe(0);
+    expect(payload.crashes[0].occurrenceCount).toBe(1);
+    expect(payload.crashes[0].occurrenceTimes).toEqual([
+      {
+        capturedAtMs: payload.crashes[0].capturedAtMs,
+        capturedAt: payload.crashes[0].capturedAt,
+        rawPath: payload.crashes[0].rawPath,
+      },
+    ]);
   });
 
   test("explains itself when collection is unavailable, with an empty list", () => {
@@ -161,7 +178,7 @@ describe("handleCrashesRequest", () => {
     runtime.start();
 
     const res = fakeRes();
-    handleCrashesRequest(fakeReq(), res, state, runtime);
+    handleCrashesRequest(fakeReq(), res, state, "", runtime);
 
     const payload = JSON.parse(res.body_);
     expect(payload.crashes).toEqual([]);
@@ -172,7 +189,7 @@ describe("handleCrashesRequest", () => {
   test("streams SSE with meta before the authoritative list", async () => {
     const runtime = await runtimeWithCrash();
     const res = fakeRes();
-    handleCrashesRequest(fakeReq({ accept: "text/event-stream" }), res, state, runtime);
+    handleCrashesRequest(fakeReq({ accept: "text/event-stream" }), res, state, "", runtime);
 
     expect(res.headers_["Content-Type"]).toBe("text/event-stream");
     const metaAt = res.body_.indexOf('"type":"meta"');
@@ -202,10 +219,37 @@ describe("handleCrashesRequest", () => {
       },
     } as unknown as LogBufferCache;
 
-    handleCrashesRequest(req, res, state, runtime, buffers);
+    handleCrashesRequest(req, res, state, "?tail=1", runtime, buffers);
     expect(readers).toBe(1);
 
     req.emit("close");
+    expect(readers).toBe(0);
+  });
+
+  test("keeps no device tail for a stream that did not ask to watch", async () => {
+    const runtime = await runtimeWithCrash();
+    const res = fakeRes();
+    let readers = 0;
+    const buffers = {
+      ensure: () => {
+        readers += 1;
+        return {
+          subscribeBatch: () => () => {
+            readers -= 1;
+          },
+        };
+      },
+    } as unknown as LogBufferCache;
+
+    handleCrashesRequest(
+      fakeReq({ accept: "text/event-stream" }),
+      res,
+      state,
+      "",
+      runtime,
+      buffers
+    );
+
     expect(readers).toBe(0);
   });
 
@@ -214,7 +258,7 @@ describe("handleCrashesRequest", () => {
     const res = fakeRes();
     res.destroyStream();
 
-    handleCrashesRequest(fakeReq({ accept: "text/event-stream" }), res, state, runtime);
+    handleCrashesRequest(fakeReq({ accept: "text/event-stream" }), res, state, "", runtime);
 
     expect(res.statusCode_).toBe(0);
     expect(res.body_).toBe("");
@@ -248,6 +292,9 @@ describe("handleCrashReportRequest", () => {
     expect(payload.record.id).toBe("INC-1");
     expect(payload.record.logTailLines).toBe(0);
     expect(payload.occurrence.logTail).toEqual([]);
+    expect(payload.occurrence.frames).toEqual([
+      { image: "Demo", symbol: "AppDelegate.boot()", imageOffset: 1, imageUuid: null, appOwned: true },
+    ]);
     expect(payload.report).toBe("RAW IPS");
     expect(payload.reportError).toBeNull();
   });
@@ -260,6 +307,18 @@ describe("handleCrashReportRequest", () => {
     const payload = JSON.parse(res.body_);
     expect(payload.record.count).toBe(2);
     expect(payload.occurrence).toMatchObject({ index: 1, total: 2 });
+    expect(payload.record.occurrenceTimes).toEqual([
+      {
+        capturedAtMs: Date.parse("2026-08-04 23:14:07.8433 -0700"),
+        capturedAt: "2026-08-04 23:14:07.8433 -0700",
+        rawPath: "/reports/Demo-1.ips",
+      },
+      {
+        capturedAtMs: Date.parse("2026-08-04 23:15:07.8433 -0700"),
+        capturedAt: "2026-08-04 23:15:07.8433 -0700",
+        rawPath: "/reports/Demo-2.ips",
+      },
+    ]);
     expect(payload.report).toBe("/reports/Demo-2.ips");
   });
 

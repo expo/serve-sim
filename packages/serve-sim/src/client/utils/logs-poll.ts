@@ -48,25 +48,38 @@ export function startLogsPoll(
     onError?: (errored: boolean) => void;
   }
 ): () => void {
+  // A reply that lands after the caller stopped belongs to a drawer that has already reset its
+  // cursor, so it must not deliver lines or move that cursor.
+  let stopped = false;
+  const abort = new AbortController();
+
   const sample = async (): Promise<void> => {
     const since = opts.getSince();
     try {
       const response = await fetch(logsSnapshotUrl(endpoint, since), {
         headers: { Accept: "application/json", ...simAuthHeaders() },
-        signal: AbortSignal.timeout(LOGS_POLL_MS * 3),
+        signal: AbortSignal.any([abort.signal, AbortSignal.timeout(LOGS_POLL_MS * 3)]),
       });
+      if (stopped) return;
       if (!response.ok) {
-        opts.onError?.(true);
+        opts.onError?.(/* errored */ true);
         return;
       }
       const parsed = parseLogSnapshot(await response.json());
-      opts.onError?.(false);
+      if (stopped) return;
+      opts.onError?.(/* errored */ false);
       const fresh = parsed.lines.filter((line) => line.seq > since);
       if (parsed.latestSeq > since) opts.setSince(parsed.latestSeq);
       if (fresh.length > 0) opts.onBatch(fresh);
     } catch {
-      opts.onError?.(true);
+      if (!stopped) opts.onError?.(/* errored */ true);
     }
   };
-  return startExclusivePoll(sample, LOGS_POLL_MS);
+
+  const stopPolling = startExclusivePoll(sample, LOGS_POLL_MS);
+  return () => {
+    stopped = true;
+    abort.abort();
+    stopPolling();
+  };
 }

@@ -198,10 +198,6 @@ export class DeviceLogBuffer {
     if (this.deps.idleAfterMs <= 0) return;
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
-      if (this.restartTimer) {
-        this.armIdle();
-        return;
-      }
       this.releaseIfIdle();
     }, this.deps.idleAfterMs);
     this.idleTimer.unref?.();
@@ -243,7 +239,6 @@ export class DeviceLogBuffer {
     });
     child.on("error", (error: Error) => gone(error.message));
     child.on("exit", (code, signal) => gone(`log stream exited (code ${code}, signal ${signal})`));
-    if (this.listenerCount === 0) this.armIdle();
   }
 
   private onChildGone(): void {

@@ -97,7 +97,6 @@ export function webrtcSessionStatsUrl(statsUrl: string, sessionId: string): stri
   return url.toString();
 }
 
-/** Only set when the server gated itself; an ungated preview is handed no token to send. */
 export function simAuthHeaders(): Record<string, string> {
   const token = window.__SIM_PREVIEW__?.execToken;
   return token ? { Authorization: `Bearer ${token}` } : {};

@@ -20,7 +20,6 @@ describe("LogsDrawer", () => {
 
     expect(html).toContain("data-logs");
     expect(html).toContain("translateY(0)");
-    // Debug is the one level that starts off.
     expect(html).toContain("Debug, off");
     expect(html).toContain("Error, on");
     expect(html).toContain("Fault, on");

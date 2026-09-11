@@ -13,16 +13,13 @@ const DEFAULT_REPORTS_DIR = join(homedir(), "Library", "Logs", "DiagnosticReport
 
 const CRASH_SCHEMA_VERSION = 1;
 
-/** Padded bound on the delay before an `.ips` lands (~4s observed). */
 const REPORT_DELAY_SECONDS = 5;
 
-/** Bounds `ingested`, which sees every host crash, not only this device's. */
 const MAX_INGESTED = 500;
 const RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30_000;
 const MAX_WATCH_RETRIES = 6;
 const MAX_TAIL_GAP_MS = POLL_IDLE_MS + 2_000;
-// 60 app-scoped lines, not 60 raw lines: unfiltered the log runs ~317 lines/sec.
 const LOG_TAIL_LINES = 60;
 const LOG_TAIL_MAX_BYTES = 64 * 1024;
 
@@ -31,7 +28,6 @@ type CrashWatchStatus = "idle" | "watching" | "unavailable";
 export interface CrashMeta {
   schemaVersion: number;
   status: CrashWatchStatus;
-  /** Non-null only when `status` is `unavailable`. */
   statusError: string | null;
   reportsDir: string;
   reportDelaySeconds: number;
@@ -52,7 +48,6 @@ export interface CrashRuntimeOptions {
   readReport?: (path: string) => Promise<string>;
   readDir?: (dir: string) => Promise<string[]>;
   statFile?: (path: string) => Promise<{ mtimeMs: number }>;
-  /** Epoch ms; compared against file mtimes. */
   now?: () => number;
   onError?: (message: string, error: unknown) => void;
   retryDelayMs?: number;
@@ -104,7 +99,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   let running = false;
   let statusError: string | null = null;
   let startedAt: number | null = null;
-  // An in-flight back-scan bails when this changes.
   let generation = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let retries = 0;
@@ -141,10 +135,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     return store;
   };
 
-  /**
-   * Windowed on the crash's own `captureTime`, not on now: the report lands seconds later,
-   * by which point the ring holds teardown chatter instead of the cause.
-   */
   const logTailFor = (
     report: Pick<CrashReport, "deviceUdid" | "capturedAtMs" | "procName">
   ): { logTail: string[]; logTailSource: LogTailSource } => {
@@ -156,8 +146,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     const crashedAt = report.capturedAtMs;
     if (crashedAt === null) return none;
 
-    // Without a process name the filter would match every daemon and still claim the tail
-    // was app-scoped, so report nothing instead.
     if (!report.procName) return none;
 
     const tail = buffer.tailBefore({
@@ -176,7 +164,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     try {
       raw = await readReport(path);
     } catch (error) {
-      // Reports age into `Retired/`, so ENOENT here is routine.
       if (!isMissingFile(error)) reportError(`could not read ${filename}`, error);
       ingested.delete(filename);
       return;
@@ -206,7 +193,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     storeFor(report.deviceUdid).record(report, path, tail.logTail, tail.logTailSource);
   };
 
-  /** Claims a filename so the watcher and the back-scan cannot both read it. */
   const claim = (filename: string): boolean => {
     if (!running || !isFinalCrashReportName(filename) || ingested.has(filename)) return false;
     if (ingested.size >= MAX_INGESTED) {
@@ -217,7 +203,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     return true;
   };
 
-  /** Reports at or after `startedAt`. */
   const backfillAsync = async (): Promise<void> => {
     const cutoff = startedAt;
     if (cutoff === null) return;
@@ -239,8 +224,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       try {
         mtimeMs = (await statFile(join(reportsDir, filename))).mtimeMs;
       } catch (error) {
-        // Retired or deleted between the listing and the stat is routine; anything else is not.
-        if (!isMissingFile(error)) reportError(`could not stat ${filename}`, error);
+            if (!isMissingFile(error)) reportError(`could not stat ${filename}`, error);
         continue;
       }
       if (mtimeMs < cutoff) continue;
@@ -252,7 +236,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
 
   async function start(opts: { deferToRetry?: boolean } = {}): Promise<void> {
     if (watcher || gaveUp) return;
-    // A request-driven start defers to the backoff; an explicit one retries now.
     if (opts.deferToRetry && retryTimer) return;
     if (retryTimer) {
       clearTimeout(retryTimer);
@@ -267,7 +250,6 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       const handle = watchDir(
         reportsDir,
         (_eventType, filename) => {
-          retries = 0;
           if (filename && claim(filename)) {
             void ingest(filename).catch((error) =>
               reportError(`could not ingest ${filename}`, error)
@@ -276,8 +258,10 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
         },
         markUnavailable
       );
-      if (running) watcher = handle;
-      else handle.close();
+      if (running) {
+        watcher = handle;
+        retries = 0;
+      } else handle.close();
     } catch (error) {
       markUnavailable(error);
       return;
@@ -286,12 +270,10 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   }
 
   return {
-    /** Fix the back-scan cutoff without touching the filesystem. */
     arm(): void {
       startedAt ??= clock();
     },
 
-    /** The watch is live before this resolves; the back-scan finishes with it. */
     start,
 
     stop(): void {
@@ -307,10 +289,14 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       watcher = null;
       for (const store of byUdid.values()) store.close();
       byUdid.clear();
+      ingested.clear();
     },
 
     prune(liveUdids: readonly string[]): void {
-      pruneByUdid(byUdid, liveUdids, (store) => store.close());
+      pruneByUdid(byUdid, liveUdids, (store) => {
+        store.close();
+        ingested.clear();
+      });
     },
 
     meta(): CrashMeta {

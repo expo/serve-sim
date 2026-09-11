@@ -231,7 +231,7 @@ describe("CrashStore", () => {
     });
     store.subscribe((event) => delivered.push(event));
 
-    expect(() => store.record(report(), "/tmp/a.ips")).not.toThrow();
+    store.record(report(), "/tmp/a.ips");
     expect(delivered).toHaveLength(1);
     expect(store.list()).toHaveLength(1);
   });

@@ -320,7 +320,7 @@ describe("createCrashRuntime", () => {
     expect(closed).toBe(1);
   });
 
-  test("surfaces a watch failure without throwing", () => {
+  test("reports a watch failure as unavailable with the cause", async () => {
     const runtime = createCrashRuntime({
       reportsDir: "/reports",
       ensureDir: () => {},
@@ -329,8 +329,10 @@ describe("createCrashRuntime", () => {
       },
       onError: (message) => errors.push(message),
     });
-    expect(() => runtime.start()).not.toThrow();
+    await runtime.start();
     expect(errors).toHaveLength(1);
+    expect(runtime.meta().status).toBe("unavailable");
+    expect(runtime.meta().statusError).toContain("EPERM");
   });
 });
 
@@ -800,6 +802,42 @@ describe("createCrashRuntime meta", () => {
     for (let i = 0; i < 5; i++) await runtime.start({ deferToRetry: true });
 
     expect(attempts).toBe(1);
+    runtime.stop();
+  });
+
+  test("clears the retry debt once a watcher comes up", async () => {
+    let attempts = 0;
+    let fail = true;
+    let onError: ((error: unknown) => void) | undefined;
+    const runtime = createCrashRuntime({
+      reportsDir: "/reports",
+      retryDelayMs: 1,
+      ensureDir: () => {},
+      watchDir: (_dir, _listener, onWatchError) => {
+        attempts += 1;
+        onError = onWatchError;
+        if (fail) throw new Error("EPERM");
+        return { close: () => {} };
+      },
+      readReport: async () => "",
+      readDir: async () => [],
+      statFile: async () => ({ mtimeMs: 0 }),
+      now: () => clock,
+      onError: () => {},
+    });
+
+    await runtime.start();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    fail = false;
+    await runtime.start();
+    expect(runtime.meta().status).toBe("watching");
+
+    const attemptsBefore = attempts;
+    onError!(new Error("ENOENT"));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(attempts).toBeGreaterThan(attemptsBefore);
+    expect(runtime.meta().statusError ?? "").not.toContain("Retries are exhausted");
     runtime.stop();
   });
 

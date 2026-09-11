@@ -31,8 +31,8 @@ type FakeRes = ServerResponse & {
   endStream: () => void;
 };
 
-function fakeReq(headers: Record<string, string> = {}): IncomingMessage {
-  return Object.assign(new EventEmitter(), { headers }) as unknown as IncomingMessage;
+function fakeReq(headers: Record<string, string> = {}, destroyed = false): IncomingMessage {
+  return Object.assign(new EventEmitter(), { headers, destroyed }) as unknown as IncomingMessage;
 }
 
 function fakeRes(): FakeRes {

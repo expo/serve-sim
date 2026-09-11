@@ -191,6 +191,27 @@ describe("DeviceLogBuffer", () => {
     buffer.stop();
   });
 
+  test("still reports a gap when a line arrives after the crash it is asked about", () => {
+    const buffer = makeBuffer();
+    buffer.start();
+    const child = spawned[0]!;
+    clock = 1_000;
+    child.emitLines(JSON.stringify({ processImagePath: "/x/Demo", m: "long before" }) + "\n");
+    clock = 600_000;
+    child.emitLines(JSON.stringify({ processImagePath: "/x/Demo", m: "after the crash" }) + "\n");
+
+    const tail = buffer.tailBefore({
+      at: 500_000,
+      count: 10,
+      processName: "Demo",
+      maxGapMs: 10_000,
+    });
+
+    expect(tail.reason).toBe("buffer-rolled-past");
+    expect(tail.lines).toEqual([]);
+    buffer.stop();
+  });
+
   test("narrows the tail to the emitting process, not lines that merely name it", () => {
     const buffer = makeBuffer();
     buffer.start();

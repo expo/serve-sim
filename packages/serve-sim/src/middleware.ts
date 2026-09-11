@@ -1556,18 +1556,23 @@ function openSseStream(
   const heartbeat = setInterval(() => {
     if (isOpen()) res.write(":\n\n");
   }, SSE_HEARTBEAT_MS);
+  let closed = false;
   const teardowns: (() => void)[] = [];
-  req.on("close", () => {
+  const closeAll = (): void => {
+    closed = true;
     clearInterval(heartbeat);
-    for (const teardown of teardowns) teardown();
-  });
+    while (teardowns.length > 0) teardowns.pop()!();
+  };
+  req.on("close", closeAll);
+  // A client that left during the caller's await already fired `close`, so run teardown now.
+  if (req.destroyed || res.destroyed) closeAll();
 
   return {
     isOpen,
     write: (payload) => {
       if (isOpen()) res.write(payload);
     },
-    onClose: (teardown) => teardowns.push(teardown),
+    onClose: (teardown) => (closed ? teardown() : teardowns.push(teardown)),
   };
 }
 

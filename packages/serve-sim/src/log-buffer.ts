@@ -133,19 +133,19 @@ export class DeviceLogBuffer {
     maxBytes?: number;
     maxGapMs?: number;
   }): { lines: LogLine[]; reason: "app-windowed" | "buffer-rolled-past" | "no-app-lines" } {
-    const newest = this.lines[this.lines.length - 1];
-    if (maxGapMs !== undefined && (newest === undefined || newest.at < at - maxGapMs)) {
-      return { lines: [], reason: "buffer-rolled-past" };
-    }
     const selected: LogLine[] = [];
-    let reachedBack = false;
+    let newestBefore: LogLine | undefined;
     for (let i = this.lines.length - 1; i >= 0 && selected.length < count; i -= 1) {
       const line = this.lines[i]!;
       if (line.at > at) continue;
-      reachedBack = true;
+      newestBefore ??= line;
       if (emittedBy(line.raw, processName)) selected.push(line);
     }
-    if (!reachedBack) return { lines: [], reason: "buffer-rolled-past" };
+    if (!newestBefore) return { lines: [], reason: "buffer-rolled-past" };
+    // The ring can hold lines from after the gap, so measure it from the newest line before `at`.
+    if (maxGapMs !== undefined && newestBefore.at < at - maxGapMs) {
+      return { lines: [], reason: "buffer-rolled-past" };
+    }
     if (selected.length === 0) return { lines: [], reason: "no-app-lines" };
 
     selected.reverse();

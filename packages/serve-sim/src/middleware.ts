@@ -1,3 +1,4 @@
+import { openSseStream } from "./sse-stream";
 import { execFile, execSync } from "child_process";
 import { readdirSync, readFileSync, existsSync, unlinkSync, watch, type FSWatcher } from "fs";
 import { readFile, unlink } from "fs/promises";
@@ -1535,45 +1536,6 @@ function booleanParam(params: URLSearchParams, name: string): boolean {
   if (raw === null) return false;
   const value = raw.trim().toLowerCase();
   return value !== "0" && value !== "false" && value !== "no";
-}
-
-const SSE_HEARTBEAT_MS = 15_000;
-
-/** `isOpen` is the `writableEnded`/`destroyed` pair: an aborted client only sets the latter. */
-function openSseStream(
-  req: SimReq,
-  res: SimRes
-): { isOpen: () => boolean; write: (payload: string) => void; onClose: (teardown: () => void) => void } {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-    "X-Accel-Buffering": "no",
-  });
-  res.write(":\n\n");
-
-  const isOpen = (): boolean => !res.writableEnded && !res.destroyed;
-  const heartbeat = setInterval(() => {
-    if (isOpen()) res.write(":\n\n");
-  }, SSE_HEARTBEAT_MS);
-  let closed = false;
-  const teardowns: (() => void)[] = [];
-  const closeAll = (): void => {
-    closed = true;
-    clearInterval(heartbeat);
-    while (teardowns.length > 0) teardowns.pop()!();
-  };
-  req.on("close", closeAll);
-  // A client that left during the caller's await already fired `close`, so run teardown now.
-  if (req.destroyed || res.destroyed) closeAll();
-
-  return {
-    isOpen,
-    write: (payload) => {
-      if (isOpen()) res.write(payload);
-    },
-    onClose: (teardown) => (closed ? teardown() : teardowns.push(teardown)),
-  };
 }
 
 export function handleLogsRequest(

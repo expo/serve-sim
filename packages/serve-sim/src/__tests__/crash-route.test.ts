@@ -5,6 +5,7 @@ import { handleCrashReportRequest, handleCrashesRequest } from "../middleware";
 import { inProcessServeSimState } from "../state";
 import { createCrashRuntime } from "../crash/runtime";
 import type { CrashRuntime } from "../crash/runtime";
+import type { LogBufferCache } from "../log-buffer";
 
 const UDID = "CD26E7DF-F2CE-4DCB-B950-2F062DE3FBB3";
 
@@ -178,6 +179,29 @@ describe("handleCrashesRequest", () => {
     const crashAt = res.body_.indexOf('"type":"crash"');
     expect(metaAt).toBeGreaterThanOrEqual(0);
     expect(crashAt).toBeGreaterThan(metaAt);
+  });
+
+  test("keeps a device tail reader for the life of the stream", async () => {
+    const runtime = await runtimeWithCrash();
+    const res = fakeRes();
+    const req = fakeReq({ accept: "text/event-stream" });
+    let readers = 0;
+    const buffers = {
+      ensure: () => {
+        readers += 1;
+        return {
+          subscribeBatch: () => () => {
+            readers -= 1;
+          },
+        };
+      },
+    } as unknown as LogBufferCache;
+
+    handleCrashesRequest(req, res, state, runtime, buffers);
+    expect(readers).toBe(1);
+
+    req.emit("close");
+    expect(readers).toBe(0);
   });
 
   test("does not open a stream for a client that already went away", async () => {

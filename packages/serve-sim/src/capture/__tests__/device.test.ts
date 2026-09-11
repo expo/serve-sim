@@ -8,6 +8,7 @@ import {
   clearBootInjection,
   clearBootInjectionSync,
   injectAtBoot,
+  isDeviceInjected,
   proxyDylibCandidates,
 } from "../device";
 import { installShims, useTempStateDir } from "../../__tests__/helpers";
@@ -178,6 +179,46 @@ describe("clearBootInjectionSync", () => {
         },
       }),
     ).not.toThrow();
+  });
+});
+
+describe("isDeviceInjected", () => {
+  const PORT_FILE = "/tmp/serve-sim-confdir/proxy-port";
+  const read = (values: Record<string, string>) => async (args: string[]) =>
+    values[args.at(-1) ?? ""] ?? "";
+
+  test("is true while both the port file and the library are set", async () => {
+    expect(
+      await isDeviceInjected(UDID, PORT_FILE, {
+        read: read({
+          SIMNET_PROXY_PORT_FILE: `${PORT_FILE}\n`,
+          DYLD_INSERT_LIBRARIES: "/opt/loader/libServeSimCapabilityLoader.dylib:/opt/libSimNetProxy.dylib\n",
+        }),
+      }),
+    ).toBe(true);
+  });
+
+  test("is false once the library is gone, however current the port file looks", async () => {
+    // Apps launched after this load nothing.
+    expect(
+      await isDeviceInjected(UDID, PORT_FILE, {
+        read: read({
+          SIMNET_PROXY_PORT_FILE: `${PORT_FILE}\n`,
+          DYLD_INSERT_LIBRARIES: "/opt/loader/libServeSimCapabilityLoader.dylib\n",
+        }),
+      }),
+    ).toBe(false);
+  });
+
+  test("is false when the port file points at another session", async () => {
+    expect(
+      await isDeviceInjected(UDID, PORT_FILE, {
+        read: read({
+          SIMNET_PROXY_PORT_FILE: "/tmp/other-confdir/proxy-port\n",
+          DYLD_INSERT_LIBRARIES: "/opt/libSimNetProxy.dylib\n",
+        }),
+      }),
+    ).toBe(false);
   });
 });
 

@@ -1,26 +1,18 @@
-// One shared `simctl log stream` tail per device, feeding a bounded ring that `/logs` reads.
-// Not ref-counted, unlike the foreground tracker: the ring must keep filling with no reader
-// so a crash has preceding context.
-
 import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 
-// ~317 lines/sec at `--level info`, so a line cap is a poor proxy for depth.
 const DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
 
-const LINE_BUFFER_LIMIT = 1024 * 1024; // drop a pathological unbroken line
+const LINE_BUFFER_LIMIT = 1024 * 1024;
 const RESTART_DELAY_MS = 1000;
 const MAX_RESTART_DELAY_MS = 30_000;
 
 export interface LogLine {
-  // Cursor for `since`: log timestamps are strings and not reliably ordered.
   seq: number;
   at: number;
   raw: string;
 }
 
-// A SpringBoard line naming the app is not an app line, so read the emitter field rather
-// than matching the raw text.
 function emittedBy(raw: string, processName: string): boolean {
   try {
     const path = (JSON.parse(raw) as { processImagePath?: unknown }).processImagePath;
@@ -115,13 +107,11 @@ export class DeviceLogBuffer {
       try {
         onClosed();
       } catch {
-        // A reader that throws on teardown must not stop the others.
       }
     }
     this.closeListeners.clear();
   }
 
-  /** Oldest first. */
   read({ since, limit }: { since?: number; limit?: number } = {}): LogLine[] {
     let selected = since === undefined ? this.lines : this.lines.filter((l) => l.seq > since);
     if (limit !== undefined && selected.length > limit) {
@@ -130,11 +120,6 @@ export class DeviceLogBuffer {
     return selected === this.lines ? [...selected] : selected;
   }
 
-  /**
-   * Newest-last lines from `processName`, at or before `at`. `reason` separates "the buffer
-   * does not reach back that far" from "it does, but that process logged nothing". A ring whose
-   * newest line predates `at` by more than `maxGapMs` was not recording when `at` happened.
-   */
   tailBefore({
     at,
     count,
@@ -178,7 +163,6 @@ export class DeviceLogBuffer {
     return this.seq;
   }
 
-  /** Lets a `since` reader detect that eviction dropped the range it asked for. */
   get oldestSeq(): number {
     return this.lines[0]?.seq ?? this.seq;
   }
@@ -261,7 +245,6 @@ export class DeviceLogBuffer {
       try {
         listener(line);
       } catch {
-        // A closed SSE socket must not stop the ring or the other listeners.
       }
     }
   }
@@ -309,11 +292,6 @@ export function createLogBufferCache(deps: LogBufferDeps = {}) {
   };
 }
 
-/**
- * Drops the entries for devices that are gone. An empty `liveUdids` usually means the state read
- * failed rather than every device going away, and the identity guard keeps a stale prune from
- * disposing a replacement that was created while it ran.
- */
 export function pruneByUdid<T>(
   byUdid: Map<string, T>,
   liveUdids: readonly string[],

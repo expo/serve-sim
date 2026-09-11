@@ -10,7 +10,9 @@ import {
 import { join } from "path";
 import { stateDir } from "./state";
 
-const LOCK_TIMEOUT_MS = 10_000;
+// A holder can be arming a capability across a dylib build, a 15s terminate and a 30s launch, and
+// capture waits on this same lock. Shorter than that and a healthy command looks like a stuck one.
+const LOCK_TIMEOUT_MS = 90_000;
 export const LOCK_POLL_MS = 50;
 
 function lockFile(udid: string): string {
@@ -58,8 +60,9 @@ async function acquireLaunchStateLock<T>(udid: string, fn: () => Promise<T>): Pr
   while (fd === undefined) {
     if (Date.now() >= deadline) {
       throw new Error(
-        `Timed out waiting to update the launch state for ${udid}. Another serve-sim command ` +
-          `is holding ${path}. Wait for it to finish, or remove that file if nothing is running.`,
+        `Timed out after ${LOCK_TIMEOUT_MS / 1000}s waiting to update the launch state for ` +
+          `${udid}. Another serve-sim command on this machine is holding ${path}. A lock left by ` +
+          `a dead process is reclaimed on its own, so wait for that command to finish.`,
       );
     }
     try {

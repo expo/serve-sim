@@ -14,6 +14,57 @@ final class HostH264PlanTests: XCTestCase {
         XCTAssertTrue(HostH264Plan.usesHostSocket(isVirtualMac: false, hostEncoderFlag: "true"))
     }
 
+    func testVirtualMacCapsEncodeLongEdgeEvenWithoutTheSidecar() {
+        // Measured: at native 1206x2622 the H.264 session dropped after a few hundred
+        // frames and the client ladder fell to software VP8. At 1280 it held past 3300.
+        // The cap therefore has to apply to the guest hardware path, not just the sidecar.
+        XCTAssertEqual(HostH264Plan.encodeMaxLongEdge(configuredMaxDimension: 0, isVirtualMac: true), 1280)
+        XCTAssertEqual(HostH264Plan.encodeMaxLongEdge(configuredMaxDimension: 0, isVirtualMac: false), 0)
+    }
+
+    func testExplicitMaxDimensionAlwaysWins() {
+        XCTAssertEqual(HostH264Plan.encodeMaxLongEdge(configuredMaxDimension: 720, isVirtualMac: true), 720)
+        XCTAssertEqual(HostH264Plan.encodeMaxLongEdge(configuredMaxDimension: 2048, isVirtualMac: true), 2048)
+    }
+
+    func testSidecarDownFallsBackToGuestHardwareNotSoftwareVP8() {
+        // The sidecar being absent says nothing about the guest's own encoder. Tart guests
+        // reach the host AVE as `paravirtualized:...ave.avc`, so falling back must mean
+        // guest hardware first. Returning `.disabled` here is what silently dropped Tart
+        // streams to software VP8 at native resolution.
+        XCTAssertEqual(
+            HostH264Plan.encoderChoice(isVirtualMac: true, hostEncoderFlag: nil, hostSocketReachable: false),
+            .guestVideoToolbox
+        )
+        XCTAssertEqual(
+            HostH264Plan.encoderChoice(isVirtualMac: true, hostEncoderFlag: "1", hostSocketReachable: false),
+            .guestVideoToolbox
+        )
+    }
+
+    func testReachableSidecarStillWins() {
+        XCTAssertEqual(
+            HostH264Plan.encoderChoice(isVirtualMac: true, hostEncoderFlag: nil, hostSocketReachable: true),
+            .hostSocket
+        )
+        XCTAssertEqual(
+            HostH264Plan.encoderChoice(isVirtualMac: false, hostEncoderFlag: "1", hostSocketReachable: true),
+            .hostSocket
+        )
+    }
+
+    func testHostEncoderOffGoesStraightToGuestVideoToolbox() {
+        // Reachability must not even be consulted when the sidecar is switched off.
+        XCTAssertEqual(
+            HostH264Plan.encoderChoice(isVirtualMac: true, hostEncoderFlag: "0", hostSocketReachable: true),
+            .guestVideoToolbox
+        )
+        XCTAssertEqual(
+            HostH264Plan.encoderChoice(isVirtualMac: false, hostEncoderFlag: nil, hostSocketReachable: false),
+            .guestVideoToolbox
+        )
+    }
+
     func testVirtualMacStillProbesGuestVideoToolbox() {
         // Tart guests expose `paravirtualized:...ave.avc`, the host AVE reached through
         // the implicit VideoToolbox device (macOS 15.4+). Skipping the probe on

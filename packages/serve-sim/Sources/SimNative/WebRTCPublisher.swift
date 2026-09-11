@@ -199,9 +199,9 @@ final class WebRTCPublisher: @unchecked Sendable {
         self.framePacer = ContinuousFramePacer(framesPerSecond: normalizedMaxFps)
         h264FrameModeOverride = Self.h264FrameModeOverride()
         h264WebRTCSupport = Self.detectH264WebRTCSupport()
-        encodeMaxDimension = HostH264Plan.sendMaxLongEdge(
+        encodeMaxDimension = HostH264Plan.encodeMaxLongEdge(
             configuredMaxDimension: self.maxDimension,
-            usesHostSocket: /* host AVE */ h264WebRTCSupport.usesHost
+            isVirtualMac: Self.isVirtualMac
         )
         Self.configureLowLatencyPlayout()
         activityToken = ProcessInfo.processInfo.beginActivity(
@@ -266,9 +266,9 @@ final class WebRTCPublisher: @unchecked Sendable {
                 }
                 self.targetBitrate = max(100_000, targetBitrate)
                 self.maxDimension = max(0, maxDimension)
-                self.encodeMaxDimension = HostH264Plan.sendMaxLongEdge(
+                self.encodeMaxDimension = HostH264Plan.encodeMaxLongEdge(
                     configuredMaxDimension: self.maxDimension,
-                    usesHostSocket: /* host AVE */ self.h264WebRTCSupport.usesHost
+                    isVirtualMac: Self.isVirtualMac
                 )
                 self.hostEncoderFactory?.setSendMaxLongEdge(self.encodeMaxDimension)
                 if self.lastOutputWidth > 0, self.lastOutputHeight > 0 {
@@ -1297,6 +1297,9 @@ final class WebRTCPublisher: @unchecked Sendable {
             : "disabled(\(h264WebRTCSupport.reason ?? "unsupported runtime"))"
     }
 
+    /// Tart and other Virtualization.framework guests report `VirtualMac*`.
+    static let isVirtualMac = sysctlString("hw.model")?.hasPrefix("Virtual") == true
+
     private static func detectH264WebRTCSupport() -> WebRTCH264Support {
         let environment = ProcessInfo.processInfo.environment
         if envFlagEnabled(environment["SERVE_SIM_DISABLE_WEBRTC_H264"]) {
@@ -1320,35 +1323,34 @@ final class WebRTCPublisher: @unchecked Sendable {
                 probeSummary: "forced in-process"
             )
         }
-        let virtual = sysctlString("hw.model")?.hasPrefix("Virtual") == true
+        let virtual = Self.isVirtualMac
         let hostEncoderFlag = environment["SERVE_SIM_HOST_ENCODER"]
-        if HostH264Plan.usesHostSocket(
+        let host = HostH264Plan.host(from: environment)
+        let port = HostH264Plan.port(from: environment)
+        // Always probe. RATE/NV12 claim the slot, so a short connect does not steal it.
+        // SERVE_SIM_HOST_ENCODER=1 used to skip this and advertise host-ave when :9876 was down.
+        let sidecarReachable = HostH264Plan.usesHostSocket(
             isVirtualMac: virtual,
             hostEncoderFlag: hostEncoderFlag
+        ) && HostEncoderSocket.sidecarListening(host: host, port: port)
+        switch HostH264Plan.encoderChoice(
+            isVirtualMac: virtual,
+            hostEncoderFlag: hostEncoderFlag,
+            hostSocketReachable: sidecarReachable
         ) {
-            let host = HostH264Plan.host(from: environment)
-            let port = HostH264Plan.port(from: environment)
-            // Always probe. RATE/NV12 claim the slot, so a short connect does not steal it.
-            // SERVE_SIM_HOST_ENCODER=1 used to skip this and advertise host-ave when :9876 was down.
-            let reachable = HostEncoderSocket.sidecarListening(host: host, port: port)
-            if reachable {
-                return WebRTCH264Support(
-                    allowed: true,
-                    usesHost: true,
-                    reason: nil,
-                    encoderID: HostH264Plan.hostEncoderID,
-                    usesHardware: true,
-                    probeSummary: "host \(host):\(port)"
-                )
-            }
+        case .hostSocket:
             return WebRTCH264Support(
-                allowed: false,
-                usesHost: false,
-                reason: "host encoder not listening at \(host):\(port)",
-                encoderID: nil,
-                usesHardware: nil,
-                probeSummary: "host \(host):\(port) down"
+                allowed: true,
+                usesHost: true,
+                reason: nil,
+                encoderID: HostH264Plan.hostEncoderID,
+                usesHardware: true,
+                probeSummary: "host \(host):\(port)"
             )
+        case .guestVideoToolbox:
+            // Fall through to the in-process probe. On Tart that finds the host AVE as
+            // `paravirtualized:...ave.avc`; a missing sidecar must not mean software VP8.
+            break
         }
         if !HostH264Plan.probesGuestVideoToolbox(isVirtualMac: virtual) {
             return WebRTCH264Support(

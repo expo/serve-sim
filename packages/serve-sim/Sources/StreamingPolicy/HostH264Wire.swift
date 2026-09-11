@@ -52,6 +52,45 @@ public enum HostH264Plan {
         return UInt32(min(max(bps, 100_000), 50_000_000))
     }
 
+    /// Long-edge cap for WebRTC H.264 encoding on a virtualised guest.
+    ///
+    /// Native Retina simulator surfaces are over 3 MP. Measured on Tart: at 1206x2622 the
+    /// H.264 session connected, ran a few hundred frames, then ICE dropped and the client's
+    /// h264->vp8 ladder fell back to software VP8. Capped at 1280 the same session held
+    /// past 3300 frames at 60 fps with no loss. An explicit setting always wins.
+    public static func encodeMaxLongEdge(configuredMaxDimension: Int, isVirtualMac: Bool) -> Int {
+        if configuredMaxDimension > 0 { return configuredMaxDimension }
+        return isVirtualMac ? hostSocketDefaultMaxLongEdge : 0
+    }
+
+    /// Which encoder a WebRTC H.264 session should use, once the explicit
+    /// disable/force env flags have already been handled.
+    public enum H264EncoderChoice: Equatable, Sendable {
+        /// Ship NV12 to the host sidecar on :9876.
+        case hostSocket
+        /// Probe the guest's in-process VideoToolbox. On Tart that is the host AVE.
+        case guestVideoToolbox
+    }
+
+    /// The sidecar being unreachable says nothing about the guest's own encoder, so a
+    /// missing sidecar falls through to guest VideoToolbox rather than disabling H.264.
+    /// Returning "disabled" here is what quietly dropped Tart streams to software VP8 at
+    /// native resolution while a working hardware encoder sat unprobed in the guest.
+    ///
+    /// This still fails closed for the *sidecar* claim: the caller reports
+    /// `usesHost=false` and the real guest encoder id, so nothing pretends the host
+    /// encoded a frame it never saw.
+    public static func encoderChoice(
+        isVirtualMac: Bool,
+        hostEncoderFlag: String?,
+        hostSocketReachable: Bool
+    ) -> H264EncoderChoice {
+        guard usesHostSocket(isVirtualMac: isVirtualMac, hostEncoderFlag: hostEncoderFlag) else {
+            return .guestVideoToolbox
+        }
+        return hostSocketReachable ? .hostSocket : .guestVideoToolbox
+    }
+
     /// A Tart guest exposes `paravirtualized:com.apple.videotoolbox.videoencoder.ave.avc`:
     /// the host AVE, reached through the VideoToolbox device that
     /// `VZMacGraphicsDeviceConfiguration` attaches implicitly (macOS 15.4+ host, macOS 14+

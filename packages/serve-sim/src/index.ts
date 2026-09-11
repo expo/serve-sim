@@ -53,6 +53,7 @@ import { MAX_MJPEG_STREAM_FPS, MAX_VIDEO_STREAM_FPS } from "./stream-settings";
 
 // `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
 // CLI works under plain `node` too.
+const SHUTDOWN_TIMEOUT_MS = 5_000;
 const __dirname = dirnameOf(import.meta.url);
 
 // Stamped in at build time (see build.ts), mirroring __PREVIEW_HTML_B64__. In
@@ -1257,16 +1258,15 @@ async function serve(
   }
 
   // Capture is stopped before the devices are disarmed, so a device is never left pointing new launches
-  // at a proxy that is already gone. Bounded, because a hung simctl must not block exit.
+  // at a proxy that is already gone. One budget for both: disabling capture takes the launch state lock,
+  // so bounding only that step leaves the disarm waiting on the work the bound just abandoned.
   const shutdown = async () => {
     sessionStopping = true;
-    if (capture) {
-      await Promise.race([
-        capture.captureRuntime.disableAll().catch(() => {}),
-        new Promise((resolve) => setTimeout(resolve, 3000)),
-      ]);
-    }
-    await disarmDevicesArmedHereAsync();
+    const teardown = (async () => {
+      if (capture) await capture.captureRuntime.disableAll().catch(() => {});
+      await disarmDevicesArmedHereAsync();
+    })();
+    await Promise.race([teardown, new Promise((done) => setTimeout(done, SHUTDOWN_TIMEOUT_MS))]);
     clearAll();
     process.exit(0);
   };

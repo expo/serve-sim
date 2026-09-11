@@ -12,29 +12,50 @@ export type CrashListState = { meta: CrashMeta | null; crashes: CrashSummary[] }
 export const EMPTY_CRASH_LIST: CrashListState = { meta: null, crashes: [] };
 
 export function parseCrashFrame(data: string): CrashStreamFrame | null {
+  let parsed: CrashStreamFrame;
   try {
-    const parsed = JSON.parse(data) as CrashStreamFrame;
-    return typeof parsed?.type === "string" ? parsed : null;
+    parsed = JSON.parse(data) as CrashStreamFrame;
   } catch {
     return null;
   }
+  switch (parsed?.type) {
+    case "meta":
+      return parsed;
+    case "list":
+      return Array.isArray(parsed.crashes) ? parsed : null;
+    case "crash":
+    case "recurred":
+      return parsed.record ? parsed : null;
+    case "evicted":
+      return typeof parsed.id === "string" ? parsed : null;
+    default:
+      return null;
+  }
 }
+
+// Two signatures can land in the same millisecond, so the tiebreak keeps a reconnect's list
+// in the order the live frames built.
+const byNewest = (a: CrashSummary, b: CrashSummary): number =>
+  b.lastSeen - a.lastSeen || b.firstSeen - a.firstSeen || (a.id < b.id ? 1 : -1);
 
 export function applyCrashFrame(state: CrashListState, frame: CrashStreamFrame): CrashListState {
   switch (frame.type) {
     case "meta":
       return { ...state, meta: frame.meta };
-    // The list is authoritative: a reconnect replays it, so it also drops what the device evicted.
     case "list":
-      return { ...state, crashes: frame.crashes };
+      return { ...state, crashes: [...frame.crashes].sort(byNewest) };
     case "evicted":
       return { ...state, crashes: state.crashes.filter((crash) => crash.id !== frame.id) };
-    default:
+    case "crash":
+    case "recurred":
       return {
         ...state,
-        crashes: [frame.record, ...state.crashes.filter((crash) => crash.id !== frame.record.id)].sort(
-          (a, b) => b.lastSeen - a.lastSeen
-        ),
+        crashes: [
+          frame.record,
+          ...state.crashes.filter((crash) => crash.id !== frame.record.id),
+        ].sort(byNewest),
       };
+    default:
+      return state;
   }
 }

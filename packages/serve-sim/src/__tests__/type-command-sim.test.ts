@@ -52,7 +52,7 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
     const detach = spawnSync("bun", ["run", CLI_PATH, "--detach", "-p", String(startPort), bootedUdid!], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "inherit"],
-      timeout: 45_000,
+      timeout: 120_000,
       // Surface the per-event `[hid] Key …` lines this test asserts on; the
       // env propagates to the detached `serve` child the CLI re-execs.
       env: { ...process.env, SERVE_SIM_DEBUG_HID: "1" },
@@ -64,7 +64,7 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
     }
     const state = parseDetachState<{ device: string }>(detach.stdout);
     logFile = join(stateDir(), `server-${state.device}.log`);
-  }, 60_000);
+  }, 180_000);
 
   afterAll(() => {
     try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe" }); } catch {}

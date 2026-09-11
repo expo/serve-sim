@@ -213,6 +213,61 @@ describe("capture runtime", () => {
     expect(frames).toContain("meta");
   });
 
+  test("does not report capturing when the proxy died while capture was starting", async () => {
+    let killProxy: (reason: string) => void = () => {};
+    const { runtime, calls } = harness({
+      startProxy: async (_store, deps) => {
+        killProxy = deps.onUnexpectedExit ?? (() => {});
+        return {
+          address: "127.0.0.1:9123",
+          portFile: PORT_FILE,
+          caPem: async () => CA_PEM,
+          close: async () => void calls.push("proxy-closed"),
+        };
+      },
+      trustCa: async () => {
+        killProxy("The capture proxy stopped unexpectedly (exit 1).");
+      },
+    });
+
+    await expect(runtime.enableForDevice(UDID)).rejects.toBeInstanceOf(CaptureEnableError);
+
+    const meta = runtime.metaFor(UDID);
+    expect(meta.attachment).toBe("failed");
+    expect(meta.attachError).toContain("stopped unexpectedly");
+    expect(calls).toContain("injection-cleared");
+    expect(calls).toContain("proxy-closed");
+  });
+
+  test("stops a device that was disabled while its capture was starting", async () => {
+    let releaseProxy: () => void = () => {};
+    const pending = new Promise<void>((done) => {
+      releaseProxy = done;
+    });
+    const { runtime, calls } = harness({
+      startProxy: async () => {
+        calls.push("proxy-started");
+        await pending;
+        return {
+          address: "127.0.0.1:9123",
+          portFile: PORT_FILE,
+          caPem: async () => CA_PEM,
+          close: async () => void calls.push("proxy-closed"),
+        };
+      },
+    });
+
+    const enabling = runtime.enableForDevice(UDID);
+    await runtime.disableForDevice(UDID);
+    releaseProxy();
+
+    await expect(enabling).rejects.toBeInstanceOf(CaptureEnableError);
+    // The device must not be left armed, and the proxy nobody can reach must not be left running.
+    expect(calls).not.toContain(`injected:${PORT_FILE}`);
+    expect(calls).toContain("proxy-closed");
+    expect(runtime.metaFor(UDID).attachment).toBe("not-enabled");
+  });
+
   test("counts oversized control bodies onto meta for the UI and logs", async () => {
     let reportOversized: NonNullable<MitmProxyDeps["onOversizedControlBody"]> = () => {};
     const frames: Array<{ type: string; meta?: { droppedOversizedBodies?: number } }> = [];

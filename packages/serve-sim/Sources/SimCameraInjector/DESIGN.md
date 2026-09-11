@@ -23,8 +23,11 @@ prevents queued frames from an earlier connection reaching an output or preview.
 
 Camera controls never call simulator privacy grant/reset, terminate, or launch.
 The real permission APIs remain unchanged, including denied/not-determined
-states. No permission-spoofing changes from the separate browser-webcam branch
-are included here.
+states. Apps that check authorization before opening the camera still need
+camera permission. Grant it through the app’s permission prompt or the preview’s
+Permissions control; enabling the feed does not grant it. The injector can
+deliver frames without authorization, so receiving frames alone does not verify
+that permission was granted.
 
 An app started before the serve-sim session cannot acquire the capability loader in
 place. An app that ignores AVFoundation device-change notifications may need to

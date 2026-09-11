@@ -44,14 +44,17 @@ function locateProxyDylib(): string | null {
 // Touch only our own entry, or enabling capture drops every other tool's library.
 function withoutOurs(current: string): string[] {
   return current
-    .split(":")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.includes("[simnetproxy]"))
+    .flatMap((line) => line.split(":"))
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0 && basename(entry) !== DYLIB_NAME);
 }
 
 export interface InjectionDeps {
   dylib?: () => string | null;
-  run?: (args: string[]) => Promise<unknown>;
+  run?: (args: string[]) => Promise<string>;
 }
 
 /** Port is a file path so a crash cannot leave apps aimed at a stale port number. */
@@ -60,7 +63,7 @@ export async function injectAtBoot(
   portFile: string,
   deps: InjectionDeps = {},
 ): Promise<void> {
-  const run = deps.run ?? ((args: string[]) => simctl(args));
+  const run = deps.run ?? (async (args: string[]) => (await simctl(args)).stdout.trim());
   const library = (deps.dylib ?? locateProxyDylib)();
   if (!library) {
     throw new Error(
@@ -69,10 +72,9 @@ export async function injectAtBoot(
     );
   }
 
-  const current = await run(["spawn", udid, "launchctl", "getenv", "DYLD_INSERT_LIBRARIES"]).catch(
-    () => "",
-  );
-  const next = [...withoutOurs(String(current ?? "")), library].join(":");
+  // Not swallowed: a read we cannot trust would make the merge below drop another tool's library.
+  const current = await run(["spawn", udid, "launchctl", "getenv", "DYLD_INSERT_LIBRARIES"]);
+  const next = [...withoutOurs(current), library].join(":");
   await run(["spawn", udid, "launchctl", "setenv", "DYLD_INSERT_LIBRARIES", next]);
   await run(["spawn", udid, "launchctl", "setenv", "SIMNET_PROXY_PORT_FILE", portFile]);
 }
@@ -130,12 +132,12 @@ function isDeviceUnavailable(error: unknown): boolean {
  * injected without anyone knowing.
  */
 export async function clearBootInjection(udid: string, deps: InjectionDeps = {}): Promise<void> {
-  const run = deps.run ?? ((args: string[]) => simctl(args));
+  const run = deps.run ?? (async (args: string[]) => (await simctl(args)).stdout.trim());
   for (const name of INJECTED_VARS) {
     try {
       if (name === "DYLD_INSERT_LIBRARIES") {
-        const current = await run(["spawn", udid, "launchctl", "getenv", name]).catch(() => "");
-        const rest = withoutOurs(String(current ?? ""));
+        const current = await run(["spawn", udid, "launchctl", "getenv", name]);
+        const rest = withoutOurs(current);
         if (rest.length > 0) {
           await run(["spawn", udid, "launchctl", "setenv", name, rest.join(":")]);
           continue;

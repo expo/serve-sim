@@ -1,4 +1,6 @@
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
@@ -156,5 +158,32 @@ describe("injectAtBoot", () => {
 
     const setenv = calls.find((args) => args.includes("setenv") && args.includes("DYLD_INSERT_LIBRARIES"));
     expect(setenv?.at(-1)).toBe(DYLIB);
+  });
+});
+
+describe("the real simctl runner", () => {
+  test("arms with a path, not a stringified result object", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "capture-xcrun-"));
+    const log = join(dir, "calls.txt");
+    writeFileSync(
+      join(dir, "xcrun"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> ${log}\n` +
+        `case "$*" in *getenv*) echo "/opt/loader/libServeSimCapabilityLoader.dylib";; esac\n`,
+      { mode: 0o755 },
+    );
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${dir}:${previousPath}`;
+    try {
+      await injectAtBoot(UDID, "/tmp/port", { dylib: () => "/opt/serve-sim/libSimNetProxy.dylib" });
+    } finally {
+      process.env.PATH = previousPath;
+    }
+
+    const setenv = readFileSync(log, "utf8")
+      .split("\n")
+      .find((line) => line.includes("setenv DYLD_INSERT_LIBRARIES"));
+    expect(setenv).toContain("/opt/loader/libServeSimCapabilityLoader.dylib");
+    expect(setenv).not.toContain("[object Object]");
+    rmSync(dir, { recursive: true, force: true });
   });
 });

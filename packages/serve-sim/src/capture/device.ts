@@ -1,9 +1,10 @@
-import { execFile, spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 
+import { withLaunchStateLock } from "../launch-state-lock";
 import { dirnameOf } from "../runtime";
 
 const execFileAsync = promisify(execFile);
@@ -42,11 +43,15 @@ function locateProxyDylib(): string | null {
 
 // DYLD_INSERT_LIBRARIES is a colon-separated list, and the capability loader arms itself the same way.
 // Touch only our own entry, or enabling capture drops every other tool's library.
-function withoutOurs(current: string): string[] {
-  return current
+function injectedLines(value: string): string[] {
+  return value
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.includes("[simnetproxy]"))
+    .filter((line) => line.length > 0 && !line.includes("[simnetproxy]"));
+}
+
+function withoutProxyEntry(current: string): string[] {
+  return injectedLines(current)
     .flatMap((line) => line.split(":"))
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0 && basename(entry) !== DYLIB_NAME);
@@ -72,29 +77,13 @@ export async function injectAtBoot(
     );
   }
 
-  // Not swallowed: a read we cannot trust would make the merge below drop another tool's library.
-  const current = await run(["spawn", udid, "launchctl", "getenv", "DYLD_INSERT_LIBRARIES"]);
-  const next = [...withoutOurs(current), library].join(":");
-  await run(["spawn", udid, "launchctl", "setenv", "DYLD_INSERT_LIBRARIES", next]);
+  // The capability loader arms this same variable under the launch state lock.
+  await withLaunchStateLock(udid, async () => {
+    const current = await run(["spawn", udid, "launchctl", "getenv", "DYLD_INSERT_LIBRARIES"]);
+    const next = [...withoutProxyEntry(current), library].join(":");
+    await run(["spawn", udid, "launchctl", "setenv", "DYLD_INSERT_LIBRARIES", next]);
+  });
   await run(["spawn", udid, "launchctl", "setenv", "SIMNET_PROXY_PORT_FILE", portFile]);
-}
-
-/**
- * `SIMCTL_CHILD_DYLD_INSERT_LIBRARIES` replaces launchd's value — callers must merge or they drop capture.
- */
-export function bootInjectedLibraries(udid: string): string | null {
-  const result = spawnSync(
-    "xcrun",
-    ["simctl", "spawn", udid, "launchctl", "getenv", "DYLD_INSERT_LIBRARIES"],
-    { encoding: "utf8", timeout: SIMCTL_TIMEOUT_MS },
-  );
-  if (result.status !== 0 || typeof result.stdout !== "string") return null;
-  const value = result.stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.includes("[simnetproxy]"))
-    .at(-1);
-  return value && value.includes(DYLIB_NAME) ? value : null;
 }
 
 type ReadEnv = (args: string[]) => Promise<string>;
@@ -109,11 +98,7 @@ const readSimctl: ReadEnv = async (args) => {
 
 /** Values launchd reports for a variable, minus the dylib's own log lines, which land on the same stream. */
 async function readInjectedVar(udid: string, name: string, read: ReadEnv): Promise<string[]> {
-  const value = await read(["spawn", udid, "launchctl", "getenv", name]);
-  return value
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.includes("[simnetproxy]"));
+  return injectedLines(await read(["spawn", udid, "launchctl", "getenv", name]));
 }
 
 /** A device that is gone cannot still be injected, so its failure is the one safe failure to ignore. */
@@ -136,12 +121,13 @@ export async function clearBootInjection(udid: string, deps: InjectionDeps = {})
   for (const name of INJECTED_VARS) {
     try {
       if (name === "DYLD_INSERT_LIBRARIES") {
-        const current = await run(["spawn", udid, "launchctl", "getenv", name]);
-        const rest = withoutOurs(current);
-        if (rest.length > 0) {
-          await run(["spawn", udid, "launchctl", "setenv", name, rest.join(":")]);
-          continue;
-        }
+        const kept = await withLaunchStateLock(udid, async () => {
+          const remaining = withoutProxyEntry(await run(["spawn", udid, "launchctl", "getenv", name]));
+          if (remaining.length === 0) return false;
+          await run(["spawn", udid, "launchctl", "setenv", name, remaining.join(":")]);
+          return true;
+        });
+        if (kept) continue;
       }
       await run(["spawn", udid, "launchctl", "unsetenv", name]);
     } catch (error) {
@@ -155,7 +141,6 @@ export async function clearBootInjection(udid: string, deps: InjectionDeps = {})
   }
 }
 
-/** Whether the device still carries either injected variable. Used to verify a teardown actually took. */
 export async function bootInjectionCleared(
   udid: string,
   deps: { read?: ReadEnv } = {},

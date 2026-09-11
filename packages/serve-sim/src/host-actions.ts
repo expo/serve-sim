@@ -78,21 +78,18 @@ const ACTION_SCHEMAS = {
   "camera.inject": z.discriminatedUnion("source", [
     z.object({
       udid: Device,
-      bundleId: BundleId.optional(),
       mirror: z.enum(MIRROR_VALUES),
       source: z.literal("file"),
       target: ConfinedPath,
     }),
     z.object({
       udid: Device,
-      bundleId: BundleId.optional(),
       mirror: z.enum(MIRROR_VALUES),
       source: z.literal("webcam"),
       target: Argument.optional(),
     }),
     z.object({
       udid: Device,
-      bundleId: BundleId.optional(),
       mirror: z.enum(MIRROR_VALUES),
       source: z.literal("placeholder"),
     }),

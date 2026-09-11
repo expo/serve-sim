@@ -266,7 +266,7 @@ describe("handleCrashReportRequest", () => {
     expect(payload.record.logTailLines).toBe(0);
     expect(payload.occurrence.logTail).toEqual([]);
     expect(payload.occurrence.frames).toEqual([
-      { image: "Demo", symbol: "AppDelegate.boot()", imageOffset: 1, appOwned: true },
+      { image: "Demo", symbol: "AppDelegate.boot()", imageOffset: 1, imageUuid: null, appOwned: true },
     ]);
     expect(payload.report).toBe("RAW IPS");
     expect(payload.reportError).toBeNull();

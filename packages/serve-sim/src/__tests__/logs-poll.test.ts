@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { logsSnapshotUrl, parseLogSnapshot } from "../client/utils/logs-poll";
+import {
+  logsSnapshotUrl,
+  parseLogSnapshot,
+  startLogsPoll,
+  type LogSnapshotLine,
+} from "../client/utils/logs-poll";
 
 const raw = JSON.stringify({
   timestamp: "2026-08-28 12:54:11.123456-0700",
@@ -48,5 +53,35 @@ describe("parseLogSnapshot", () => {
   test("treats a malformed payload as empty", () => {
     expect(parseLogSnapshot(null)).toEqual({ latestSeq: 0, lines: [] });
     expect(parseLogSnapshot("nope")).toEqual({ latestSeq: 0, lines: [] });
+  });
+});
+
+describe("startLogsPoll", () => {
+  test("drops a reply that lands after the caller stopped", async () => {
+    const original = globalThis.fetch;
+    const replied = Promise.withResolvers<Response>();
+    globalThis.fetch = (() => replied.promise) as unknown as typeof fetch;
+
+    const batches: LogSnapshotLine[][] = [];
+    let since = 0;
+    const stop = startLogsPoll("/logs", {
+      getSince: () => since,
+      setSince: (seq) => {
+        since = seq;
+      },
+      onBatch: (lines) => batches.push(lines),
+    });
+
+    stop();
+    replied.resolve(
+      new Response(JSON.stringify({ lines: [{ seq: 7, raw }], latestSeq: 7 }), {
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    globalThis.fetch = original;
+
+    expect(batches).toEqual([]);
+    expect(since).toBe(0);
   });
 });

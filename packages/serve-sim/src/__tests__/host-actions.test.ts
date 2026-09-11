@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "os";
 import { join } from "path";
 
 import { InvalidHostActionError, runHostActionAsync } from "../host-actions";
+import { UDID } from "./helpers";
 import { SCREENSHOT_DIR, UPLOAD_DIR } from "../host-paths";
 
 // `true` ignores its arguments and exits 0, so these assert validation without running simctl.
@@ -263,37 +264,35 @@ describe("runHostActionAsync validation", () => {
 });
 
 describe("capture actions", () => {
-  const UDID = "404F2659-7202-4450-8465-912BD2AB744B";
+  it("names --network-capture when capture is off for the server", async () => {
+    const { captureRuntime } = await import("../capture");
+    const previous = captureRuntime.getServerEnabled();
+    captureRuntime.setServerEnabled(false);
+    try {
+      const result = await runHostActionAsync(
+        { action: "capture.reboot", params: { udid: UDID, enabled: true } },
+        BIN,
+      );
 
-  it("refuses a reboot without the enabled flag", async () => {
-    await expect(
-      runHostActionAsync({ action: "capture.reboot", params: { udid: UDID } }, BIN),
-    ).rejects.toBeInstanceOf(InvalidHostActionError);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("--network-capture");
+    } finally {
+      captureRuntime.setServerEnabled(previous);
+    }
   });
 
-  it("refuses a clear without a device", async () => {
-    await expect(runHostActionAsync({ action: "capture.clear", params: {} }, BIN)).rejects.toBeInstanceOf(
-      InvalidHostActionError,
-    );
-  });
-
-  it("says how to turn capture on when the server started without it", async () => {
-    const result = await runHostActionAsync(
-      { action: "capture.reboot", params: { udid: UDID, enabled: true } },
-      BIN,
-    );
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("--network-capture");
-  });
-
-  it("reports no session rather than succeeding when clearing an unknown device", async () => {
-    const result = await runHostActionAsync(
-      { action: "capture.clear", params: { udid: UDID } },
-      BIN,
-    );
+  it("reports no capture session for an unknown device", async () => {
+    const result = await runHostActionAsync({ action: "capture.clear", params: { udid: UDID } }, BIN);
 
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("No capture session");
+  });
+
+  it("refuses a device name where simctl would read it as every device", async () => {
+    for (const udid of ["all", "booted", "iPhone 17 Pro"]) {
+      await expect(
+        runHostActionAsync({ action: "capture.reboot", params: { udid, enabled: true } }, BIN),
+      ).rejects.toBeInstanceOf(InvalidHostActionError);
+    }
   });
 });

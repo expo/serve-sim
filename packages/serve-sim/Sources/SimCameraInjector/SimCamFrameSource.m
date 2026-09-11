@@ -21,8 +21,6 @@
 
 #pragma mark - Source globals
 
-static UIImage *gSourceImage = nil;
-static CGImageRef gSourceCGImage = NULL;
 static size_t kFrameWidth = 1280;
 static size_t kFrameHeight = 720;
 static const double kFrameRate = 30.0;
@@ -133,6 +131,7 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
         delegate, out, queue, (int)SimCamPositionOf(out),
         (unsigned long)entryCount, (unsigned long)toRemove.count);
 
+    uint64_t generation = atomic_load(&gConnectionGeneration);
     CVPixelBufferRef cached = SimCamAcquireCachedPB();
     if (cached) {
         CMVideoFormatDescriptionRef fd = NULL;
@@ -154,7 +153,8 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
             __weak SimCamWeakRef *weakRef = ref;
             dispatch_async(q, ^{
                 id<AVCaptureVideoDataOutputSampleBufferDelegate> del = weakRef.target;
-                if (del && [del respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+                if (SimCamDeviceIsConnected() && generation == atomic_load(&gConnectionGeneration) &&
+                    del && [del respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
                     AVCaptureConnection *conn = SimCamFakeConnectionForOutput(outRef);
                     [del captureOutput:outRef didOutputSampleBuffer:sb fromConnection:conn];
                 }
@@ -185,9 +185,6 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
     BOOL mirror = SimCamShouldMirror(SimCamPositionOf(layer));
     uint64_t generation = atomic_load(&gConnectionGeneration);
     CGImageRef primed = SimCamAcquireCachedCGImage();
-    if (!primed && gSourceCGImage && !SimCamDeviceIsConnected()) {
-        primed = CGImageRetain(gSourceCGImage);
-    }
     dispatch_async(dispatch_get_main_queue(), ^{
         layer.contentsGravity = kCAGravityResizeAspectFill;
         if (mirror) layer.transform = CATransform3DMakeScale(-1.f, 1.f, 1.f);
@@ -263,43 +260,42 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
 // different ring slot until we release it.
 - (CVPixelBufferRef)newPixelBufferFromSurfaceForceFresh:(BOOL)force CF_RETURNS_RETAINED {
     @synchronized([SimCamRegistry class]) {
-    if (!SimCamDeviceIsConnected()) return NULL;
-    if (!gShmHeader || !gSurfaceTable) return NULL;
-    if (gShmHeader->magic != SIMCAM_SHM_MAGIC) return NULL;
-    uint64_t seqA = atomic_load_explicit(&gShmHeader->frameSeq, memory_order_acquire);
-    if (seqA == 0) return NULL;
-    if (!force && seqA == gLastSeenSeq) return NULL;
+        if (!SimCamDeviceIsConnected()) return NULL;
+        if (!gShmHeader || !gSurfaceTable) return NULL;
+        if (gShmHeader->magic != SIMCAM_SHM_MAGIC) return NULL;
+        uint64_t seqA = atomic_load_explicit(&gShmHeader->frameSeq, memory_order_acquire);
+        if (seqA == 0) return NULL;
+        if (!force && seqA == gLastSeenSeq) return NULL;
 
-    uint32_t count = gSurfaceTable->surfaceCount;
-    if (count == 0 || count > SIMCAM_SURFACE_RING) return NULL;
-    uint32_t idx = gSurfaceTable->latestIndex;
-    if (idx >= count) return NULL;
-    IOSurfaceRef surface = gSurfaces[idx];
-    if (!surface) {
-        simcam_log(@"missing IOSurface at latest index %u/%u", idx, count);
-        return NULL;
-    }
+        uint32_t count = gSurfaceTable->surfaceCount;
+        if (count == 0 || count > SIMCAM_SURFACE_RING) return NULL;
+        uint32_t idx = gSurfaceTable->latestIndex;
+        if (idx >= count) return NULL;
+        IOSurfaceRef surface = gSurfaces[idx];
+        if (!surface) {
+            simcam_log(@"missing IOSurface at latest index %u/%u", idx, count);
+            return NULL;
+        }
 
-    CVPixelBufferRef pb = NULL;
-    NSDictionary *attrs = @{ (id)kCVPixelBufferIOSurfacePropertiesKey: @{} };
-    CVReturn r = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface,
-        (__bridge CFDictionaryRef)attrs, &pb);
-    if (r != kCVReturnSuccess || !pb) return NULL;
+        CVPixelBufferRef pb = NULL;
+        NSDictionary *attrs = @{ (id)kCVPixelBufferIOSurfacePropertiesKey: @{} };
+        CVReturn r = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface,
+            (__bridge CFDictionaryRef)attrs, &pb);
+        if (r != kCVReturnSuccess || !pb) return NULL;
 
-    uint64_t seqB = atomic_load_explicit(&gShmHeader->frameSeq, memory_order_acquire);
-    if (!force && seqA != seqB) {
-        CVPixelBufferRelease(pb);
-        return NULL;
-    }
-    gLastSeenSeq = seqA;
-    return pb;
+        uint64_t seqB = atomic_load_explicit(&gShmHeader->frameSeq, memory_order_acquire);
+        if (!force && seqA != seqB) {
+            CVPixelBufferRelease(pb);
+            return NULL;
+        }
+        gLastSeenSeq = seqA;
+        return pb;
     }
 }
 
 - (CVPixelBufferRef)currentPixelBuffer CF_RETURNS_RETAINED {
     if (!SimCamDeviceIsConnected()) return NULL;
     CVPixelBufferRef pb = [self newPixelBufferFromSurfaceForceFresh:YES];
-    if (!pb) pb = [self newPixelBufferFromImage];
     return pb;
 }
 
@@ -319,33 +315,6 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
     NSData *data = UIImageJPEGRepresentation(ui, q);
     CGImageRelease(cg);
     return data;
-}
-
-- (CVPixelBufferRef)newPixelBufferFromImage CF_RETURNS_RETAINED {
-    if (!gSourceCGImage) return NULL;
-    CVPixelBufferRef pb = NULL;
-    NSDictionary *attrs = @{ (id)kCVPixelBufferIOSurfacePropertiesKey: @{} };
-    CVReturn r = CVPixelBufferCreate(kCFAllocatorDefault, kFrameWidth, kFrameHeight,
-        kCVPixelFormatType_32BGRA, (__bridge CFDictionaryRef)attrs, &pb);
-    if (r != kCVReturnSuccess || !pb) return NULL;
-    CVPixelBufferLockBaseAddress(pb, 0);
-    void *base = CVPixelBufferGetBaseAddress(pb);
-    size_t bpr = CVPixelBufferGetBytesPerRow(pb);
-    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx = CGBitmapContextCreate(base, kFrameWidth, kFrameHeight, 8, bpr, cs,
-        kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
-    CGContextSetFillColorWithColor(ctx, [UIColor blackColor].CGColor);
-    CGContextFillRect(ctx, CGRectMake(0, 0, kFrameWidth, kFrameHeight));
-    size_t iw = CGImageGetWidth(gSourceCGImage), ih = CGImageGetHeight(gSourceCGImage);
-    double sx = (double)kFrameWidth / iw, sy = (double)kFrameHeight / ih;
-    double s = MAX(sx, sy);
-    double dw = iw * s, dh = ih * s;
-    CGRect dst = CGRectMake((kFrameWidth - dw)/2.0, (kFrameHeight - dh)/2.0, dw, dh);
-    CGContextDrawImage(ctx, dst, gSourceCGImage);
-    CGContextRelease(ctx);
-    CGColorSpaceRelease(cs);
-    CVPixelBufferUnlockBaseAddress(pb, 0);
-    return pb;
 }
 
 - (CVPixelBufferRef)newPixelBufferNoSignal CF_RETURNS_RETAINED {
@@ -372,37 +341,36 @@ static CGImageRef SimCamAcquireCachedCGImage(void) CF_RETURNS_RETAINED {
 
 - (CMSampleBufferRef)newSampleBufferAtTime:(CMTime)pts CF_RETURNS_RETAINED {
     @synchronized([SimCamRegistry class]) {
-    if (!SimCamDeviceIsConnected()) return NULL;
-    CVPixelBufferRef pb = [self newPixelBufferFromSurface];
-    if (!pb) pb = [self newPixelBufferFromImage];
-    if (pb) {
-        SimCamCacheFrame(pb);
-    } else {
-        pb = SimCamAcquireCachedPB();
-    }
-    if (!pb) {
-        static dispatch_once_t logOnce;
-        dispatch_once(&logOnce, ^{
-            simcam_log(@"no-signal fallback: shm=%@ frameSeq=%llu cache=empty",
-                gShmHeader ? @"attached" : @"unattached",
-                (unsigned long long)(gShmHeader ? atomic_load_explicit(&gShmHeader->frameSeq, memory_order_acquire) : 0));
-        });
-        pb = [self newPixelBufferNoSignal];
-    }
-    if (!pb) return NULL;
+        if (!SimCamDeviceIsConnected()) return NULL;
+        CVPixelBufferRef pb = [self newPixelBufferFromSurface];
+        if (pb) {
+            SimCamCacheFrame(pb);
+        } else {
+            pb = SimCamAcquireCachedPB();
+        }
+        if (!pb) {
+            static dispatch_once_t logOnce;
+            dispatch_once(&logOnce, ^{
+                simcam_log(@"no-signal fallback: shm=%@ frameSeq=%llu cache=empty",
+                    gShmHeader ? @"attached" : @"unattached",
+                    (unsigned long long)(gShmHeader ? atomic_load_explicit(&gShmHeader->frameSeq, memory_order_acquire) : 0));
+            });
+            pb = [self newPixelBufferNoSignal];
+        }
+        if (!pb) return NULL;
 
-    CMVideoFormatDescriptionRef fd = NULL;
-    CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, pb, &fd);
-    CMSampleTimingInfo timing = {
-        .duration = CMTimeMake(1, (int32_t)kFrameRate),
-        .presentationTimeStamp = pts,
-        .decodeTimeStamp = kCMTimeInvalid,
-    };
-    CMSampleBufferRef sb = NULL;
-    CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault, pb, true, NULL, NULL, fd, &timing, &sb);
-    if (fd) CFRelease(fd);
-    CVPixelBufferRelease(pb);
-    return sb;
+        CMVideoFormatDescriptionRef fd = NULL;
+        CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, pb, &fd);
+        CMSampleTimingInfo timing = {
+            .duration = CMTimeMake(1, (int32_t)kFrameRate),
+            .presentationTimeStamp = pts,
+            .decodeTimeStamp = kCMTimeInvalid,
+        };
+        CMSampleBufferRef sb = NULL;
+        CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault, pb, true, NULL, NULL, fd, &timing, &sb);
+        if (fd) CFRelease(fd);
+        CVPixelBufferRelease(pb);
+        return sb;
     }
 }
 
@@ -501,43 +469,6 @@ BOOL SimCamFrameSourceIsShmAttached(void) {
     return SimCamDeviceIsConnected();
 }
 
-void SimCamFrameSourceLoadImage(void) {
-    const char *envPath = getenv("SIMCAM_IMAGE_PATH");
-    NSString *path = envPath ? [NSString stringWithUTF8String:envPath] : nil;
-    if (!path.length) {
-        simcam_log(@"SIMCAM_IMAGE_PATH not set — generating gradient placeholder");
-        UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc]
-            initWithSize:CGSizeMake(kFrameWidth, kFrameHeight)];
-        gSourceImage = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-            CGContextRef c = ctx.CGContext;
-            CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-            CGFloat colors[] = {0.10,0.45,0.95,1.0,  0.95,0.20,0.55,1.0};
-            CGFloat locs[] = {0.0, 1.0};
-            CGGradientRef g = CGGradientCreateWithColorComponents(cs, colors, locs, 2);
-            CGContextDrawLinearGradient(c, g, CGPointZero,
-                CGPointMake(kFrameWidth, kFrameHeight), 0);
-            CGGradientRelease(g);
-            CGColorSpaceRelease(cs);
-            NSDictionary *attrs = @{
-                NSFontAttributeName: [UIFont boldSystemFontOfSize:96],
-                NSForegroundColorAttributeName: UIColor.whiteColor,
-            };
-            [@"serve-sim camera" drawAtPoint:CGPointMake(60, 60) withAttributes:attrs];
-        }];
-    } else {
-        gSourceImage = [UIImage imageWithContentsOfFile:path];
-        if (!gSourceImage) {
-            simcam_log(@"failed to load image at %@", path);
-            return;
-        }
-        simcam_log(@"loaded source image %@ (%.0fx%.0f)", path,
-                   gSourceImage.size.width, gSourceImage.size.height);
-    }
-    if (gSourceImage.CGImage) {
-        gSourceCGImage = CGImageRetain(gSourceImage.CGImage);
-    }
-}
-
 void SimCamFrameSourceOpenShmIfRequested(void) {
     const char *shmName = getenv("SIMCAM_SHM_NAME");
     if (!shmName || !*shmName) return;
@@ -625,17 +556,17 @@ static void SimCamRefreshDevice(void) {
     BOOL connected;
     BOOL changed;
     @synchronized([SimCamRegistry class]) {
-        BOOL wasConnected = SimCamDeviceIsConnected();
-        if (gShmHeader && (!atomic_load_explicit(&gShmHeader->active, memory_order_acquire) ||
-                          kill((pid_t)gShmHeader->ownerPid, 0) != 0)) {
-            atomic_store_explicit(&gConnected, false, memory_order_release);
-            SimCamCloseSource();
-        }
-        if (!gShmHeader && !wasConnected) SimCamFrameSourceOpenShmIfRequested();
-        connected = gShmHeader != NULL;
-        changed = wasConnected != connected;
-        atomic_store_explicit(&gConnected, connected, memory_order_release);
-        if (changed) atomic_fetch_add(&gConnectionGeneration, 1);
+            BOOL wasConnected = SimCamDeviceIsConnected();
+            if (gShmHeader && (!atomic_load_explicit(&gShmHeader->active, memory_order_acquire) ||
+                              kill((pid_t)gShmHeader->ownerPid, 0) != 0)) {
+                atomic_store_explicit(&gConnected, false, memory_order_release);
+                SimCamCloseSource();
+            }
+            if (!gShmHeader && !wasConnected) SimCamFrameSourceOpenShmIfRequested();
+            connected = gShmHeader != NULL;
+            changed = wasConnected != connected;
+            atomic_store_explicit(&gConnected, connected, memory_order_release);
+            if (changed) atomic_fetch_add(&gConnectionGeneration, 1);
     }
     if (!changed) return;
     if (!connected) [[SimCamRegistry shared] disconnectPreviewLayers];

@@ -851,13 +851,13 @@ static int OpenShm(const char *name) {
     gHeader->magic = SIMCAM_SHM_MAGIC;
     gHeader->version = 3;
     gHeader->ownerPid = (uint32_t)getpid();
-    atomic_store_explicit(&gHeader->active, 1, memory_order_release);
     gHeader->width = gWidth;
     gHeader->height = gHeight;
     gHeader->pixelFormat = SIMCAM_PIXEL_BGRA;
     gHeader->bytesPerRow = (uint32_t)IOSurfaceGetBytesPerRow(gSurfaces[0]);
     gHeader->pixelByteSize = (uint64_t)gWidth * gHeight * 4;
     gHeader->mirrorMode = SIMCAM_MIRROR_UNSET; // dylib falls back to env
+    atomic_store_explicit(&gHeader->active, 1, memory_order_release);
     return fd;
 }
 

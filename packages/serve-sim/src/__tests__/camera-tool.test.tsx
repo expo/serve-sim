@@ -15,7 +15,6 @@ import {
   nextCameraPillState,
   parseWebcamListOutput,
   requestCameraStatus,
-  selectCameraPrimaryKind,
 } from "../client/components/camera-tool";
 
 describe("requestCameraStatus", () => {
@@ -23,14 +22,14 @@ describe("requestCameraStatus", () => {
     const request = async (input: string, init: RequestInit) => {
       expect(input).toBe("/helper/DEVICE-A/camera/status");
       expect(init.cache).toBe("no-store");
-      return new Response(JSON.stringify({ alive: true, helperPid: 42 }), {
+      return new Response(JSON.stringify({ alive: true, source: "placeholder" }), {
         headers: { "Content-Type": "application/json" },
       });
     };
 
     expect(await requestCameraStatus("/helper/DEVICE-A/camera/status", request)).toEqual({
       alive: true,
-      helperPid: 42,
+      source: "placeholder",
     });
   });
 
@@ -61,80 +60,6 @@ describe("nextCameraPillState", () => {
   });
   test("disconnected recovers to active if poll says alive again", () => {
     expect(nextCameraPillState("disconnected", true)).toBe("active");
-  });
-});
-
-describe("selectCameraPrimaryKind", () => {
-  test("no foreground bundle, helper not alive: Play", () => {
-    expect(selectCameraPrimaryKind({
-      bundleId: null,
-      injected: false,
-      source: "placeholder",
-      foregroundIsInjected: false,
-    })).toBe("play");
-  });
-
-  test("foreground bundle, helper not alive: Play", () => {
-    expect(selectCameraPrimaryKind({
-      bundleId: "com.example.app",
-      injected: false,
-      source: "webcam",
-      foregroundIsInjected: false,
-    })).toBe("play");
-  });
-
-  test("helper alive with placeholder: Stop", () => {
-    expect(selectCameraPrimaryKind({
-      bundleId: "com.example.app",
-      injected: true,
-      source: "placeholder",
-      foregroundIsInjected: true,
-    })).toBe("stop");
-  });
-
-  test("helper alive in another foreground app: Stop", () => {
-    expect(selectCameraPrimaryKind({
-      bundleId: "com.example.app",
-      injected: true,
-      source: "webcam",
-      foregroundIsInjected: false,
-    })).toBe("stop");
-  });
-
-  test("helper alive with real source, foreground app injected: Stop", () => {
-    expect(selectCameraPrimaryKind({
-      bundleId: "com.example.app",
-      injected: true,
-      source: "webcam",
-      foregroundIsInjected: true,
-    })).toBe("stop");
-  });
-
-  test("page reload mid-injection (helper alive, real source, bundle not yet detected): Stop", () => {
-    expect(selectCameraPrimaryKind({
-      bundleId: null,
-      injected: true,
-      source: "webcam",
-      foregroundIsInjected: false,
-    })).toBe("stop");
-  });
-
-  test("image source counts as a real source", () => {
-    expect(selectCameraPrimaryKind({
-      bundleId: "com.example.app",
-      injected: true,
-      source: "image",
-      foregroundIsInjected: true,
-    })).toBe("stop");
-  });
-
-  test("video source counts as a real source", () => {
-    expect(selectCameraPrimaryKind({
-      bundleId: "com.example.app",
-      injected: true,
-      source: "video",
-      foregroundIsInjected: true,
-    })).toBe("stop");
   });
 });
 

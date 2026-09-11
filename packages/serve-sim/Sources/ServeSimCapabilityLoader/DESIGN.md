@@ -149,6 +149,5 @@ The capability loader loads capability code; it does not unload swizzles or cont
 camera device availability. The camera owns runtime enable/disable, frame
 liveness, and connection notifications. See [the camera design](../SimCameraInjector/DESIGN.md).
 
-Camera commands use only the capability loader. They do not insert a
-camera dylib alongside it, change permissions, or restart a process. The generic
-`childLaunchEnv` helper still exists but the camera no longer calls it.
+Camera commands use only the capability loader loading path. They do not insert a
+camera dylib alongside it, change permissions, or restart a process.

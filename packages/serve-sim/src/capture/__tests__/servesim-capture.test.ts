@@ -76,8 +76,15 @@ describeOrSkip("servesim_capture addon", () => {
     expect(probe.proxyBypassed).toBe(true);
   });
 
-  test("does not report a second row when a response arrived after an error", () => {
-    expect(probe.errorSkippedWhenResponseExists).toBe(true);
+  test("does not report a second row when a completed response already reported one", () => {
+    expect(probe.errorSkippedWhenResponseCompleted).toBe(true);
+  });
+
+  test("settles a row whose response started and then died mid-body", () => {
+    // Skipping on any response at all left these rows started forever: no status, no failure.
+    expect(probe.errorAfterPartialResponseFrames).toBe(1);
+    expect(probe.errorAfterPartialResponseStatus).toBeNull();
+    expect(probe.errorAfterPartialResponseMessage).toBe("server closed the connection");
   });
 
   test("opens and settles a row for a CONNECT that never established", () => {

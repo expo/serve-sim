@@ -207,7 +207,9 @@ def response(flow):
 
 
 def error(flow):
-    if flow.response is not None:
+    reply = flow.response
+    # No end timestamp means the response never completed, so the `response` hook never reported it.
+    if reply is not None and reply.timestamp_end is not None:
         return
     _post(
         "/response",

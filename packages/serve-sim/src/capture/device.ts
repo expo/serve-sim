@@ -1,20 +1,14 @@
-import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { promisify } from "node:util";
 
 import { withLaunchStateLock } from "../launch-state-lock";
 import { dirnameOf } from "../runtime";
+import { simctl } from "../simctl";
 
-const execFileAsync = promisify(execFile);
 const __dirname = dirnameOf(import.meta.url);
 const DYLIB_NAME = "libSimNetProxy.dylib";
-const SIMCTL_TIMEOUT_MS = 30_000;
 const INJECTED_VARS = ["DYLD_INSERT_LIBRARIES", "SIMNET_PROXY_PORT_FILE"] as const;
-
-const simctl = (args: string[]) =>
-  execFileAsync("xcrun", ["simctl", ...args], { timeout: SIMCTL_TIMEOUT_MS });
 
 /** Trust the proxy root. No untrust — simctl can only reset the whole keychain. */
 export async function trustCaInSimulator(udid: string, caPem: string): Promise<void> {
@@ -68,7 +62,7 @@ export async function injectAtBoot(
   portFile: string,
   deps: InjectionDeps = {},
 ): Promise<void> {
-  const run = deps.run ?? (async (args: string[]) => (await simctl(args)).stdout.trim());
+  const run = deps.run ?? simctl;
   const library = (deps.dylib ?? locateProxyDylib)();
   if (!library) {
     throw new Error(
@@ -87,14 +81,6 @@ export async function injectAtBoot(
 }
 
 type ReadEnv = (args: string[]) => Promise<string>;
-
-const readSimctl: ReadEnv = async (args) => {
-  const { stdout } = await execFileAsync("xcrun", ["simctl", ...args], {
-    timeout: SIMCTL_TIMEOUT_MS,
-    encoding: "utf8",
-  });
-  return stdout;
-};
 
 /** Values launchd reports for a variable, minus the dylib's own log lines, which land on the same stream. */
 async function readInjectedVar(udid: string, name: string, read: ReadEnv): Promise<string[]> {
@@ -117,17 +103,20 @@ function isDeviceUnavailable(error: unknown): boolean {
  * injected without anyone knowing.
  */
 export async function clearBootInjection(udid: string, deps: InjectionDeps = {}): Promise<void> {
-  const run = deps.run ?? (async (args: string[]) => (await simctl(args)).stdout.trim());
+  const run = deps.run ?? simctl;
   for (const name of INJECTED_VARS) {
     try {
       if (name === "DYLD_INSERT_LIBRARIES") {
-        const kept = await withLaunchStateLock(udid, async () => {
+        // Held across the write: a loader arming between the read and the clear would be erased.
+        await withLaunchStateLock(udid, async () => {
           const remaining = withoutProxyEntry(await run(["spawn", udid, "launchctl", "getenv", name]));
-          if (remaining.length === 0) return false;
+          if (remaining.length === 0) {
+            await run(["spawn", udid, "launchctl", "unsetenv", name]);
+            return;
+          }
           await run(["spawn", udid, "launchctl", "setenv", name, remaining.join(":")]);
-          return true;
         });
-        if (kept) continue;
+        continue;
       }
       await run(["spawn", udid, "launchctl", "unsetenv", name]);
     } catch (error) {
@@ -145,7 +134,7 @@ export async function bootInjectionCleared(
   udid: string,
   deps: { read?: ReadEnv } = {},
 ): Promise<boolean> {
-  const read = deps.read ?? readSimctl;
+  const read = deps.read ?? simctl;
   for (const name of INJECTED_VARS) {
     try {
       const values = await readInjectedVar(udid, name, read);

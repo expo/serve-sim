@@ -227,4 +227,41 @@ describe("concurrent arming", () => {
       shims.restore();
     }
   });
+
+  test("keeps a loader that arms while the last capture entry is cleared", async () => {
+    const LOADER = "/opt/loader/libServeSimCapabilityLoader.dylib";
+    const env = new Map<string, string>([["DYLD_INSERT_LIBRARIES", DYLIB]]);
+    const log = join(tempState.dir, "teardown-race-calls.txt");
+    const shims = installShims({
+      xcrun: `#!/bin/sh\nprintf '%s\\n' "$*" >> ${log}\n` + `exit 0\n`,
+    });
+    try {
+      const run = async (args: string[]): Promise<string> => {
+        const name = args.at(-1) ?? "";
+        if (args.includes("getenv")) return env.get(name) ?? "";
+        if (args.includes("setenv")) {
+          await new Promise((done) => setTimeout(done, 5));
+          env.set(args.at(-2) ?? "", name);
+        }
+        if (args.includes("unsetenv")) {
+          // Slower than the lock's poll interval, so a released lock is taken before this lands.
+          await new Promise((done) => setTimeout(done, 200));
+          env.delete(name);
+        }
+        return "";
+      };
+      const armLoader = () =>
+        withLaunchStateLock(UDID, async () => {
+          const current = env.get("DYLD_INSERT_LIBRARIES") ?? "";
+          await new Promise((done) => setTimeout(done, 5));
+          env.set("DYLD_INSERT_LIBRARIES", [current, LOADER].filter(Boolean).join(":"));
+        });
+
+      await Promise.all([clearBootInjection(UDID, { run }), armLoader()]);
+
+      expect((env.get("DYLD_INSERT_LIBRARIES") ?? "").split(":").filter(Boolean)).toEqual([LOADER]);
+    } finally {
+      shims.restore();
+    }
+  });
 });

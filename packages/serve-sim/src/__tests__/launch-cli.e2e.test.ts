@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
 import { cameraHelperPidFile } from "../camera-helper";
-import { readLaunchState, removeTrampolineSync } from "../launch-manager";
+import { launchApp, readLaunchState, removeTrampolineSync } from "../launch-manager";
 import { freePortAsync, killHelpersForDevice, useTempStateDir } from "./helpers";
 import { e2eDevice, readInsert, requireE2E } from "./e2e-preconditions";
 
@@ -76,6 +76,7 @@ describe.skipIf(!ready)("serve-sim launch flags", () => {
         udid!,
         "--port", String(port),
         "--no-preview",
+        "--enable", "camera",
         "--launch-app-identifier", APP,
         "--launch-arg", "-ServeSimCliFlag",
         "--launch-arg", "1",
@@ -104,6 +105,8 @@ describe.skipIf(!ready)("serve-sim launch flags", () => {
       `no URL recorded. serve-sim output:\n${output}`,
     ).toBe(true);
 
+    expect(fixtureLines().filter((line) => line.startsWith("start\t"))).toHaveLength(1);
+
     // Whether serve-sim stays up or returns straight away depends on whether a
     // helper was already streaming this device, so only the teardown is asserted.
     server.kill("SIGTERM");
@@ -128,6 +131,8 @@ describe.skipIf(!ready)("serve-sim launch flags", () => {
     };
     let output = "";
     try {
+      await launchApp(udid!, { bundleId: APP });
+      const startsBefore = fixtureLines().filter((line) => line.startsWith("start\t"));
       server = spawn("node", [CLI, udid!, "--port", String(port), "--enable", "camera", "--quiet"], {
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -135,7 +140,8 @@ describe.skipIf(!ready)("serve-sim launch flags", () => {
       server.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
       expect(await waitFor(() =>
         readLaunchState(udid!)?.capabilities.camera?.ownerPid === server?.pid &&
-        existsSync(cameraHelperPidFile(udid!)), 60_000), output).toBe(true);
+        existsSync(cameraHelperPidFile(udid!)) && output.includes('"url"'), 60_000), output).toBe(true);
+      expect(fixtureLines().filter((line) => line.startsWith("start\t"))).toEqual(startsBefore);
       const helperPid = Number(readFileSync(cameraHelperPidFile(udid!), "utf-8"));
       expect(alive(helperPid)).toBe(true);
       server.kill("SIGTERM");

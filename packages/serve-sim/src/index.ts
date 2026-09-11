@@ -22,6 +22,20 @@ import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from ".
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
 import { isLoopbackHost } from "./middleware-utils";
 import { launchAppAsync } from "./launch-app";
+import {
+  assertKnownCapabilities,
+  hasDefaultCapabilities,
+} from "./capabilities";
+import {
+  applyDefaultCapabilities,
+  armTrampoline,
+  clearLaunchState,
+  devicesArmedHere,
+  disarmStaleTrampoline,
+  releaseLaunchState,
+  removeTrampoline,
+  removeTrampolineSync,
+} from "./launch-manager";
 import { killOwnListeners } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
@@ -358,7 +372,30 @@ async function ensureBooted(udid: string): Promise<void> {
       process.exit(1);
     }
   }
+
+  // Only clean up a trampoline an earlier session left behind. Arming belongs to
+  // launchApp and enableCapabilities: this runs in the stream helper too, and a
+  // helper arming after its parent disarmed would leave the insert set.
+  await disarmStaleTrampoline(udid);
 }
+
+/**
+ * Clears only the simulators this process armed. The insert and the config are
+ * shared by every serve-sim on a device, so a session that armed nothing must
+ * leave another session's capabilities alone. Runs at most once per device.
+ */
+function disarmDevicesArmedHere(): void {
+  for (const udid of devicesArmedHere()) {
+    let othersRemain = false;
+    try { othersRemain = releaseLaunchState(udid, process.pid); } catch {}
+    if (othersRemain) continue;
+    try { removeTrampolineSync(udid); } catch {}
+  }
+}
+
+// A stream helper outlives the session that spawned it, so it must not arm the
+// device: arming after its parent disarmed would leave the insert set for good.
+const STREAM_HELPER_ENV = "SERVE_SIM_STREAM_HELPER";
 
 // ─── Preview server lifecycle ───
 
@@ -406,6 +443,7 @@ async function startHelper(
   const child = nodeSpawn(command, args, {
     detached: opts.detach,
     stdio: ["ignore", logFd, logFd],
+    env: { ...process.env, [STREAM_HELPER_ENV]: "1" },
   });
   closeSync(logFd);
   if (opts.detach) child.unref();
@@ -524,6 +562,7 @@ async function follow(
       if (pid) stopProcess(pid);
       clearState(udid);
     }
+    disarmDevicesArmedHere();
     children.clear();
     process.exit(exitCode);
   };
@@ -659,7 +698,7 @@ function listStreams(deviceArg?: string) {
 }
 
 /** Kill running streams (--kill). */
-function killStreams(deviceArg?: string) {
+async function killStreams(deviceArg?: string): Promise<void> {
   if (deviceArg) {
     const udid = resolveDevice(deviceArg);
     const state = readState(udid);
@@ -669,6 +708,8 @@ function killStreams(deviceArg?: string) {
     }
     try { process.kill(state.pid, "SIGTERM"); } catch {}
     clearState(udid);
+    clearLaunchState(udid);
+    await removeTrampoline(udid);
     console.log(JSON.stringify({ disconnected: true, device: state.device }));
   } else {
     const states = readAllStates();
@@ -679,6 +720,8 @@ function killStreams(deviceArg?: string) {
     const devices: string[] = [];
     for (const state of states) {
       try { process.kill(state.pid, "SIGTERM"); } catch {}
+      clearLaunchState(state.device);
+      await removeTrampoline(state.device);
       devices.push(state.device);
     }
     clearState();
@@ -1723,6 +1766,7 @@ async function serve(
     for (const udid of targetDevices) {
       try { clearServeSimState(udid, process.pid); } catch {}
     }
+    disarmDevicesArmedHere();
   };
   process.on("exit", clearAll);
 
@@ -1768,9 +1812,13 @@ async function serve(
     console.log("");
   }
 
-  // Exit cleanly on Ctrl+C
-  process.on("SIGINT", () => process.exit(0));
-  process.on("SIGTERM", () => process.exit(0));
+  const shutdown = () => {
+    clearAll();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  process.on("SIGHUP", shutdown);
   await new Promise(() => {});
 }
 
@@ -1829,6 +1877,16 @@ program
   .option(
     "--launch-arg <arg>",
     "Argument passed to the app when it launches. Repeat for multiple arguments.",
+    (value: string, previous: string[] = []) => [...previous, value],
+  )
+  .option(
+    "--enable <capability>",
+    "Turn on a capability that is off by default. Repeat for multiple.",
+    (value: string, previous: string[] = []) => [...previous, value],
+  )
+  .option(
+    "--disable <capability>",
+    "Turn off a capability that is on by default. Repeat for multiple.",
     (value: string, previous: string[] = []) => [...previous, value],
   )
   .option(
@@ -1942,7 +2000,7 @@ Examples:
       return;
     }
     if (opts.kill !== undefined) {
-      killStreams(typeof opts.kill === "string" ? opts.kill : undefined);
+      await killStreams(typeof opts.kill === "string" ? opts.kill : undefined);
       return;
     }
     if (opts.transport !== "http" && opts.transport !== "webrtc") {
@@ -2023,17 +2081,25 @@ Examples:
       );
       process.exit(1);
     }
-    let targets = devices;
-    if (bundleId) {
-      try {
-        targets = resolveTargetDevices(devices);
-        for (const udid of targets) await ensureBooted(udid);
-        for (const udid of targets) await launchAppAsync(udid, { bundleId, launchArgs, openUrl });
-      } catch (error) {
-        console.error(error instanceof Error ? error.message : error);
-        process.exit(1);
-      }
+    const capabilities: { enable: string[]; disable: string[] } = {
+      enable: (opts.enable as string[] | undefined) ?? [],
+      disable: (opts.disable as string[] | undefined) ?? [],
+    };
+    try {
+      assertKnownCapabilities([...capabilities.enable, ...capabilities.disable]);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : error);
+      process.exit(1);
     }
+    // Only take over device selection when something has to happen before the
+    // run mode starts. Otherwise follow and detach pick their own target, as
+    // they did before this flag existed.
+    const launchesBeforeStreaming =
+      Boolean(bundleId) ||
+      capabilities.enable.length > 0 ||
+      capabilities.disable.length > 0 ||
+      hasDefaultCapabilities();
+
     const startPort: number | undefined = opts.port;
     const streamOptionsProvided = wasProvided("transport")
       || wasProvided("codec")
@@ -2061,6 +2127,52 @@ Examples:
           "network-exposed preview; those modes bind loopback only, where the token does nothing.",
       );
       process.exit(1);
+    }
+    let targets = devices;
+    if (!opts.detach) {
+      try {
+        targets = resolveTargetDevices(devices);
+        // The trampoline is armed for the whole session, not when a capability
+        // turns on: an app only carries it if it was inserted at launch, so
+        // arming late means the app it was armed for cannot receive anything
+        // until it restarts. It loads nothing on its own, so an app that never
+        // gets a capability pays a libSystem-only dylib and nothing else.
+        {
+          process.on("exit", disarmDevicesArmedHere);
+          for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+            process.on(signal, () => {
+              // The exit handler is too late: spawning simctl while the
+              // process is tearing down does not always finish.
+              disarmDevicesArmedHere();
+              // A run mode that registered its own handler stops children too.
+              if (process.listenerCount(signal) > 1) return;
+              process.exit(0);
+            });
+          }
+        }
+        for (const udid of targets) await ensureBooted(udid);
+        if (process.env[STREAM_HELPER_ENV] !== "1") {
+          for (const udid of targets) await armTrampoline(udid);
+        }
+        for (const udid of launchesBeforeStreaming ? targets : []) {
+          if (bundleId) {
+            await launchAppAsync(udid, { bundleId, launchArgs, openUrl, capabilities });
+          } else {
+            const applied = await applyDefaultCapabilities(udid, null, capabilities);
+            const missing = capabilities.enable.filter((name) => !applied.includes(name));
+            if (missing.length > 0) {
+              console.error(
+                `Requested ${missing.join(", ")} but ${missing.length === 1 ? "it" : "they"} ` +
+                  `did not apply on ${udid}. See the message above for why.`,
+              );
+              process.exit(1);
+            }
+          }
+        }
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : error);
+        process.exit(1);
+      }
     }
     if (opts.detach) {
       const states = await detach(targets, startPort ?? 3100, stream, streamOptionsProvided);
@@ -2175,5 +2287,6 @@ program
   .helpOption(false)
   .argument("[args...]")
   .action((args: string[]) => uiSettings(args));
+
 
 await program.parseAsync(process.argv);

@@ -49,8 +49,6 @@ import { type WebMiddleware } from "./runtime-utils";
 import { connectToFetch, type ConnectMiddleware } from "./connect-to-fetch";
 
 /** Captured traffic is decrypted credentials; `no-cache` would still let a cache keep a copy. */
-const CAPTURE_CONTROL_PATHS = ["reboot", "clear"];
-
 const NO_STORE = { "Cache-Control": "no-store, private", Pragma: "no-cache" } as const;
 
 type SimReq = IncomingMessage;
@@ -1746,6 +1744,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
   const frameAncestors = options?.frameAncestors ?? [];
   const networkCapture = options?.networkCapture ?? false;
+  // An embedded mount enables capture without the CLI, and the capture actions read this too.
+  if (networkCapture) captureRuntime.setServerEnabled(true);
 
   // Simulator-settings requests run in-process (just the underlying simctl /
   // ax-tool spawn) instead of round-tripping a full `node <cli>` exec per
@@ -2625,15 +2625,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     if (url.startsWith(base + "/network-capture/")) {
       const id = url.slice((base + "/network-capture/").length);
-      // These were POST routes. Without this, an old client's call is read as a request id and answered
-      // "No captured body", which points at the wrong problem.
-      if (CAPTURE_CONTROL_PATHS.includes(id)) {
-        res.writeHead(410, { "Content-Type": "application/json", ...NO_STORE });
-        res.end(
-          JSON.stringify({ error: `This route is gone. Run the capture.${id} host action instead.` }),
-        );
-        return;
-      }
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       handleCaptureBodyRequest(req, res, state, decodeURIComponent(id), captureRuntime);

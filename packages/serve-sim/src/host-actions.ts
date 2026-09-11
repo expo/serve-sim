@@ -41,6 +41,11 @@ const Device = z
   .max(256)
   .regex(/^[A-Za-z0-9][A-Za-z0-9 ._()-]*$/, "must be a simulator udid or device name");
 
+// simctl reads "all" and "booted" as every device, and capture reboots what it is given.
+const DeviceUdid = z
+  .string()
+  .regex(/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i, "must be a simulator udid");
+
 const BundleId = z.string().max(256).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "must look like com.example.app");
 
 /** An orientation or button name. Bounded rather than allowlisted, so a new button still works. */
@@ -121,8 +126,8 @@ const ACTION_SCHEMAS = {
     first: z.boolean().optional(),
   }),
   "upload.remove": z.object({ uploadId: UploadId }),
-  "capture.reboot": z.object({ udid: Device, enabled: z.boolean() }),
-  "capture.clear": z.object({ udid: Device }),
+  "capture.reboot": z.object({ udid: DeviceUdid, enabled: z.boolean() }),
+  "capture.clear": z.object({ udid: DeviceUdid }),
 } as const;
 
 type HostActionName = keyof typeof ACTION_SCHEMAS;
@@ -319,9 +324,8 @@ async function runProcedureAsync(action: ProcedureAction, raw: unknown): Promise
     }
     case "capture.reboot": {
       const p = parseParams(action, raw);
-      // Imported here so a server started without capture never loads the capture module.
       const { captureRuntime, rebootWithCapture } = await import("./capture");
-      if (!captureRuntime.isServerEnabled()) {
+      if (!captureRuntime.getServerEnabled()) {
         return {
           stdout: "",
           stderr:
@@ -330,7 +334,6 @@ async function runProcedureAsync(action: ProcedureAction, raw: unknown): Promise
         };
       }
       const { closeDeviceSession } = await import("./device-session");
-      // The stream and HID sockets are bound to a device that is about to go down under them.
       closeDeviceSession(p.udid);
       try {
         return ok(JSON.stringify(await rebootWithCapture(p.udid, p.enabled)));

@@ -150,12 +150,12 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
       policy = next;
     },
 
-    isServerEnabled(): boolean {
+    getServerEnabled(): boolean {
       return serverEnabled;
     },
 
-    markServerEnabled(): void {
-      serverEnabled = true;
+    setServerEnabled(next: boolean): void {
+      serverEnabled = next;
     },
 
     enableForDevice(udid: string): Promise<CaptureMeta> {

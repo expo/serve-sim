@@ -1130,8 +1130,8 @@ async function serve(
   // before anything can launch an app on it.
   const capture = options.networkCapture ? await import("./capture") : null;
   if (capture) {
+    capture.captureRuntime.setServerEnabled(true);
     // Set once, so the panel's reboot and a sidebar boot capture the same fields as the CLI asked for.
-    capture.captureRuntime.markServerEnabled();
     capture.captureRuntime.setFields(capture.resolveCaptureFields(options.networkCaptureFields));
     for (const udid of targetDevices) {
       try {

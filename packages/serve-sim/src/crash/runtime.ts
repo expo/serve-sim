@@ -94,7 +94,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     });
 
   const byUdid = new Map<string, CrashStore>();
-  const ingested = new Set<string>();
+  const ingested = new Map<string, number>();
   let watcher: CrashWatcherHandle | null = null;
   let running = false;
   let statusError: string | null = null;
@@ -159,18 +159,22 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   };
 
   const ingest = async (filename: string): Promise<void> => {
+    const epoch = generation;
+    const releaseClaim = (): void => {
+      if (ingested.get(filename) === epoch) ingested.delete(filename);
+    };
     const path = join(reportsDir, filename);
     let raw: string;
     try {
       raw = await readReport(path);
     } catch (error) {
       if (!isMissingFile(error)) reportError(`could not read ${filename}`, error);
-      ingested.delete(filename);
+      releaseClaim();
       return;
     }
 
-    if (!running) {
-      ingested.delete(filename);
+    if (!running || epoch !== generation) {
+      releaseClaim();
       return;
     }
 
@@ -196,10 +200,10 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   const claim = (filename: string): boolean => {
     if (!running || !isFinalCrashReportName(filename) || ingested.has(filename)) return false;
     if (ingested.size >= MAX_INGESTED) {
-      const oldest = ingested.values().next().value;
+      const oldest = ingested.keys().next().value;
       if (oldest !== undefined) ingested.delete(oldest);
     }
-    ingested.add(filename);
+    ingested.set(filename, generation);
     return true;
   };
 
@@ -224,9 +228,10 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       try {
         mtimeMs = (await statFile(join(reportsDir, filename))).mtimeMs;
       } catch (error) {
-            if (!isMissingFile(error)) reportError(`could not stat ${filename}`, error);
+        if (!isMissingFile(error)) reportError(`could not stat ${filename}`, error);
         continue;
       }
+      if (epoch !== generation || !running) return;
       if (mtimeMs < cutoff) continue;
 
       if (!claim(filename)) continue;

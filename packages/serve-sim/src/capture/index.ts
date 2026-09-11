@@ -1,5 +1,4 @@
 export {
-  bootInjectedLibraries,
   bootInjectionCleared,
   clearBootInjection,
   injectAtBoot,

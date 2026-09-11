@@ -145,7 +145,7 @@ describe("handleCrashesRequest", () => {
   test("returns JSON with the crash list and collection meta", async () => {
     const runtime = await runtimeWithCrash();
     const res = fakeRes();
-    handleCrashesRequest(fakeReq(), res, state, runtime);
+    handleCrashesRequest(fakeReq(), res, state, "", runtime);
 
     expect(res.statusCode_).toBe(200);
     expect(res.headers_["Content-Type"]).toBe("application/json");
@@ -178,7 +178,7 @@ describe("handleCrashesRequest", () => {
     runtime.start();
 
     const res = fakeRes();
-    handleCrashesRequest(fakeReq(), res, state, runtime);
+    handleCrashesRequest(fakeReq(), res, state, "", runtime);
 
     const payload = JSON.parse(res.body_);
     expect(payload.crashes).toEqual([]);
@@ -189,7 +189,7 @@ describe("handleCrashesRequest", () => {
   test("streams SSE with meta before the authoritative list", async () => {
     const runtime = await runtimeWithCrash();
     const res = fakeRes();
-    handleCrashesRequest(fakeReq({ accept: "text/event-stream" }), res, state, runtime);
+    handleCrashesRequest(fakeReq({ accept: "text/event-stream" }), res, state, "", runtime);
 
     expect(res.headers_["Content-Type"]).toBe("text/event-stream");
     const metaAt = res.body_.indexOf('"type":"meta"');
@@ -219,10 +219,37 @@ describe("handleCrashesRequest", () => {
       },
     } as unknown as LogBufferCache;
 
-    handleCrashesRequest(req, res, state, runtime, buffers);
+    handleCrashesRequest(req, res, state, "?tail=1", runtime, buffers);
     expect(readers).toBe(1);
 
     req.emit("close");
+    expect(readers).toBe(0);
+  });
+
+  test("keeps no device tail for a stream that did not ask to watch", async () => {
+    const runtime = await runtimeWithCrash();
+    const res = fakeRes();
+    let readers = 0;
+    const buffers = {
+      ensure: () => {
+        readers += 1;
+        return {
+          subscribeBatch: () => () => {
+            readers -= 1;
+          },
+        };
+      },
+    } as unknown as LogBufferCache;
+
+    handleCrashesRequest(
+      fakeReq({ accept: "text/event-stream" }),
+      res,
+      state,
+      "",
+      runtime,
+      buffers
+    );
+
     expect(readers).toBe(0);
   });
 
@@ -231,7 +258,7 @@ describe("handleCrashesRequest", () => {
     const res = fakeRes();
     res.destroyStream();
 
-    handleCrashesRequest(fakeReq({ accept: "text/event-stream" }), res, state, runtime);
+    handleCrashesRequest(fakeReq({ accept: "text/event-stream" }), res, state, "", runtime);
 
     expect(res.statusCode_).toBe(0);
     expect(res.body_).toBe("");

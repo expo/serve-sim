@@ -166,6 +166,32 @@ describe("CaptureDiskAccumulator", () => {
     }
   });
 
+  it("rebuilds the HAR for a request that finished during a rebuild", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-disk-race-"));
+    const store = new CaptureStore();
+    const disk = new CaptureDiskAccumulator({ dir, flushIntervalMs: 60_000 });
+    try {
+      const stop = disk.attach(store);
+      for (let i = 0; i < 200; i++) {
+        const id = store.start("GET", `https://a.test/${i}`);
+        store.update(id, { status: 200, durationMs: 1 }, true);
+      }
+      const rebuilding = disk.flush();
+      await Bun.sleep(5);
+      const late = store.start("GET", "https://late.test/");
+      store.update(late, { status: 200, durationMs: 1 }, true);
+      await rebuilding;
+      await disk.flush();
+
+      const har = JSON.parse(readFileSync(join(dir, CAPTURE_HAR_FILENAME), "utf8"));
+      expect(har.log.entries).toHaveLength(201);
+      expect(har.log.entries.at(-1).request.url).toBe("https://late.test/");
+      await stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("removes the artifact directory on stop even when nothing was recorded", async () => {
     const dir = mkdtempSync(join(tmpdir(), "serve-sim-disk-empty-"));
     const store = new CaptureStore();

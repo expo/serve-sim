@@ -1,10 +1,13 @@
 /** Best-effort header redaction. Not a secret scanner; bodies are untouched. */
 const REDACTED = "[REDACTED]";
 
-/** Credential headers the pattern misses: `auth` here is followed by a letter, not a delimiter. */
+/** Credential headers the pattern misses: the word here is followed by a letter or digit, not a delimiter. */
 const SENSITIVE_HEADER_NAMES = new Set([
   "authorization",
   "proxy-authorization",
+  "authentication",
+  "cookie2",
+  "set-cookie2",
   "x-firebase-appcheck",
   "x-amz-content-sha256",
 ]);
@@ -14,7 +17,8 @@ const SENSITIVE_HEADER_NAMES = new Set([
  *
  * Matching the shape of the name means an unknown vendor header is redacted rather than recorded.
  */
-const SENSITIVE_HEADER_PATTERN = /(^|[-_])(auth|authz|token|secret|password|passwd|credential|session|cookie|apikey|api[-_]?key|access[-_]?key|private[-_]?key|signature|bearer)([-_]|$)/i;
+const SENSITIVE_HEADER_PATTERN =
+  /(^|[-_])(auth|authz|token|secret|password|passwd|credential|session|cookie|apikey|api[-_]?key|access[-_]?key|private[-_]?key|signature|bearer)([-_]|$)/i;
 
 /** Whether a header's value would be redacted. Exported so the docs and tests agree on one rule. */
 export function isSensitiveHeaderName(name: string): boolean {

@@ -1530,7 +1530,6 @@ function nonNegativeIntParam(params: URLSearchParams, name: string): number | un
   return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
-/** `?flag=0` and `?flag=false` mean off, not "present so on". */
 function booleanParam(params: URLSearchParams, name: string): boolean {
   const raw = params.get(name);
   if (raw === null) return false;
@@ -1540,10 +1539,7 @@ function booleanParam(params: URLSearchParams, name: string): boolean {
 
 const SSE_HEARTBEAT_MS = 15_000;
 
-/**
- * Opens an SSE response: headers, the priming comment, a heartbeat, and teardown on close.
- * `isOpen` is the `writableEnded`/`destroyed` pair, since an aborted client only sets the latter.
- */
+/** `isOpen` is the `writableEnded`/`destroyed` pair: an aborted client only sets the latter. */
 function openSseStream(
   req: SimReq,
   res: SimRes
@@ -1575,7 +1571,6 @@ function openSseStream(
   };
 }
 
-/** SSE by default (the preview UI); JSON on `Accept: application/json` or `?snapshot`. */
 export function handleLogsRequest(
   req: SimReq,
   res: SimRes,
@@ -1597,7 +1592,6 @@ export function handleLogsRequest(
     snapshot === null
       ? (req.headers.accept ?? "").includes("application/json")
       : booleanParam(params, "snapshot");
-  // The raw line is already JSON, so default frames are unwrapped.
   const wantsEnvelope = booleanParam(params, "envelope");
 
   const buffer = cache.ensure(state.device);
@@ -1626,8 +1620,7 @@ export function handleLogsRequest(
     (wantsEnvelope ? JSON.stringify({ seq: line.seq, at: line.at, raw: line.raw }) : line.raw) +
     "\n\n";
 
-  // Must stay synchronous between read and subscribe: lines arrive on a separate macrotask,
-  // so an await here would drop whatever landed in the gap.
+  // Lines arrive on a separate macrotask, so an await between read and subscribe drops them.
   let lastSent = since ?? 0;
   for (const line of buffer.read({ since, limit })) {
     if (!stream.isOpen()) break;

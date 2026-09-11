@@ -317,6 +317,8 @@ function onSignal(signal: NodeJS.Signals): void {
   reapAll();
   process.removeListener("exit", reapAll);
   for (const other of SIGNALS) process.removeListener(other, onSignal);
+  // Re-raising with another handler still installed would run that handler twice for one signal.
+  if (process.listenerCount(signal) > 0) return;
   process.kill(process.pid, signal);
 }
 

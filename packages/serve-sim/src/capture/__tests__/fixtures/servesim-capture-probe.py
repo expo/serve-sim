@@ -126,6 +126,11 @@ class FakeRequest:
         return b""
 
 
+class FakeResponse:
+    def __init__(self, timestamp_end=None):
+        self.timestamp_end = timestamp_end
+
+
 class FakeFlow:
     def __init__(self, error=None, response=None):
         self.id = "flow-1"
@@ -134,11 +139,20 @@ class FakeFlow:
         self.response = response
 
 
-# A response arriving after an error must not produce a second row.
-settled = FakeFlow(error="reset", response=object())
-addon.error(settled)
+# A completed response was already reported; erroring after it must not produce a second row.
+addon.error(FakeFlow(error="reset", response=FakeResponse(timestamp_end=1001.0)))
 time.sleep(0.2)
-results["errorSkippedWhenResponseExists"] = len(received) == 0
+results["errorSkippedWhenResponseCompleted"] = len(received) == 0
+
+# Headers arrived and the body was cut: `response` never ran, so this error is the only report there is.
+addon.error(FakeFlow(error="server closed the connection", response=FakeResponse()))
+results["errorAfterPartialResponseFrames"] = wait_for(1)
+results["errorAfterPartialResponseStatus"] = (
+    received[0]["body"].get("status", "missing") if received else "missing"
+)
+results["errorAfterPartialResponseMessage"] = received[0]["body"].get("error") if received else None
+
+received.clear()
 
 addon.http_connect_error(FakeFlow(error="no route to host"))
 results["connectErrorFrames"] = wait_for(2)

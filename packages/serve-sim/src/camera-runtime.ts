@@ -103,7 +103,7 @@ function spawnCameraHelper(args: {
   arg?: string;
   width?: number;
   height?: number;
-}): number {
+}): void {
   const camDir = simcamStateDir();
   mkdirSync(camDir, { recursive: true });
   const logPath = join(camDir, `${args.udid}.log`);
@@ -135,14 +135,13 @@ function spawnCameraHelper(args: {
     if (existsSync(args.socketPath)) break;
     sleepSync(50);
   }
-  return child.pid;
 }
 
 async function ensureHelperWithSource(opts: {
   udid: string;
   source: ResolvedSource;
   forceBuild: boolean;
-}): Promise<{ helperPid: number | null; shmName: string; relaunched: boolean }> {
+}): Promise<string> {
   const shmName = shmNameForUdid(opts.udid);
   const sockPath = helperSocketFile(opts.udid);
   if (isHelperAlive(opts.udid)) {
@@ -153,16 +152,12 @@ async function ensureHelperWithSource(opts: {
       arg: opts.source.arg,
     });
     if (!reply.ok) throw new Error(reply.error || "helper rejected switch");
-    return {
-      helperPid: readCameraHelperPid(opts.udid),
-      shmName,
-      relaunched: false,
-    };
+    return shmName;
   }
   // Need to start a fresh helper. Pre-emptively reap any stale state.
   stopExistingHelper(opts.udid);
   const helper = (!opts.forceBuild && locateCameraHelper()) || buildCameraHelper();
-  const pid = spawnCameraHelper({
+  spawnCameraHelper({
     udid: opts.udid,
     helperBin: helper,
     shmName,
@@ -170,7 +165,7 @@ async function ensureHelperWithSource(opts: {
     source: opts.source.kind,
     arg: opts.source.arg,
   });
-  return { helperPid: pid, shmName, relaunched: true };
+  return shmName;
 }
 
 export const cameraCapability: CapabilityDefinition = {
@@ -188,7 +183,7 @@ export const cameraCapability: CapabilityDefinition = {
     const source: ResolvedSource = options.arg
       ? { kind: (options.kind ?? "placeholder") as CamSourceKind, arg: options.arg }
       : { kind: (options.kind ?? "placeholder") as CamSourceKind };
-    const { shmName } = await ensureHelperWithSource({ udid, source, forceBuild });
+    const shmName = await ensureHelperWithSource({ udid, source, forceBuild });
     return {
       dylib,
       env: {

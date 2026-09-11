@@ -22,23 +22,6 @@ import {
 } from "../utils/camera";
 import { type CameraMediaPreviewProps, CameraTestPatternHint, CameraStatusPill, CameraMediaPreview, CameraInlineBanner } from "./camera-tool-ui";
 
-export {
-  type CamSource,
-  type CamWebcam,
-  type CameraPillState,
-  CAMERA_POLL_INTERVAL_MS,
-  requestCameraStatus,
-  CAMERA_LARGE_VIDEO_BYTES,
-  CAMERA_LARGE_VIDEO_WARNING,
-  CAMERA_HEIC_ERROR,
-  nextCameraPillState,
-  parseWebcamListOutput,
-  isOversizedCameraVideo,
-  isHeicLikeFile,
-  cameraSourceErrorMessage,
-} from "../utils/camera";
-export { CameraTestPatternHint, CameraStatusPill, CameraMediaPreview, CameraInlineBanner } from "./camera-tool-ui";
-
 type CamMirror = "on" | "off";
 
 export function CameraTool({

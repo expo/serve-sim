@@ -5,6 +5,8 @@ import {
   CameraTestPatternHint,
   CameraMediaPreview,
   CameraInlineBanner,
+} from "../client/components/camera-tool-ui";
+import {
   CAMERA_HEIC_ERROR,
   CAMERA_LARGE_VIDEO_BYTES,
   CAMERA_LARGE_VIDEO_WARNING,
@@ -15,7 +17,7 @@ import {
   nextCameraPillState,
   parseWebcamListOutput,
   requestCameraStatus,
-} from "../client/components/camera-tool";
+} from "../client/utils/camera";
 
 describe("requestCameraStatus", () => {
   test("reads structured status directly from the configured endpoint", async () => {

@@ -49,14 +49,13 @@ export function startLogsPoll(
   }
 ): () => void {
   let stopped = false;
-  const abort = new AbortController();
 
   const sample = async (): Promise<void> => {
     const since = opts.getSince();
     try {
       const response = await fetch(logsSnapshotUrl(endpoint, since), {
         headers: { Accept: "application/json", ...simAuthHeaders() },
-        signal: AbortSignal.any([abort.signal, AbortSignal.timeout(LOGS_POLL_MS * 3)]),
+        signal: AbortSignal.timeout(LOGS_POLL_MS * 3),
       });
       if (stopped) return;
       if (!response.ok) {
@@ -66,6 +65,10 @@ export function startLogsPoll(
       const parsed = parseLogSnapshot(await response.json());
       if (stopped) return;
       opts.onError?.(/* errored */ false);
+      if (parsed.latestSeq < since) {
+        opts.setSince(0);
+        return;
+      }
       const fresh = parsed.lines.filter((line) => line.seq > since);
       if (parsed.latestSeq > since) opts.setSince(parsed.latestSeq);
       if (fresh.length > 0) opts.onBatch(fresh);
@@ -77,7 +80,6 @@ export function startLogsPoll(
   const stopPolling = startExclusivePoll(sample, LOGS_POLL_MS);
   return () => {
     stopped = true;
-    abort.abort();
     stopPolling();
   };
 }

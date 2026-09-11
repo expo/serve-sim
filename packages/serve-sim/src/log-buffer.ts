@@ -119,19 +119,7 @@ export class DeviceLogBuffer {
   }
 
   private releaseIfIdle(): void {
-    if (this.listenerCount > 0) return;
-    this.stopped = true;
-    this.clearIdle();
-    if (this.restartTimer) {
-      clearTimeout(this.restartTimer);
-      this.restartTimer = null;
-    }
-    this.child?.removeAllListeners();
-    this.child?.stdout?.destroy();
-    this.child?.kill();
-    this.child = null;
-    this.partial = "";
-    this.dropping = false;
+    if (this.listenerCount === 0) this.stop();
   }
 
   read({ since, limit }: { since?: number; limit?: number } = {}): LogLine[] {

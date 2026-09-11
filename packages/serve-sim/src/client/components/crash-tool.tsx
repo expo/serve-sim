@@ -1,42 +1,28 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CrashSummary } from "../../crash/store";
+import { useEffect, useMemo, useState } from "react";
+import { useCrashDetail } from "../hooks/use-crash-detail";
 import {
   applyCrashFrame,
   EMPTY_CRASH_LIST,
   type CrashListState,
 } from "../utils/crash-stream";
-import { crashDetailUrl, formatCrashAgo } from "../utils/crash-format";
+import { crashStreamUrl, formatCrashAgo } from "../utils/crash-format";
 import { watchCrashes } from "../utils/watch-crashes";
-import { simAuthHeaders, simEndpoint } from "../utils/sim-endpoint";
+import { simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
-import { CrashDetailModal, type SelectedOccurrence } from "./crash-detail-modal";
-
-
-type CrashDetail = {
-  record: CrashSummary;
-  occurrence: SelectedOccurrence;
-  report: string | null;
-  reportError: string | null;
-};
+import { CrashDetailModal } from "./crash-detail-modal";
 
 export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndpoint?: string }) {
   const [open, setOpen] = useState(false);
   const [list, setList] = useState<CrashListState>(EMPTY_CRASH_LIST);
-  const [detail, setDetail] = useState<CrashDetail | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [pendingIndex, setPendingIndex] = useState<number | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const fetchGenRef = useRef(0);
-  const requestedRef = useRef<number | null>(null);
-  const confirmedRef = useRef<number | null>(null);
-  const reloadedForRef = useRef<string | null>(null);
+  const [streamError, setStreamError] = useState<string | null>(null);
 
   const path = useMemo(
     () => crashesEndpoint ?? `${simEndpoint("crashes")}?device=${encodeURIComponent(udid)}`,
     [crashesEndpoint, udid]
   );
   // Watching costs a device log tail, so ask for one only while the section is showing crashes.
-  const streamPath = open ? `${path}${path.includes("?") ? "&" : "?"}tail=1` : path;
+  const streamPath = crashStreamUrl(path, open);
 
   useEffect(() => {
     const tick = setInterval(() => setNow(Date.now()), 10_000);
@@ -48,97 +34,26 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
     return watchCrashes(
       streamPath,
       (frame) => {
-        setLoadError(null);
+        setStreamError(null);
         setList((prev) => applyCrashFrame(prev, frame));
       },
-      () => setLoadError("Lost contact with serve-sim. Showing the last crash list read."),
+      () => setStreamError("Lost contact with serve-sim. Showing the last crash list read."),
     );
   }, [streamPath]);
 
-  const loadDetail = useCallback(
-    async (id: string, occurrence?: number): Promise<void> => {
-      const gen = ++fetchGenRef.current;
-      setLoadError(null);
-      const revert = (): void => {
-        if (gen !== fetchGenRef.current) return;
-        requestedRef.current = confirmedRef.current;
-        setPendingIndex(confirmedRef.current);
-        setLoadError("Could not load that crash.");
-      };
-      try {
-        const response = await fetch(crashDetailUrl(path, id, occurrence), { headers: simAuthHeaders() });
-        if (!response.ok) {
-          revert();
-          return;
-        }
-        const next = (await response.json()) as CrashDetail;
-        if (gen !== fetchGenRef.current) return;
-        requestedRef.current = next.occurrence.index;
-        confirmedRef.current = next.occurrence.index;
-        setPendingIndex(next.occurrence.index);
-        setDetail(next);
-      } catch {
-        revert();
-      }
-    },
-    [path]
-  );
-
-  useEffect(() => {
-    if (!detail) return;
-    const listed = list.crashes.find((crash) => crash.id === detail.record.id);
-    if (!listed) return;
-    const remapped = listed.occurrenceTimes.findIndex(
-      (stamp) => stamp.rawPath === detail.occurrence.rawPath
-    );
-    // A list older than the open detail misses it too, so reload at most once per report.
-    if (remapped === -1) {
-      if (reloadedForRef.current === detail.occurrence.rawPath) return;
-      reloadedForRef.current = detail.occurrence.rawPath;
-      void loadDetail(detail.record.id, listed.occurrenceCount - 1);
-      return;
-    }
-    const total = listed.occurrenceCount;
-    if (
-      listed.count === detail.record.count &&
-      total === detail.occurrence.total &&
-      remapped === detail.occurrence.index
-    ) {
-      return;
-    }
-    if (requestedRef.current === detail.occurrence.index) requestedRef.current = remapped;
-    if (confirmedRef.current === detail.occurrence.index) confirmedRef.current = remapped;
-    setPendingIndex((pending) => (pending === detail.occurrence.index ? remapped : pending));
-    setDetail((prev) =>
-      prev && prev.record.id === listed.id
-        ? {
-            ...prev,
-            record: listed,
-            occurrence: { ...prev.occurrence, index: remapped, total },
-          }
-        : prev
-    );
-  }, [list, detail, loadDetail]);
-
-  const selectOccurrence = (index: number): void => {
-    if (!detail) return;
-    if (index < 0 || index >= detail.occurrence.total) return;
-    if (index === requestedRef.current) return;
-    requestedRef.current = index;
-    setPendingIndex(index);
-    void loadDetail(detail.record.id, index);
-  };
-
-  const stepOccurrence = (delta: number): boolean => {
-    const index = (requestedRef.current ?? detail?.occurrence.index ?? 0) + delta;
-    if (!detail || index < 0 || index >= detail.occurrence.total) return false;
-    if (index === requestedRef.current) return false;
-    selectOccurrence(index);
-    return true;
-  };
+  const {
+    detail,
+    pendingIndex,
+    error: detailError,
+    load: loadDetail,
+    select: selectOccurrence,
+    step: stepOccurrence,
+    close: closeDetail,
+  } = useCrashDetail(path, list.crashes);
+  const loadError = detailError ?? streamError;
 
   const crashes = list.crashes;
-  const evicted = detail !== null && !crashes.some((crash) => crash.id === detail.record.id);
+  const evicted = list.ready && detail !== null && !crashes.some((crash) => crash.id === detail.record.id);
   const unavailable = list.meta?.status === "unavailable";
 
   return (
@@ -231,14 +146,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
           }
           onSelectOccurrence={selectOccurrence}
           onStepOccurrence={stepOccurrence}
-          onClose={() => {
-            fetchGenRef.current += 1;
-            requestedRef.current = null;
-            confirmedRef.current = null;
-            setPendingIndex(null);
-            setLoadError(null);
-            setDetail(null);
-          }}
+          onClose={closeDetail}
         />
       )}
     </CollapsibleSection>

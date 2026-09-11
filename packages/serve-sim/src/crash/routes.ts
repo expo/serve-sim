@@ -5,7 +5,7 @@ import type { ServeSimDeviceState } from "../state";
 import { logBufferCache, type LogBufferCache } from "../log-buffer";
 import { openSseStream } from "../sse-stream";
 import { crashRuntime, type CrashRuntime } from "./runtime";
-import { summarizeCrash, type CrashStreamFrame } from "./protocol";
+import { summarizeCrash, type CrashStreamFrame, type CrashDetailResponse } from "./protocol";
 
 /** A reader keeps the tail alive, so a crash during this stream still has lines before it. */
 function holdDeviceTail(buffers: LogBufferCache, udid: string): () => void {
@@ -116,12 +116,11 @@ export async function handleCrashReportRequest(
   }
 
   res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-  res.end(
-    JSON.stringify({
-      record: summarizeCrash(record),
-      occurrence: { ...occurrence, index: requested, total },
-      report,
-      reportError,
-    })
-  );
+  const detail: CrashDetailResponse = {
+    record: summarizeCrash(record),
+    occurrence: { ...occurrence, index: requested, total },
+    report,
+    reportError,
+  };
+  res.end(JSON.stringify(detail));
 }

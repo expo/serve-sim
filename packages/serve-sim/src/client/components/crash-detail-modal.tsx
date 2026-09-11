@@ -1,3 +1,4 @@
+import type { SelectedOccurrence } from "../../crash/protocol";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CrashFrame } from "../../crash/report";
@@ -89,10 +90,10 @@ function StackTrace({ frames }: { frames: CrashFrame[] }) {
   );
 }
 
-export type SelectedOccurrence = CrashOccurrence & { index: number; total: number };
+
 
 function emptyTailReason(source: CrashOccurrence["logTailSource"]): string {
-  if (source === "buffer-rolled-past") return "Device logs were not being read when this crash happened.";
+  if (source === "buffer-rolled-past") return "The retained device logs do not cover this crash. Keep the Crashes panel open to collect logs for the next one.";
   if (source === "no-app-lines") return "The app logged nothing in the lines before this crash.";
   return "No device logs for this crash.";
 }

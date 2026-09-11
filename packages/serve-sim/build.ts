@@ -207,6 +207,48 @@ const compile = spawnSync(
 if (compile.status !== 0) process.exit(compile.status ?? 1);
 console.log("dist/serve-sim      (compiled binary)");
 
+{
+  const res = spawnSync(
+    "bash",
+    [
+      resolve(root, "Sources/ServeSimTrampoline/build.sh"),
+      resolve(distDir, "trampoline"),
+    ],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  if (res.status !== 0) {
+    console.error("ServeSimTrampoline dylib build failed.");
+    process.exit(1);
+  }
+  console.log("dist/trampoline/libServeSimTrampoline.dylib");
+}
+
+{
+  const res = spawnSync(
+    "bash",
+    [resolve(root, "Sources/ServeSimProbe/build.sh"), resolve(distDir, "trampoline")],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  if (res.status !== 0) {
+    console.error("ServeSimProbe dylib build failed.");
+    process.exit(1);
+  }
+  console.log("dist/trampoline/libServeSimProbe.dylib");
+}
+
+{
+  const res = spawnSync(
+    "bash",
+    [resolve(root, "Sources/ServeSimLaunchFixture/build.sh"), resolve(distDir, "trampoline")],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  if (res.status !== 0) {
+    console.error("ServeSimLaunchFixture app build failed.");
+    process.exit(1);
+  }
+  console.log("dist/trampoline/ServeSimLaunchFixture.app");
+}
+
 // ─── 6. SimCameraInjector dylib + SimCameraHelper host CLI ───────────────
 // Both ship in dist/simcam/ so they tarball alongside the JS bin. The CLI's
 // `camera` verb resolves them via locateCameraDylib / locateCameraHelper.

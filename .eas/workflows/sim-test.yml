@@ -56,6 +56,9 @@ jobs:
         uses: eas/start_ios_simulator
 
       - name: Run serve-sim tests
+        # An unmet precondition fails instead of skipping; see e2e-preconditions.ts.
+        env:
+          SERVE_SIM_E2E_REQUIRED: "1"
         run: |
           run_tests() {
             bun test --max-concurrency=1 packages/serve-sim/src/__tests__/ &

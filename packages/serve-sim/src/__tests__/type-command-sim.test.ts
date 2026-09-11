@@ -4,7 +4,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { stateDir } from "../state";
 import { parseDetachState } from "./detach-state";
-import { freePortAsync } from "./helpers";
+import { freePortAsync, useTempStateDir } from "./helpers";
 
 /**
  * Native e2e for `serve-sim type`.
@@ -44,9 +44,10 @@ const describeWithSim = bootedUdid ? describe : describe.skip;
 
 describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, () => {
   let logFile: string;
+  let tempState: ReturnType<typeof useTempStateDir>;
 
   beforeAll(async () => {
-    try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe" }); } catch {}
+    tempState = useTempStateDir();
 
     const startPort = await freePortAsync();
     const detach = spawnSync("bun", ["run", CLI_PATH, "--detach", "-p", String(startPort), bootedUdid!], {
@@ -67,7 +68,8 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
   }, 60_000);
 
   afterAll(() => {
-    try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe" }); } catch {}
+    try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe", env: { ...process.env } }); } catch {}
+    tempState?.restore();
   });
 
   test("`serve-sim type` injects HID key events into the booted simulator", async () => {
@@ -82,6 +84,7 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 15_000,
+      env: { ...process.env },
     });
     if (result.status !== 0) {
       throw new Error(

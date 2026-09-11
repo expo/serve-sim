@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { FlipHorizontal2, Images, X } from "lucide-react";
 import { PlayGlyph, StopGlyph, ReloadIcon } from "../icons";
-import { runHostAction } from "../utils/exec";
+import { runHostAction, stopCameraFrames } from "../utils/exec";
 import { fileExtension, uploadFileToTmp } from "../utils/drop";
+import {
+  BROWSER_CAMERA_UNSUPPORTED,
+  type BrowserCameraSession,
+  browserCameraErrorMessage,
+  browserCameraSupported,
+  startBrowserCamera,
+} from "../utils/browser-camera";
 import { CollapsibleSection } from "./collapsible-section";
 
 import {
@@ -49,264 +56,249 @@ export function CameraTool({
   const [warning, setWarning] = useState<string | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [pillState, setPillState] = useState<CameraPillState>("ready");
-  const [webcamAutoEnableRequest, setWebcamAutoEnableRequest] = useState<string | null>(null);
   const lastFileIsHeicRef = useRef(false);
-  const skipNextAutoSwapRef = useRef(false);
-  const appliedMirrorRef = useRef<CamMirror>("off");
-  const autoOpenedForStreamingRef = useRef(false);
+
+  const [browserLabel, setBrowserLabel] = useState<string | null>(null);
+  const browserSessionRef = useRef<BrowserCameraSession | null>(null);
+  const browserAbortRef = useRef<AbortController | null>(null);
+  const operationRef = useRef(0);
+  const browserOwnsHelperRef = useRef(false);
+  const enablingRef = useRef(false);
+  const busyRef = useRef(false);
+  const mountedRef = useRef(true);
+  const appliedSourceRef = useRef<string | null>(null);
+  const commandsRef = useRef<Promise<unknown>>(Promise.resolve());
+
+  const cameraAction = useCallback((action: string, params: Record<string, string | undefined> = {}) => {
+    const command = commandsRef.current.then(() => runHostAction(action, { ...params, udid }));
+    commandsRef.current = command.catch(() => {});
+    return command;
+  }, [udid]);
+
+  const stopBrowserCamera = useCallback(() => {
+    browserAbortRef.current?.abort();
+    browserAbortRef.current = null;
+    browserSessionRef.current?.stop();
+    browserSessionRef.current = null;
+    browserOwnsHelperRef.current = false;
+    if (mountedRef.current) setBrowserLabel(null);
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const release = () => {
+      operationRef.current++;
+      const ownedBrowser = browserOwnsHelperRef.current;
+      stopBrowserCamera();
+      busyRef.current = false;
+      enablingRef.current = false;
+      if (mountedRef.current) {
+        setPendingPrimary(null);
+        setPendingAux(null);
+        if (ownedBrowser) {
+          setEnabled(false);
+          setPillState("ready");
+        }
+      }
+      if (ownedBrowser) void commandsRef.current.then(() => stopCameraFrames(udid));
+    };
+    window.addEventListener("pagehide", release);
+    return () => {
+      mountedRef.current = false;
+      window.removeEventListener("pagehide", release);
+      release();
+    };
+  }, [stopBrowserCamera, udid]);
 
   const fetchCameraStatus = useCallback(async () => {
     const endpoint = window.__SIM_PREVIEW__?.cameraStatusEndpoint;
     return endpoint ? requestCameraStatus(endpoint) : null;
   }, []);
 
-  const refreshWebcamsRef = useRef<() => Promise<void>>(async () => {});
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const reply = await fetchCameraStatus();
-      if (cancelled || !reply || !reply.alive) return;
-      skipNextAutoSwapRef.current = true;
-      const replySource = reply.source;
-      if (replySource === "placeholder" || replySource === "webcam" || replySource === "image" || replySource === "video") {
-        setSource(replySource);
-      }
-      if ((replySource === "image" || replySource === "video") && reply.arg) {
-        setFilePath(reply.arg);
-        setDroppedFileName(reply.arg.split("/").pop() ?? null);
-      }
-      if (replySource === "webcam" && reply.arg) {
-        setWebcamId(reply.arg);
-        void refreshWebcamsRef.current();
-      }
-      const replyMirror: CamMirror = reply.mirror === "on" ? "on" : "off";
-      setMirror(replyMirror);
-      appliedMirrorRef.current = replyMirror;
-      setEnabled(true);
-      setPillState("active");
-    })();
-    return () => { cancelled = true; };
-  }, [udid, fetchCameraStatus]);
-
   useEffect(() => {
     let cancelled = false;
     let inFlight = false;
-    let timer: ReturnType<typeof setInterval> | null = null;
-
+    let initial = true;
     const tick = async () => {
-      if (cancelled || inFlight) return;
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (cancelled || inFlight || busyRef.current || document.visibilityState === "hidden") return;
+      const generation = operationRef.current;
       inFlight = true;
       try {
         const reply = await fetchCameraStatus();
-        if (cancelled) return;
-        const alive = !!reply?.alive;
-        setPillState((prev) => nextCameraPillState(prev, alive));
+        if (cancelled || generation !== operationRef.current || busyRef.current || !reply) return;
+        if (initial && generation === 0 && reply.alive) {
+          const restored = reply.source === "stream" ? "browser" : reply.source;
+          if (restored === "placeholder" || restored === "webcam" || restored === "image" || restored === "video" || restored === "browser") {
+            setSource(restored);
+            const path = restored === "image" || restored === "video" ? reply.arg ?? "" : "";
+            const webcam = restored === "webcam" ? reply.arg ?? "" : "";
+            setFilePath(path);
+            setDroppedFileName(path ? path.split("/").pop() ?? null : null);
+            setWebcamId(webcam);
+            appliedSourceRef.current = `${restored}::${webcam}::${path}`;
+            if (restored === "browser") setWarning("This tab is not sending camera frames. Pick Browser camera to connect it.");
+          }
+          const restoredMirror = reply.mirror === "on" ? "on" : "off";
+          setMirror(restoredMirror);
+        }
+        initial = false;
+        const alive = reply.alive === true;
+        const connected = alive && (reply.connected ?? true);
+        setPillState((previous) => nextCameraPillState(previous, connected));
         setEnabled(alive);
-        if (!alive) appliedMirrorRef.current = "off";
+        if (!alive) {
+          stopBrowserCamera();
+        } else if (browserSessionRef.current && typeof reply.source === "string" && reply.source !== "stream") {
+          stopBrowserCamera();
+          setWarning("The camera source changed in another session. Pick Browser camera to reconnect this tab.");
+        }
       } finally {
         inFlight = false;
       }
     };
-
-    timer = setInterval(() => { void tick(); }, CAMERA_POLL_INTERVAL_MS);
-
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") void tick();
-    };
-    if (typeof document !== "undefined") {
-      document.addEventListener("visibilitychange", onVisibility);
-    }
-
+    void tick();
+    const timer = setInterval(() => { void tick(); }, CAMERA_POLL_INTERVAL_MS);
+    const onVisibility = () => { if (document.visibilityState === "visible") void tick(); };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       cancelled = true;
-      if (timer) clearInterval(timer);
-      if (typeof document !== "undefined") {
-        document.removeEventListener("visibilitychange", onVisibility);
-      }
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [fetchCameraStatus]);
+  }, [fetchCameraStatus, stopBrowserCamera, udid]);
 
   const refreshWebcams = useCallback(async () => {
     setWebcamLoading(true);
     setError(null);
     try {
       const res = await runHostAction("camera.listWebcams");
+      if (!mountedRef.current) return;
       if (res.exitCode !== 0) {
-        setError(res.stderr.trim() || `--list-webcams failed (${res.exitCode})`);
+        setError(res.stderr.trim() || `Could not list host cameras (${res.exitCode})`);
         return;
       }
       const list = parseWebcamListOutput(res.stdout);
       setWebcams(list);
-      if (list.length > 0 && !webcamId) setWebcamId(list[0]!.id);
+      if (list.length > 0) setWebcamId((current) => current || list[0]!.id);
+    } catch (error) {
+      if (mountedRef.current) setError(browserCameraErrorMessage(error));
     } finally {
-      setWebcamLoading(false);
+      if (mountedRef.current) setWebcamLoading(false);
     }
-  }, [webcamId]);
+  }, []);
 
-  useEffect(() => {
-    refreshWebcamsRef.current = refreshWebcams;
-  }, [refreshWebcams]);
+  const sourceKey = `${source}::${source === "webcam" ? webcamId : ""}::${source === "image" || source === "video" ? filePath : ""}`;
 
-  useEffect(() => {
-    if (sourceMenuOpen && webcams.length === 0 && !webcamLoading) {
-      void refreshWebcams();
-    }
-  }, [sourceMenuOpen, webcams.length, webcamLoading, refreshWebcams]);
-
-  const reportSourceError = useCallback((rawMessage: string) => {
-    setError(cameraSourceErrorMessage({
-      rawMessage,
-      lastFileIsHeic: lastFileIsHeicRef.current,
-      source,
-    }));
-  }, [source]);
-
-  const pushSwitch = useCallback(async (
-    nextSource: CamSource,
-    nextWebcamId: string,
-    nextFilePath: string,
-  ): Promise<boolean> => {
-    const isFile = nextSource === "image" || nextSource === "video";
-    if (isFile && !nextFilePath.trim()) {
-      setError("Drop a file into the panel or pick another source.");
-      return false;
-    }
-    const target = isFile
-      ? nextFilePath.trim()
-      : nextSource === "webcam"
-        ? nextWebcamId
-        : undefined;
-    const res = await runHostAction("camera.switch", {
-      source: isFile ? "file" : nextSource,
-      target,
-      udid,
-    });
-    if (res.exitCode !== 0) {
-      reportSourceError(res.stderr.trim() || res.stdout.trim() || `switch failed (${res.exitCode})`);
-      return false;
-    }
-    lastFileIsHeicRef.current = false;
-    return true;
-  }, [udid, reportSourceError]);
-
-  const enableCamera = useCallback(async () => {
-    setPendingPrimary("enable");
+  const applySource = useCallback(async (enable: boolean) => {
+    const generation = ++operationRef.current;
+    busyRef.current = true;
+    enablingRef.current = enable;
+    if (enable) setPendingPrimary("enable");
+    else setPendingAux("switch");
+    appliedSourceRef.current = sourceKey;
+    stopBrowserCamera();
     setError(null);
+    setWarning(null);
+    const current = () => mountedRef.current && generation === operationRef.current;
     try {
       const isFile = source === "image" || source === "video";
-      if (isFile && !filePath.trim()) {
-        setError("Drop a file into the panel or pick another source.");
-        return;
+      if (isFile && !filePath.trim()) throw new Error("Drop a file into the panel or pick another source.");
+      if (source === "browser") {
+        const controller = new AbortController();
+        browserAbortRef.current = controller;
+        const session = await startBrowserCamera({
+          udid,
+          signal: controller.signal,
+          onError(message) {
+            if (!mountedRef.current || browserAbortRef.current !== controller) return;
+            operationRef.current++;
+            const ownedHelper = browserOwnsHelperRef.current;
+            stopBrowserCamera();
+            busyRef.current = false;
+            setPendingPrimary(null);
+            setPendingAux(null);
+            setEnabled(false);
+            setPillState("disconnected");
+            setError(message);
+            if (ownedHelper) void commandsRef.current.then(() => stopCameraFrames(udid));
+          },
+        });
+        if (!current()) { session.stop(); return; }
+        browserSessionRef.current = session;
+        setBrowserLabel(session.label);
       }
-      const res = await runHostAction("camera.inject", {
-        udid,
-        mirror,
-        source: isFile ? "file" : source,
-        target: isFile ? filePath.trim() : webcamId || undefined,
+      if (!current()) return;
+      browserOwnsHelperRef.current = source === "browser";
+      const res = await cameraAction(enable ? "camera.inject" : "camera.switch", {
+        source: isFile ? "file" : source === "browser" ? "stream" : source,
+        target: isFile ? filePath.trim() : source === "webcam" ? webcamId || undefined : undefined,
+        ...(enable ? { mirror } : {}),
       });
-      if (res.exitCode !== 0) {
-        reportSourceError(res.stderr.trim() || res.stdout.trim() || `Could not enable camera (${res.exitCode})`);
-        return;
-      }
+      if (!current()) return;
+      if (res.exitCode !== 0) throw new Error(res.stderr.trim() || res.stdout.trim() || `Could not update camera (${res.exitCode})`);
       lastFileIsHeicRef.current = false;
       setEnabled(true);
-      setPillState("active");
-
-      appliedMirrorRef.current = mirror;
+      setPillState(source === "browser" ? "ready" : "active");
+      browserSessionRef.current?.start();
+    } catch (error) {
+      if (!current()) return;
+      stopBrowserCamera();
+      setError(cameraSourceErrorMessage({ rawMessage: browserCameraErrorMessage(error), lastFileIsHeic: lastFileIsHeicRef.current, source }));
     } finally {
-      setPendingPrimary(null);
+      if (current()) {
+        enablingRef.current = false;
+        busyRef.current = false;
+        setPendingPrimary(null);
+        setPendingAux(null);
+      }
     }
-  }, [udid, source, filePath, webcamId, mirror, reportSourceError]);
+  }, [cameraAction, filePath, mirror, source, sourceKey, stopBrowserCamera, udid, webcamId]);
 
-  const autoSwapKey = enabled
-    ? `${source}::${source === "webcam" ? webcamId : ""}::${source === "image" || source === "video" ? filePath : ""}`
-    : null;
+  const enableCamera = useCallback(() => applySource(true), [applySource]);
+  useEffect(() => {
+    if (!enabled || appliedSourceRef.current === sourceKey) return;
+    void applySource(false);
+  }, [enabled, sourceKey, applySource]);
 
   const isStreaming = enabled && source !== "placeholder";
   useEffect(() => {
-    if (!isStreaming) {
-      autoOpenedForStreamingRef.current = false;
-      return;
-    }
-    if (autoOpenedForStreamingRef.current) return;
-    autoOpenedForStreamingRef.current = true;
-    setOpen(true);
+    if (isStreaming) setOpen(true);
   }, [isStreaming]);
 
-  useEffect(() => {
-    if (!webcamAutoEnableRequest) return;
-    if (isBusy || uploading) return;
-    if (source !== "webcam" || webcamId !== webcamAutoEnableRequest) return;
-    setWebcamAutoEnableRequest(null);
-    if (enabled) return;
-    void enableCamera();
-  }, [webcamAutoEnableRequest, isBusy, uploading, source, webcamId, enabled, enableCamera]);
-
-  useEffect(() => {
-    if (!enabled) return;
-    if ((source === "image" || source === "video") && !filePath.trim()) return;
-    if (source === "webcam" && !webcamId) return;
-    if (skipNextAutoSwapRef.current) {
-      skipNextAutoSwapRef.current = false;
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      setPendingAux("switch");
-      setError(null);
-      try {
-        if (cancelled) return;
-        await pushSwitch(source, webcamId, filePath);
-      } finally {
-        if (!cancelled) setPendingAux(null);
-      }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoSwapKey]);
-
-  useEffect(() => {
-    if (!enabled) return;
-    if (appliedMirrorRef.current === mirror) return;
-    const target = mirror;
-    let cancelled = false;
-    void (async () => {
-      setPendingAux("mirror");
-      setError(null);
-      try {
-        const res = await runHostAction("camera.mirror", { value: target, udid });
-        if (cancelled) return;
-        if (res.exitCode !== 0) {
-          setError(res.stderr.trim() || res.stdout.trim() || `mirror failed (${res.exitCode})`);
-          return;
-        }
-        appliedMirrorRef.current = target;
-      } finally {
-        if (!cancelled) setPendingAux(null);
-      }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mirror, enabled]);
-
   const disableCamera = useCallback(async () => {
+    const generation = ++operationRef.current;
+    busyRef.current = true;
+    stopBrowserCamera();
     setPendingPrimary("disable");
+    setPendingAux(null);
     setError(null);
     try {
-      const res = await runHostAction("camera.stopWebcam", { udid });
-      if (res.exitCode !== 0) {
-        setError(res.stderr.trim() || `Could not disable camera (${res.exitCode})`);
-        return;
-      }
+      const res = await cameraAction("camera.stopWebcam");
+      if (!mountedRef.current || generation !== operationRef.current) return;
+      if (res.exitCode !== 0) throw new Error(res.stderr.trim() || `Could not disable camera (${res.exitCode})`);
       setEnabled(false);
       setPillState("ready");
-      appliedMirrorRef.current = "off";
+    } catch (error) {
+      if (mountedRef.current && generation === operationRef.current) setError(browserCameraErrorMessage(error));
     } finally {
-      setPendingPrimary(null);
+      if (mountedRef.current && generation === operationRef.current) {
+        busyRef.current = false;
+        setPendingPrimary(null);
+      }
     }
-  }, [udid]);
+  }, [cameraAction, stopBrowserCamera]);
+
+  const cancelBrowserRequest = useCallback(() => {
+    if (!browserAbortRef.current) return;
+    operationRef.current++;
+    const stopPendingEnable = enablingRef.current && browserOwnsHelperRef.current;
+    stopBrowserCamera();
+    enablingRef.current = false;
+    busyRef.current = false;
+    setPendingPrimary(null);
+    setPendingAux(null);
+    if (stopPendingEnable) void commandsRef.current.then(() => stopCameraFrames(udid));
+  }, [stopBrowserCamera, udid]);
 
   const handleSourceFile = useCallback(async (file: File) => {
     const isHeic = isHeicLikeFile({ type: file.type, name: file.name });
@@ -327,6 +319,8 @@ export function CameraTool({
     try {
       const ext = fileExtension(file);
       const tmpPath = await uploadFileToTmp(file, "serve-sim-camsrc", ext);
+      if (!mountedRef.current) return;
+      cancelBrowserRequest();
       setDroppedFileName(file.name);
       setSource(isVideo ? "video" : "image");
       setFilePath(tmpPath);
@@ -336,7 +330,7 @@ export function CameraTool({
     } finally {
       setUploading(false);
     }
-  }, []);
+  }, [cancelBrowserRequest]);
 
   const onDrop = useCallback(async (e: DragEvent) => {
     e.preventDefault();
@@ -348,13 +342,14 @@ export function CameraTool({
   }, [handleSourceFile]);
 
   const clearMedia = useCallback(() => {
+    cancelBrowserRequest();
     setSource("placeholder");
     setFilePath("");
     setDroppedFileName(null);
     setError(null);
     setWarning(null);
     lastFileIsHeicRef.current = false;
-  }, []);
+  }, [cancelBrowserRequest]);
 
   const openFilePicker = useCallback(() => {
     fileInputRef.current?.click();
@@ -379,19 +374,45 @@ export function CameraTool({
   }, [sourceMenuOpen]);
 
   const selectWebcam = useCallback((webcam: CamWebcam) => {
+    cancelBrowserRequest();
     setWebcamId(webcam.id);
     setSource("webcam");
     setDroppedFileName(null);
     setError(null);
     lastFileIsHeicRef.current = false;
     setSourceMenuOpen(false);
-    setWebcamAutoEnableRequest(webcam.id);
-  }, []);
+  }, [cancelBrowserRequest]);
 
-  const toggleMirror = useCallback(() => {
-    setMirror((m) => (m === "on" ? "off" : "on"));
-  }, []);
-  const mirrorDisabled = !enabled || source === "placeholder";
+  const selectBrowserCamera = useCallback(() => {
+    setSourceMenuOpen(false);
+    if (!browserCameraSupported()) { setError(BROWSER_CAMERA_UNSUPPORTED); return; }
+    setDroppedFileName(null);
+    lastFileIsHeicRef.current = false;
+    setSource("browser");
+    if (source === "browser") void applySource(!enabled);
+  }, [source, enabled, applySource]);
+
+  const toggleMirror = useCallback(async () => {
+    const generation = ++operationRef.current;
+    busyRef.current = true;
+    const next = mirror === "on" ? "off" : "on";
+    setPendingAux("mirror");
+    setError(null);
+    try {
+      const res = await cameraAction("camera.mirror", { value: next });
+      if (!mountedRef.current || generation !== operationRef.current) return;
+      if (res.exitCode !== 0) throw new Error(res.stderr.trim() || `Could not change mirror (${res.exitCode})`);
+      setMirror(next);
+    } catch (error) {
+      if (mountedRef.current && generation === operationRef.current) setError(browserCameraErrorMessage(error));
+    } finally {
+      if (mountedRef.current && generation === operationRef.current) {
+        busyRef.current = false;
+        setPendingAux(null);
+      }
+    }
+  }, [cameraAction, mirror]);
+  const mirrorDisabled = !enabled || source === "placeholder" || isBusy;
 
   const onDragEnter = useCallback((e: DragEvent) => {
     e.preventDefault();
@@ -411,10 +432,12 @@ export function CameraTool({
     }
   }, []);
 
-  const primaryDisabled = uploading || pendingPrimary !== null;
+  const canCancelEnable = pendingPrimary === "enable" && source === "browser";
+  const primaryDisabled = uploading || pendingPrimary === "disable" || (pendingPrimary === "enable" && !canCancelEnable);
 
   const isPlaceholder = source === "placeholder";
   const showWebcam = source === "webcam";
+  const showBrowser = source === "browser";
   const showFile = (source === "image" || source === "video") && !!droppedFileName;
   const activeWebcamName = showWebcam
     ? (webcams.find((w) => w.id === webcamId)?.name ?? webcamId ?? "Webcam")
@@ -423,9 +446,7 @@ export function CameraTool({
     ? "uploading"
     : showFile
       ? "file"
-      : showWebcam
-        ? "webcam"
-        : "placeholder";
+      : showBrowser ? "browser" : showWebcam ? "webcam" : "placeholder";
 
   return (
     <CollapsibleSection
@@ -468,7 +489,7 @@ export function CameraTool({
             title={
               isPlaceholder
                 ? "No source selected — Enable uses a test-pattern feed. Click to pick an image/video, or drop one here."
-                : showWebcam
+                : showBrowser ? `Source: ${browserLabel ?? "this browser’s camera"}` : showWebcam
                   ? `Source: ${activeWebcamName}`
                   : `Source: ${droppedFileName ?? source}`
             }
@@ -484,7 +505,7 @@ export function CameraTool({
             <CameraMediaPreview
               mode={tileMode}
               fileName={droppedFileName}
-              webcamName={activeWebcamName}
+              webcamName={showBrowser ? browserLabel ?? "This browser’s camera" : activeWebcamName}
               sourceKind={source}
             />
 
@@ -505,7 +526,11 @@ export function CameraTool({
           <div className="flex items-stretch gap-1.5">
             <div className="relative" data-camera-source-menu>
               <button
-                onClick={() => setSourceMenuOpen((o) => !o)}
+                onClick={() => {
+                  if (!sourceMenuOpen && !webcamLoading) void refreshWebcams();
+                  setSourceMenuOpen((value) => !value);
+                }}
+                disabled={isBusy}
                 className="h-full min-h-[36px] w-10 flex items-center justify-center bg-transparent border border-white/12 text-white/85 rounded-[7px] cursor-pointer p-0 hover:bg-white/[0.06] hover:border-white/20 hover:text-white"
                 aria-haspopup="menu"
                 aria-expanded={sourceMenuOpen}
@@ -532,10 +557,18 @@ export function CameraTool({
                   >
                     Browse media…
                   </button>
+                  <button
+                    role="menuitem"
+                    data-camera-browser-source
+                    className="text-left bg-transparent border-none text-white/85 text-[12px] px-2.5 py-[7px] rounded-md cursor-pointer hover:bg-white/[0.06]"
+                    onClick={selectBrowserCamera}
+                  >
+                    Browser camera
+                  </button>
                   <div className="h-px bg-white/8 my-1" />
                   <div className="flex items-center justify-between pl-2.5 pr-2 pt-1 pb-[2px]">
                     <span className="text-[10px] text-white/45 uppercase tracking-[0.08em]">
-                      {webcamLoading ? "Cameras (loading…)" : webcams.length === 0 ? "No cameras" : "Cameras"}
+                      {webcamLoading ? "Host cameras (loading…)" : webcams.length === 0 ? "No host cameras" : "Host cameras"}
                     </span>
                     <button
                       onClick={(e) => { e.stopPropagation(); void refreshWebcams(); }}
@@ -569,7 +602,7 @@ export function CameraTool({
             </div>
 
             <button
-              onClick={enabled ? disableCamera : enableCamera}
+              onClick={canCancelEnable ? cancelBrowserRequest : enabled ? disableCamera : enableCamera}
               disabled={primaryDisabled}
               className={[
                 "flex-1 flex items-center justify-center gap-1.5 py-2 px-2.5 border-none rounded-[7px] text-[12px] font-semibold cursor-pointer disabled:opacity-50 min-h-[36px]",
@@ -582,10 +615,10 @@ export function CameraTool({
                 "Enable the selected camera feed for all apps"
               }
               aria-pressed={enabled}
-              aria-label={enabled ? "Disable" : "Enable"}
+              aria-label={canCancelEnable ? "Cancel" : enabled ? "Disable" : "Enable"}
             >
               {enabled ? <StopGlyph /> : <PlayGlyph />}
-              <span>{enabled ? "Disable" : "Enable"}</span>
+              <span>{canCancelEnable ? "Cancel" : pendingPrimary === "enable" ? "Enabling…" : pendingPrimary === "disable" ? "Disabling…" : enabled ? "Disable" : "Enable"}</span>
             </button>
 
             <button

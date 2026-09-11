@@ -1019,3 +1019,29 @@ describe("createCrashRuntime log tail", () => {
     runtime.stop();
   });
 });
+
+
+test("a report read from a stopped generation cannot enter the replacement store", async () => {
+  const pending = Promise.withResolvers<string>();
+  let emit: Emit = () => {};
+  let reads = 0;
+  const runtime = createCrashRuntime({
+    ensureDir: () => {},
+    watchDir: (_dir, listener) => { emit = listener; return { close: () => {} }; },
+    readDir: async () => [],
+    readReport: () => ++reads === 1 ? pending.promise : Promise.resolve(ips()),
+    onError: () => {},
+  });
+  try {
+    await runtime.start();
+    emit("rename", "generation-test.ips");
+    runtime.stop();
+    await runtime.start();
+    pending.resolve(ips());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(runtime.listFor(UDID_A)).toEqual([]);
+    emit("rename", "generation-test.ips");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(runtime.listFor(UDID_A)).toHaveLength(1);
+  } finally { runtime.stop(); }
+});

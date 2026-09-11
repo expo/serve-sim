@@ -1,5 +1,6 @@
+import { e2eDevice } from "./e2e-preconditions";
 import { afterAll, describe, expect, test } from "bun:test";
-import { execFileSync, execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
 
@@ -13,21 +14,7 @@ import { join } from "path";
 const PKG_DIR = join(import.meta.dir, "../..");
 const CLI = join(PKG_DIR, "dist/serve-sim.js");
 
-function bootedUdid(): string | null {
-  try {
-    const out = execSync("xcrun simctl list devices booted -j", { encoding: "utf-8" });
-    const data = JSON.parse(out) as {
-      devices: Record<string, Array<{ udid: string; state: string }>>;
-    };
-    for (const [runtime, devices] of Object.entries(data.devices)) {
-      if (!/iOS/i.test(runtime)) continue;
-      for (const d of devices) if (d.state === "Booted") return d.udid;
-    }
-  } catch {}
-  return null;
-}
-
-const udid = bootedUdid();
+const udid = e2eDevice();
 
 // `simctl ui` hangs *intermittently per-call* on GitHub's shared macOS
 // runners — a probe can succeed and the very next call hang for minutes

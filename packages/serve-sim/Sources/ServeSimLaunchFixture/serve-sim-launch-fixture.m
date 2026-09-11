@@ -105,7 +105,7 @@ static void RecordURLContexts(NSSet<UIOpenURLContext *> *contexts) {
       });
     }
   }];
-  // Opening the camera later than the trampoline's load delay, to tell a
+  // Opening the camera later than the capability loader's load delay, to tell a
   // capability that arrived late from one that never arrived.
   if ([NSProcessInfo.processInfo.arguments containsObject:@"-ServeSimFixtureCameraLate"]) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),

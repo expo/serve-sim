@@ -200,9 +200,9 @@ the launch is what lets `serve-sim` attach to the process from the start.
 
 ### Camera
 
-`serve-sim camera enable` provides a single camera feed to all eligible apps on the simulator. Start a serve-sim session before opening the apps: its lightweight trampoline loads the camera implementation safely inside each app. Enable and Disable never launch or terminate apps and never modify camera permissions.
+`serve-sim camera enable` provides a single camera feed to all eligible apps on the simulator. Start a serve-sim session before opening the apps: its lightweight capability loader loads the camera implementation safely inside each app. Enable and Disable never launch or terminate apps and never modify camera permissions.
 
-`serve-sim camera disable` disconnects the fake camera from running apps and stops frame delivery. Enabling again reconnects those apps to the selected source. Apps receive AVFoundation device connection/disconnection notifications; an app that does not handle device changes may need to reopen its camera UI. The trampoline stays armed until the serve-sim session ends.
+`serve-sim camera disable` disconnects the fake camera from running apps and stops frame delivery. Enabling again reconnects those apps to the selected source. Apps receive AVFoundation device connection/disconnection notifications; an app that does not handle device changes may need to reopen its camera UI. The capability loader stays armed until the serve-sim session ends.
 
 Source changes (`camera switch`) and mirror changes (`camera mirror`) update the same device-wide feed. A legacy bundle-id argument is accepted for compatibility but does not target or restart that app. `--restart` is rejected. Camera permission APIs retain their real values.
 

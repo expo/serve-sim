@@ -84,37 +84,20 @@ export class CrashStore {
       seenAt: at,
     };
 
-    if (existing) {
-      const updated: CrashRecord = {
-        ...report,
-        frames: [...report.frames],
-        id: existing.id,
-        rawPath,
-        logTailSource,
-        occurrences: [...existing.occurrences, occurrence].slice(-MAX_OCCURRENCES),
-        count: existing.count + 1,
-        firstSeen: existing.firstSeen,
-        lastSeen: at,
-      };
-      this.bySignature.set(report.signature, updated);
-      this.emit({ type: "recurred", record: updated });
-      return snapshot(updated);
-    }
-
     const record: CrashRecord = {
       ...report,
       frames: [...report.frames],
-      id: report.incidentId ?? `no-incident-${++this.seq}`,
+      id: existing?.id ?? report.incidentId ?? `no-incident-${++this.seq}`,
       rawPath,
       logTailSource,
-      occurrences: [occurrence],
-      count: 1,
-      firstSeen: at,
+      occurrences: [...(existing?.occurrences ?? []), occurrence].slice(-MAX_OCCURRENCES),
+      count: (existing?.count ?? 0) + 1,
+      firstSeen: existing?.firstSeen ?? at,
       lastSeen: at,
     };
     this.bySignature.set(report.signature, record);
-    this.evictOverflow();
-    this.emit({ type: "crash", record });
+    if (!existing) this.evictOverflow();
+    this.emit({ type: existing ? "recurred" : "crash", record });
     return snapshot(record);
   }
 

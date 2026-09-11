@@ -17,23 +17,16 @@ import {
   deviceLogMatches,
   formatLogClock,
   formatLogLine,
-  type DeviceLogFields,
   type DeviceLogLevel,
 } from "../utils/device-log-format";
 import { logWindow } from "../utils/logs-window";
-import { startLogsPoll } from "../utils/logs-poll";
+import { useDeviceLogs } from "../hooks/use-device-logs";
+import type { DisplayLine } from "../utils/log-rows";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { PanelTitle } from "../Panel";
 import { PANEL_BACKGROUND } from "./panel-colors";
 
-const MAX_LOG_ROWS = 2000;
-
-function capRows(rows: DisplayLine[]): DisplayLine[] {
-  return rows.length > MAX_LOG_ROWS ? rows.slice(rows.length - MAX_LOG_ROWS) : rows;
-}
 const NEAR_BOTTOM_PX = 48;
-
-type DisplayLine = DeviceLogFields & { id: number };
 
 type LevelEnabled = Record<DeviceLogLevel, boolean>;
 
@@ -66,12 +59,9 @@ export function LogsDrawer({
   rightInset: number;
   onResizePointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
-  const [paused, setPaused] = useState(false);
   const [filter, setFilter] = useState("");
   const [scope, setScope] = useState<"all" | "app">("all");
   const [levels, setLevels] = useState<LevelEnabled>(DEFAULT_LEVELS);
-  const [lines, setLines] = useState<DisplayLine[]>([]);
-  const [errored, setErrored] = useState(false);
   const [following, setFollowing] = useState(true);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [copied, copy] = useCopy();
@@ -82,56 +72,14 @@ export function LogsDrawer({
 
   const listRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
-  const nextIdRef = useRef(1);
-  const lastSeqRef = useRef(0);
-  const pausedRef = useRef(paused);
-  const heldRef = useRef<DisplayLine[]>([]);
-  const erroredRef = useRef(false);
-  pausedRef.current = paused;
+  const { lines, paused, errored, clear, togglePause } = useDeviceLogs(path, open);
 
   useEffect(() => {
     if (!open) return;
-    erroredRef.current = false;
-    setErrored(false);
-    setLines([]);
     setExpandedId(null);
-    setPaused(false);
-    nextIdRef.current = 1;
-    lastSeqRef.current = 0;
-    heldRef.current = [];
     stickRef.current = true;
     setFollowing(true);
   }, [open, path]);
-
-  useEffect(() => {
-    if (!open) return;
-    return startLogsPoll(path, {
-      getSince: () => lastSeqRef.current,
-      setSince: (seq) => {
-        lastSeqRef.current = seq;
-      },
-      onBatch: (batch) => {
-        const mapped = batch.map((line) => ({ ...line.fields, id: nextIdRef.current++ }));
-        if (pausedRef.current) {
-          heldRef.current = capRows(heldRef.current.concat(mapped));
-          return;
-        }
-        setLines((prev) => capRows(prev.length === 0 ? mapped : prev.concat(mapped)));
-      },
-      onError: (next) => {
-        if (erroredRef.current === next) return;
-        erroredRef.current = next;
-        setErrored(next);
-      },
-    });
-  }, [open, path]);
-
-  useEffect(() => {
-    if (paused || heldRef.current.length === 0) return;
-    const held = heldRef.current;
-    heldRef.current = [];
-    setLines((prev) => capRows(prev.concat(held)));
-  }, [paused]);
 
   useEffect(() => {
     if (!open) return;
@@ -248,8 +196,7 @@ export function LogsDrawer({
           <IconButton
             label="Clear"
             onClick={() => {
-              heldRef.current = [];
-              setLines([]);
+              clear();
               setExpandedId(null);
             }}
           >
@@ -257,7 +204,7 @@ export function LogsDrawer({
           </IconButton>
           <IconButton
             label={paused ? "Resume" : "Pause"}
-            onClick={() => setPaused((value) => !value)}
+            onClick={togglePause}
           >
             {paused ? <Play size={16} strokeWidth={2} /> : <Pause size={16} strokeWidth={2} />}
           </IconButton>

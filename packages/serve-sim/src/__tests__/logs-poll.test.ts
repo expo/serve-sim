@@ -155,7 +155,11 @@ describe("startLogsPoll", () => {
     const restoreWindow = withPreviewWindow();
     const original = globalThis.fetch;
     const replied = Promise.withResolvers<Response>();
-    globalThis.fetch = (() => replied.promise) as unknown as typeof fetch;
+    let requestSignal: AbortSignal | null = null;
+    globalThis.fetch = ((_url: unknown, init: RequestInit) => {
+      requestSignal = init.signal ?? null;
+      return replied.promise;
+    }) as unknown as typeof fetch;
 
     const batches: LogSnapshotLine[][] = [];
     let since = 0;
@@ -168,6 +172,7 @@ describe("startLogsPoll", () => {
     });
 
     stop();
+    expect((requestSignal as AbortSignal | null)?.aborted).toBe(true);
     replied.resolve(
       new Response(JSON.stringify({ lines: [{ seq: 7, raw }], latestSeq: 7 }), {
         headers: { "Content-Type": "application/json" },

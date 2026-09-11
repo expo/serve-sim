@@ -61,6 +61,24 @@ describe("frameAncestorsPolicy", () => {
     );
   });
 
+  test("drops a host wildcard, which URL parsing keeps", () => {
+    expect(frameAncestorsPolicy(["https://*", "https://*.evil.test"])).toBe("frame-ancestors 'self'");
+  });
+
+  test("drops a directive smuggled into the host", () => {
+    expect(frameAncestorsPolicy(["https://expo.dev;img-src"])).toBe("frame-ancestors 'self'");
+  });
+
+  test("drops an opaque origin, which serializes to null", () => {
+    expect(frameAncestorsPolicy(["data:text/html,x"])).toBe("frame-ancestors 'self'");
+  });
+
+  test("keeps a port, which a local website needs", () => {
+    expect(frameAncestorsPolicy(["http://localhost:3001"])).toBe(
+      "frame-ancestors 'self' http://localhost:3001",
+    );
+  });
+
   test("canonicalizes, so a configured path or default port still matches", () => {
     expect(frameAncestorsPolicy(["https://expo.dev:443/dashboard"])).toBe(
       "frame-ancestors 'self' https://expo.dev",

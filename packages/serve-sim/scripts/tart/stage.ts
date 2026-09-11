@@ -60,6 +60,7 @@ xattr -cr ${GUEST_SIMPB} 2>/dev/null || true
 export SERVE_SIM_SIMPB_DIR=${GUEST_SIMPB}
 ln -sfn ${shareModules} ${GUEST_PKG}/node_modules
 cd ${GUEST_PKG}
+bash Sources/build-test-fixtures.sh
 echo "user=$(whoami) console=$(stat -f %Su /dev/console) pwd=$PWD simpb=$SERVE_SIM_SIMPB_DIR"
 exec bun test --max-concurrency=1 ${quoted}
 `);

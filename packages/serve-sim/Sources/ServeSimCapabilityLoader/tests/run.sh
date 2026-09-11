@@ -1,5 +1,5 @@
 #!/bin/bash
-# Compiles and runs the trampoline parsing tests on the host, then runs clang's
+# Compiles and runs the capability loader parsing tests on the host, then runs clang's
 # static analyzer over the shipped source. The dylib itself is built for the
 # simulator; this builds the same code for the host so it can be exercised
 # without a device.
@@ -21,10 +21,10 @@ xcrun clang \
     -fno-omit-frame-pointer \
     -fno-sanitize-recover=all \
     -DSERVE_SIM_TEST_DYLIB="\"$OUT_DIR/libServeSimHostProbe.dylib\"" \
-    -o "$OUT_DIR/trampoline-test" \
-    "$HERE/trampoline-test.c"
+    -o "$OUT_DIR/capability-loader-test" \
+    "$HERE/capability-loader-test.c"
 
-"$OUT_DIR/trampoline-test"
+"$OUT_DIR/capability-loader-test"
 
 # clang --analyze exits 0 even when it reports, and -Werror does not change that,
 # so the findings themselves are the signal.
@@ -35,7 +35,7 @@ xcrun clang \
     -std=c11 \
     -Wall -Wextra -Wconversion -Wshadow \
     -o "$OUT_DIR/analysis" \
-    "$HERE/../serve-sim-trampoline.c" > "$ANALYSIS" 2>&1 || true
+    "$HERE/../serve-sim-capability-loader.c" > "$ANALYSIS" 2>&1 || true
 
 if [ -s "$ANALYSIS" ]; then
   echo "analyzer findings:"

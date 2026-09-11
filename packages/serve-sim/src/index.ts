@@ -4,7 +4,7 @@ import { execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
 import { existsSync, mkdirSync, openSync, closeSync, readFileSync, unlinkSync } from "fs";
 import { randomBytes } from "crypto";
 import { networkInterfaces } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 import WebSocket from "ws";
 import {
   stateDir,

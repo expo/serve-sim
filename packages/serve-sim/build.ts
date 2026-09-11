@@ -211,42 +211,42 @@ console.log("dist/serve-sim      (compiled binary)");
   const res = spawnSync(
     "bash",
     [
-      resolve(root, "Sources/ServeSimTrampoline/build.sh"),
-      resolve(distDir, "trampoline"),
+      resolve(root, "Sources/ServeSimCapabilityLoader/build.sh"),
+      resolve(distDir, "capability-loader"),
     ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
   if (res.status !== 0) {
-    console.error("ServeSimTrampoline dylib build failed.");
+    console.error("ServeSimCapabilityLoader dylib build failed.");
     process.exit(1);
   }
-  console.log("dist/trampoline/libServeSimTrampoline.dylib");
+  console.log("dist/capability-loader/libServeSimCapabilityLoader.dylib");
 }
 
 {
   const res = spawnSync(
     "bash",
-    [resolve(root, "Sources/ServeSimProbe/build.sh"), resolve(distDir, "trampoline")],
+    [resolve(root, "Sources/ServeSimProbe/build.sh"), resolve(distDir, "capability-loader")],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
   if (res.status !== 0) {
     console.error("ServeSimProbe dylib build failed.");
     process.exit(1);
   }
-  console.log("dist/trampoline/libServeSimProbe.dylib");
+  console.log("dist/capability-loader/libServeSimProbe.dylib");
 }
 
 {
   const res = spawnSync(
     "bash",
-    [resolve(root, "Sources/ServeSimLaunchFixture/build.sh"), resolve(distDir, "trampoline")],
+    [resolve(root, "Sources/ServeSimLaunchFixture/build.sh"), resolve(distDir, "capability-loader")],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
   if (res.status !== 0) {
     console.error("ServeSimLaunchFixture app build failed.");
     process.exit(1);
   }
-  console.log("dist/trampoline/ServeSimLaunchFixture.app");
+  console.log("dist/capability-loader/ServeSimLaunchFixture.app");
 }
 
 // ─── 6. SimCameraInjector dylib + SimCameraHelper host CLI ───────────────

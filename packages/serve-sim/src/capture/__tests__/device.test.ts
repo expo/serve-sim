@@ -1,12 +1,21 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { bootInjectionCleared, clearBootInjection, injectAtBoot, proxyDylibCandidates } from "../device";
+import { installShims, useTempStateDir } from "../../__tests__/helpers";
+import { withLaunchStateLock } from "../../launch-state-lock";
 
 const UDID = "ABCD1234-0000-0000-0000-0000000000EF";
+
+let tempState: ReturnType<typeof useTempStateDir>;
+beforeAll(() => {
+  tempState = useTempStateDir();
+});
+afterAll(() => {
+  tempState.restore();
+});
 
 describe("clearBootInjection", () => {
   test("unsets both variables when nothing else is injected", async () => {
@@ -146,6 +155,27 @@ describe("injectAtBoot", () => {
     expect(setenv?.at(-1)).toBe(`/opt/loader/libServeSimCapabilityLoader.dylib:${DYLIB}`);
   });
 
+  test("passes the value simctl printed, not the result object", async () => {
+    const LOADER = "/opt/loader/libServeSimCapabilityLoader.dylib";
+    const log = join(tempState.dir, "xcrun-calls.txt");
+    const shims = installShims({
+      xcrun:
+        `#!/bin/sh\nprintf '%s\\n' "$*" >> ${log}\n` +
+        `case "$*" in *getenv*) echo "${LOADER}";; esac\n`,
+    });
+    try {
+      await injectAtBoot(UDID, "/tmp/port", { dylib: () => DYLIB });
+      const setenv = readFileSync(log, "utf8")
+        .split("\n")
+        .find((line) => line.includes("setenv DYLD_INSERT_LIBRARIES"));
+      expect(setenv).toBe(
+        `simctl spawn ${UDID} launchctl setenv DYLD_INSERT_LIBRARIES ${LOADER}:${DYLIB}`,
+      );
+    } finally {
+      shims.restore();
+    }
+  });
+
   test("does not list itself twice when the device is already armed", async () => {
     const calls: string[][] = [];
     await injectAtBoot(UDID, "/tmp/port", {
@@ -161,29 +191,40 @@ describe("injectAtBoot", () => {
   });
 });
 
-describe("the real simctl runner", () => {
-  test("arms with a path, not a stringified result object", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "capture-xcrun-"));
-    const log = join(dir, "calls.txt");
-    writeFileSync(
-      join(dir, "xcrun"),
-      `#!/bin/sh\nprintf '%s\\n' "$*" >> ${log}\n` +
-        `case "$*" in *getenv*) echo "/opt/loader/libServeSimCapabilityLoader.dylib";; esac\n`,
-      { mode: 0o755 },
-    );
-    const previousPath = process.env.PATH;
-    process.env.PATH = `${dir}:${previousPath}`;
-    try {
-      await injectAtBoot(UDID, "/tmp/port", { dylib: () => "/opt/serve-sim/libSimNetProxy.dylib" });
-    } finally {
-      process.env.PATH = previousPath;
-    }
 
-    const setenv = readFileSync(log, "utf8")
-      .split("\n")
-      .find((line) => line.includes("setenv DYLD_INSERT_LIBRARIES"));
-    expect(setenv).toContain("/opt/loader/libServeSimCapabilityLoader.dylib");
-    expect(setenv).not.toContain("[object Object]");
-    rmSync(dir, { recursive: true, force: true });
+describe("concurrent arming", () => {
+  const DYLIB = "/opt/serve-sim/libSimNetProxy.dylib";
+  test("keeps the capability loader's entry when it arms at the same time", async () => {
+    const LOADER = "/opt/loader/libServeSimCapabilityLoader.dylib";
+    const env = new Map<string, string>();
+    const log = join(tempState.dir, "race-calls.txt");
+    const shims = installShims({
+      xcrun: `#!/bin/sh\nprintf '%s\\n' "$*" >> ${log}\n` + `exit 0\n`,
+    });
+    try {
+      const run = async (args: string[]): Promise<string> => {
+        const name = args.at(-2) ?? "";
+        if (args.includes("getenv")) return env.get(args.at(-1) ?? "") ?? "";
+        if (args.includes("setenv")) {
+          await new Promise((done) => setTimeout(done, 5));
+          env.set(name, args.at(-1) ?? "");
+        }
+        return "";
+      };
+      const armLoader = () =>
+        withLaunchStateLock(UDID, async () => {
+          const current = env.get("DYLD_INSERT_LIBRARIES") ?? "";
+          await new Promise((done) => setTimeout(done, 5));
+          env.set("DYLD_INSERT_LIBRARIES", [current, LOADER].filter(Boolean).join(":"));
+        });
+
+      await Promise.all([injectAtBoot(UDID, "/tmp/port", { dylib: () => DYLIB, run }), armLoader()]);
+
+      const entries = (env.get("DYLD_INSERT_LIBRARIES") ?? "").split(":").filter(Boolean);
+      expect(entries).toContain(LOADER);
+      expect(entries).toContain(DYLIB);
+    } finally {
+      shims.restore();
+    }
   });
 });

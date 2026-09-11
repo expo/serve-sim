@@ -1654,7 +1654,8 @@ export function handleCrashesRequest(
   req: SimReq,
   res: SimRes,
   state: ServeSimState | null,
-  runtime: CrashRuntime = crashRuntime
+  runtime: CrashRuntime = crashRuntime,
+  logBuffers: LogBufferCache = logBufferCache
 ): void {
   if (!state) {
     res.writeHead(404, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -1694,6 +1695,8 @@ export function handleCrashesRequest(
     }
   );
   stream.onClose(unsubscribe);
+  // A reader holds the device tail open, so a crash during this stream still has lines before it.
+  stream.onClose(logBuffers.ensure(udid).subscribeBatch(() => {}));
 
   stream.write(`data: {"type":"meta","meta":${lastMeta}}\n\n`);
   for (const record of crashes) {
@@ -2800,6 +2803,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       `${base}/grid/api/status/events`,
       `${base}/appstate`,
       `${base}/logs`,
+      `${base}/crashes`,
       `${base}/metrics`,
       `${base}/ax`,
     ],

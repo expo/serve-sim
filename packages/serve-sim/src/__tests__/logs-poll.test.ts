@@ -122,6 +122,35 @@ describe("startLogsPoll", () => {
     expect(since).toBe(3);
   });
 
+  test("rewinds when the server hands back a fresh buffer", async () => {
+    const restoreWindow = withPreviewWindow();
+    const original = globalThis.fetch;
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ lines: [{ seq: 1, raw }], latestSeq: 1 }), {
+          headers: { "Content-Type": "application/json" },
+        })
+      )) as unknown as typeof fetch;
+
+    const batches: LogSnapshotLine[][] = [];
+    let since = 5_000;
+    const stop = startLogsPoll("/logs", {
+      getSince: () => since,
+      setSince: (seq) => {
+        since = seq;
+      },
+      onBatch: (lines) => batches.push(lines),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stop();
+    globalThis.fetch = original;
+    restoreWindow();
+
+    expect(since).toBe(0);
+    expect(batches).toEqual([]);
+  });
+
   test("drops a reply that lands after the caller stopped", async () => {
     const restoreWindow = withPreviewWindow();
     const original = globalThis.fetch;

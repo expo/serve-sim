@@ -29,12 +29,12 @@ import {
 import {
   applyDefaultCapabilities,
   armCapabilityLoader,
-  clearLaunchState,
   devicesArmedHere,
   disarmStaleCapabilityLoader,
-  releaseLaunchState,
-  removeCapabilityLoader,
-  removeCapabilityLoaderSync,
+  releaseSessionSync,
+  releaseSession,
+  stopLaunchSession,
+  waitForLaunchUpdates,
 } from "./launch-manager";
 import { killOwnListeners } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
@@ -386,11 +386,28 @@ async function ensureBooted(udid: string): Promise<void> {
  */
 function disarmDevicesArmedHere(): void {
   for (const udid of devicesArmedHere()) {
-    let othersRemain = false;
-    try { othersRemain = releaseLaunchState(udid, process.pid); } catch {}
-    if (othersRemain) continue;
-    try { removeCapabilityLoaderSync(udid); } catch {}
+    try {
+      releaseSessionSync(udid, process.pid, (capability) => {
+        if (capability.name === "camera") stopExistingHelper(udid);
+      });
+    } catch (error) {
+      console.error(`Could not clean up capabilities on ${udid}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
+}
+
+let sessionStopping = false;
+let releasingDevices: Promise<void> | undefined;
+
+function disarmDevicesArmedHereAsync(): Promise<void> {
+  return releasingDevices ??= (async () => {
+    await waitForLaunchUpdates();
+    for (const udid of devicesArmedHere()) {
+      await releaseSession(udid, process.pid, (capability) => {
+        if (capability.name === "camera") stopExistingHelper(udid);
+      });
+    }
+  })();
 }
 
 // A stream helper outlives the session that spawned it, so it must not arm the
@@ -553,16 +570,17 @@ async function follow(
 
   let shuttingDown = false;
 
-  const cleanup = (exitCode: number) => {
+  const cleanup = async (exitCode: number) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    sessionStopping = true;
     if (!quiet) console.log("\nShutting down...");
     for (const [udid, child] of children) {
       const pid = child.pid;
       if (pid) stopProcess(pid);
       clearState(udid);
     }
-    disarmDevicesArmedHere();
+    await disarmDevicesArmedHereAsync();
     children.clear();
     process.exit(exitCode);
   };
@@ -699,34 +717,18 @@ function listStreams(deviceArg?: string) {
 
 /** Kill running streams (--kill). */
 async function killStreams(deviceArg?: string): Promise<void> {
-  if (deviceArg) {
-    const udid = resolveDevice(deviceArg);
-    const state = readState(udid);
-    if (!state) {
-      console.log(JSON.stringify({ disconnected: true, device: udid }));
-      return;
-    }
-    try { process.kill(state.pid, "SIGTERM"); } catch {}
-    clearState(udid);
-    clearLaunchState(udid);
-    await removeCapabilityLoader(udid);
-    console.log(JSON.stringify({ disconnected: true, device: state.device }));
-  } else {
-    const states = readAllStates();
-    if (states.length === 0) {
-      console.log(JSON.stringify({ disconnected: true, devices: [] }));
-      return;
-    }
-    const devices: string[] = [];
-    for (const state of states) {
-      try { process.kill(state.pid, "SIGTERM"); } catch {}
-      clearLaunchState(state.device);
-      await removeCapabilityLoader(state.device);
-      devices.push(state.device);
-    }
-    clearState();
-    console.log(JSON.stringify({ disconnected: true, devices }));
+  const udid = deviceArg ? resolveDevice(deviceArg) : undefined;
+  const state = udid ? readState(udid) : null;
+  const states = udid ? (state ? [state] : []) : readAllStates();
+  for (const current of states) {
+    await stopLaunchSession(current.device, current.pid, (capability) => {
+      if (capability.name === "camera") stopExistingHelper(current.device);
+    });
+    clearServeSimState(current.device, current.pid);
   }
+  console.log(JSON.stringify(udid
+    ? { disconnected: true, device: udid }
+    : { disconnected: true, devices: states.map((current) => current.device) }));
 }
 
 async function eventLog(
@@ -1812,7 +1814,9 @@ async function serve(
     console.log("");
   }
 
-  const shutdown = () => {
+  const shutdown = async () => {
+    sessionStopping = true;
+    await disarmDevicesArmedHereAsync();
     clearAll();
     process.exit(0);
   };
@@ -2140,21 +2144,26 @@ Examples:
         {
           process.on("exit", disarmDevicesArmedHere);
           for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-            process.on(signal, () => {
-              // The exit handler is too late: spawning simctl while the
-              // process is tearing down does not always finish.
-              disarmDevicesArmedHere();
-              // A run mode that registered its own handler stops children too.
+            process.on(signal, async () => {
+              sessionStopping = true;
+              await disarmDevicesArmedHereAsync();
               if (process.listenerCount(signal) > 1) return;
               process.exit(0);
             });
           }
         }
-        for (const udid of targets) await ensureBooted(udid);
+        for (const udid of targets) {
+          await ensureBooted(udid);
+          if (sessionStopping) return;
+        }
         if (process.env[STREAM_HELPER_ENV] !== "1") {
-          for (const udid of targets) await armCapabilityLoader(udid);
+          for (const udid of targets) {
+            await armCapabilityLoader(udid);
+            if (sessionStopping) return;
+          }
         }
         for (const udid of launchesBeforeStreaming ? targets : []) {
+          if (sessionStopping) return;
           if (bundleId) {
             await launchAppAsync(udid, { bundleId, launchArgs, openUrl, capabilities });
           } else {
@@ -2174,6 +2183,7 @@ Examples:
         process.exit(1);
       }
     }
+    if (sessionStopping) return;
     if (opts.detach) {
       const states = await detach(targets, startPort ?? 3100, stream, streamOptionsProvided);
       printStatesJSON(states);

@@ -1,12 +1,15 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { execFileSync } from "child_process";
+import { execFileSync, spawn, type ChildProcess } from "child_process";
 import { existsSync, writeFileSync } from "fs";
 import { join } from "path";
 
+import { useTempStateDir } from "./helpers";
 import { e2eDevice, readInsert, requireE2E } from "./e2e-preconditions";
 import {
   armCapabilityLoader,
   capabilityConfigPath,
+  clearLaunchState,
+  readLaunchState,
   disarmStaleCapabilityLoader,
   removeCapabilityLoader,
   removeCapabilityLoaderSync,
@@ -57,12 +60,14 @@ beforeAll(() => {
 afterEach(() => {
   if (!ready) return;
   removeCapabilityLoaderSync(udid!);
+  clearLaunchState(udid!);
   restoreInsert();
 });
 
 afterAll(() => {
   if (!ready) return;
   removeCapabilityLoaderSync(udid!);
+  clearLaunchState(udid!);
   restoreInsert();
 });
 
@@ -91,6 +96,60 @@ describe.skipIf(!ready)("capability loader lifecycle", () => {
     expect(readInsert(udid!)).toBe("");
     expect(existsSync(capabilityConfigPath(udid!))).toBe(false);
   }, 60_000);
+
+  test("one idle session can exit without disarming another", async () => {
+    const temp = useTempStateDir();
+    const sessions: ChildProcess[] = [];
+    const manager = join(import.meta.dir, "../launch-manager.ts");
+    const startSession = async (): Promise<ChildProcess> => {
+      const child = spawn(process.execPath, ["-e", `
+        const { armCapabilityLoader, releaseSessionSync } = await import(${JSON.stringify(manager)});
+        await armCapabilityLoader(${JSON.stringify(udid)});
+        process.on("SIGTERM", () => {
+          releaseSessionSync(${JSON.stringify(udid)}, process.pid, () => {});
+          process.exit(0);
+        });
+        setInterval(() => {}, 1000);
+        console.log("armed");
+      `], { stdio: ["ignore", "pipe", "pipe"] });
+      sessions.push(child);
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("session did not arm")), 30_000);
+        child.once("error", reject);
+        child.stdout?.once("data", () => { clearTimeout(timeout); resolve(); });
+      });
+      return child;
+    };
+    const stopSession = async (child: ChildProcess): Promise<void> => {
+      const exited = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("session did not exit")), 30_000);
+        child.once("exit", (code) => {
+          clearTimeout(timeout);
+          if (code === 0) resolve();
+          else reject(new Error(`session exited ${code}`));
+        });
+      });
+      child.kill("SIGTERM");
+      await exited;
+    };
+    try {
+      const first = await startSession();
+      const second = await startSession();
+      expect(readLaunchState(udid!)?.sessionPids?.sort()).toEqual([first.pid!, second.pid!].sort());
+      await stopSession(first);
+      expect(readInsert(udid!)).toBe(CAPABILITY_LOADER);
+      expect(readLaunchState(udid!)?.sessionPids).toEqual([second.pid!]);
+      await stopSession(second);
+      expect(readInsert(udid!)).toBe("");
+      expect(readLaunchState(udid!)).toBeNull();
+    } finally {
+      for (const child of sessions) {
+        if (child.exitCode === null) child.kill("SIGKILL");
+      }
+      removeCapabilityLoaderSync(udid!);
+      temp.restore();
+    }
+  }, 150_000);
 
   test("a capability loader left by a session whose build is gone is cleared", async () => {
     setInsert(join(capabilityLoaderDir(), "gone", "libServeSimCapabilityLoader.dylib"));

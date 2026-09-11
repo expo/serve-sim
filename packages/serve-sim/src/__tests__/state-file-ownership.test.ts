@@ -1,27 +1,12 @@
+import { e2eDevice } from "./e2e-preconditions";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { execSync, spawnSync } from "child_process";
+import { execFileSync, spawnSync } from "child_process";
 import { existsSync, readFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { clearServeSimState, inProcessServeSimState, stateFileForDevice, writeServeSimState } from "../state";
 import { freePortAsync, useTempStateDir } from "./helpers";
 
 const CLI_PATH = join(import.meta.dir, "../../src/index.ts");
-
-function firstBootedIosSim(): string | null {
-  try {
-    const out = execSync("xcrun simctl list devices booted -j", { encoding: "utf-8" });
-    const data = JSON.parse(out) as {
-      devices: Record<string, Array<{ udid: string; state: string }>>;
-    };
-    for (const [runtime, devices] of Object.entries(data.devices)) {
-      if (!runtime.includes("iOS")) continue;
-      for (const device of devices) {
-        if (device.state === "Booted") return device.udid;
-      }
-    }
-  } catch {}
-  return null;
-}
 
 function statePid(file: string): number {
   return (JSON.parse(readFileSync(file, "utf-8")) as { pid: number }).pid;
@@ -71,15 +56,17 @@ describe("clearServeSimState", () => {
   });
 });
 
-const bootedUdid = firstBootedIosSim();
+const bootedUdid = e2eDevice();
 const describeWithSim = bootedUdid ? describe : describe.skip;
 
 describeWithSim(`serve-sim state ownership e2e (booted sim ${bootedUdid ?? "<skipped>"})`, () => {
   let stateFile: string;
   let predecessorPid = 0;
 
-  function killAll(): void {
-    try { execSync(`bun run ${CLI_PATH} --kill`, { stdio: "pipe", env: { ...process.env } }); } catch {}
+  function stopServer(): void {
+    execFileSync("bun", ["run", CLI_PATH, "--kill", bootedUdid!], {
+      stdio: "pipe", env: { ...process.env }, timeout: 75_000,
+    });
   }
 
   async function startServerAsync(): Promise<number> {
@@ -108,22 +95,24 @@ describeWithSim(`serve-sim state ownership e2e (booted sim ${bootedUdid ?? "<ski
 
   beforeAll(() => {
     stateFile = stateFileForDevice(bootedUdid!);
-    killAll();
-  }, 30_000);
+    stopServer();
+  }, 90_000);
 
   afterAll(() => {
     if (predecessorPid > 0) {
       try { process.kill(predecessorPid, "SIGCONT"); } catch {}
       try { process.kill(predecessorPid, "SIGKILL"); } catch {}
     }
-    killAll();
-  }, 30_000);
+    stopServer();
+  }, 90_000);
 
   test("a late-exiting server does not unlink its replacement's record", async () => {
     predecessorPid = await startServerAsync();
 
     process.kill(predecessorPid, "SIGSTOP");
-    try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe", env: { ...process.env } }); } catch {}
+    process.kill(predecessorPid, "SIGTERM");
+    // Allow a replacement to start while the predecessor has shutdown pending.
+    clearServeSimState(bootedUdid!, predecessorPid);
 
     const successorPid = await startServerAsync();
     expect(successorPid).not.toBe(predecessorPid);

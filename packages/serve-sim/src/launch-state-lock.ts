@@ -37,7 +37,19 @@ function lockHolderIsGone(path: string): boolean {
   }
 }
 
-export async function withLaunchStateLock<T>(udid: string, fn: () => Promise<T>): Promise<T> {
+const pendingLaunchUpdates = new Set<Promise<unknown>>();
+
+export async function waitForLaunchUpdates(): Promise<void> {
+  while (pendingLaunchUpdates.size) await Promise.allSettled([...pendingLaunchUpdates]);
+}
+
+export function withLaunchStateLock<T>(udid: string, fn: () => Promise<T>): Promise<T> {
+  const update = acquireLaunchStateLock(udid, fn);
+  pendingLaunchUpdates.add(update);
+  return update.finally(() => pendingLaunchUpdates.delete(update));
+}
+
+async function acquireLaunchStateLock<T>(udid: string, fn: () => Promise<T>): Promise<T> {
   if (!existsSync(stateDir())) mkdirSync(stateDir(), { recursive: true });
   const path = lockFile(udid);
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
@@ -64,6 +76,38 @@ export async function withLaunchStateLock<T>(udid: string, fn: () => Promise<T>)
   try {
     return await fn();
   } finally {
+    closeSync(fd);
+    try { unlinkSync(path); } catch {}
+  }
+}
+
+export function withLaunchStateLockSync<T>(udid: string, fn: () => T): T {
+  mkdirSync(stateDir(), { recursive: true });
+  const path = lockFile(udid);
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  let fd: number;
+  for (;;) {
+    try {
+      fd = openSync(path, "wx");
+      writeFileSync(fd, String(process.pid));
+      break;
+    } catch {
+      let holder: string | undefined;
+      try { holder = readFileSync(path, "utf-8").trim(); } catch {}
+      if (holder === String(process.pid)) {
+        throw new Error(`Cannot release launch state for ${udid} while this process is updating it. Run cleanup again after the command finishes.`);
+      }
+      if (lockHolderIsGone(path)) {
+        try { unlinkSync(path); } catch {}
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Could not release launch state for ${udid}: ${path} is still locked. Retry cleanup after the active command finishes.`);
+      }
+      Atomics.wait(sleeper, 0, 0, LOCK_POLL_MS);
+    }
+  }
+  try { return fn(); } finally {
     closeSync(fd);
     try { unlinkSync(path); } catch {}
   }

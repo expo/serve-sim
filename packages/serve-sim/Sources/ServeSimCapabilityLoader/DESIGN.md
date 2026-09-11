@@ -1,8 +1,7 @@
 # The capability loader
 
-How serve-sim gets code into apps running on a simulator, and why it is shaped
-this way. This is the source of truth; the code should follow it, and where the
-code does not yet match, that is recorded below under "Not there yet".
+The capability loader loads capabilities into eligible simulator apps while keeping
+system daemons free of framework dependencies.
 
 ## The problem
 
@@ -87,8 +86,9 @@ serve-sim. One capability per line, tab-separated:
 - **env**: `NAME=VALUE` pairs joined by `;`, applied with `setenv` before the
   `dlopen`.
 - **delay-ms**: how long to wait before loading this one. Optional, defaults to
-  0. Capabilities are loaded soonest-first, so one capability's delay never holds
-  up another's.
+  0. Delayed loads are scheduled on the main queue without blocking it.
+  Pending and loaded paths are deduplicated, and delayed callbacks reject
+  removed or reconfigured entries.
 
 The capability loader reads at most 64KB and loads at most 64 capabilities, and says so
 on stderr rather than truncating silently.
@@ -101,8 +101,7 @@ installed. That is what makes serve-sim usable in agent flows, where the app is
 installed later by the agent rather than by the workflow.
 
 Scope decides *which processes load the dylib*. It is not the same as "which app
-this is about": the bundle id a command takes is a target for restarting and for
-granting permissions, and it never narrows what loads.
+this is about": the optional bundle id is a launch target and never narrows what loads.
 
 ## Arriving late
 
@@ -137,10 +136,12 @@ something that reliably removes it:
 - `--detach` keeps what it arms, since its session outlives the command.
 - On startup, a capability loader left behind by an earlier session whose dylib no
   longer exists is cleaned up.
+- Live session PIDs are recorded independently of capabilities, so an idle
+  session still owns the insert. State updates and teardown share a device lock.
 - Capability records carry the pid that enabled them. A record with no owner
   (`null`) outlives the command that created it; a record owned by a session is
-  released when that session exits. The insert is only removed when nothing is
-  left that needs it.
+  released when that session exits, including its host helper. The insert is
+  removed only when no live session or capability needs it.
 
 ## Not there yet
 

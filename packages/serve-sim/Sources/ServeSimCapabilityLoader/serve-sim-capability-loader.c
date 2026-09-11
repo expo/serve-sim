@@ -1,10 +1,10 @@
 // Inserted into every simulator process via launchd DYLD_INSERT_LIBRARIES, so
 // it links libSystem only: a Foundation-linked insert crash-loops GSSCred, and
-// loading UIKit from the constructor crashes Safari on headless boots. All the
-// real work happens in capability dylibs this one dlopens off a detached thread.
+// loading UIKit from the constructor crashes Safari on headless boots. Capability
+// dylibs load on the main queue after the constructor returns.
 //
 // Config format, one capability per line, written by the launch manager:
-//   <container>\t<dylib>\t[KEY=VALUE;KEY=VALUE]
+//   <user|all>\t<dylib>\t[KEY=VALUE;KEY=VALUE]\t<delay-ms>
 //
 // The launch manager sets SERVE_SIM_CAPABILITIES_CONFIG alongside the insert,
 // per simulator, so the config can live with the rest of serve-sim's state
@@ -81,9 +81,6 @@ static int apply_env(char *pairs) {
 // Apple app ships inside the runtime, under RuntimeRoot.
 #define USER_APP_MARKER "/Containers/Bundle/Application/"
 
-// Splits one config line and answers whether it applies to this app. Returns 1
-// and points dylib/env into the line, or 0 to skip it. Separate from the load
-// loop so it can be tested without dlopen.
 static unsigned parse_delay_ms(const char *text) {
   if (text == NULL || *text == '\0') return 0;
   char *end = NULL;
@@ -124,75 +121,132 @@ static int capability_applies(char *line, const char *exec_path, char **dylib_ou
   return 1;
 }
 
+struct CapabilityLoad {
+  char *dylib;
+  char *env;
+  unsigned delay_ms;
+  uint64_t generation;
+  int loaded;
+  int pending;
+};
+
 struct Load {
   char exec_path[1024];
   char config_path[1024];
+  uint64_t next_generation;
+  struct CapabilityLoad capabilities[MAX_CAPABILITIES];
 };
 
-struct Pending {
-  unsigned delay_ms;
-  char *dylib;
-  char *env;
-};
+static void load_capabilities(struct Load *load);
+
+static void load_one(struct CapabilityLoad *capability) {
+  capability->pending = 0;
+  char *env = strdup(capability->env);
+  if (env == NULL) return;
+  int failed = apply_env(env);
+  free(env);
+  if (failed) {
+    fprintf(stderr, "[serve-sim] not loading %s: its environment is incomplete\n",
+            capability->dylib);
+    return;
+  }
+  if (dlopen(capability->dylib, RTLD_NOW | RTLD_LOCAL) == NULL) {
+    fprintf(stderr, "[serve-sim] could not load %s: %s\n", capability->dylib, dlerror());
+    return;
+  }
+  capability->loaded = 1;
+}
 
 static void load_capabilities(struct Load *load) {
-  const char *exec_path = load->exec_path;
-  const char *config_path = load->config_path;
-
   char *config = malloc(MAX_CONFIG_BYTES);
   if (config == NULL) return;
-  int status = read_config(config_path, config, MAX_CONFIG_BYTES);
+  int status = read_config(load->config_path, config, MAX_CONFIG_BYTES);
   if (status != 0) {
     if (status > 0) {
       fprintf(stderr, "[serve-sim] %s exceeds %d bytes; no capabilities loaded.\n",
-              config_path, MAX_CONFIG_BYTES);
+              load->config_path, MAX_CONFIG_BYTES);
     }
-    free(config);
-    return;
+    config[0] = '\0';
   }
 
-  struct Pending pending[MAX_CAPABILITIES];
+  struct CapabilityLoad desired[MAX_CAPABILITIES];
   size_t count = 0;
   char *line, *lines = config;
   while ((line = strsep(&lines, "\n")) != NULL) {
     char *dylib, *env;
     unsigned delay_ms;
-    if (!capability_applies(line, exec_path, &dylib, &env, &delay_ms)) continue;
+    if (!capability_applies(line, load->exec_path, &dylib, &env, &delay_ms)) continue;
     if (count == MAX_CAPABILITIES) {
       fprintf(stderr, "[serve-sim] more than %d capabilities apply; ignoring the rest.\n",
               MAX_CAPABILITIES);
       break;
     }
-    pending[count].delay_ms = delay_ms;
-    pending[count].dylib = dylib;
-    pending[count].env = env;
-    count++;
+    desired[count++] = (struct CapabilityLoad){
+      .dylib = dylib, .env = env ? env : "", .delay_ms = delay_ms,
+    };
   }
-
-  // Soonest first, so one capability's delay never holds up another's.
-  for (size_t i = 1; i < count; i++) {
-    struct Pending key = pending[i];
-    size_t j = i;
-    while (j > 0 && pending[j - 1].delay_ms > key.delay_ms) {
-      pending[j] = pending[j - 1];
-      j--;
+  for (size_t i = 0; i < MAX_CAPABILITIES; i++) {
+    struct CapabilityLoad *capability = &load->capabilities[i];
+    if (capability->dylib == NULL || capability->loaded) continue;
+    size_t j = 0;
+    while (j < count && strcmp(capability->dylib, desired[j].dylib) != 0) j++;
+    if (j == count) {
+      free(capability->dylib);
+      free(capability->env);
+      *capability = (struct CapabilityLoad){0};
     }
-    pending[j] = key;
   }
-
-  unsigned slept_ms = 0;
-  for (size_t i = 0; i < count; i++) {
-    if (pending[i].delay_ms > slept_ms) {
-      usleep((useconds_t)(pending[i].delay_ms - slept_ms) * 1000);
-      slept_ms = pending[i].delay_ms;
+  for (size_t entry = 0; entry < count; entry++) {
+    char *dylib = desired[entry].dylib;
+    char *env = desired[entry].env;
+    unsigned delay_ms = desired[entry].delay_ms;
+    struct CapabilityLoad *capability = NULL;
+    for (size_t i = 0; i < MAX_CAPABILITIES; i++) {
+      if (load->capabilities[i].dylib && strcmp(load->capabilities[i].dylib, dylib) == 0) {
+        capability = &load->capabilities[i];
+        break;
+      }
     }
-    if (pending[i].env != NULL && apply_env(pending[i].env) != 0) {
-      fprintf(stderr, "[serve-sim] not loading %s: its environment is incomplete\n",
-              pending[i].dylib);
+    if (capability && (capability->loaded ||
+        (capability->pending && capability->delay_ms == delay_ms && strcmp(capability->env, env) == 0))) {
       continue;
     }
-    if (dlopen(pending[i].dylib, RTLD_NOW | RTLD_LOCAL) == NULL) {
-      fprintf(stderr, "[serve-sim] could not load %s: %s\n", pending[i].dylib, dlerror());
+    if (capability == NULL) {
+      for (size_t i = 0; i < MAX_CAPABILITIES; i++) {
+        if (load->capabilities[i].dylib == NULL) {
+          capability = &load->capabilities[i];
+          break;
+        }
+      }
+    }
+    if (capability == NULL) {
+      fprintf(stderr, "[serve-sim] capability load limit reached; ignoring %s\n", dylib);
+      continue;
+    }
+    char *dylib_copy = strdup(dylib);
+    char *env_copy = strdup(env);
+    if (dylib_copy == NULL || env_copy == NULL) {
+      free(dylib_copy);
+      free(env_copy);
+      continue;
+    }
+    free(capability->dylib);
+    free(capability->env);
+    *capability = (struct CapabilityLoad){
+      .dylib = dylib_copy, .env = env_copy, .delay_ms = delay_ms,
+      .generation = ++load->next_generation,
+    };
+    if (delay_ms == 0) {
+      load_one(capability);
+    } else {
+      capability->pending = 1;
+      uint64_t generation = capability->generation;
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay_ms * (int64_t)NSEC_PER_MSEC),
+                     dispatch_get_main_queue(), ^{
+        load_capabilities(load);
+        if (capability->generation == generation && capability->dylib && !capability->loaded)
+          load_one(capability);
+      });
     }
   }
   free(config);
@@ -207,11 +261,7 @@ static int config_dir(const char *path, char *out, size_t cap) {
   return 0;
 }
 
-// A capability turned on while the app is already running has to reach it, or
-// the only way to pick one up is to start the app again. dlopen of something
-// already loaded is a no-op, so re-reading the whole config is safe. The
-// directory is watched rather than the file because the writer replaces it by
-// rename, which a file watch would stop following.
+// Watch the directory because config updates replace the file by rename.
 static void watch_config(struct Load *load) {
   char dir[sizeof load->config_path];
   if (config_dir(load->config_path, dir, sizeof dir) != 0) return;
@@ -241,7 +291,7 @@ static void serve_sim_capability_loader_init(void) {
   const char *config = getenv(CONFIG_VAR);
   if (config == NULL || *config != '/') return;
 
-  struct Load *load = malloc(sizeof *load);
+  struct Load *load = calloc(1, sizeof *load);
   if (load == NULL) return;
   char dir[sizeof load->config_path];
 
@@ -263,17 +313,10 @@ static void serve_sim_capability_loader_init(void) {
     return;
   }
 
-  // Loading anything here, or from a thread racing this one, deadlocks: the
-  // app's launch holds the ObjC load lock and wants dyld's, while a concurrent
-  // dlopen holds dyld's and wants ObjC's. FrontBoard then kills the app for
-  // taking too long to launch. The main queue does not run until the app is
-  // past that, so it is the signal that loading is safe. A process that never
-  // runs its main queue loads nothing, which is the right answer for one that
-  // is not an app.
-  // On the main queue itself, not hopping off it: the block is queued before
-  // the app's own, so the capability is in place before the app can ask for it.
+  // Concurrent dlopen during construction can invert the dyld/ObjC load locks.
+  // Defer capability loads to the main queue after construction completes.
   dispatch_async(dispatch_get_main_queue(), ^{
-    load_capabilities(load);
     watch_config(load);
+    load_capabilities(load);
   });
 }

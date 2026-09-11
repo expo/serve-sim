@@ -261,3 +261,39 @@ describe("runHostActionAsync validation", () => {
     expect(direct.stderr).toContain("ENOENT");
   });
 });
+
+describe("capture actions", () => {
+  const UDID = "404F2659-7202-4450-8465-912BD2AB744B";
+
+  it("refuses a reboot without the enabled flag", async () => {
+    await expect(
+      runHostActionAsync({ action: "capture.reboot", params: { udid: UDID } }, BIN),
+    ).rejects.toBeInstanceOf(InvalidHostActionError);
+  });
+
+  it("refuses a clear without a device", async () => {
+    await expect(runHostActionAsync({ action: "capture.clear", params: {} }, BIN)).rejects.toBeInstanceOf(
+      InvalidHostActionError,
+    );
+  });
+
+  it("says how to turn capture on when the server started without it", async () => {
+    const result = await runHostActionAsync(
+      { action: "capture.reboot", params: { udid: UDID, enabled: true } },
+      BIN,
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--network-capture");
+  });
+
+  it("reports no session rather than succeeding when clearing an unknown device", async () => {
+    const result = await runHostActionAsync(
+      { action: "capture.clear", params: { udid: UDID } },
+      BIN,
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("No capture session");
+  });
+});

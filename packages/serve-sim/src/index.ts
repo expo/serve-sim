@@ -37,7 +37,6 @@ import {
   stopLaunchSession,
   waitForLaunchUpdates,
 } from "./launch-manager";
-import { bootInjectedLibraries } from "./capture";
 import { parseCaptureFields } from "./capture/fields";
 import { killOwnListeners } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
@@ -1132,6 +1131,7 @@ async function serve(
   const capture = options.networkCapture ? await import("./capture") : null;
   if (capture) {
     // Set once, so the panel's reboot and a sidebar boot capture the same fields as the CLI asked for.
+    capture.captureRuntime.markServerEnabled();
     capture.captureRuntime.setFields(capture.resolveCaptureFields(options.networkCaptureFields));
     for (const udid of targetDevices) {
       try {

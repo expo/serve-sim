@@ -1,3 +1,4 @@
+import { e2eDevice } from "./e2e-preconditions";
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { execSync, spawnSync } from "child_process";
 import { readdirSync, readFileSync } from "fs";
@@ -34,25 +35,7 @@ const FIRST_FRAME_BUDGET_MS = process.env.CI ? 5000 : 1500;
 const IDLE_WINDOW_MS = process.env.CI ? 5000 : 2000;
 const MIN_FRAMES_IN_IDLE_WINDOW = 3;
 
-function firstBootedIosSim(): string | null {
-  try {
-    const out = execSync("xcrun simctl list devices booted -j", { encoding: "utf-8" });
-    const data = JSON.parse(out) as {
-      devices: Record<string, Array<{ udid: string; state: string; name?: string }>>;
-    };
-    for (const [runtime, devs] of Object.entries(data.devices)) {
-      // Only iOS simulators — watchOS/tvOS have different framebuffer shapes
-      // and aren't what the production code targets.
-      if (!runtime.includes("iOS")) continue;
-      for (const d of devs) {
-        if (d.state === "Booted") return d.udid;
-      }
-    }
-  } catch {}
-  return null;
-}
-
-const bootedUdid = firstBootedIosSim();
+const bootedUdid = e2eDevice();
 const describeWithSim = bootedUdid ? describe : describe.skip;
 
 // ── Multipart parser (standalone copy to keep this package self-contained). ──

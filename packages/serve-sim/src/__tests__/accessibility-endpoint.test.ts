@@ -1,3 +1,4 @@
+import { e2eDevice } from "./e2e-preconditions";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execSync, spawnSync } from "child_process";
 import { join } from "path";
@@ -20,23 +21,7 @@ const AX_RESPONSE_BUDGET_MS = process.env.CI ? 10_000 : 5_000;
 const AX_READY_BUDGET_MS = process.env.CI ? 120_000 : 10_000;
 const AX_READY_POLL_INTERVAL_MS = 500;
 
-function firstBootedIosSim(): string | null {
-  try {
-    const out = execSync("xcrun simctl list devices booted -j", { encoding: "utf-8" });
-    const data = JSON.parse(out) as {
-      devices: Record<string, Array<{ udid: string; state: string; name?: string }>>;
-    };
-    for (const [runtime, devices] of Object.entries(data.devices)) {
-      if (!runtime.includes("iOS")) continue;
-      for (const device of devices) {
-        if (device.state === "Booted") return device.udid;
-      }
-    }
-  } catch {}
-  return null;
-}
-
-const bootedUdid = firstBootedIosSim();
+const bootedUdid = e2eDevice();
 const describeWithSim = bootedUdid ? describe : describe.skip;
 
 describeWithSim(`serve-sim accessibility endpoint (booted sim ${bootedUdid ?? "<skipped>"})`, () => {

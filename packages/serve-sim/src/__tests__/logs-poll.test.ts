@@ -57,7 +57,73 @@ describe("parseLogSnapshot", () => {
 });
 
 describe("startLogsPoll", () => {
+  // `simAuthHeaders` reads a bare `window`, which is a ReferenceError off the browser.
+  function withPreviewWindow(): () => void {
+    const globals = globalThis as { window?: unknown };
+    globals.window = { __SIM_PREVIEW__: { execToken: "test-token" } };
+    return () => delete globals.window;
+  }
+
+  test("delivers a live reply and advances the cursor", async () => {
+    const restoreWindow = withPreviewWindow();
+    const original = globalThis.fetch;
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ lines: [{ seq: 7, raw }], latestSeq: 7 }), {
+          headers: { "Content-Type": "application/json" },
+        })
+      )) as unknown as typeof fetch;
+
+    const batches: LogSnapshotLine[][] = [];
+    const errors: boolean[] = [];
+    let since = 0;
+    const stop = startLogsPoll("/logs", {
+      getSince: () => since,
+      setSince: (seq) => {
+        since = seq;
+      },
+      onBatch: (lines) => batches.push(lines),
+      onError: (errored) => errors.push(errored),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stop();
+    globalThis.fetch = original;
+    restoreWindow();
+
+    expect(errors).toEqual([false]);
+    expect(since).toBe(7);
+    expect(batches.flat().map((line) => line.seq)).toEqual([7]);
+  });
+
+  test("reports a failed request without moving the cursor", async () => {
+    const restoreWindow = withPreviewWindow();
+    const original = globalThis.fetch;
+    globalThis.fetch = (() =>
+      Promise.resolve(new Response("nope", { status: 503 }))) as unknown as typeof fetch;
+
+    const errors: boolean[] = [];
+    let since = 3;
+    const stop = startLogsPoll("/logs", {
+      getSince: () => since,
+      setSince: (seq) => {
+        since = seq;
+      },
+      onBatch: () => {},
+      onError: (errored) => errors.push(errored),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    stop();
+    globalThis.fetch = original;
+    restoreWindow();
+
+    expect(errors).toContain(true);
+    expect(since).toBe(3);
+  });
+
   test("drops a reply that lands after the caller stopped", async () => {
+    const restoreWindow = withPreviewWindow();
     const original = globalThis.fetch;
     const replied = Promise.withResolvers<Response>();
     globalThis.fetch = (() => replied.promise) as unknown as typeof fetch;
@@ -80,6 +146,7 @@ describe("startLogsPoll", () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 10));
     globalThis.fetch = original;
+    restoreWindow();
 
     expect(batches).toEqual([]);
     expect(since).toBe(0);

@@ -48,8 +48,6 @@ export function startLogsPoll(
     onError?: (errored: boolean) => void;
   }
 ): () => void {
-  // A reply that lands after the caller stopped belongs to a drawer that has already reset its
-  // cursor, so it must not deliver lines or move that cursor.
   let stopped = false;
   const abort = new AbortController();
 

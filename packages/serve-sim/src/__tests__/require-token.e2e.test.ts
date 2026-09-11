@@ -1,5 +1,6 @@
+import { e2eDevice } from "./e2e-preconditions";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { execSync, spawn, type ChildProcess } from "child_process";
+import { spawn, type ChildProcess } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
 import WebSocket from "ws";
@@ -16,19 +17,6 @@ import { freePortAsync } from "./helpers";
 const PKG_DIR = join(import.meta.dir, "../..");
 const CLI = join(PKG_DIR, "dist/serve-sim.js");
 
-function bootedUdid(): string | null {
-  try {
-    const out = execSync("xcrun simctl list devices booted -j", { encoding: "utf-8" });
-    const data = JSON.parse(out) as {
-      devices: Record<string, Array<{ udid: string; state: string }>>;
-    };
-    for (const [runtime, devices] of Object.entries(data.devices)) {
-      if (!runtime.includes("iOS")) continue;
-      for (const d of devices) if (d.state === "Booted") return d.udid;
-    }
-  } catch {}
-  return null;
-}
 
 async function waitFor(check: () => Promise<boolean>, budgetMs: number): Promise<boolean> {
   const deadline = Date.now() + budgetMs;
@@ -39,7 +27,7 @@ async function waitFor(check: () => Promise<boolean>, budgetMs: number): Promise
   return false;
 }
 
-const udid = bootedUdid();
+const udid = e2eDevice();
 const describeIfSim = udid && existsSync(CLI) ? describe : describe.skip;
 
 describeIfSim("serve-sim --require-token (built CLI)", () => {

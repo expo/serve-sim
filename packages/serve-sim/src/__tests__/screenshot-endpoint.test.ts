@@ -1,5 +1,5 @@
+import { e2eDevice } from "./e2e-preconditions";
 import { describe, expect, test } from "bun:test";
-import { execSync } from "child_process";
 import { simMiddleware } from "../middleware";
 
 // POST {base}/api/screenshot — still-PNG capture via `simctl io <udid> screenshot`.
@@ -9,21 +9,6 @@ import { simMiddleware } from "../middleware";
 
 const middleware = simMiddleware({ basePath: "/preview" });
 
-function firstBootedIosSim(): string | null {
-  try {
-    const out = execSync("xcrun simctl list devices booted -j", { encoding: "utf-8" });
-    const data = JSON.parse(out) as {
-      devices: Record<string, Array<{ udid: string; state: string }>>;
-    };
-    for (const [runtime, devices] of Object.entries(data.devices)) {
-      if (!runtime.includes("iOS")) continue;
-      for (const device of devices) {
-        if (device.state === "Booted") return device.udid;
-      }
-    }
-  } catch {}
-  return null;
-}
 
 describe("POST /api/screenshot", () => {
   test("rejects non-POST methods with CORS headers", async () => {
@@ -60,7 +45,7 @@ describe("POST /api/screenshot", () => {
   });
 });
 
-const bootedUdid = firstBootedIosSim();
+const bootedUdid = e2eDevice();
 const describeWithSim = bootedUdid ? describe : describe.skip;
 
 describeWithSim(`POST /api/screenshot (booted sim ${bootedUdid ?? "<skipped>"})`, () => {

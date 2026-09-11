@@ -97,6 +97,7 @@ interface ExecChannelOptions {
   onActionResult?: ActionResultHandler;
   /** False means ownership was lost; temporary delivery drops still return true. */
   onCameraFrame?: (udid: string, frame: Buffer, owner: symbol) => boolean;
+  /** May run again after an in-flight action finishes; releasing ownership must be idempotent. */
   onCameraClose?: (owner: symbol) => void;
   onCameraStop?: (udid: string, owner: symbol) => void;
   /** Routes an authenticated subscription back through the owning middleware. */
@@ -296,8 +297,9 @@ function wireExecSocket(
               (action === "camera.inject" || action === "camera.switch")) {
             stoppedCameras.delete(params.udid);
           }
+        } finally {
           if (closed) opts.onCameraClose?.(cameraOwner);
-        } catch {}
+        }
         send({ id, ...result });
       })
       .catch((e: unknown) => {

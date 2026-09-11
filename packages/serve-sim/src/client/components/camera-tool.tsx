@@ -68,8 +68,6 @@ export function selectCameraPrimaryKind(input: {
   foregroundIsInjected: boolean;
 }): CameraPrimaryKind {
   if (!input.injected) return "play";
-  if (input.source === "placeholder") return "play";
-  if (input.bundleId && !input.foregroundIsInjected) return "attach";
   return "stop";
 }
 
@@ -226,7 +224,6 @@ export function CameraInlineBanner({
 
 export function CameraTool({
   udid,
-  bundleId,
 }: {
   udid: string;
   bundleId: string | null;
@@ -252,8 +249,7 @@ export function CameraTool({
   const [, setStatus] = useState<string | null>(null);
   const [injected, setInjected] = useState(false);
   const [pillState, setPillState] = useState<CameraPillState>("ready");
-  const [injectedBundleIds, setInjectedBundleIds] = useState<Set<string>>(() => new Set());
-  const [attachedHelperPid, setAttachedHelperPid] = useState<number | null>(null);
+  const [, setAttachedHelperPid] = useState<number | null>(null);
   const [webcamAutoInjectRequest, setWebcamAutoInjectRequest] = useState<string | null>(null);
   const lastFileIsHeicRef = useRef(false);
   const skipNextAutoSwapRef = useRef(false);
@@ -266,8 +262,7 @@ export function CameraTool({
   }, []);
 
   const refreshWebcamsRef = useRef<() => Promise<void>>(async () => {});
-  const bundleIdRef = useRef<string | null>(bundleId);
-  useEffect(() => { bundleIdRef.current = bundleId; }, [bundleId]);
+
 
   useEffect(() => {
     let cancelled = false;
@@ -292,11 +287,7 @@ export function CameraTool({
       appliedMirrorRef.current = replyMirror;
       setAttachedHelperPid(reply.helperPid ?? null);
       setInjected(true);
-      const replyBundles = Array.isArray(reply.bundleIds) ? reply.bundleIds : [];
-      if (replyBundles.length > 0) setInjectedBundleIds(new Set(replyBundles));
-      const fg = bundleIdRef.current;
-      const replyHasRealSource = replySource && replySource !== "placeholder";
-      setPillState(fg && replyBundles.includes(fg) && replyHasRealSource ? "active" : "ready");
+      setPillState("active");
       setStatus(`Reattached → ${replySource ?? "running helper"}${reply.arg ? ` (${reply.arg})` : ""}`);
     })();
     return () => { cancelled = true; };
@@ -315,35 +306,11 @@ export function CameraTool({
         const reply = await fetchCameraStatus();
         if (cancelled) return;
         const alive = !!reply?.alive;
-        const replyBundles = Array.isArray(reply?.bundleIds) ? reply.bundleIds : null;
-        const foregroundIsInjected =
-          !!bundleId && (replyBundles ? replyBundles.includes(bundleId) : injectedBundleIds.has(bundleId));
-        const replySource = reply?.source ?? null;
-        const replyHasRealSource = replySource && replySource !== "placeholder";
-        const attachedToCurrentHelper =
-          injected && alive && foregroundIsInjected && !!replyHasRealSource
-          && (attachedHelperPid == null || reply?.helperPid === attachedHelperPid);
+        const attachedToCurrentHelper = alive;
         setPillState((prev) => nextCameraPillState(prev, attachedToCurrentHelper));
-        if (!alive) {
-          setInjected((prevInjected) => {
-            if (!prevInjected) return prevInjected;
-            setInjectedBundleIds(new Set());
-            setAttachedHelperPid(null);
-            appliedMirrorRef.current = "off";
-            return false;
-          });
-        } else if (injected && attachedHelperPid != null && reply?.helperPid !== attachedHelperPid) {
-          setInjected(false);
-          setInjectedBundleIds(new Set());
-          setAttachedHelperPid(null);
-          appliedMirrorRef.current = "off";
-        } else if (alive && Array.isArray(reply?.bundleIds)) {
-          const next = reply.bundleIds;
-          setInjectedBundleIds((prev) => {
-            if (prev.size === next.length && next.every((b) => prev.has(b))) return prev;
-            return new Set(next);
-          });
-        }
+        setInjected(alive);
+        setAttachedHelperPid(reply?.helperPid ?? null);
+        if (!alive) appliedMirrorRef.current = "off";
       } finally {
         inFlight = false;
       }
@@ -365,7 +332,7 @@ export function CameraTool({
         document.removeEventListener("visibilitychange", onVisibility);
       }
     };
-  }, [fetchCameraStatus, injected, attachedHelperPid, bundleId, injectedBundleIds]);
+  }, [fetchCameraStatus]);
 
   const refreshWebcams = useCallback(async () => {
     setWebcamLoading(true);
@@ -437,7 +404,6 @@ export function CameraTool({
   }, [udid, reportSourceError]);
 
   const inject = useCallback(async () => {
-    if (!bundleId) return;
     setPendingPrimary("inject");
     setError(null);
     setStatus(null);
@@ -448,7 +414,6 @@ export function CameraTool({
         return;
       }
       const res = await runHostAction("camera.inject", {
-        bundleId,
         udid,
         mirror,
         source: isFile ? "file" : source,
@@ -466,28 +431,25 @@ export function CameraTool({
           hotSwapped?: boolean; helperRelaunched?: boolean;
         };
         helperPid = json.helperPid ?? null;
-        const verb = json.helperRelaunched === false ? "Attached" : "Injected";
-        const pidStr = json.pid ? ` pid ${json.pid}` : "";
-        const helper = json.helperPid ? `, helper pid ${json.helperPid}` : "";
-        setStatus(`${verb} ${json.source ?? source} into ${bundleId}${pidStr}${helper}`);
+        setStatus(`Camera enabled for all apps (${json.source ?? source}).`);
       } catch {
-        setStatus(res.stdout.trim() || "Injected.");
+        setStatus("Camera enabled for all apps.");
       }
       setInjected(true);
-      setPillState(source === "placeholder" ? "ready" : "active");
+      setPillState("active");
       setAttachedHelperPid(helperPid);
-      setInjectedBundleIds((prev) => prev.has(bundleId) ? prev : new Set(prev).add(bundleId));
+
       appliedMirrorRef.current = mirror;
     } finally {
       setPendingPrimary(null);
     }
-  }, [bundleId, udid, source, filePath, webcamId, mirror, reportSourceError]);
+  }, [udid, source, filePath, webcamId, mirror, reportSourceError]);
 
   const autoSwapKey = injected
     ? `${source}::${source === "webcam" ? webcamId : ""}::${source === "image" || source === "video" ? filePath : ""}`
     : null;
 
-  const foregroundIsInjected = !!bundleId && injectedBundleIds.has(bundleId);
+  const foregroundIsInjected = injected;
   const foregroundIsStreaming = foregroundIsInjected && source !== "placeholder";
   useEffect(() => {
     if (!foregroundIsStreaming) {
@@ -501,12 +463,12 @@ export function CameraTool({
 
   useEffect(() => {
     if (!webcamAutoInjectRequest) return;
-    if (!bundleId || isBusy || uploading) return;
+    if (isBusy || uploading) return;
     if (source !== "webcam" || webcamId !== webcamAutoInjectRequest) return;
     setWebcamAutoInjectRequest(null);
     if (injected) return;
     void inject();
-  }, [webcamAutoInjectRequest, bundleId, isBusy, uploading, source, webcamId, injected, inject]);
+  }, [webcamAutoInjectRequest, isBusy, uploading, source, webcamId, injected, inject]);
 
   useEffect(() => {
     if (!injected) return;
@@ -568,7 +530,6 @@ export function CameraTool({
       setStatus("Camera helper stopped.");
       setInjected(false);
       setPillState("ready");
-      setInjectedBundleIds(new Set());
       appliedMirrorRef.current = "off";
     } finally {
       setPendingPrimary(null);
@@ -653,8 +614,8 @@ export function CameraTool({
     setError(null);
     lastFileIsHeicRef.current = false;
     setSourceMenuOpen(false);
-    if (bundleId) setWebcamAutoInjectRequest(webcam.id);
-  }, [bundleId]);
+    setWebcamAutoInjectRequest(webcam.id);
+  }, []);
 
   const toggleMirror = useCallback(() => {
     setMirror((m) => (m === "on" ? "off" : "on"));
@@ -679,16 +640,16 @@ export function CameraTool({
     }
   }, []);
 
-  const primaryKind = selectCameraPrimaryKind({ bundleId, injected, source, foregroundIsInjected });
+  const primaryKind = selectCameraPrimaryKind({ bundleId: null, injected, source, foregroundIsInjected });
   const primary: { label: string; onClick: () => void; kind: CameraPrimaryKind } =
     primaryKind === "stop"
       ? { label: pendingPrimary === "stop" ? "Stopping…" : "Stop", onClick: stopHelper, kind: "stop" }
     : primaryKind === "attach"
-      ? { label: pendingPrimary === "inject" ? "Injecting…" : `Inject ${bundleId}`, onClick: inject, kind: "attach" }
-    : { label: pendingPrimary === "inject" ? "Starting…" : "Play", onClick: inject, kind: "play" };
+      ? { label: pendingPrimary === "inject" ? "Injecting…" : "Enable", onClick: inject, kind: "attach" }
+    : { label: pendingPrimary === "inject" ? "Starting…" : "Enable", onClick: inject, kind: "play" };
   const primaryDisabled = primaryKind === "stop"
     ? uploading || pendingPrimary !== null
-    : !bundleId || uploading || pendingPrimary !== null;
+    : uploading || pendingPrimary !== null;
 
   const isPlaceholder = source === "placeholder";
   const showWebcam = source === "webcam";
@@ -725,9 +686,9 @@ export function CameraTool({
         className="flex flex-col gap-2.5"
       >
           <p className="m-0 text-[10px] leading-[1.5] text-white/45">
-            Replaces the simulator's camera feed by injecting a dylib at app launch
-            and streaming frames into shared memory. Pick media or a webcam,
-            then Play to inject into the foreground app.
+            Enable connects the selected camera feed to all apps. Disable disconnects
+            it without restarting apps. Choose media or a webcam, or use the
+            test-pattern feed.
           </p>
 
           <input
@@ -746,7 +707,7 @@ export function CameraTool({
             }}
             title={
               isPlaceholder
-                ? "No source selected — Play uses a test-pattern feed. Click to pick an image/video, or drop one here."
+                ? "No source selected — Enable uses a test-pattern feed. Click to pick an image/video, or drop one here."
                 : showWebcam
                   ? `Source: ${activeWebcamName}`
                   : `Source: ${droppedFileName ?? source}`
@@ -858,16 +819,15 @@ export function CameraTool({
                   : "bg-success-emerald text-[#062018] enabled:hover:brightness-[1.08]",
               ].join(" ")}
               title={
-                primary.kind === "stop" ? "Stop the camera helper and terminate injected apps" :
-                primary.kind === "attach" ? `Inject ${bundleId} so it joins the camera feed` :
-                !bundleId ? "Bring an app to the foreground first" :
-                "Start: inject the dylib and launch the foreground app with the chosen source"
+                primary.kind === "stop" ? "Disconnect the camera from all apps" :
+                primary.kind === "attach" ? "Enable the camera for all apps" :
+                "Enable the selected camera feed for all apps"
               }
               aria-pressed={primary.kind === "stop"}
-              aria-label={primary.kind === "stop" ? "Stop" : "Play"}
+              aria-label={primary.kind === "stop" ? "Disable" : "Enable"}
             >
               {primary.kind === "stop" ? <StopGlyph /> : <PlayGlyph />}
-              <span>{primary.kind === "stop" ? "Stop" : primary.kind === "attach" ? "Inject" : "Play"}</span>
+              <span>{primary.kind === "stop" ? "Disable" : "Enable"}</span>
             </button>
 
             <button

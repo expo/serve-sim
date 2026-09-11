@@ -24,3 +24,6 @@ void SimCamFrameSourceLoadImage(void);
 void SimCamFrameSourceOpenShmIfRequested(void);
 
 BOOL SimCamFrameSourceIsShmAttached(void);
+
+BOOL SimCamDeviceIsConnected(void);
+void SimCamStartDeviceMonitor(void);

@@ -320,6 +320,22 @@ describe("parseCrashReport", () => {
     expect(first?.signature).not.toBe(second?.signature);
   });
 
+  test("separates two unsymbolized crashes at different offsets in one binary", () => {
+    const at = (imageOffset: number) =>
+      parseCrashReport(
+        ips(
+          {},
+          {
+            usedImages: [{ name: "Demo", path: `${BUNDLE_ROOT}/Demo`, uuid: "UUID-1" }],
+            threads: [{ triggered: true, frames: [{ imageIndex: 0, imageOffset }] }],
+          }
+        )
+      );
+
+    expect(at(100)?.signature).not.toBe(at(200)?.signature);
+    expect(at(100)?.signature).toBe(at(100)?.signature);
+  });
+
   test("returns null for a body that is not a crash report", () => {
     expect(parseCrashReport(`${JSON.stringify(header())}\nnot json`)).toBeNull();
     expect(parseCrashReport(JSON.stringify(header()))).toBeNull();

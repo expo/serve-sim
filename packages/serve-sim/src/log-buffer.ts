@@ -6,8 +6,6 @@ const DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
 const LINE_BUFFER_LIMIT = 1024 * 1024;
 const RESTART_DELAY_MS = 1000;
 const MAX_RESTART_DELAY_MS = 30_000;
-// Pollers call ensure() every ~2s. A missed tick must not kill the child, but
-// closing the drawer must not leave simctl running.
 const POLL_IDLE_MS = 8_000;
 
 export interface LogLine {
@@ -80,7 +78,6 @@ export class DeviceLogBuffer {
     return this.batchListeners.size;
   }
 
-  /** One callback per stdout burst so a reader can write a single SSE/WS frame. */
   subscribeBatch(listener: (lines: readonly LogLine[]) => void, onClosed?: () => void): () => void {
     this.batchListeners.add(listener);
     if (onClosed) this.closeListeners.add(onClosed);

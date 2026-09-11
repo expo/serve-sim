@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
+import { useTempStateDir } from "../../__tests__/helpers";
 import { rebootWithCapture } from "../reboot";
 import { createCaptureRuntime } from "../runtime";
 import { type CaptureProxy } from "../mitm-engine";
@@ -28,9 +31,18 @@ function harness() {
     runtime,
     shutdown: async (_udid: string) => void calls.push("device-shutdown"),
     boot: async (_udid: string) => void calls.push("device-booted"),
+    rearm: async (_udid: string) => void calls.push("capabilities-rearmed"),
   };
   return { runtime, deps, calls };
 }
+
+let tempState: ReturnType<typeof useTempStateDir>;
+beforeAll(() => {
+  tempState = useTempStateDir();
+});
+afterAll(() => {
+  tempState.restore();
+});
 
 describe("rebootWithCapture", () => {
   test("reboots and comes back capturing", async () => {
@@ -43,6 +55,7 @@ describe("rebootWithCapture", () => {
     expect(calls).toEqual([
       "device-shutdown",
       "device-booted",
+      "capabilities-rearmed",
       "proxy-started",
       "trusted",
       "injected",
@@ -142,11 +155,31 @@ describe("rebootWithCapture", () => {
       runtime,
       shutdown: async () => void calls.push("device-shutdown"),
       boot: async () => void calls.push("device-booted"),
+      rearm: async () => {},
     });
 
     // The device did reboot; only capture failed, and the reason has to survive.
     expect(calls).toEqual(["device-shutdown", "device-booted"]);
     expect(meta.attachment).toBe("failed");
     expect(meta.attachError).toContain("mitmproxy is not installed");
+  });
+
+  test("re-arms capabilities even when capture is turned off", async () => {
+    const { deps, calls } = harness();
+
+    await rebootWithCapture(UDID, /* enabled */ false, deps);
+
+    expect(calls).toEqual(["device-shutdown", "device-booted", "capabilities-rearmed"]);
+  });
+
+  test("leaves a device this process never armed alone", async () => {
+    const { deps, calls } = harness();
+    const { rearm: _ignored, ...withoutRearm } = deps;
+
+    await rebootWithCapture(UDID, /* enabled */ true, withoutRearm);
+
+    // The real default runs here; an unarmed device must not gain a loader from a capture reboot.
+    expect(calls).not.toContain("capabilities-rearmed");
+    expect(existsSync(join(tempState.dir, `launch-${UDID}.json`))).toBe(false);
   });
 });

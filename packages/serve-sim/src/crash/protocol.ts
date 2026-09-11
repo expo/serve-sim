@@ -1,5 +1,5 @@
 import type { CrashMeta } from "./runtime";
-import type { CrashRecord, CrashSummary } from "./store";
+import type { CrashOccurrence, CrashRecord, CrashSummary } from "./store";
 
 export type CrashStreamFrame =
   | { type: "meta"; meta: CrashMeta }
@@ -21,3 +21,11 @@ export function summarizeCrash(record: CrashRecord): CrashSummary {
     })),
   };
 }
+
+export type SelectedOccurrence = CrashOccurrence & { index: number; total: number };
+export type CrashDetailResponse = {
+  record: CrashSummary;
+  occurrence: SelectedOccurrence;
+  report: string | null;
+  reportError: string | null;
+};

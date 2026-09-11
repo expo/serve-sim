@@ -1,3 +1,4 @@
+import { crashStreamUrl } from "../client/utils/crash-format";
 import { describe, expect, test } from "bun:test";
 import type { CrashFrame } from "../crash/report";
 import {
@@ -97,4 +98,11 @@ describe("collapseSystemFrames", () => {
       },
     ]);
   });
+});
+
+
+test("crash URLs normalize the trailing slash and replace an existing tail option", () => {
+  expect(crashDetailUrl("/.sim/crashes/?device=U", "A")).toBe("/.sim/crashes/A?device=U");
+  expect(crashStreamUrl("/.sim/crashes?device=U&tail=0", true)).toBe("/.sim/crashes?device=U&tail=1");
+  expect(crashStreamUrl("/.sim/crashes?device=U&tail=1", false)).toBe("/.sim/crashes?device=U&tail=0");
 });

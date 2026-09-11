@@ -2,9 +2,9 @@ import type { CrashStreamFrame } from "../../crash/protocol";
 import type { CrashMeta } from "../../crash/runtime";
 import type { CrashSummary } from "../../crash/store";
 
-export type CrashListState = { meta: CrashMeta | null; crashes: CrashSummary[] };
+export type CrashListState = { meta: CrashMeta | null; crashes: CrashSummary[]; ready: boolean };
 
-export const EMPTY_CRASH_LIST: CrashListState = { meta: null, crashes: [] };
+export const EMPTY_CRASH_LIST: CrashListState = { meta: null, crashes: [], ready: false };
 
 export function parseCrashFrame(data: string): CrashStreamFrame | null {
   let parsed: CrashStreamFrame;
@@ -31,14 +31,14 @@ export function parseCrashFrame(data: string): CrashStreamFrame | null {
 // Two signatures can land in the same millisecond, so the tiebreak keeps a reconnect's list
 // in the order the live frames built.
 const byNewest = (a: CrashSummary, b: CrashSummary): number =>
-  b.lastSeen - a.lastSeen || b.firstSeen - a.firstSeen || (a.id < b.id ? 1 : -1);
+  b.lastSeen - a.lastSeen || b.firstSeen - a.firstSeen || (a.id === b.id ? 0 : a.id < b.id ? 1 : -1);
 
 export function applyCrashFrame(state: CrashListState, frame: CrashStreamFrame): CrashListState {
   switch (frame.type) {
     case "meta":
       return { ...state, meta: frame.meta };
     case "list":
-      return { ...state, crashes: [...frame.crashes].sort(byNewest) };
+      return { ...state, ready: true, crashes: [...frame.crashes].sort(byNewest) };
     case "evicted":
       return { ...state, crashes: state.crashes.filter((crash) => crash.id !== frame.id) };
     case "crash":

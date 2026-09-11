@@ -2,18 +2,40 @@ import { resolve } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
-import { bootInjectionCleared, clearBootInjection, proxyDylibCandidates } from "../device";
+import { bootInjectionCleared, clearBootInjection, injectAtBoot, proxyDylibCandidates } from "../device";
 
 const UDID = "ABCD1234-0000-0000-0000-0000000000EF";
 
 describe("clearBootInjection", () => {
-  test("clears both injected variables", async () => {
-    const calls: string[] = [];
+  test("unsets both variables when nothing else is injected", async () => {
+    const calls: string[][] = [];
     await clearBootInjection(UDID, {
-      run: async (args) => void calls.push(args.at(-1)!),
+      run: async (args) => {
+        calls.push(args);
+        return args.includes("getenv") ? "/opt/serve-sim/libSimNetProxy.dylib" : "";
+      },
     });
 
-    expect(calls).toEqual(["DYLD_INSERT_LIBRARIES", "SIMNET_PROXY_PORT_FILE"]);
+    const unset = calls.filter((args) => args.includes("unsetenv")).map((args) => args.at(-1));
+    expect(unset).toEqual(["DYLD_INSERT_LIBRARIES", "SIMNET_PROXY_PORT_FILE"]);
+  });
+
+  test("leaves another tool's library in the list", async () => {
+    const calls: string[][] = [];
+    await clearBootInjection(UDID, {
+      run: async (args) => {
+        calls.push(args);
+        return args.includes("getenv")
+          ? "/opt/loader/libServeSimCapabilityLoader.dylib:/opt/serve-sim/libSimNetProxy.dylib"
+          : "";
+      },
+    });
+
+    const setenv = calls.find((args) => args.includes("setenv") && args.includes("DYLD_INSERT_LIBRARIES"));
+    expect(setenv?.at(-1)).toBe("/opt/loader/libServeSimCapabilityLoader.dylib");
+    expect(calls.some((args) => args.includes("unsetenv") && args.includes("DYLD_INSERT_LIBRARIES"))).toBe(
+      false,
+    );
   });
 
   test("stops clearing once the device turns out to be gone", async () => {
@@ -26,7 +48,7 @@ describe("clearBootInjection", () => {
     });
 
     // The remaining variable went with the device, so it is not attempted or reported.
-    expect(attempted).toEqual(["DYLD_INSERT_LIBRARIES"]);
+    expect(new Set(attempted)).toEqual(new Set(["DYLD_INSERT_LIBRARIES"]));
   });
 
   test("does not treat a live device or a broken toolchain as gone", async () => {
@@ -102,5 +124,37 @@ describe("proxyDylibCandidates", () => {
     const fromSource = resolve(import.meta.dir, "../../../dist/simnet/libSimNetProxy.dylib");
 
     expect(proxyDylibCandidates()).toContain(fromSource);
+  });
+});
+
+describe("injectAtBoot", () => {
+  const DYLIB = "/opt/serve-sim/libSimNetProxy.dylib";
+
+  test("keeps another tool's library when it arms the device", async () => {
+    const calls: string[][] = [];
+    await injectAtBoot(UDID, "/tmp/port", {
+      dylib: () => DYLIB,
+      run: async (args) => {
+        calls.push(args);
+        return args.includes("getenv") ? "/opt/loader/libServeSimCapabilityLoader.dylib" : "";
+      },
+    });
+
+    const setenv = calls.find((args) => args.includes("setenv") && args.includes("DYLD_INSERT_LIBRARIES"));
+    expect(setenv?.at(-1)).toBe(`/opt/loader/libServeSimCapabilityLoader.dylib:${DYLIB}`);
+  });
+
+  test("does not list itself twice when the device is already armed", async () => {
+    const calls: string[][] = [];
+    await injectAtBoot(UDID, "/tmp/port", {
+      dylib: () => DYLIB,
+      run: async (args) => {
+        calls.push(args);
+        return args.includes("getenv") ? DYLIB : "";
+      },
+    });
+
+    const setenv = calls.find((args) => args.includes("setenv") && args.includes("DYLD_INSERT_LIBRARIES"));
+    expect(setenv?.at(-1)).toBe(DYLIB);
   });
 });

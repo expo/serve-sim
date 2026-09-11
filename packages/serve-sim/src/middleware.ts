@@ -26,7 +26,7 @@ import {
   sendCorsPreflight,
   type HidSocket,
 } from "./device-session";
-import { assertPreviewAccess, assertUpgradeAccess } from "./session-auth";
+import { assertCaptureAccess, assertPreviewAccess, assertUpgradeAccess } from "./session-auth";
 import {
   eventLogEventForAction,
   readEventLog,
@@ -1790,6 +1790,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   };
 /** Reachable without the session token: liveness probes cannot carry one. */
   const UNGATED_PATHS = ["/healthz", "/readyz"];
+  // Capture routes carry decrypted traffic, so they need the token even when the rest of the
+  // surface is open. Prefix match, so a new capture route is gated before it is written.
+  const ALWAYS_GATED_PREFIX = "/network-capture";
 
   const connectMiddleware = (async (req: SimReq, res: SimRes, next?: SimNext) => {
     const rawUrl: string = req.url ?? "";
@@ -1802,8 +1805,15 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // Gated as a whole rather than per route, so a new route is protected by default.
     if (
       !UNGATED_PATHS.some((path) => url === base + path)
-      && !assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })
+      && !assertPreviewAccess(req, res, execToken, {
+        required: requirePreviewToken || url.startsWith(base + ALWAYS_GATED_PREFIX),
+        basePath: base,
+      })
     ) {
+      return;
+    }
+
+    if (url.startsWith(base + ALWAYS_GATED_PREFIX) && !assertCaptureAccess(req, res)) {
       return;
     }
 
@@ -2681,7 +2691,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       // id and answered "No captured body", which points at the wrong problem.
       if (CAPTURE_CONTROL_PATHS.includes(id)) {
         res.writeHead(405, { "Content-Type": "application/json", Allow: "POST", ...NO_STORE });
-        res.end(JSON.stringify(captureAuthError(`${id} accepts POST only.`)));
+        res.end(JSON.stringify({ error: `${id} accepts POST only.` }));
         return;
       }
       const states = await readServeSimStates();

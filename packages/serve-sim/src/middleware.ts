@@ -15,7 +15,7 @@ import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
 import { claimCameraFrameStream, closeCameraFrameStream, closeCameraFrameStreams, ownsCameraFrameStream, writeCameraFrame } from "./camera-frames";
-import { CaptureEnableError, captureRuntime, rebootWithCapture, type CaptureRuntime } from "./capture";
+import { CaptureEnableError, captureRuntime, type CaptureRuntime } from "./capture";
 import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./metrics-sampler";
 import { foregroundTracker, type ForegroundApp, type ForegroundTrackerCache } from "./foreground-tracker";
 import { corsAllowOriginHeaders, frameAncestorsPolicy } from "./middleware-utils";
@@ -2623,75 +2623,15 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       return;
     }
 
-    if (
-      new URL(url, "http://127.0.0.1").pathname === base + "/network-capture/reboot" &&
-      req.method === "POST"
-    ) {
-      if (!networkCapture) {
-        // Rebooting into capture installs a CA root that simctl cannot remove short of erasing the
-        // device, so it stays behind the same opt-in as every other way to turn capture on.
-        res.writeHead(404, { "Content-Type": "application/json", ...NO_STORE });
-        res.end(
-          JSON.stringify({
-            error:
-              "Network capture is off for this server. Restart serve-sim with --network-capture to " +
-              "enable it.",
-          }),
-        );
-        return;
-      }
-      const states = await readServeSimStates();
-      const state = selectServeSimState(states, selectedDevice);
-      if (!state) {
-        res.writeHead(404, { "Content-Type": "application/json", ...NO_STORE });
-        res.end(JSON.stringify({ error: "No serve-sim device" }));
-        return;
-      }
-      const enabled = new URL(rawUrl, "http://127.0.0.1").searchParams.get("enabled") !== "0";
-      // The stream and HID sockets are bound to a device that is about to go down under them, so this
-      // drops them first, the same order /grid/api/shutdown uses.
-      closeDeviceSession(state.device);
-      try {
-        const meta = await rebootWithCapture(state.device, enabled);
-        res.writeHead(200, { "Content-Type": "application/json", ...NO_STORE });
-        res.end(JSON.stringify(meta));
-      } catch (error) {
-        res.writeHead(500, { "Content-Type": "application/json", ...NO_STORE });
-        res.end(
-          JSON.stringify({
-            error:
-              `Could not reboot the device: ${
-                error instanceof Error ? error.message : String(error)
-              }. The device may now be shut down — boot it from the sidebar, then try again.`,
-          }),
-        );
-      }
-      return;
-    }
-
-    if (
-      new URL(url, "http://127.0.0.1").pathname === base + "/network-capture/clear" &&
-      req.method === "POST"
-    ) {
-      const states = await readServeSimStates();
-      const state = selectServeSimState(states, selectedDevice);
-      if (!state || !captureRuntime.clearForDevice(state.device)) {
-        res.writeHead(404, { "Content-Type": "application/json", ...NO_STORE });
-        res.end(JSON.stringify({ error: "No capture session" }));
-        return;
-      }
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
     if (url.startsWith(base + "/network-capture/")) {
       const id = url.slice((base + "/network-capture/").length);
-      // The control routes above are POST-only. Without this, a GET on one of them is read as a request
-      // id and answered "No captured body", which points at the wrong problem.
+      // These were POST routes. Without this, an old client's call is read as a request id and answered
+      // "No captured body", which points at the wrong problem.
       if (CAPTURE_CONTROL_PATHS.includes(id)) {
-        res.writeHead(405, { "Content-Type": "application/json", Allow: "POST", ...NO_STORE });
-        res.end(JSON.stringify({ error: `${id} accepts POST only.` }));
+        res.writeHead(410, { "Content-Type": "application/json", ...NO_STORE });
+        res.end(
+          JSON.stringify({ error: `This route is gone. Run the capture.${id} host action instead.` }),
+        );
         return;
       }
       const states = await readServeSimStates();

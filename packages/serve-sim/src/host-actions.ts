@@ -121,6 +121,8 @@ const ACTION_SCHEMAS = {
     first: z.boolean().optional(),
   }),
   "upload.remove": z.object({ uploadId: UploadId }),
+  "capture.reboot": z.object({ udid: Device, enabled: z.boolean() }),
+  "capture.clear": z.object({ udid: Device }),
 } as const;
 
 type HostActionName = keyof typeof ACTION_SCHEMAS;
@@ -136,6 +138,8 @@ const PROCEDURE_ACTIONS = [
   "app.iconPath",
   "screenshot.capture",
   "screenshot.thumbnail",
+  "capture.reboot",
+  "capture.clear",
 ] as const satisfies readonly HostActionName[];
 
 type ProcedureAction = (typeof PROCEDURE_ACTIONS)[number];
@@ -312,6 +316,41 @@ async function runProcedureAsync(action: ProcedureAction, raw: unknown): Promise
     case "upload.remove": {
       const p = parseParams(action, raw);
       return await removeUploadAsync(p.uploadId);
+    }
+    case "capture.reboot": {
+      const p = parseParams(action, raw);
+      // Imported here so a server started without capture never loads the capture module.
+      const { captureRuntime, rebootWithCapture } = await import("./capture");
+      if (!captureRuntime.isServerEnabled()) {
+        return {
+          stdout: "",
+          stderr:
+            "Network capture is off for this server. Restart serve-sim with --network-capture to enable it.",
+          exitCode: 1,
+        };
+      }
+      const { closeDeviceSession } = await import("./device-session");
+      // The stream and HID sockets are bound to a device that is about to go down under them.
+      closeDeviceSession(p.udid);
+      try {
+        return ok(JSON.stringify(await rebootWithCapture(p.udid, p.enabled)));
+      } catch (error) {
+        return {
+          stdout: "",
+          stderr:
+            `Could not reboot the device: ${error instanceof Error ? error.message : String(error)}. ` +
+            "The device may now be shut down, so boot it from the sidebar and try again.",
+          exitCode: 1,
+        };
+      }
+    }
+    case "capture.clear": {
+      const p = parseParams(action, raw);
+      const { captureRuntime } = await import("./capture");
+      if (!captureRuntime.clearForDevice(p.udid)) {
+        return { stdout: "", stderr: "No capture session for this device.", exitCode: 1 };
+      }
+      return ok();
     }
     case "app.iconPath": {
       const p = parseParams(action, raw);

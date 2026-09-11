@@ -1,8 +1,8 @@
-// Host-compiled tests for the trampoline's parsing. Includes the dylib source
+// Host-compiled tests for the capability loader's parsing. Includes the dylib source
 // so the static helpers are reachable; the constructor is a no-op here because
 // TMPDIR is not an app container.
 
-#include "../serve-sim-trampoline.c"
+#include "../serve-sim-capability-loader.c"
 
 #include <sys/stat.h>
 
@@ -26,7 +26,7 @@ static char *write_temp(const char *name, const char *contents, size_t len) {
     abort();
   }
   char *path = temps[temp_count++];
-  snprintf(path, sizeof temps[0], "/tmp/serve-sim-trampoline-test-%d-%s", getpid(), name);
+  snprintf(path, sizeof temps[0], "/tmp/serve-sim-capability-loader-test-%d-%s", getpid(), name);
   FILE *file = fopen(path, "w");
   if (file == NULL) abort();
   size_t written = fwrite(contents, 1, len, file);
@@ -156,7 +156,7 @@ static void test_apply_env(void) {
 static char *load_and_capture(const char *config_body) {
   static char captured[4096];
   char log_path[1024];
-  snprintf(log_path, sizeof log_path, "/tmp/serve-sim-trampoline-test-%d-stderr", getpid());
+  snprintf(log_path, sizeof log_path, "/tmp/serve-sim-capability-loader-test-%d-stderr", getpid());
 
   char *config_path = write_temp("load-config", config_body, strlen(config_body));
   struct Load *load = malloc(sizeof *load);

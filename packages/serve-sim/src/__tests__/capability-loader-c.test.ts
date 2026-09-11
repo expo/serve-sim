@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { join } from "path";
 
 // Needs no simulator: the dylib ships for iOS, but the parsing is the same code.
-const RUNNER = join(import.meta.dir, "../../Sources/ServeSimTrampoline/tests/run.sh");
+const RUNNER = join(import.meta.dir, "../../Sources/ServeSimCapabilityLoader/tests/run.sh");
 
-describe("trampoline C", () => {
+describe("capability loader C", () => {
   test("parses its config without memory errors or analyzer findings", async () => {
     const proc = Bun.spawn(["bash", RUNNER], { stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, code] = await Promise.all([

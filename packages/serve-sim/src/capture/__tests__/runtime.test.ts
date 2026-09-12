@@ -178,6 +178,36 @@ describe("capture runtime", () => {
     expect(calls).toContain("proxy-closed");
   });
 
+  test("makes a second shutdown wait for the first, not walk past it", async () => {
+    // Both callers exit the process when they return, so returning early is how a device stays injected.
+    let releaseClear: () => void = () => {};
+    const pending = new Promise<void>((done) => {
+      releaseClear = done;
+    });
+    const { runtime, calls } = harness({
+      clearInjection: async () => {
+        calls.push("clearing");
+        await pending;
+        calls.push("injection-cleared");
+      },
+    });
+    await runtime.enableForDevice(UDID);
+
+    const first = runtime.disableAll();
+    const second = runtime.disableAll();
+    let secondDone = false;
+    void second.then(() => {
+      secondDone = true;
+    });
+    await Bun.sleep(10);
+    expect(secondDone).toBe(false);
+
+    releaseClear();
+    await Promise.all([first, second]);
+    expect(secondDone).toBe(true);
+    expect(calls).toContain("injection-cleared");
+  });
+
   test("stops every device on shutdown", async () => {
     const { runtime, calls } = harness();
     await runtime.enableForDevice(UDID);

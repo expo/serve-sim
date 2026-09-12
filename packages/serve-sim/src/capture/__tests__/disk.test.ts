@@ -217,10 +217,24 @@ describe("sweepAbandonedCaptureDirs", () => {
         "serve-sim-capture-abc123",
       ],
       remove: (dir: string) => void removed.push(dir.split("/").at(-1)!),
+      liveDevices: () => [],
     });
 
     expect(swept).toBe(2);
     expect(removed).toEqual(["capture-CRASHED-EARLIER", "capture-ANOTHER-DEAD-ONE"]);
+  });
+
+  it("leaves the recording of a server this one knows nothing about", () => {
+    // Two servers share the state directory, and the second one starting must not delete the first's HAR.
+    const removed: string[] = [];
+    const swept = sweepAbandonedCaptureDirs(["MINE"], {
+      list: () => ["capture-MINE", "capture-THEIRS", "capture-CRASHED-EARLIER"],
+      remove: (dir: string) => void removed.push(dir.split("/").at(-1)!),
+      liveDevices: () => ["THEIRS"],
+    });
+
+    expect(swept).toBe(1);
+    expect(removed).toEqual(["capture-CRASHED-EARLIER"]);
   });
 
   it("leaves state files and the proxy's own confdirs alone", () => {

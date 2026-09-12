@@ -311,9 +311,7 @@ if (nativeBuild.status !== 0) {
 console.log("dist/native/serve-sim-native.node");
 
 
-// ─── 8. SimNetProxy dylib (per-app capture proxy) ─────────────────────────
-// Injected into the app under capture with DYLD_INSERT_LIBRARIES so the proxy
-// applies to that process alone; capture-injection locates it via dist/simnet.
+// Build the capture dylib for injection into third-party apps.
 
 const netBuild = spawnSync(
   "bash",
@@ -326,15 +324,11 @@ if (netBuild.status !== 0) {
 }
 console.log("dist/simnet/libSimNetProxy.dylib");
 
-// ─── 9. mitmproxy capture addon ──────────────────────────────────────────
-// Copied rather than bundled: mitmproxy reads it as a Python file from disk in
-// its own process. mitmproxy itself is not shipped and not downloaded — the
-// developer installs it, and mitm-engine locates it.
+// mitmproxy loads the Python add-on from disk.
 
 cpSync(resolve(root, "src/capture/mitm-addon"), resolve(distDir, "capture/mitm-addon"), {
   recursive: true,
-  // Python leaves bytecode beside the source once the addon has been imported; it is per-interpreter and
-  // must not ship.
+  // Exclude interpreter-specific bytecode.
   filter: (source) => !source.includes("__pycache__"),
 });
 console.log("dist/capture/mitm-addon/");

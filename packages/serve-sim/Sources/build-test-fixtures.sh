@@ -2,15 +2,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-
-# Skip a fixture this checkout does not have.
-for BUILD_SCRIPT in \
-  "$HERE/ServeSimProbe/build.sh" \
-  "$HERE/ServeSimLaunchFixture/build.sh" \
-  "$HERE/ServeSimCrashFixture/build.sh" \
-  "$HERE/SimNetProbe/build.sh"
-do
-  if [ -f "$BUILD_SCRIPT" ]; then
-    bash "$BUILD_SCRIPT"
-  fi
-done
+bash "$HERE/ServeSimProbe/build.sh"
+bash "$HERE/ServeSimLaunchFixture/build.sh"
+bash "$HERE/ServeSimCrashFixture/build.sh"
+bash "$HERE/SimNetProbe/build.sh"

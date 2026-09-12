@@ -785,8 +785,6 @@ describe("capture runtime", () => {
   });
 
   test("uses one policy for every device, however capture was started", async () => {
-    // The policy used to be a per-call argument and two of three enable paths forgot it, so a panel
-    // reboot silently narrowed capture to metadata with nothing said.
     const seen: (readonly string[])[] = [];
     const runtime = createCaptureRuntime({
       startProxy: async (_store, deps) => {

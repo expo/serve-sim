@@ -234,8 +234,6 @@ describe("CaptureDiskAccumulator", () => {
         store.update(id, { status: 200, durationMs: 1 }, true);
       }
       const rebuilding = disk.flush();
-      // Wait for the compact's temp file rather than a fixed delay, so the late request really does land
-      // inside the rebuild on a loaded machine.
       const harTmp = join(dir, `${CAPTURE_HAR_FILENAME}.${process.pid}.tmp`);
       const deadline = Date.now() + 2_000;
       while (!existsSync(harTmp) && Date.now() < deadline) await Bun.sleep(0);
@@ -301,8 +299,6 @@ describe("sweepAbandonedCaptureDirs", () => {
   });
 
   it("reads ownership from the directory, not from a state file written later", async () => {
-    // A live owner is proven by the file the directory carries, so a session is protected from the moment
-    // it starts writing — long before the preview server records its state.
     const dir = mkdtempSync(join(tmpdir(), "serve-sim-owner-"));
     const store = new CaptureStore();
     const disk = new CaptureDiskAccumulator({ dir, flushIntervalMs: 60_000 });

@@ -1,8 +1,4 @@
-// Proves the shipped CLI arms capture before it launches the app it was asked to launch.
-//
-// An app loads the capture library only if it was inserted at launch, so arming after the launch
-// records nothing until someone relaunches by hand. Only a request that comes back out of the session's
-// own HAR proves the order.
+// Verify the CLI captures requests from the app’s first launch.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync, spawn, type ChildProcess } from "child_process";

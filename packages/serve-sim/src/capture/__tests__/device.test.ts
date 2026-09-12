@@ -3,7 +3,13 @@ import { join, resolve } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { bootInjectionCleared, clearBootInjection, injectAtBoot, proxyDylibCandidates } from "../device";
+import {
+  bootInjectionCleared,
+  clearBootInjection,
+  clearBootInjectionSync,
+  injectAtBoot,
+  proxyDylibCandidates,
+} from "../device";
 import { installShims, useTempStateDir } from "../../__tests__/helpers";
 import { withLaunchStateLock } from "../../launch-state-lock";
 
@@ -126,6 +132,52 @@ describe("bootInjectionCleared", () => {
         },
       }),
     ).toBe(true);
+  });
+});
+
+describe("clearBootInjectionSync", () => {
+  const LOADER = "/opt/loader/libServeSimCapabilityLoader.dylib";
+
+  test("leaves the other tool's entry behind and drops both of ours", () => {
+    const calls: string[] = [];
+    const run = (args: string[]): string => {
+      calls.push(args.slice(2).join(" "));
+      return args.includes("getenv") ? `${LOADER}:/opt/serve-sim/libSimNetProxy.dylib\n` : "";
+    };
+
+    clearBootInjectionSync(UDID, { run });
+
+    expect(calls).toEqual([
+      "launchctl getenv DYLD_INSERT_LIBRARIES",
+      `launchctl setenv DYLD_INSERT_LIBRARIES ${LOADER}`,
+      "launchctl unsetenv SIMNET_PROXY_PORT_FILE",
+    ]);
+  });
+
+  test("unsets the variable when ours was the only entry", () => {
+    const calls: string[] = [];
+    const run = (args: string[]): string => {
+      calls.push(args.slice(2).join(" "));
+      return args.includes("getenv") ? "/opt/serve-sim/libSimNetProxy.dylib\n" : "";
+    };
+
+    clearBootInjectionSync(UDID, { run });
+
+    expect(calls).toEqual([
+      "launchctl getenv DYLD_INSERT_LIBRARIES",
+      "launchctl unsetenv DYLD_INSERT_LIBRARIES",
+      "launchctl unsetenv SIMNET_PROXY_PORT_FILE",
+    ]);
+  });
+
+  test("ignores a device that is already gone", () => {
+    expect(() =>
+      clearBootInjectionSync(UDID, {
+        run: () => {
+          throw new Error("Unable to lookup device");
+        },
+      }),
+    ).not.toThrow();
   });
 });
 

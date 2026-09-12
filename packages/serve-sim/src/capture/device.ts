@@ -2,9 +2,9 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
-import { withLaunchStateLock } from "../launch-state-lock";
+import { withLaunchStateLock, withLaunchStateLockSync } from "../launch-state-lock";
 import { dirnameOf } from "../runtime";
-import { simctl } from "../simctl";
+import { simctl, simctlSync } from "../simctl";
 
 const __dirname = dirnameOf(import.meta.url);
 const DYLIB_NAME = "libSimNetProxy.dylib";
@@ -128,6 +128,36 @@ export async function clearBootInjection(udid: string, deps: InjectionDeps = {})
       `Could not clear ${clearing} on ${udid}, so apps launched on it may still load the capture library. ` +
         `Reboot the device to clear it. (${error instanceof Error ? error.message : String(error)})`,
     );
+  }
+}
+
+/**
+ * The same clear, on a synchronous exit.
+ *
+ * `process.on("exit")` cannot await, so a path that exits without running the async teardown — a failed
+ * port bind, an uncaught rejection — would otherwise leave the device loading the capture library for
+ * every app launched on it until it is rebooted.
+ */
+export function clearBootInjectionSync(
+  udid: string,
+  deps: { run?: (args: string[]) => string } = {},
+): void {
+  const run = deps.run ?? simctlSync;
+  try {
+    withLaunchStateLockSync(udid, () => {
+      const remaining = withoutProxyEntry(
+        run(["spawn", udid, "launchctl", "getenv", "DYLD_INSERT_LIBRARIES"]),
+      );
+      if (remaining.length === 0) {
+        run(["spawn", udid, "launchctl", "unsetenv", "DYLD_INSERT_LIBRARIES"]);
+      } else {
+        run(["spawn", udid, "launchctl", "setenv", "DYLD_INSERT_LIBRARIES", remaining.join(":")]);
+      }
+      run(["spawn", udid, "launchctl", "unsetenv", "SIMNET_PROXY_PORT_FILE"]);
+    });
+  } catch (error) {
+    if (isDeviceUnavailable(error)) return;
+    throw error;
   }
 }
 

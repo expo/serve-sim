@@ -20,7 +20,7 @@ function simpbFiles(pkgDir: string): string[] {
 export async function stageGuest(guest: TartGuest): Promise<void> {
   const { pkgDir } = guest.config;
   await guest.ssh(
-    `rm -rf ${GUEST_SIMPB} ${GUEST_PKG}/src ${GUEST_PKG}/dist ${GUEST_PKG}/node_modules && mkdir -p ${GUEST_SIMPB} ${GUEST_PKG}`,
+    `rm -rf ${GUEST_SIMPB} ${GUEST_PKG}/src ${GUEST_PKG}/dist ${GUEST_PKG}/Sources ${GUEST_PKG}/node_modules && mkdir -p ${GUEST_SIMPB} ${GUEST_PKG}`,
   );
 
   const binaries = simpbFiles(pkgDir);
@@ -30,7 +30,9 @@ export async function stageGuest(guest: TartGuest): Promise<void> {
     await guest.tarTo(join(pkgDir, "dist", "simpb"), ["PasteboardFixture.app"], GUEST_SIMPB);
   }
 
-  const extras = ["bun.lock", "bun.lockb", "dev.ts", "dist"].filter((name) => existsSync(join(pkgDir, name)));
+  const extras = ["bun.lock", "bun.lockb", "dev.ts", "dist", "Sources"].filter((name) =>
+    existsSync(join(pkgDir, name)),
+  );
   await guest.tarTo(pkgDir, ["src", "package.json", ...extras], GUEST_PKG);
 }
 
@@ -58,6 +60,7 @@ xattr -cr ${GUEST_SIMPB} 2>/dev/null || true
 export SERVE_SIM_SIMPB_DIR=${GUEST_SIMPB}
 ln -sfn ${shareModules} ${GUEST_PKG}/node_modules
 cd ${GUEST_PKG}
+bash Sources/build-test-fixtures.sh
 echo "user=$(whoami) console=$(stat -f %Su /dev/console) pwd=$PWD simpb=$SERVE_SIM_SIMPB_DIR"
 exec bun test --max-concurrency=1 ${quoted}
 `);

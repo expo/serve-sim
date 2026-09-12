@@ -1,5 +1,6 @@
+import { e2eDevice } from "./e2e-preconditions";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { execFileSync, execSync, spawnSync } from "child_process";
+import { execFileSync, spawnSync } from "child_process";
 import { join } from "path";
 import { parseDetachState } from "./detach-state";
 
@@ -22,21 +23,6 @@ const TAG_KEYFRAME = 0x02;
 const TAG_DELTA = 0x03;
 const TAG_SEED = 0x04;
 
-function firstBootedIosSim(): string | null {
-  try {
-    const out = execSync("xcrun simctl list devices booted -j", { encoding: "utf-8" });
-    const data = JSON.parse(out) as {
-      devices: Record<string, Array<{ udid: string; state: string }>>;
-    };
-    for (const [runtime, devices] of Object.entries(data.devices)) {
-      if (!runtime.includes("iOS")) continue;
-      for (const device of devices) {
-        if (device.state === "Booted") return device.udid;
-      }
-    }
-  } catch {}
-  return null;
-}
 
 /** Parse a length-prefixed AVCC byte stream into tags plus consumed bytes. */
 function* parseEnvelope(buffer: Uint8Array): Generator<{ tag: number; consumed: number }> {
@@ -51,7 +37,7 @@ function* parseEnvelope(buffer: Uint8Array): Generator<{ tag: number; consumed: 
   }
 }
 
-const bootedUdid = firstBootedIosSim();
+const bootedUdid = e2eDevice();
 const describeWithSim = bootedUdid ? describe : describe.skip;
 
 describeWithSim(`serve-sim AVCC endpoint (booted sim ${bootedUdid ?? "<skipped>"})`, () => {

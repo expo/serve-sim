@@ -1,3 +1,4 @@
+import { e2eDevice } from "./e2e-preconditions";
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { execSync, spawnSync } from "child_process";
 import { readFileSync } from "fs";
@@ -25,21 +26,7 @@ import { freePortAsync } from "./helpers";
 
 const CLI_PATH = join(import.meta.dir, "../../src/index.ts");
 
-function firstBootedIosSim(): string | null {
-  try {
-    const out = execSync("xcrun simctl list devices booted -j", { encoding: "utf-8" });
-    const data = JSON.parse(out) as {
-      devices: Record<string, Array<{ udid: string; state: string }>>;
-    };
-    for (const [runtime, devs] of Object.entries(data.devices)) {
-      if (!runtime.includes("iOS")) continue;
-      for (const d of devs) if (d.state === "Booted") return d.udid;
-    }
-  } catch {}
-  return null;
-}
-
-const bootedUdid = firstBootedIosSim();
+const bootedUdid = e2eDevice();
 const describeWithSim = bootedUdid ? describe : describe.skip;
 
 describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, () => {
@@ -52,7 +39,7 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
     const detach = spawnSync("bun", ["run", CLI_PATH, "--detach", "-p", String(startPort), bootedUdid!], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "inherit"],
-      timeout: 45_000,
+      timeout: 120_000,
       // Surface the per-event `[hid] Key …` lines this test asserts on; the
       // env propagates to the detached `serve` child the CLI re-execs.
       env: { ...process.env, SERVE_SIM_DEBUG_HID: "1" },
@@ -64,7 +51,7 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
     }
     const state = parseDetachState<{ device: string }>(detach.stdout);
     logFile = join(stateDir(), `server-${state.device}.log`);
-  }, 60_000);
+  }, 180_000);
 
   afterAll(() => {
     try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe" }); } catch {}

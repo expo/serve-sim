@@ -1,3 +1,4 @@
+import { e2eDevice } from "./e2e-preconditions";
 import { beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync, execSync } from "child_process";
 import { existsSync } from "fs";
@@ -17,32 +18,13 @@ const REAL_APP = "com.apple.mobilecal";
 const PKG_DIR = join(import.meta.dir, "../..");
 const CLI = join(PKG_DIR, "dist/serve-sim.js");
 
-function bootedUdid(): string | null {
-  try {
-    const out = execSync("xcrun simctl list devices booted -j", { encoding: "utf-8" });
-    const data = JSON.parse(out) as {
-      devices: Record<string, Array<{ udid: string; state: string }>>;
-    };
-    // Prefer an iOS device — a dev machine may also have a booted watchOS or
-    // tvOS sim, which don't share the same permission state layout.
-    for (const [runtime, devices] of Object.entries(data.devices)) {
-      if (!/iOS/i.test(runtime)) continue;
-      for (const d of devices) if (d.state === "Booted") return d.udid;
-    }
-    for (const devices of Object.values(data.devices)) {
-      for (const d of devices) if (d.state === "Booted") return d.udid;
-    }
-  } catch {}
-  return null;
-}
-
-const udid = bootedUdid();
+const udid = e2eDevice();
 // Needs both a booted iOS sim and the built CLI. CI builds serve-sim before
 // running this directory; locally, run `bun run build.ts` first or it skips.
 const describeIfSim = udid && existsSync(CLI) ? describe : describe.skip;
 
 function cli(...args: string[]): string {
-  return execFileSync("node", [CLI, "permissions", ...args], { encoding: "utf-8" });
+  return execFileSync("node", [CLI, "permissions", ...args, "-d", udid!], { encoding: "utf-8" });
 }
 
 function libDir(): string {

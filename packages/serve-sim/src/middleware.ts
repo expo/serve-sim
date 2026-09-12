@@ -1029,14 +1029,7 @@ function attachHidInProcess(
   return true;
 }
 
-/**
- * SSE routes the exec WebSocket may proxy.
- *
- * The bridge refuses anything not listed here, and refuses it by ending the subscription — which the
- * client can only report as a dropped stream. A route added to the middleware but forgotten here
- * therefore works over plain HTTP and fails only in the browser, with no usable diagnosis. Exported so a
- * test can hold this list against the endpoints the preview config advertises.
- */
+// Keep the exec bridge allowlist aligned with preview SSE endpoints.
 export function sseStreamPaths(base: string): string[] {
   return [
     `${base}/api/events`,
@@ -1583,11 +1576,7 @@ export interface SimMiddlewareOptions {
    */
   metricsCorsOrigins?: string[];
   frameAncestors?: string[];
-  /**
-   * When true (standalone `serve-sim --network-capture`), every device this
-   * middleware boots or starts also gets capture enabled — not only the ones
-   * passed on the CLI at process start.
-   */
+  /** Enable capture for devices started through this middleware. */
   networkCapture?: boolean;
   /** @deprecated Use `streamSettings: { transport: "http", codec }`. */
   codec?: string;
@@ -1782,8 +1771,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   };
 /** Reachable without the session token: liveness probes cannot carry one. */
   const UNGATED_PATHS = ["/healthz", "/readyz"];
-  // Capture routes carry decrypted traffic, so they need the token even when the rest of the
-  // surface is open. Prefix match, so a new capture route is gated before it is written.
+  // Capture routes always require authentication, including future subroutes.
   const ALWAYS_GATED_PREFIX = "/network-capture";
 
   const connectMiddleware = (async (req: SimReq, res: SimRes, next?: SimNext) => {
@@ -2751,8 +2739,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       recordActionEvent(action, params, result);
     },
     onSseRequest(path, websocketRequest) {
-      // WS channel is already token-gated; forward the bearer so capture SSE
-      // (and other gated streams) accept this internal hop.
       const url = new URL(path, websocketRequest.url);
       // The exec channel already authenticated, so its fan-out carries the token past the gate.
       return fetchMiddleware(new Request(url, {

@@ -236,8 +236,7 @@ export function upgradeAuthHeaders(
   return headers;
 }
 
-// Capture responses carry decrypted traffic, so a bearer alone is not enough: a cross-origin page
-// holding a leaked token must not read them, and a state-changing POST must not be CORS-simple.
+// Capture requires same-origin access and non-simple POSTs.
 export function assertCaptureAccess(req: SessionAuthReq, res: SessionAuthRes): boolean {
   if (!isSameOriginRequest(req.headers)) {
     res.writeHead(403, { "Content-Type": "application/json", "Cache-Control": "no-store, private" });

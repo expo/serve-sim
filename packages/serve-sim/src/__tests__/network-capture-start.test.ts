@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
+import { startCaptureForDevice } from "../capture/start";
+
 import {
   disableNetworkCaptureForStoppedDevice,
   enableNetworkCaptureForStartedDevice,
@@ -63,5 +65,43 @@ describe("disableNetworkCaptureForStoppedDevice", () => {
       disable: async (udid) => void disabled.push(udid),
     });
     expect(disabled).toEqual(["UDID-3"]);
+  });
+});
+
+describe("capture startup cancellation", () => {
+  test("does not arm another device after an in-flight start is cancelled", async () => {
+    let stopping = false;
+    let cancel!: (error: Error) => void;
+    const pending = new Promise<never>((_resolve, reject) => { cancel = reject; });
+    const enabled: string[] = [];
+    const start = async () => {
+      for (const udid of ["FIRST", "SECOND"]) {
+        await startCaptureForDevice(udid, {
+          shouldStop: () => stopping,
+          enable: async (device) => {
+            enabled.push(device);
+            return pending;
+          },
+        });
+      }
+    };
+    const starting = start();
+    expect(enabled).toEqual(["FIRST"]);
+    stopping = true;
+    cancel(new Error("capture was cancelled"));
+    await starting;
+    expect(enabled).toEqual(["FIRST"]);
+  });
+
+  test("does not enable capture when shutdown has already begun", async () => {
+    let enabled = false;
+    await startCaptureForDevice("DEVICE", {
+      shouldStop: () => true,
+      enable: async () => {
+        enabled = true;
+        return { proxyAddress: "127.0.0.1:1" };
+      },
+    });
+    expect(enabled).toBe(false);
   });
 });

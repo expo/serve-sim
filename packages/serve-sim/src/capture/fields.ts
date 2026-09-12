@@ -1,11 +1,9 @@
 import type { CapturedBody } from "./store";
 
-/** Allowlisted pieces of each captured exchange (CLI: `--network-capture-field`). */
 export const CAPTURE_FIELDS = ["header", "query", "request-body", "response-body"] as const;
 
 export type CaptureField = (typeof CAPTURE_FIELDS)[number];
 
-/** Everything beyond metadata is opt-in: it can carry a credential, and body capture has no redaction. */
 export const DEFAULT_CAPTURE_FIELDS: readonly CaptureField[] = [];
 
 const CAPTURE_FIELD_SET = new Set<string>(CAPTURE_FIELDS);
@@ -14,32 +12,21 @@ export function isCaptureField(value: string): value is CaptureField {
   return CAPTURE_FIELD_SET.has(value);
 }
 
-/**
- * Parse CLI / config field tokens. Accepts repeated flags and comma-separated
- * lists (`header,request-body`). Dedupes; rejects unknown names.
- */
 export function parseCaptureFields(values: readonly string[]): CaptureField[] {
-  const out: CaptureField[] = [];
   const seen = new Set<CaptureField>();
-  for (const raw of values) {
-    for (const part of raw.split(",")) {
-      const value = part.trim().toLowerCase();
-      if (!value) continue;
-      if (!isCaptureField(value)) {
-        throw new Error(
-          `Unknown network capture field '${part.trim()}'. Supported: ${CAPTURE_FIELDS.join(", ")}.`,
-        );
-      }
-      if (!seen.has(value)) {
-        seen.add(value);
-        out.push(value);
-      }
+  for (const part of values.flatMap((value) => value.split(","))) {
+    const value = part.trim().toLowerCase();
+    if (!value) continue;
+    if (!isCaptureField(value)) {
+      throw new Error(
+        `Unknown network capture field '${part.trim()}'. Supported: ${CAPTURE_FIELDS.join(", ")}.`,
+      );
     }
+    seen.add(value);
   }
-  return out;
+  return [...seen];
 }
 
-/** Resolve fields for a session: explicit list, or {@link DEFAULT_CAPTURE_FIELDS} when empty. */
 export function resolveCaptureFields(values: readonly string[] | undefined): CaptureField[] {
   if (!values || values.length === 0) return [...DEFAULT_CAPTURE_FIELDS];
   return parseCaptureFields(values);
@@ -49,22 +36,21 @@ export function captureFieldSet(fields: readonly CaptureField[]): ReadonlySet<Ca
   return new Set(fields);
 }
 
-/** Drop disallowed header/body slots before store / disk / HAR. */
 export function applyCaptureFields(
   body: CapturedBody,
   fields: ReadonlySet<CaptureField>,
 ): CapturedBody {
-  const keepHeaders = fields.has("header");
-  const keepRequest = fields.has("request-body");
-  const keepResponse = fields.has("response-body");
+  const headers = fields.has("header");
+  const requestBody = fields.has("request-body");
+  const responseBody = fields.has("response-body");
   return {
-    requestHeaders: keepHeaders ? body.requestHeaders : {},
-    responseHeaders: keepHeaders ? body.responseHeaders : {},
-    requestBody: keepRequest ? body.requestBody : null,
-    responseBody: keepResponse ? body.responseBody : null,
-    requestTruncated: keepRequest ? body.requestTruncated : false,
-    responseTruncated: keepResponse ? body.responseTruncated : false,
-    requestBinary: keepRequest ? body.requestBinary : false,
-    responseBinary: keepResponse ? body.responseBinary : false,
+    requestHeaders: headers ? body.requestHeaders : {},
+    responseHeaders: headers ? body.responseHeaders : {},
+    requestBody: requestBody ? body.requestBody : null,
+    responseBody: responseBody ? body.responseBody : null,
+    requestTruncated: requestBody && body.requestTruncated,
+    responseTruncated: responseBody && body.responseTruncated,
+    requestBinary: requestBody && body.requestBinary,
+    responseBinary: responseBody && body.responseBinary,
   };
 }

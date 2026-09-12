@@ -5,7 +5,7 @@
 // an empty list. Here a real app runs in a real simulator and its request has to arrive on a real socket.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -17,10 +17,10 @@ import { e2eDevice, requireE2E } from "./e2e-preconditions";
 const BUNDLE_ID = "dev.expo.serve-sim.simnet-probe";
 const PROBE_HOST = "simnet-probe.test";
 const DYLIB = resolve(import.meta.dir, "../../dist/simnet/libSimNetProxy.dylib");
-const BUILD_SCRIPT = resolve(import.meta.dir, "fixtures/SimNetProbe/build.sh");
+const PROBE_APP = resolve(import.meta.dir, "../../dist/capability-loader/SimNetProbe.app");
 
 const udid = e2eDevice();
-const canRun = !!udid && existsSync(DYLIB);
+const canRun = !!udid && existsSync(DYLIB) && existsSync(PROBE_APP);
 const describeOrSkip = canRun ? describe : describe.skip;
 requireE2E("simnet injection", canRun);
 
@@ -96,9 +96,7 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
       spawnSync("xcrun", ["simctl", "spawn", udid!, "launchctl", "unsetenv", name], { stdio: "ignore" });
     }
     appDir = mkdtempSync(join(tmpdir(), "simnet-probe-"));
-    chmodSync(BUILD_SCRIPT, 0o755);
-    execFileSync("bash", [BUILD_SCRIPT, appDir], { stdio: "pipe", timeout: 180_000 });
-    execFileSync("xcrun", ["simctl", "install", udid!, join(appDir, "SimNetProbe.app")], {
+    execFileSync("xcrun", ["simctl", "install", udid!, PROBE_APP], {
       stdio: "pipe",
       timeout: 60_000,
     });
@@ -108,6 +106,7 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
     // The fixture app is the only thing this test adds to the device, and it does not outlive the test.
     terminateProbeApp();
     spawnSync("xcrun", ["simctl", "uninstall", udid!, BUNDLE_ID], { stdio: "ignore" });
+    // Only the port files this test writes; the app itself comes from dist.
     if (appDir) rmSync(appDir, { recursive: true, force: true });
   });
 

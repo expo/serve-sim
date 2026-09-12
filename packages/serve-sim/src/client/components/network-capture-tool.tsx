@@ -157,7 +157,7 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
                 aria-label="Group by domain"
                 aria-pressed={grouped}
                 onClick={() => setGrouped((on) => !on)}
-                className={`rounded p-1 ${grouped ? "bg-sky-500/15 text-sky-300" : "text-white/40 hover:bg-white/10"}`}
+                className={`rounded p-1 ${grouped ? "bg-sky-500/15 text-sky-300" : "text-white/70 hover:bg-white/10"}`}
               >
                 <Folder aria-hidden="true" className="w-3.5 h-3.5" />
               </button>
@@ -166,7 +166,7 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
                 aria-label="Clear the live request list"
                 title="Clear the live request list"
                 onClick={clear}
-                className="rounded p-1 text-white/40 hover:bg-white/10"
+                className="rounded p-1 text-white/70 hover:bg-white/10"
               >
                 <Ban aria-hidden="true" className="w-3.5 h-3.5" />
               </button>

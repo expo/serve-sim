@@ -24,6 +24,7 @@ const ARM64_MACH_O_ARTIFACTS = [
   "dist/simcam/libSimCameraInjector.dylib",
   "dist/simcam/serve-sim-camera-helper",
   "dist/simax/serve-sim-ax-settings",
+  "dist/capability-loader/libServeSimCapabilityLoader.dylib",
 ] as const;
 
 // CI builds dist before running this directory; locally, run

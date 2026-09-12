@@ -22,6 +22,20 @@ import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from ".
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
 import { isLoopbackHost } from "./middleware-utils";
 import { launchAppAsync } from "./launch-app";
+import {
+  assertKnownCapabilities,
+  hasDefaultCapabilities,
+} from "./capabilities";
+import {
+  applyDefaultCapabilities,
+  armCapabilityLoader,
+  devicesArmedHere,
+  disarmStaleCapabilityLoader,
+  releaseSessionSync,
+  releaseSession,
+  stopLaunchSession,
+  waitForLaunchUpdates,
+} from "./launch-manager";
 import { killOwnListeners } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
@@ -358,7 +372,47 @@ async function ensureBooted(udid: string): Promise<void> {
       process.exit(1);
     }
   }
+
+  // Only clean up a capability loader an earlier session left behind. Arming belongs to
+  // launchApp and enableCapabilities: this runs in the stream helper too, and a
+  // helper arming after its parent disarmed would leave the insert set.
+  await disarmStaleCapabilityLoader(udid);
 }
+
+/**
+ * Clears only the simulators this process armed. The insert and the config are
+ * shared by every serve-sim on a device, so a session that armed nothing must
+ * leave another session's capabilities alone. Runs at most once per device.
+ */
+function disarmDevicesArmedHere(): void {
+  for (const udid of devicesArmedHere()) {
+    try {
+      releaseSessionSync(udid, process.pid, (capability) => {
+        if (capability.name === "camera") stopExistingHelper(udid);
+      });
+    } catch (error) {
+      console.error(`Could not clean up capabilities on ${udid}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
+let sessionStopping = false;
+let releasingDevices: Promise<void> | undefined;
+
+function disarmDevicesArmedHereAsync(): Promise<void> {
+  return releasingDevices ??= (async () => {
+    await waitForLaunchUpdates();
+    for (const udid of devicesArmedHere()) {
+      await releaseSession(udid, process.pid, (capability) => {
+        if (capability.name === "camera") stopExistingHelper(udid);
+      });
+    }
+  })();
+}
+
+// A stream helper outlives the session that spawned it, so it must not arm the
+// device: arming after its parent disarmed would leave the insert set for good.
+const STREAM_HELPER_ENV = "SERVE_SIM_STREAM_HELPER";
 
 // ─── Preview server lifecycle ───
 
@@ -406,6 +460,7 @@ async function startHelper(
   const child = nodeSpawn(command, args, {
     detached: opts.detach,
     stdio: ["ignore", logFd, logFd],
+    env: { ...process.env, [STREAM_HELPER_ENV]: "1" },
   });
   closeSync(logFd);
   if (opts.detach) child.unref();
@@ -515,15 +570,17 @@ async function follow(
 
   let shuttingDown = false;
 
-  const cleanup = (exitCode: number) => {
+  const cleanup = async (exitCode: number) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    sessionStopping = true;
     if (!quiet) console.log("\nShutting down...");
     for (const [udid, child] of children) {
       const pid = child.pid;
       if (pid) stopProcess(pid);
       clearState(udid);
     }
+    await disarmDevicesArmedHereAsync();
     children.clear();
     process.exit(exitCode);
   };
@@ -659,31 +716,19 @@ function listStreams(deviceArg?: string) {
 }
 
 /** Kill running streams (--kill). */
-function killStreams(deviceArg?: string) {
-  if (deviceArg) {
-    const udid = resolveDevice(deviceArg);
-    const state = readState(udid);
-    if (!state) {
-      console.log(JSON.stringify({ disconnected: true, device: udid }));
-      return;
-    }
-    try { process.kill(state.pid, "SIGTERM"); } catch {}
-    clearState(udid);
-    console.log(JSON.stringify({ disconnected: true, device: state.device }));
-  } else {
-    const states = readAllStates();
-    if (states.length === 0) {
-      console.log(JSON.stringify({ disconnected: true, devices: [] }));
-      return;
-    }
-    const devices: string[] = [];
-    for (const state of states) {
-      try { process.kill(state.pid, "SIGTERM"); } catch {}
-      devices.push(state.device);
-    }
-    clearState();
-    console.log(JSON.stringify({ disconnected: true, devices }));
+async function killStreams(deviceArg?: string): Promise<void> {
+  const udid = deviceArg ? resolveDevice(deviceArg) : undefined;
+  const state = udid ? readState(udid) : null;
+  const states = udid ? (state ? [state] : []) : readAllStates();
+  for (const current of states) {
+    await stopLaunchSession(current.device, current.pid, (capability) => {
+      if (capability.name === "camera") stopExistingHelper(current.device);
+    });
+    clearServeSimState(current.device, current.pid);
   }
+  console.log(JSON.stringify(udid
+    ? { disconnected: true, device: udid }
+    : { disconnected: true, devices: states.map((current) => current.device) }));
 }
 
 async function eventLog(
@@ -1725,6 +1770,7 @@ async function serve(
     for (const udid of targetDevices) {
       try { clearServeSimState(udid, process.pid); } catch {}
     }
+    disarmDevicesArmedHere();
   };
   process.on("exit", clearAll);
 
@@ -1770,9 +1816,15 @@ async function serve(
     console.log("");
   }
 
-  // Exit cleanly on Ctrl+C
-  process.on("SIGINT", () => process.exit(0));
-  process.on("SIGTERM", () => process.exit(0));
+  const shutdown = async () => {
+    sessionStopping = true;
+    await disarmDevicesArmedHereAsync();
+    clearAll();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  process.on("SIGHUP", shutdown);
   await new Promise(() => {});
 }
 
@@ -1831,6 +1883,16 @@ program
   .option(
     "--launch-arg <arg>",
     "Argument passed to the app when it launches. Repeat for multiple arguments.",
+    (value: string, previous: string[] = []) => [...previous, value],
+  )
+  .option(
+    "--enable <capability>",
+    "Turn on a capability that is off by default. Repeat for multiple.",
+    (value: string, previous: string[] = []) => [...previous, value],
+  )
+  .option(
+    "--disable <capability>",
+    "Turn off a capability that is on by default. Repeat for multiple.",
     (value: string, previous: string[] = []) => [...previous, value],
   )
   .option(
@@ -1951,7 +2013,7 @@ Examples:
       return;
     }
     if (opts.kill !== undefined) {
-      killStreams(typeof opts.kill === "string" ? opts.kill : undefined);
+      await killStreams(typeof opts.kill === "string" ? opts.kill : undefined);
       return;
     }
     if (opts.transport !== "http" && opts.transport !== "webrtc") {
@@ -2032,17 +2094,25 @@ Examples:
       );
       process.exit(1);
     }
-    let targets = devices;
-    if (bundleId) {
-      try {
-        targets = resolveTargetDevices(devices);
-        for (const udid of targets) await ensureBooted(udid);
-        for (const udid of targets) await launchAppAsync(udid, { bundleId, launchArgs, openUrl });
-      } catch (error) {
-        console.error(error instanceof Error ? error.message : error);
-        process.exit(1);
-      }
+    const capabilities: { enable: string[]; disable: string[] } = {
+      enable: (opts.enable as string[] | undefined) ?? [],
+      disable: (opts.disable as string[] | undefined) ?? [],
+    };
+    try {
+      assertKnownCapabilities([...capabilities.enable, ...capabilities.disable]);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : error);
+      process.exit(1);
     }
+    // Only take over device selection when something has to happen before the
+    // run mode starts. Otherwise follow and detach pick their own target, as
+    // they did before this flag existed.
+    const launchesBeforeStreaming =
+      Boolean(bundleId) ||
+      capabilities.enable.length > 0 ||
+      capabilities.disable.length > 0 ||
+      hasDefaultCapabilities();
+
     const startPort: number | undefined = opts.port;
     const streamOptionsProvided = wasProvided("transport")
       || wasProvided("codec")
@@ -2071,6 +2141,58 @@ Examples:
       );
       process.exit(1);
     }
+    let targets = devices;
+    if (!opts.detach) {
+      try {
+        targets = resolveTargetDevices(devices);
+        // The capability loader is armed for the whole session, not when a capability
+        // turns on: an app only carries it if it was inserted at launch, so
+        // arming late means the app it was armed for cannot receive anything
+        // until it restarts. It loads nothing on its own, so an app that never
+        // gets a capability pays a libSystem-only dylib and nothing else.
+        {
+          process.on("exit", disarmDevicesArmedHere);
+          for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+            process.on(signal, async () => {
+              sessionStopping = true;
+              await disarmDevicesArmedHereAsync();
+              if (process.listenerCount(signal) > 1) return;
+              process.exit(0);
+            });
+          }
+        }
+        for (const udid of targets) {
+          await ensureBooted(udid);
+          if (sessionStopping) return;
+        }
+        if (process.env[STREAM_HELPER_ENV] !== "1") {
+          for (const udid of targets) {
+            await armCapabilityLoader(udid);
+            if (sessionStopping) return;
+          }
+        }
+        for (const udid of launchesBeforeStreaming ? targets : []) {
+          if (sessionStopping) return;
+          if (bundleId) {
+            await launchAppAsync(udid, { bundleId, launchArgs, openUrl, capabilities });
+          } else {
+            const applied = await applyDefaultCapabilities(udid, null, capabilities);
+            const missing = capabilities.enable.filter((name) => !applied.includes(name));
+            if (missing.length > 0) {
+              console.error(
+                `Requested ${missing.join(", ")} but ${missing.length === 1 ? "it" : "they"} ` +
+                  `did not apply on ${udid}. See the message above for why.`,
+              );
+              process.exit(1);
+            }
+          }
+        }
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : error);
+        process.exit(1);
+      }
+    }
+    if (sessionStopping) return;
     if (opts.detach) {
       const states = await detach(targets, startPort ?? 3100, stream, streamOptionsProvided);
       printStatesJSON(states);
@@ -2185,5 +2307,6 @@ program
   .helpOption(false)
   .argument("[args...]")
   .action((args: string[]) => uiSettings(args));
+
 
 await program.parseAsync(process.argv);

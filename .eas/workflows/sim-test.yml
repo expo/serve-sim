@@ -35,6 +35,10 @@ jobs:
         run: bun run build.ts
         working_directory: packages/serve-sim
 
+      - name: Build native test fixtures
+        run: bash Sources/build-test-fixtures.sh
+        working_directory: packages/serve-sim
+
       # Packed before the tests run so the tarball exists even when they fail:
       # a build is often worth trying on a device precisely because the tests
       # did not settle the question.
@@ -56,6 +60,9 @@ jobs:
         uses: eas/start_ios_simulator
 
       - name: Run serve-sim tests
+        # An unmet precondition fails instead of skipping; see e2e-preconditions.ts.
+        env:
+          SERVE_SIM_E2E_REQUIRED: "1"
         run: |
           run_tests() {
             bun test --max-concurrency=1 packages/serve-sim/src/__tests__/ &

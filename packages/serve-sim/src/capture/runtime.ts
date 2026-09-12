@@ -106,6 +106,7 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   const byUdid = new Map<string, CaptureSession>();
   const operations = new DeviceOperationQueue();
   const enables = new Map<string, EnableRequest>();
+  let serverEnabled = false;
 
   const tearDownSession = async (udid: string, session: CaptureSession): Promise<void> => {
     session.cleanup ??= (async () => {
@@ -147,6 +148,14 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   return {
     setFields(next: readonly CaptureField[]): void {
       policy = next;
+    },
+
+    getServerEnabled(): boolean {
+      return serverEnabled;
+    },
+
+    setServerEnabled(next: boolean): void {
+      serverEnabled = next;
     },
 
     enableForDevice(udid: string): Promise<CaptureMeta> {

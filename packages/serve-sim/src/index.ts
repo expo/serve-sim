@@ -37,6 +37,7 @@ import {
   stopLaunchSession,
   waitForLaunchUpdates,
 } from "./launch-manager";
+import { parseCaptureFields } from "./capture/fields";
 import { killOwnListeners } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
@@ -52,6 +53,10 @@ import { MAX_MJPEG_STREAM_FPS, MAX_VIDEO_STREAM_FPS } from "./stream-settings";
 
 // `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
 // CLI works under plain `node` too.
+// Covers disabling capture and disarming the loader together. One device's capture teardown is a HAR
+// flush, four `simctl spawn` calls and a proxy that gets up to 5s to stop, so a smaller budget abandons
+// healthy teardowns and leaves the simulator armed.
+const SHUTDOWN_TIMEOUT_MS = 20_000;
 const __dirname = dirnameOf(import.meta.url);
 
 // Stamped in at build time (see build.ts), mirroring __PREVIEW_HTML_B64__. In
@@ -1088,6 +1093,47 @@ function resolveTargetDevices(devices: string[]): string[] {
   return [fallback.udid];
 }
 
+// Kept so a synchronous exit can still reach the capture module; `import()` cannot be awaited there.
+let loadedCapture: typeof import("./capture") | null = null;
+
+function clearCaptureInjectionSync(udids: readonly string[]): void {
+  if (!loadedCapture) return;
+  for (const udid of udids) {
+    try {
+      loadedCapture.clearBootInjectionSync(udid);
+    } catch (error) {
+      console.error(
+        `Could not clear network capture on ${udid}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+}
+
+async function startNetworkCapture(
+  udids: string[],
+  fields: string[] | undefined,
+  quiet: boolean,
+): Promise<void> {
+  const capture = await import("./capture");
+  loadedCapture = capture;
+  capture.captureRuntime.setServerEnabled(true);
+  capture.captureRuntime.setFields(capture.resolveCaptureFields(fields));
+  for (const udid of udids) {
+    if (capture.captureRuntime.metaFor(udid).attachment === "capturing") continue;
+    await capture.startCaptureForDevice(udid, {
+      onStarted: (meta) => {
+        if (quiet) return;
+        console.log(
+          `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from third-party apps on ` +
+            "this device is recorded for the whole boot session (Apple system apps like Safari are left unproxied); " +
+            "HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
+        );
+      },
+      onFailed: (reason) => console.error(`Network capture could not start for ${udid}. ${reason}`),
+    });
+  }
+}
+
 async function serve(
   servePort: number,
   devices: string[],
@@ -1095,11 +1141,13 @@ async function serve(
   host: string,
   options: {
     stream?: StreamRuntimeOptions;
+    networkCaptureFields?: string[];
     metricsCorsOrigins?: string[];
     frameAncestors?: string[];
     debugStreamPath?: string;
     requireToken?: boolean;
     quiet?: boolean;
+    networkCapture?: boolean;
   } = {},
 ) {
   const quiet = !!options.quiet;
@@ -1123,6 +1171,9 @@ async function serve(
   }
   const targetDevice = targetDevices[0];
 
+  const capture = options.networkCapture ? await import("./capture") : null;
+  if (capture) await startNetworkCapture(targetDevices, options.networkCaptureFields, quiet);
+
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
   // it can route helper/DevTools sockets through the single preview port.
@@ -1136,6 +1187,7 @@ async function serve(
     proxyHelpers: true,
     metricsCorsOrigins: options.metricsCorsOrigins ?? [],
     frameAncestors: options.frameAncestors ?? [],
+    networkCapture: !!options.networkCapture,
     execToken: previewToken,
     requirePreviewToken,
   });
@@ -1213,9 +1265,9 @@ async function serve(
       console.log(
         requirePreviewToken
           ? "  This server is listening on the network. The links above carry a token because anyone who " +
-            "has it can run commands on this machine."
+            "has it can read captured traffic and run commands on this machine."
           : "  This server is listening on the network with no token required. Anyone who can reach it can " +
-            "run commands on this machine. Pass --require-token to gate it.",
+            "read captured traffic and run commands on this machine. Pass --require-token to gate it.",
       );
     } else if (networkIP) {
       console.log(`  - Network: \x1b[2muse --host 0.0.0.0 to expose on http://${networkIP}:${boundPort}\x1b[0m`);
@@ -1225,9 +1277,16 @@ async function serve(
     console.log("");
   }
 
+  // Capture is stopped before the devices are disarmed, so a device is never left pointing new launches
+  // at a proxy that is already gone. One budget for both: disabling capture takes the launch state lock,
+  // so bounding only that step leaves the disarm waiting on the work the bound just abandoned.
   const shutdown = async () => {
     sessionStopping = true;
-    await disarmDevicesArmedHereAsync();
+    const teardown = (async () => {
+      if (capture) await capture.captureRuntime.disableAll().catch(() => {});
+      await disarmDevicesArmedHereAsync();
+    })();
+    await Promise.race([teardown, new Promise((done) => setTimeout(done, SHUTDOWN_TIMEOUT_MS))]);
     clearAll();
     process.exit(0);
   };
@@ -1284,6 +1343,29 @@ program
   .option("--detach", "Spawn helper and exit (daemon mode)")
   .option("-q, --quiet", "Suppress human-readable output, JSON only")
   .option("--no-preview", "Skip the web preview server; stream in foreground only")
+  .option(
+    "--network-capture-field <field>",
+    "What network capture may keep, beyond method/URL/status/timing/size: header, query, request-body, " +
+      "response-body. Repeatable or comma-separated. Default: none of them, because each can carry " +
+      "credentials and only header names are redacted.",
+    (value: string, prev: string[]) => {
+      // Rejected here, like --codec, so a typo fails at the flag instead of silently capturing less.
+      try {
+        parseCaptureFields([value]);
+      } catch (error) {
+        throw new InvalidArgumentError(error instanceof Error ? error.message : String(error));
+      }
+      return [...prev, value];
+    },
+    [] as string[],
+  )
+  .option(
+    "--network-capture",
+    "Record HTTP(S) traffic for devices this process starts or boots (CLI args and the device sidebar). " +
+      "Covers third-party apps and their startup requests; Apple system apps (e.g. Safari) are left unproxied. " +
+      "HTTPS is decrypted for the whole boot session and certificate-pinned apps will refuse to connect. " +
+      "Requires mitmproxy. Relaunch apps after enabling so they pick up the proxy.",
+  )
   .option("--transport <http|webrtc>", "Stream transport", "http")
   .option(
     "--launch-app-identifier <id>",
@@ -1429,6 +1511,13 @@ Examples:
       console.error("--transport must be one of: http, webrtc.");
       process.exit(1);
     }
+    if (opts.networkCaptureField?.length && !opts.networkCapture) {
+      console.error(
+        "--network-capture-field only applies with --network-capture, which is off, so nothing would " +
+          "be captured. Add --network-capture, or drop the field flag.",
+      );
+      process.exit(1);
+    }
     const wasProvided = (name: string) => program.getOptionValueSource(name) === "cli";
     const webRtcOptionProvided = [
       "webrtcCodec",
@@ -1543,6 +1632,13 @@ Examples:
         process.exit(1);
       }
     }
+    if (opts.networkCapture && (opts.detach || opts.preview === false)) {
+      console.error(
+        "--network-capture needs the preview server, so drop --detach/--no-preview. The proxy and its " +
+          "recordings live in that process; these modes exit and would leave nothing capturing.",
+      );
+      process.exit(1);
+    }
     if (opts.requireToken && (opts.detach || opts.preview === false)) {
       console.error(
         "--require-token needs the preview server, so drop --detach/--no-preview. It gates the " +
@@ -1551,6 +1647,14 @@ Examples:
       process.exit(1);
     }
     let targets = devices;
+    // Capture is armed before the run mode starts, so every path out of here has to disarm it again.
+    let captureStarted = false;
+    const stopNetworkCapture = async () => {
+      if (!captureStarted) return;
+      captureStarted = false;
+      const capture = await import("./capture");
+      await capture.captureRuntime.disableAll().catch(() => {});
+    };
     if (!opts.detach) {
       try {
         targets = resolveTargetDevices(devices);
@@ -1560,10 +1664,14 @@ Examples:
         // until it restarts. It loads nothing on its own, so an app that never
         // gets a capability pays a libSystem-only dylib and nothing else.
         {
-          process.on("exit", disarmDevicesArmedHere);
+          process.on("exit", () => {
+            if (captureStarted) clearCaptureInjectionSync(targets);
+            disarmDevicesArmedHere();
+          });
           for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
             process.on(signal, async () => {
               sessionStopping = true;
+              await stopNetworkCapture();
               await disarmDevicesArmedHereAsync();
               if (process.listenerCount(signal) > 1) return;
               process.exit(0);
@@ -1580,6 +1688,13 @@ Examples:
             if (sessionStopping) return;
           }
         }
+        if (opts.networkCapture) {
+          // Set first: enableForDevice arms each device in turn, and a signal arriving part way through
+          // has to find a teardown that knows about the ones already armed.
+          captureStarted = true;
+          await startNetworkCapture(targets, opts.networkCaptureField, !!opts.quiet);
+          if (sessionStopping) return;
+        }
         for (const udid of launchesBeforeStreaming ? targets : []) {
           if (sessionStopping) return;
           if (bundleId) {
@@ -1592,12 +1707,14 @@ Examples:
                 `Requested ${missing.join(", ")} but ${missing.length === 1 ? "it" : "they"} ` +
                   `did not apply on ${udid}. See the message above for why.`,
               );
+              await stopNetworkCapture();
               process.exit(1);
             }
           }
         }
       } catch (error) {
         console.error(error instanceof Error ? error.message : error);
+        await stopNetworkCapture();
         process.exit(1);
       }
     }
@@ -1615,6 +1732,8 @@ Examples:
         debugStreamPath,
         requireToken: !!opts.requireToken,
         quiet: !!opts.quiet,
+        networkCapture: !!opts.networkCapture,
+        networkCaptureFields: opts.networkCaptureField,
       });
     }
   });

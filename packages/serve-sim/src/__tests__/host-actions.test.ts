@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "os";
 import { join } from "path";
 
 import { InvalidHostActionError, runHostActionAsync } from "../host-actions";
+import { UDID } from "./helpers";
 import { SCREENSHOT_DIR, UPLOAD_DIR } from "../host-paths";
 
 // `true` ignores its arguments and exits 0, so these assert validation without running simctl.
@@ -259,5 +260,39 @@ describe("runHostActionAsync validation", () => {
     expect(viaBun.stderr).toContain("Module not found");
     expect(viaBun.stderr).not.toContain(homedir());
     expect(direct.stderr).toContain("ENOENT");
+  });
+});
+
+describe("capture actions", () => {
+  it("names --network-capture when capture is off for the server", async () => {
+    const { captureRuntime } = await import("../capture");
+    const previous = captureRuntime.getServerEnabled();
+    captureRuntime.setServerEnabled(false);
+    try {
+      const result = await runHostActionAsync(
+        { action: "capture.reboot", params: { udid: UDID, enabled: true } },
+        BIN,
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("--network-capture");
+    } finally {
+      captureRuntime.setServerEnabled(previous);
+    }
+  });
+
+  it("reports no capture session for an unknown device", async () => {
+    const result = await runHostActionAsync({ action: "capture.clear", params: { udid: UDID } }, BIN);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("No capture session");
+  });
+
+  it("refuses a device name where simctl would read it as every device", async () => {
+    for (const udid of ["all", "booted", "iPhone 17 Pro"]) {
+      await expect(
+        runHostActionAsync({ action: "capture.reboot", params: { udid, enabled: true } }, BIN),
+      ).rejects.toBeInstanceOf(InvalidHostActionError);
+    }
   });
 });

@@ -1094,6 +1094,23 @@ function resolveTargetDevices(devices: string[]): string[] {
   return [fallback.udid];
 }
 
+// Kept so a synchronous exit can still reach the capture module; `import()` cannot be awaited there.
+let loadedCapture: typeof import("./capture") | null = null;
+
+/** Last resort on a synchronous exit, where the async teardown never runs. */
+function clearCaptureInjectionSync(udids: readonly string[]): void {
+  if (!loadedCapture) return;
+  for (const udid of udids) {
+    try {
+      loadedCapture.clearBootInjectionSync(udid);
+    } catch (error) {
+      console.error(
+        `Could not clear network capture on ${udid}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+}
+
 /**
  * Point a device's future app launches at the capture proxy.
  *
@@ -1106,6 +1123,7 @@ async function startNetworkCapture(
   quiet: boolean,
 ): Promise<void> {
   const capture = await import("./capture");
+  loadedCapture = capture;
   capture.captureRuntime.setServerEnabled(true);
   // Set once, so the panel's reboot and a sidebar boot capture the same fields as the CLI asked for.
   capture.captureRuntime.setFields(capture.resolveCaptureFields(fields));
@@ -1661,7 +1679,10 @@ Examples:
         // until it restarts. It loads nothing on its own, so an app that never
         // gets a capability pays a libSystem-only dylib and nothing else.
         {
-          process.on("exit", disarmDevicesArmedHere);
+          process.on("exit", () => {
+            if (captureStarted) clearCaptureInjectionSync(targets);
+            disarmDevicesArmedHere();
+          });
           for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
             process.on(signal, async () => {
               sessionStopping = true;

@@ -150,24 +150,17 @@ def _safe_url(raw):
 
 
 def _part(message, want_body):
-    # strict=False: mismatched content-encoding must not kill the hook.
-    try:
-        content = message.get_content(strict=False) or b""
-    except (ValueError, TypeError):
-        content = b""
     wire = message.raw_content or b""
-    truncated = len(content) > MAX_BODY_BYTES
-    head = content[:MAX_BODY_BYTES]
-    if not want_body or not content:
+    if not want_body or not wire:
         return {
             "headers": _headers_of(message),
             "mime": _mime_of(message),
             "size": len(wire),
-            "decodedSize": 0,
             "body": "",
             "base64": None,
             "truncated": False,
         }
+    head = wire[:MAX_BODY_BYTES]
     try:
         text, encoded = head.decode("utf-8"), None
     except UnicodeDecodeError:
@@ -176,10 +169,9 @@ def _part(message, want_body):
         "headers": _headers_of(message),
         "mime": _mime_of(message),
         "size": len(wire),
-        "decodedSize": len(content),
         "body": text,
         "base64": encoded,
-        "truncated": truncated,
+        "truncated": len(wire) > MAX_BODY_BYTES,
     }
 
 

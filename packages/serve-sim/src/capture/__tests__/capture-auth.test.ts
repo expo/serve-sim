@@ -77,4 +77,15 @@ describe("network-capture auth", () => {
       expect(r.status).toBe(401);
     });
   });
+
+  test("serves the HAR route to an authenticated same-origin caller", async () => {
+    // Unrouted, this fell through unhandled, so only the gate above ever answered it.
+    await withMiddleware(async (origin, request) => {
+      const r = await request("/network-capture.har", {
+        headers: { Origin: origin, Authorization: `Bearer ${TOKEN}` },
+      });
+      expect(r.status).toBe(404);
+      expect(await r.json()).toEqual({ error: "No capture session" });
+    });
+  });
 });

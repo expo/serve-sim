@@ -24,7 +24,8 @@
   NSURLSessionConfiguration *configuration = NSURLSessionConfiguration.defaultSessionConfiguration;
   NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration];
   NSURLSessionDataTask *task = [session dataTaskWithURL:[NSURL URLWithString:urlString]
-                                     completionHandler:^(NSData *data, NSURLResponse *response,
+                                     completionHandler:^(__unused NSData *data,
+                                                         __unused NSURLResponse *response,
                                                          NSError *error) {
                                        NSLog(@"[simnetprobe] done error=%@",
                                              error.localizedDescription ?: @"none");

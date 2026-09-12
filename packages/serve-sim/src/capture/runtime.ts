@@ -69,7 +69,7 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
 
   const byUdid = new Map<string, CaptureSession>();
   const operations = new Map<string, Promise<void>>();
-  const enables = new Map<string, { cancelled: boolean; promise: Promise<CaptureMeta> }>();
+  const enables = new Map<string, { cancelled: boolean; started: boolean; promise: Promise<CaptureMeta> }>();
 
   function enqueue<T>(udid: string, operation: () => Promise<T>): Promise<T> {
     const previous = operations.get(udid);
@@ -129,9 +129,12 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
     /** Capturing meta, or {@link CaptureEnableError} after publishing failed meta. */
     enableForDevice(udid: string): Promise<CaptureMeta> {
       const pending = enables.get(udid);
-      if (pending && byUdid.get(udid)?.meta.attachment !== "failed") return pending.promise;
-      const request = { cancelled: false, promise: Promise.resolve(notEnabledMeta(udid)) };
+      if (pending && (!pending.started || byUdid.get(udid)?.meta.attachment !== "failed")) {
+        return pending.promise;
+      }
+      const request = { cancelled: false, started: false, promise: Promise.resolve(notEnabledMeta(udid)) };
       const promise = enqueue(udid, async () => {
+        request.started = true;
         if (request.cancelled) {
           throw new CaptureEnableError({
             ...notEnabledMeta(udid),

@@ -111,7 +111,7 @@ describe("followCaptureHar", () => {
           version: "test",
           token: "test-token",
         }),
-      ).rejects.toThrow();
+      ).rejects.toThrow(/ENOENT/);
       expect(existsSync(outPath)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });

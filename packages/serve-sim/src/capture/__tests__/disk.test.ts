@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import {
   CAPTURE_ENTRIES_FILENAME,
+  CAPTURE_OWNER_FILENAME,
   CAPTURE_HAR_FILENAME,
   CaptureDiskAccumulator,
   NETWORK_CAPTURE_FILENAME,
@@ -177,7 +178,13 @@ describe("CaptureDiskAccumulator", () => {
         store.update(id, { status: 200, durationMs: 1 }, true);
       }
       const rebuilding = disk.flush();
-      await Bun.sleep(5);
+      // Wait for the compact's temp file rather than a fixed delay, so the late request really does land
+      // inside the rebuild on a loaded machine.
+      const harTmp = join(dir, `${CAPTURE_HAR_FILENAME}.${process.pid}.tmp`);
+      const deadline = Date.now() + 2_000;
+      while (!existsSync(harTmp) && Date.now() < deadline) await Bun.sleep(0);
+      expect(existsSync(harTmp)).toBe(true);
+
       const late = store.start("GET", "https://late.test/");
       store.update(late, { status: 200, durationMs: 1 }, true);
       await rebuilding;
@@ -217,7 +224,7 @@ describe("sweepAbandonedCaptureDirs", () => {
         "serve-sim-capture-abc123",
       ],
       remove: (dir: string) => void removed.push(dir.split("/").at(-1)!),
-      liveDevices: () => [],
+      ownedByLiveProcess: () => false,
     });
 
     expect(swept).toBe(2);
@@ -230,11 +237,26 @@ describe("sweepAbandonedCaptureDirs", () => {
     const swept = sweepAbandonedCaptureDirs(["MINE"], {
       list: () => ["capture-MINE", "capture-THEIRS", "capture-CRASHED-EARLIER"],
       remove: (dir: string) => void removed.push(dir.split("/").at(-1)!),
-      liveDevices: () => ["THEIRS"],
+      ownedByLiveProcess: (dir) => dir.endsWith("capture-THEIRS"),
     });
 
     expect(swept).toBe(1);
     expect(removed).toEqual(["capture-CRASHED-EARLIER"]);
+  });
+
+  it("reads ownership from the directory, not from a state file written later", () => {
+    // A live owner is proven by the file the directory carries, so a session is protected from the moment
+    // it starts writing — long before the preview server records its state.
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-owner-"));
+    const store = new CaptureStore();
+    const disk = new CaptureDiskAccumulator({ dir, flushIntervalMs: 60_000 });
+    try {
+      const stop = disk.attach(store);
+      expect(readFileSync(join(dir, CAPTURE_OWNER_FILENAME), "utf8")).toBe(String(process.pid));
+      void stop;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("leaves state files and the proxy's own confdirs alone", () => {

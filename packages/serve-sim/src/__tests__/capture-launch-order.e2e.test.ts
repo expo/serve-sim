@@ -1,15 +1,14 @@
 // Proves the shipped CLI arms capture before it launches the app it was asked to launch.
 //
 // An app loads the capture library only if it was inserted at launch, so arming after the launch
-// records nothing until someone relaunches by hand. Nothing below can tell the difference unless the
-// request the app makes comes back out of the session's own HAR.
+// records nothing until someone relaunches by hand. Only a request that comes back out of the session's
+// own HAR proves the order.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { execFileSync } from "child_process";
+import { execFileSync, spawn, type ChildProcess } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { createServer, type Server } from "http";
 import { join } from "path";
-import { type ChildProcess, spawn } from "child_process";
 
 import { locateMitmdump } from "../capture/mitm-engine";
 import { e2eDevice, readInsert, requireE2E } from "./e2e-preconditions";
@@ -93,8 +92,12 @@ describeOrSkip("capture arms before launch", () => {
       ],
       { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env } },
     );
-    server.stdout?.on("data", (chunk: Buffer) => void (stdout += chunk.toString()));
-    server.stderr?.on("data", (chunk: Buffer) => void (stderr += chunk.toString()));
+    server.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    server.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
   }, 180_000);
 
   afterAll(async () => {
@@ -112,8 +115,6 @@ describeOrSkip("capture arms before launch", () => {
       });
     }
     try {
-      // The device must come back clean, or every test after this one inherits a proxied simulator.
-      expect(readInsert(udid!)).toBe("");
       try {
         simctl(["terminate", udid!, APP]);
       } catch {}
@@ -124,6 +125,8 @@ describeOrSkip("capture arms before launch", () => {
         origin.closeAllConnections();
         await new Promise<void>((done) => origin!.close(() => done()));
       }
+      // Asserted last, so a device left injected still gets the app and the origin cleaned up first.
+      expect(readInsert(udid!)).toBe("");
     } finally {
       tempState.restore();
     }
@@ -149,6 +152,8 @@ describeOrSkip("capture arms before launch", () => {
   }, 180_000);
 
   test("keeps stdout to the JSON payload --quiet promises", () => {
+    // An empty stdout would make the loop below vacuous.
+    expect(stdout.trim().length).toBeGreaterThan(0);
     for (const line of stdout.split("\n").filter((line) => line.trim().length > 0)) {
       expect(() => JSON.parse(line)).not.toThrow();
     }

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Writable } from "node:stream";
 import { EventEmitter } from "events";
 import type { IncomingMessage, ServerResponse } from "http";
 
@@ -22,28 +23,22 @@ function createFakeReq(): { req: IncomingMessage; close: () => void } {
   return { req: req as unknown as IncomingMessage, close: () => req.emit("close") };
 }
 
+/** A real Writable, because the HAR route pipes a file stream into the response. */
 function createFakeRes(): { res: ServerResponse; writes: string[]; status: () => number } {
   const writes: string[] = [];
   let statusCode = 0;
-  let ended = false;
-  const res = {
+  const res = new Writable({
+    write(chunk: Buffer | string, _encoding, done) {
+      writes.push(chunk.toString());
+      done();
+    },
+  });
+  Object.assign(res, {
     writeHead(status: number) {
       statusCode = status;
       return res;
     },
-    write(chunk: string) {
-      writes.push(chunk);
-      return true;
-    },
-    end(chunk?: string) {
-      if (chunk !== undefined) writes.push(chunk);
-      ended = true;
-      return res;
-    },
-    get writableEnded() {
-      return ended;
-    },
-  };
+  });
   return { res: res as unknown as ServerResponse, writes, status: () => statusCode };
 }
 

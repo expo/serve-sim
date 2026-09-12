@@ -1733,7 +1733,7 @@ export async function handleCaptureHarRequest(
   runtime: CaptureRuntime = captureRuntime,
 ): Promise<void> {
   if (!state) {
-    res.writeHead(404, { "Content-Type": "application/json" });
+    res.writeHead(404, { "Content-Type": "application/json", ...NO_STORE });
     res.end(JSON.stringify({ error: "No capture session" }));
     return;
   }
@@ -1741,7 +1741,7 @@ export async function handleCaptureHarRequest(
   try {
     harPath = await runtime.flushHarPathFor(state.device);
   } catch (error) {
-    res.writeHead(500, { "Content-Type": "application/json" });
+    res.writeHead(500, { "Content-Type": "application/json", ...NO_STORE });
     res.end(
       JSON.stringify({
         error: error instanceof Error ? error.message : String(error),
@@ -1750,20 +1750,36 @@ export async function handleCaptureHarRequest(
     return;
   }
   if (!harPath || !existsSync(harPath)) {
-    res.writeHead(404, { "Content-Type": "application/json" });
+    res.writeHead(404, { "Content-Type": "application/json", ...NO_STORE });
     res.end(JSON.stringify({ error: "No capture session" }));
     return;
   }
   const filename = `serve-sim-${state.device.slice(0, 8)}.har`;
-  res.writeHead(200, {
+  // The whole decrypted session in one response, so no intermediary may keep a copy.
+  const headers = {
     "Content-Type": "application/json",
     "Content-Disposition": `attachment; filename="${filename}"`,
-  });
+    ...NO_STORE,
+  };
   if (req.method === "HEAD") {
+    res.writeHead(200, headers);
     res.end();
     return;
   }
-  res.end(readFileSync(harPath));
+  let har: Buffer;
+  try {
+    har = readFileSync(harPath);
+  } catch (error) {
+    // With bodies captured this file has no bound, so the read can fail on size alone. Throwing here
+    // would reject out of the request handler and take the preview server, and the session, with it.
+    res.writeHead(500, { "Content-Type": "application/json", ...NO_STORE });
+    res.end(
+      JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+    );
+    return;
+  }
+  res.writeHead(200, headers);
+  res.end(har);
 }
 
 export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {

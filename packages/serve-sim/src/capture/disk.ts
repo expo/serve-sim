@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { MAX_HAR_ENTRIES, toHarEntry } from "./har";
 import { compactNdjsonAndStreamHar, emptyHarText } from "./har-stream";
 import type { CapturedBody, CapturedRequest, CaptureEvent, CaptureStore } from "./store";
-import { listStateFiles, stateDir } from "../state";
+import { stateDir } from "../state";
 
 export const NETWORK_CAPTURE_FILENAME = "network-capture.json";
 export const CAPTURE_HAR_FILENAME = "capture.har";
@@ -25,6 +25,31 @@ export function captureDirForDevice(udid: string): string {
 
 const CAPTURE_DIR_PREFIX = "capture-";
 
+export const CAPTURE_OWNER_FILENAME = "owner.pid";
+
+/**
+ * Whether a capture directory belongs to a process that is still running.
+ *
+ * The owner file is written when the directory is created and goes with it, so a directory only looks
+ * owned while its writer is alive. A device's state file cannot answer this: it is written later, after
+ * the preview port binds, and it outlives a killed process.
+ */
+function ownerIsRunning(dir: string): boolean {
+  let pid: number;
+  try {
+    pid = Number(readFileSync(join(dir, CAPTURE_OWNER_FILENAME), "utf-8").trim());
+  } catch {
+    return false;
+  }
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Remove capture directories no live session owns.
  *
@@ -33,34 +58,16 @@ const CAPTURE_DIR_PREFIX = "capture-";
  * nothing scheduled to collect it. Reclaiming those at the next start is what bounds how long captured
  * traffic can survive on disk.
  */
-/** Devices another running serve-sim is streaming. Its capture is live, so its directory is not abandoned. */
-function devicesWithLiveOwner(): string[] {
-  const devices: string[] = [];
-  for (const file of listStateFiles()) {
-    try {
-      const state = JSON.parse(readFileSync(file, "utf-8")) as { pid?: number; device?: string };
-      if (typeof state.pid !== "number" || !state.device) continue;
-      process.kill(state.pid, 0);
-      devices.push(state.device);
-    } catch {
-      // Unreadable, malformed, or a pid that is gone: nothing there to protect.
-    }
-  }
-  return devices;
-}
-
 export function sweepAbandonedCaptureDirs(
   keepUdids: readonly string[],
   deps: {
     list?: () => string[];
     remove?: (dir: string) => void;
-    liveDevices?: () => string[];
+    ownedByLiveProcess?: (dir: string) => boolean;
   } = {},
 ): number {
-  const live = deps.liveDevices ?? devicesWithLiveOwner;
-  const keep = new Set(
-    [...keepUdids, ...live()].map((udid) => `${CAPTURE_DIR_PREFIX}${udid}`),
-  );
+  const owned = deps.ownedByLiveProcess ?? ownerIsRunning;
+  const keep = new Set(keepUdids.map((udid) => `${CAPTURE_DIR_PREFIX}${udid}`));
   const list =
     deps.list ??
     (() => {
@@ -75,6 +82,8 @@ export function sweepAbandonedCaptureDirs(
   let swept = 0;
   for (const name of list()) {
     if (!name.startsWith(CAPTURE_DIR_PREFIX) || keep.has(name)) continue;
+    // Another serve-sim is recording into it right now.
+    if (owned(join(stateDir(), name))) continue;
     try {
       remove(join(stateDir(), name));
       swept++;
@@ -165,6 +174,9 @@ export class CaptureDiskAccumulator {
     this.harDirty = false;
     this.lastWriteError = null;
     mkdirSync(this.dir, { recursive: true });
+    // Written before anything is recorded, so another serve-sim's sweep can never mistake this directory
+    // for one a crash left behind.
+    writeFileSync(join(this.dir, CAPTURE_OWNER_FILENAME), String(process.pid));
     writeFileSync(this.networkCapturePath, "");
     writeFileSync(this.entriesPath, "");
     writeFileSync(this.harPath, emptyHarText(this.creatorVersion));
@@ -181,7 +193,9 @@ export class CaptureDiskAccumulator {
     this.begin();
     this.unsubscribe = store.subscribe((event) => this.onStoreEvent(store, event));
     this.recordEvent({ type: "session", startedAt: new Date().toISOString() });
-    return async () => void (await this.end({ removeDir: true }));
+    return async () => {
+      await this.end({ removeDir: true });
+    };
   }
 
   /** Append one event line to network-capture.json (any SSE payload). */

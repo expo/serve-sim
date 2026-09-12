@@ -13,7 +13,6 @@ import {
 import { startMitmProxy, type CaptureProxy, type MitmProxyDeps } from "./mitm-engine";
 import { DEFAULT_CAPTURE_FIELDS, type CaptureField } from "./fields";
 
-/** Failed enable after publishing `attachment: "failed"`. Simulator stays usable. */
 export class CaptureEnableError extends Error {
   readonly meta: CaptureMeta;
 
@@ -28,17 +27,43 @@ interface CaptureSession {
   store: CaptureStore;
   meta: CaptureMeta;
   proxy: CaptureProxy | null;
-  cleaned?: boolean;
+  cleanup?: Promise<void>;
+}
+
+interface EnableRequest {
+  cancelled: boolean;
+  failed: boolean;
+  promise: Promise<CaptureMeta>;
+}
+
+class DeviceOperationQueue {
+  readonly #operations = new Map<string, Promise<void>>();
+
+  enqueue<T>(udid: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.#operations.get(udid);
+    const result = previous ? previous.then(operation) : operation();
+    const settled = result.then(
+      () => {},
+      () => {},
+    );
+    this.#operations.set(udid, settled);
+    void settled.then(() => {
+      if (this.#operations.get(udid) === settled) this.#operations.delete(udid);
+    });
+    return result;
+  }
+
+  devices(): IterableIterator<string> {
+    return this.#operations.keys();
+  }
 }
 
 export interface CaptureRuntimeOptions {
-  /** Parts of an exchange this server may keep. Metadata only when omitted. */
   fields?: readonly CaptureField[];
   startProxy?: (store: CaptureStore, deps: MitmProxyDeps) => Promise<CaptureProxy>;
   trustCa?: (udid: string, caPem: string) => Promise<void>;
   inject?: (udid: string, portFile: string) => Promise<void>;
   clearInjection?: (udid: string) => Promise<void>;
-  /** Whether teardown actually removed the injected variables. */
   injectionCleared?: (udid: string) => Promise<boolean>;
 }
 
@@ -57,8 +82,19 @@ function notEnabledMeta(udid: string): CaptureMeta {
 
 export type CaptureRuntime = ReturnType<typeof createCaptureRuntime>;
 
+function cancelledMeta(udid: string): CaptureMeta {
+  return {
+    ...notEnabledMeta(udid),
+    attachment: "failed",
+    attachError: "Capture was turned off while it was waiting to start. Enable it again to retry.",
+  };
+}
+
+function assertRequested(udid: string, request: EnableRequest): void {
+  if (request.cancelled) throw new CaptureEnableError(cancelledMeta(udid));
+}
+
 export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
-  // Read at enable time, so changing it does not affect proxies already running.
   let policy: readonly CaptureField[] = options.fields ?? DEFAULT_CAPTURE_FIELDS;
   const startProxy =
     options.startProxy ?? ((store: CaptureStore, deps: MitmProxyDeps) => startMitmProxy(store, deps));
@@ -68,52 +104,39 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   const stillCleared = options.injectionCleared ?? bootInjectionCleared;
 
   const byUdid = new Map<string, CaptureSession>();
-  const operations = new Map<string, Promise<void>>();
-  const enables = new Map<string, { cancelled: boolean; failed: boolean; promise: Promise<CaptureMeta> }>();
-
-  function enqueue<T>(udid: string, operation: () => Promise<T>): Promise<T> {
-    const previous = operations.get(udid);
-    const result = previous ? previous.then(operation) : operation();
-    const settled = result.then(() => {}, () => {});
-    operations.set(udid, settled);
-    void settled.then(() => {
-      if (operations.get(udid) === settled) operations.delete(udid);
-    });
-    return result;
-  }
+  const operations = new DeviceOperationQueue();
+  const enables = new Map<string, EnableRequest>();
 
   const tearDownSession = async (udid: string, session: CaptureSession): Promise<void> => {
-    if (session.cleaned) return;
-    session.cleaned = true;
-    // Clear injection before closing the proxy so launches aren't aimed at a dead port.
-    try {
-      await clearInjection(udid);
-      if (!(await stillCleared(udid))) {
-        console.error(
-          `Network capture: ${udid} still has the capture library injected after teardown. Apps launched ` +
-            "on it will keep loading it until the device is rebooted.",
+    session.cleanup ??= (async () => {
+      try {
+        await clearInjection(udid);
+        if (!(await stillCleared(udid))) {
+          console.error(
+            `Network capture: ${udid} still has the capture library injected after teardown. Apps launched ` +
+              "on it will keep loading it until the device is rebooted.",
+          );
+        }
+      } catch (error) {
+        console.error(`Network capture: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      try {
+        await session.proxy?.close();
+      } catch (error) {
+        console.warn(
+          `Network capture: closing proxy for ${udid} failed:`,
+          error instanceof Error ? error.message : error,
         );
       }
-    } catch (error) {
-      console.error(
-        `Network capture: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    try {
-      await session.proxy?.close();
-    } catch (error) {
-      console.warn(
-        `Network capture: closing proxy for ${udid} failed:`,
-        error instanceof Error ? error.message : error,
-      );
-    }
+    })();
+    await session.cleanup;
   };
 
   const disableDevice = (udid: string): Promise<void> => {
     const pending = enables.get(udid);
     if (pending) pending.cancelled = true;
     enables.delete(udid);
-    return enqueue(udid, async () => {
+    return operations.enqueue(udid, async () => {
       const session = byUdid.get(udid);
       if (!session) return;
       byUdid.delete(udid);
@@ -126,29 +149,23 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
       policy = next;
     },
 
-    /** Capturing meta, or {@link CaptureEnableError} after publishing failed meta. */
     enableForDevice(udid: string): Promise<CaptureMeta> {
       const pending = enables.get(udid);
       if (pending && !pending.failed) {
         return pending.promise;
       }
-      const request = { cancelled: false, failed: false, promise: Promise.resolve(notEnabledMeta(udid)) };
-      const promise = enqueue(udid, async () => {
-        const assertRequested = () => {
-          if (request.cancelled) {
-            throw new CaptureEnableError({
-              ...notEnabledMeta(udid),
-              attachment: "failed",
-              attachError: "Capture was turned off while it was waiting to start. Enable it again to retry.",
-            });
-          }
-        };
-        assertRequested();
+      const request: EnableRequest = {
+        cancelled: false,
+        failed: false,
+        promise: Promise.resolve(notEnabledMeta(udid)),
+      };
+      const promise = operations.enqueue(udid, async () => {
+        assertRequested(udid, request);
         const existing = byUdid.get(udid);
         if (existing) {
           if (existing.meta.attachment !== "failed") return existing.meta;
           await tearDownSession(udid, existing);
-          assertRequested();
+          assertRequested(udid, request);
         }
 
         const store = new CaptureStore();
@@ -172,12 +189,6 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
           store.publishMeta(meta);
         };
 
-        const assertStillOurs = () => {
-          if (request.cancelled) {
-            throw new Error("Capture was turned off for this device while it was starting.");
-          }
-        };
-
         try {
           const proxy = await startProxy(store, {
             fields: policy,
@@ -190,15 +201,13 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
           });
           session.proxy = proxy;
           meta.proxyAddress = proxy.address;
-          assertStillOurs();
+          assertRequested(udid, request);
 
           await trustCa(udid, await proxy.caPem());
-          assertStillOurs();
+          assertRequested(udid, request);
 
           await inject(udid, proxy.portFile);
-          assertStillOurs();
-          // The proxy can die during the two steps above. Overwriting the failure it published with
-          // "capturing" reports a dead proxy as a healthy one.
+          assertRequested(udid, request);
           if (meta.attachment === "failed") {
             throw new Error(meta.attachError ?? "The capture proxy stopped while capture was starting.");
           }
@@ -228,7 +237,7 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
     disableForDevice: disableDevice,
 
     async disableAll(): Promise<void> {
-      const devices = new Set([...byUdid.keys(), ...operations.keys()]);
+      const devices = new Set([...byUdid.keys(), ...operations.devices()]);
       await Promise.all([...devices].map(disableDevice));
     },
 
@@ -253,7 +262,6 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
       return true;
     },
 
-    /** Null when not capturing so the sampler can fall back to host counters. */
     throughputFor(udid: string): { netInBytesPerSec: number; netOutBytesPerSec: number } | null {
       const session = byUdid.get(udid);
       if (!session || session.meta.attachment !== "capturing") return null;

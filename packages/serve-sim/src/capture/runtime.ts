@@ -67,11 +67,9 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   const stillCleared = options.injectionCleared ?? bootInjectionCleared;
 
   const byUdid = new Map<string, CaptureSession>();
+  const teardowns = new Map<string, Promise<void>>();
 
-  const disableDevice = async (udid: string): Promise<void> => {
-    const session = byUdid.get(udid);
-    if (!session) return;
-    byUdid.delete(udid);
+  const tearDownSession = async (udid: string, session: CaptureSession): Promise<void> => {
     // Clear injection before closing the proxy so launches aren't aimed at a dead port.
     try {
       await clearInjection(udid);
@@ -94,6 +92,23 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
         error instanceof Error ? error.message : error,
       );
     }
+  };
+
+  /**
+   * Stop capturing on a device, once.
+   *
+   * A second caller joins the teardown already running instead of finding an empty map and returning
+   * straight away. Shutdown has two callers, and one of them exits the process when it returns.
+   */
+  const disableDevice = (udid: string): Promise<void> => {
+    const running = teardowns.get(udid);
+    if (running) return running;
+    const session = byUdid.get(udid);
+    if (!session) return Promise.resolve();
+    byUdid.delete(udid);
+    const teardown = tearDownSession(udid, session).finally(() => teardowns.delete(udid));
+    teardowns.set(udid, teardown);
+    return teardown;
   };
 
   return {
@@ -198,7 +213,8 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
     disableForDevice: disableDevice,
 
     async disableAll(): Promise<void> {
-      await Promise.all([...byUdid.keys()].map(disableDevice));
+      const devices = new Set([...byUdid.keys(), ...teardowns.keys()]);
+      await Promise.all([...devices].map(disableDevice));
     },
 
     subscribe(udid: string, listener: (event: CaptureEvent) => void): { meta: CaptureMeta; unsubscribe: () => void } {

@@ -71,13 +71,14 @@ export async function injectAtBoot(
     );
   }
 
-  // The capability loader arms this same variable under the launch state lock.
+  // The capability loader arms the insert list under this same lock, and the two variables only mean
+  // anything together: a device carrying one without the other launches apps unproxied.
   await withLaunchStateLock(udid, async () => {
     const current = await run(["spawn", udid, "launchctl", "getenv", "DYLD_INSERT_LIBRARIES"]);
     const next = [...withoutProxyEntry(current), library].join(":");
     await run(["spawn", udid, "launchctl", "setenv", "DYLD_INSERT_LIBRARIES", next]);
+    await run(["spawn", udid, "launchctl", "setenv", "SIMNET_PROXY_PORT_FILE", portFile]);
   });
-  await run(["spawn", udid, "launchctl", "setenv", "SIMNET_PROXY_PORT_FILE", portFile]);
 }
 
 type ReadEnv = (args: string[]) => Promise<string>;
@@ -104,29 +105,29 @@ function isDeviceUnavailable(error: unknown): boolean {
  */
 export async function clearBootInjection(udid: string, deps: InjectionDeps = {}): Promise<void> {
   const run = deps.run ?? simctl;
-  for (const name of INJECTED_VARS) {
-    try {
-      if (name === "DYLD_INSERT_LIBRARIES") {
-        // Held across the write: a loader arming between the read and the clear would be erased.
-        await withLaunchStateLock(udid, async () => {
-          const remaining = withoutProxyEntry(await run(["spawn", udid, "launchctl", "getenv", name]));
-          if (remaining.length === 0) {
-            await run(["spawn", udid, "launchctl", "unsetenv", name]);
-            return;
-          }
-          await run(["spawn", udid, "launchctl", "setenv", name, remaining.join(":")]);
-        });
-        continue;
-      }
-      await run(["spawn", udid, "launchctl", "unsetenv", name]);
-    } catch (error) {
-      // The device is gone, so the remaining variables went with it.
-      if (isDeviceUnavailable(error)) return;
-      throw new Error(
-        `Could not clear ${name} on ${udid}, so apps launched on it may still load the capture library. ` +
-          `Reboot the device to clear it. (${error instanceof Error ? error.message : String(error)})`,
+  let clearing: (typeof INJECTED_VARS)[number] = "DYLD_INSERT_LIBRARIES";
+  try {
+    // Held across both writes: a loader arming between the read and the clear would be erased, and a
+    // device that keeps one variable without the other reports itself injected while nothing is proxied.
+    await withLaunchStateLock(udid, async () => {
+      const remaining = withoutProxyEntry(
+        await run(["spawn", udid, "launchctl", "getenv", "DYLD_INSERT_LIBRARIES"]),
       );
-    }
+      if (remaining.length === 0) {
+        await run(["spawn", udid, "launchctl", "unsetenv", "DYLD_INSERT_LIBRARIES"]);
+      } else {
+        await run(["spawn", udid, "launchctl", "setenv", "DYLD_INSERT_LIBRARIES", remaining.join(":")]);
+      }
+      clearing = "SIMNET_PROXY_PORT_FILE";
+      await run(["spawn", udid, "launchctl", "unsetenv", "SIMNET_PROXY_PORT_FILE"]);
+    });
+  } catch (error) {
+    // The device is gone, so the remaining variables went with it.
+    if (isDeviceUnavailable(error)) return;
+    throw new Error(
+      `Could not clear ${clearing} on ${udid}, so apps launched on it may still load the capture library. ` +
+        `Reboot the device to clear it. (${error instanceof Error ? error.message : String(error)})`,
+    );
   }
 }
 

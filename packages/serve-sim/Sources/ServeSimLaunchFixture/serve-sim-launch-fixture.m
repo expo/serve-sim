@@ -41,8 +41,25 @@ static void RecordURLContexts(NSSet<UIOpenURLContext *> *contexts) {
 
 @end
 
-@interface FixtureSceneDelegate : UIResponder <UIWindowSceneDelegate>
+@interface QueuedFrameRecorder : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
+@end
+
+@implementation QueuedFrameRecorder
+- (void)captureOutput:(AVCaptureOutput *)output
+ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
+        fromConnection:(AVCaptureConnection *)connection {
+  dispatch_async(dispatch_get_main_queue(), ^{ Record(@"queued-sample", @""); });
+}
+@end
+
+@interface FixtureSceneDelegate : UIResponder <UIWindowSceneDelegate, AVCaptureVideoDataOutputSampleBufferDelegate>
 @property(nonatomic, strong) UIWindow *window;
+@property(nonatomic, strong) AVCaptureSession *session;
+@property(nonatomic, strong) AVCaptureVideoPreviewLayer *preview;
+@property(nonatomic, copy) NSString *lastPixel;
+@property(nonatomic, strong) AVCaptureVideoDataOutput *queuedOutput;
+@property(nonatomic, strong) QueuedFrameRecorder *queuedRecorder;
+@property(nonatomic, strong) dispatch_queue_t queuedFrames;
 @end
 
 @implementation FixtureSceneDelegate
@@ -54,7 +71,113 @@ static void RecordURLContexts(NSSet<UIOpenURLContext *> *contexts) {
   self.window.rootViewController = [[UIViewController alloc] init];
   self.window.rootViewController.view.backgroundColor = UIColor.systemGreenColor;
   [self.window makeKeyAndVisible];
+  UIView *root = self.window.rootViewController.view;
+  Record(@"permission", [NSString stringWithFormat:@"%ld", (long)[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo]]);
+  [self showCameraIn:root];
+  [NSNotificationCenter.defaultCenter addObserverForName:AVCaptureDeviceWasConnectedNotification
+                                                  object:nil
+                                                   queue:NSOperationQueue.mainQueue
+                                              usingBlock:^(NSNotification *note) {
+    Record(@"connected", ((AVCaptureDevice *)note.object).uniqueID);
+    if (self.session == nil) [self showCameraIn:root];
+  }];
+  [NSNotificationCenter.defaultCenter addObserverForName:AVCaptureDeviceWasDisconnectedNotification
+                                                  object:nil
+                                                   queue:NSOperationQueue.mainQueue
+                                              usingBlock:^(NSNotification *note) {
+    AVCaptureDevice *device = note.object;
+    AVCaptureDevice *legacy = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+    Record(@"disconnected", [NSString stringWithFormat:@"connected=%d legacy=%d devices=%lu permission=%ld",
+        device.isConnected, legacy != nil,
+        (unsigned long)[AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInWideAngleCamera] mediaType:AVMediaTypeVideo position:AVCaptureDevicePositionUnspecified].devices.count,
+        (long)[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo]]);
+    [self.session stopRunning];
+    self.session = nil;
+    [self.preview removeFromSuperlayer];
+    self.preview = nil;
+    self.lastPixel = nil;
+    if (self.queuedFrames) {
+      dispatch_queue_t queue = self.queuedFrames;
+      self.queuedFrames = nil;
+      dispatch_resume(queue);
+      dispatch_async(queue, ^{
+        dispatch_async(dispatch_get_main_queue(), ^{ Record(@"queue-drained", @""); });
+      });
+    }
+  }];
+  // Opening the camera later than the capability loader's load delay, to tell a
+  // capability that arrived late from one that never arrived.
+  if ([NSProcessInfo.processInfo.arguments containsObject:@"-ServeSimFixtureCameraLate"]) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [self showCameraIn:root]; });
+  }
   RecordURLContexts(connectionOptions.URLContexts);
+}
+
+// Records what it saw either way, so a test can assert the feed without
+// looking at a screenshot.
+- (void)showCameraIn:(UIView *)view {
+  AVCaptureDevice *device =
+      [AVCaptureDevice defaultDeviceWithDeviceType:AVCaptureDeviceTypeBuiltInWideAngleCamera
+                                         mediaType:AVMediaTypeVideo
+                                          position:AVCaptureDevicePositionBack];
+  if (device == nil) {
+    Record(@"camera", @"no device");
+    return;
+  }
+
+  NSError *error = nil;
+  AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:device error:&error];
+  AVCaptureSession *session = [[AVCaptureSession alloc] init];
+  if (input == nil || ![session canAddInput:input]) {
+    Record(@"camera", error.localizedDescription ?: @"input refused");
+    return;
+  }
+  [session addInput:input];
+  AVCaptureVideoDataOutput *output = [AVCaptureVideoDataOutput new];
+  [output setSampleBufferDelegate:self queue:dispatch_get_main_queue()];
+  [session addOutput:output];
+
+  // Assigning the session goes through setSession:, which is where serve-sim
+  // hooks the preview. layerWithSession: sets it without that.
+  AVCaptureVideoPreviewLayer *preview = [[AVCaptureVideoPreviewLayer alloc] init];
+  preview.session = session;
+  preview.videoGravity = AVLayerVideoGravityResizeAspectFill;
+  preview.frame = view.bounds;
+  [view.layer addSublayer:preview];
+  self.session = session;
+  self.preview = preview;
+  self.lastPixel = nil;
+
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    [session startRunning];
+  });
+  Record(@"camera", device.localizedName);
+}
+
+- (void)captureOutput:(AVCaptureOutput *)output
+ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
+        fromConnection:(AVCaptureConnection *)connection {
+  CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+  CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+  const unsigned char *pixel = (const unsigned char *)CVPixelBufferGetBaseAddress(pixelBuffer)
+      + (CVPixelBufferGetHeight(pixelBuffer) / 2) * CVPixelBufferGetBytesPerRow(pixelBuffer)
+      + (CVPixelBufferGetWidth(pixelBuffer) / 2) * 4;
+  Record(@"sample", @"");
+  if (!self.queuedOutput && [NSProcessInfo.processInfo.arguments containsObject:@"-ServeSimFixtureQueuedFrames"]) {
+    self.queuedOutput = [AVCaptureVideoDataOutput new];
+    self.queuedRecorder = [QueuedFrameRecorder new];
+    self.queuedFrames = dispatch_queue_create("fixture.queued-frames", DISPATCH_QUEUE_SERIAL);
+    dispatch_suspend(self.queuedFrames);
+    [self.queuedOutput setSampleBufferDelegate:self.queuedRecorder queue:self.queuedFrames];
+    Record(@"queue-suspended", @"");
+  }
+  NSString *value = [NSString stringWithFormat:@"%u,%u,%u", pixel[2], pixel[1], pixel[0]];
+  if (![value isEqualToString:self.lastPixel]) {
+    Record(@"frame", value);
+    self.lastPixel = value;
+  }
+  CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
 }
 
 - (void)scene:(UIScene *)scene openURLContexts:(NSSet<UIOpenURLContext *> *)URLContexts {

@@ -107,10 +107,15 @@ static BOOL SwizzleInstanceMethod(Class cls, SEL orig, SEL swiz) {
 @interface AVCaptureDevice (SimCam)
 @end
 @implementation AVCaptureDevice (SimCam)
++ (AVCaptureDevice *)simcam_defaultDeviceWithMediaType:(AVMediaType)mediaType {
+    if ([mediaType isEqualToString:AVMediaTypeVideo] && SimCamDeviceIsConnected())
+        return SimCamFakeDeviceForPosition(AVCaptureDevicePositionBack);
+    return [self simcam_defaultDeviceWithMediaType:mediaType];
+}
 + (AVCaptureDevice *)simcam_defaultDeviceWithDeviceType:(AVCaptureDeviceType)t
                                               mediaType:(AVMediaType)m
                                                position:(AVCaptureDevicePosition)p {
-    if ([m isEqualToString:AVMediaTypeVideo] || m == nil) {
+    if (SimCamDeviceIsConnected() && ([m isEqualToString:AVMediaTypeVideo] || m == nil)) {
         AVCaptureDevicePosition resolved =
             (p == AVCaptureDevicePositionBack) ? AVCaptureDevicePositionBack
                                                : AVCaptureDevicePositionFront;
@@ -121,7 +126,7 @@ static BOOL SwizzleInstanceMethod(Class cls, SEL orig, SEL swiz) {
     return [self simcam_defaultDeviceWithDeviceType:t mediaType:m position:p];
 }
 + (NSArray<AVCaptureDevice *> *)simcam_devicesWithMediaType:(AVMediaType)m {
-    if ([m isEqualToString:AVMediaTypeVideo]) {
+    if (SimCamDeviceIsConnected() && [m isEqualToString:AVMediaTypeVideo]) {
         return @[
             SimCamFakeDeviceForPosition(AVCaptureDevicePositionFront),
             SimCamFakeDeviceForPosition(AVCaptureDevicePositionBack),
@@ -131,6 +136,7 @@ static BOOL SwizzleInstanceMethod(Class cls, SEL orig, SEL swiz) {
 }
 + (NSArray<AVCaptureDevice *> *)simcam_devices {
     NSArray *real = [self simcam_devices];
+    if (!SimCamDeviceIsConnected()) return real;
     NSArray *fakes = @[
         SimCamFakeDeviceForPosition(AVCaptureDevicePositionFront),
         SimCamFakeDeviceForPosition(AVCaptureDevicePositionBack),
@@ -141,27 +147,29 @@ static BOOL SwizzleInstanceMethod(Class cls, SEL orig, SEL swiz) {
 
 #pragma mark - AVCaptureDeviceDiscoverySession swizzles
 
+static char kSimCamDiscoveryPositionKey;
+
 @interface AVCaptureDeviceDiscoverySession (SimCam)
 @end
 @implementation AVCaptureDeviceDiscoverySession (SimCam)
 + (AVCaptureDeviceDiscoverySession *)simcam_discoverySessionWithDeviceTypes:(NSArray<AVCaptureDeviceType> *)types
-                                                                  mediaType:(AVMediaType)m
-                                                                   position:(AVCaptureDevicePosition)p {
-    AVCaptureDeviceDiscoverySession *real =
-        [self simcam_discoverySessionWithDeviceTypes:types mediaType:m position:p];
-    if ([m isEqualToString:AVMediaTypeVideo] || m == nil) {
-        NSMutableArray *list = [NSMutableArray new];
-        if (p == AVCaptureDevicePositionUnspecified || p == AVCaptureDevicePositionFront)
-            [list addObject:SimCamFakeDeviceForPosition(AVCaptureDevicePositionFront)];
-        if (p == AVCaptureDevicePositionUnspecified || p == AVCaptureDevicePositionBack)
-            [list addObject:SimCamFakeDeviceForPosition(AVCaptureDevicePositionBack)];
-        @try {
-            [real setValue:list forKey:@"devices"];
-        } @catch (__unused id e) {
-            simcam_log(@"could not override discovery session devices");
-        }
-    }
-    return real;
+                                                                  mediaType:(AVMediaType)mediaType
+                                                                   position:(AVCaptureDevicePosition)position {
+    AVCaptureDeviceDiscoverySession *session =
+        [self simcam_discoverySessionWithDeviceTypes:types mediaType:mediaType position:position];
+    if ([mediaType isEqualToString:AVMediaTypeVideo] || mediaType == nil)
+        objc_setAssociatedObject(session, &kSimCamDiscoveryPositionKey, @(position), OBJC_ASSOCIATION_RETAIN);
+    return session;
+}
+- (NSArray<AVCaptureDevice *> *)simcam_devices {
+    NSNumber *position = objc_getAssociatedObject(self, &kSimCamDiscoveryPositionKey);
+    if (!position || !SimCamDeviceIsConnected()) return [self simcam_devices];
+    NSMutableArray *devices = [NSMutableArray new];
+    if (position.intValue == AVCaptureDevicePositionUnspecified || position.intValue == AVCaptureDevicePositionFront)
+        [devices addObject:SimCamFakeDeviceForPosition(AVCaptureDevicePositionFront)];
+    if (position.intValue == AVCaptureDevicePositionUnspecified || position.intValue == AVCaptureDevicePositionBack)
+        [devices addObject:SimCamFakeDeviceForPosition(AVCaptureDevicePositionBack)];
+    return devices;
 }
 @end
 
@@ -172,6 +180,11 @@ static BOOL SwizzleInstanceMethod(Class cls, SEL orig, SEL swiz) {
 @implementation AVCaptureDeviceInput (SimCam)
 - (instancetype)simcam_initWithDevice:(AVCaptureDevice *)device error:(NSError **)err {
     if ([device isKindOfClass:[SimCamFakeDevice class]]) {
+        if (!SimCamDeviceIsConnected()) {
+            if (err) *err = [NSError errorWithDomain:AVFoundationErrorDomain code:AVErrorDeviceWasDisconnected
+                                          userInfo:@{NSLocalizedDescriptionKey: @"The simulated camera is disconnected. Enable the camera feed and try again."}];
+            return nil;
+        }
         if (err) *err = nil;
         struct objc_super sup = { self, [NSObject class] };
         id obj = ((id (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, @selector(init));
@@ -936,6 +949,7 @@ static void SimCamInstallPickerSwizzles(void); // defined below
 
 void SimCamInstallSwizzles(void) {
     Class dev = [AVCaptureDevice class];
+    SwizzleClassMethod(dev, @selector(defaultDeviceWithMediaType:), @selector(simcam_defaultDeviceWithMediaType:));
     SwizzleClassMethod(dev,
         @selector(defaultDeviceWithDeviceType:mediaType:position:),
         @selector(simcam_defaultDeviceWithDeviceType:mediaType:position:));
@@ -945,6 +959,7 @@ void SimCamInstallSwizzles(void) {
     SwizzleClassMethod(dev, @selector(devices), @selector(simcam_devices));
 
     Class disc = [AVCaptureDeviceDiscoverySession class];
+    SwizzleInstanceMethod(disc, @selector(devices), @selector(simcam_devices));
     SwizzleClassMethod(disc,
         @selector(discoverySessionWithDeviceTypes:mediaType:position:),
         @selector(simcam_discoverySessionWithDeviceTypes:mediaType:position:));
@@ -1286,17 +1301,17 @@ static void SimCamWalkPickerTree(UIView *view) {
 @implementation UIImagePickerController (SimCam)
 
 + (BOOL)simcam_isSourceTypeAvailable:(UIImagePickerControllerSourceType)t {
-    if (t == UIImagePickerControllerSourceTypeCamera) return YES;
+    if (t == UIImagePickerControllerSourceTypeCamera) return SimCamDeviceIsConnected();
     return [self simcam_isSourceTypeAvailable:t];
 }
 + (NSArray<NSString *> *)simcam_availableMediaTypesForSourceType:(UIImagePickerControllerSourceType)t {
-    if (t == UIImagePickerControllerSourceTypeCamera) return @[SimCamPickerUTImage];
+    if (t == UIImagePickerControllerSourceTypeCamera) return SimCamDeviceIsConnected() ? @[SimCamPickerUTImage] : nil;
     return [self simcam_availableMediaTypesForSourceType:t];
 }
 + (NSArray<NSNumber *> *)simcam_availableCaptureModesForCameraDevice:(UIImagePickerControllerCameraDevice)d {
     (void)d; return @[ @(UIImagePickerControllerCameraCaptureModePhoto) ];
 }
-+ (BOOL)simcam_isCameraDeviceAvailable:(UIImagePickerControllerCameraDevice)d { (void)d; return YES; }
++ (BOOL)simcam_isCameraDeviceAvailable:(UIImagePickerControllerCameraDevice)d { (void)d; return SimCamDeviceIsConnected(); }
 + (BOOL)simcam_isFlashAvailableForCameraDevice:(UIImagePickerControllerCameraDevice)d { (void)d; return NO; }
 
 - (void)simcam_viewDidAppear:(BOOL)animated {

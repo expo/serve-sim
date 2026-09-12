@@ -109,6 +109,21 @@ describe("toHarEntry", () => {
     expect(isHarEntryCompliant(entry)).toBe(true);
   });
 
+  it("preserves binary request and response bodies as base64", () => {
+    const entry = toHarEntry(req, {
+      requestHeaders: { "content-type": "application/octet-stream" },
+      responseHeaders: { "content-type": "image/png" },
+      requestBody: "AAEC",
+      responseBody: "//4AAQ==",
+      requestTruncated: false,
+      responseTruncated: false,
+      requestBinary: true,
+      responseBinary: true,
+    });
+    expect(entry.request.postData).toMatchObject({ text: "AAEC", _encoding: "base64" });
+    expect(entry.response.content).toMatchObject({ text: "//4AAQ==", encoding: "base64" });
+  });
+
   it("never emits negative required timings for in-flight rows", () => {
     const entry = toHarEntry(
       { ...req, status: null, ttfbMs: null, durationMs: null },

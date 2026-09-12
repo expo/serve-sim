@@ -141,8 +141,14 @@ class FakeFlow:
 
 # A completed response was already reported; erroring after it must not produce a second row.
 addon.error(FakeFlow(error="reset", response=FakeResponse(timestamp_end=1001.0)))
-time.sleep(0.2)
-results["errorSkippedWhenResponseCompleted"] = len(received) == 0
+# One worker keeps the order, so a record queued after it arriving alone proves the skip.
+addon._post("/probe-sentinel", {"id": "sentinel"})
+wait_for(1)
+results["errorSkippedWhenResponseCompleted"] = [
+    item["path"].split("?")[0] for item in received
+] == ["/probe-sentinel"]
+
+received.clear()
 
 # Headers arrived and the body was cut: `response` never ran, so this error is the only report there is.
 addon.error(FakeFlow(error="server closed the connection", response=FakeResponse()))

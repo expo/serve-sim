@@ -31,15 +31,15 @@ function runProbe(): Record<string, unknown> {
 describeOrSkip("servesim_capture addon", () => {
   const probe = PYTHON ? runProbe() : {};
 
-  test("counts the bytes that crossed the wire, not the decompressed length", () => {
-    // A gzipped body reported by its decoded size overstated throughput by several hundred times.
+  test("captures bounded wire bytes without decompressing hostile content", () => {
     expect(probe.compressedSize).toBe(90);
-    expect(probe.compressedDecodedSize).toBe(10_000);
+    expect(probe.compressedBody).toBe("gzipbytes".repeat(10));
+    expect(probe.metadataBody).toBe("");
   });
 
   test("survives a body whose content-encoding does not match its bytes", () => {
     // Strict decoding raises, which kills the hook and leaves the row in flight forever.
-    expect(probe.lyingBody).toBe("");
+    expect(probe.lyingBody).toBe("raw-wire-bytes");
     expect(probe.lyingSize).toBe(14);
   });
 
@@ -51,8 +51,6 @@ describeOrSkip("servesim_capture addon", () => {
   test("caps a body at the per-body limit and says it was cut", () => {
     expect(probe.oversizedTruncated).toBe(true);
     expect(probe.oversizedBodyLength).toBe(512 * 1024);
-    // The full length is still reported, so a panel can say how much it is not showing.
-    expect(probe.oversizedDecodedSize).toBe(512 * 1024 + 10);
   });
 
   test("reports an absent body as empty rather than as a cut one", () => {

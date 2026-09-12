@@ -1,3 +1,7 @@
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, test } from "bun:test";
 
 import {
@@ -8,7 +12,9 @@ import {
   maxControlBodyBytes,
   mitmdumpMissingMessage,
   parseMitmPids,
+  startMitmProxy,
 } from "../mitm-engine";
+import { CaptureStore } from "../store";
 
 const MARKER = "serve-sim-capture-Qz7pLm";
 const SELF = 400;
@@ -177,4 +183,65 @@ describe("describeFailure", () => {
   test("passes an unrecognised reason through rather than inventing one", () => {
     expect(describeFailure("something entirely new")).toBe("something entirely new");
   });
+});
+
+test("proxy startup retries address conflicts and cleans every attempt", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "serve-sim-mitm-retry-"));
+  const executable = join(dir, "mitmdump");
+  const attempts = join(dir, "attempts");
+  const paths = join(dir, "paths");
+  writeFileSync(
+    executable,
+    `#!/usr/bin/env bun
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+const attempts = process.env.SERVE_SIM_TEST_ATTEMPTS;
+const paths = process.env.SERVE_SIM_TEST_PATHS;
+const count = Number(readFileSync(attempts, "utf8") || "0") + 1;
+writeFileSync(attempts, String(count));
+const confdir = process.argv.find((arg) => arg.startsWith("confdir="))?.slice("confdir=".length);
+appendFileSync(paths, confdir + "\\n");
+if (count < 3) {
+  console.error("Address already in use");
+  process.exit(1);
+}
+writeFileSync(confdir + "/mitmproxy-ca-cert.pem", "test-ca");
+await fetch(process.env.SERVE_SIM_CAPTURE_CONTROL_URL + "/ready?t=" + process.env.SERVE_SIM_CAPTURE_CONTROL_TOKEN, {
+  method: "POST",
+  body: "{}",
+});
+setInterval(() => {}, 1000);
+`,
+  );
+  chmodSync(executable, 0o755);
+  writeFileSync(attempts, "0");
+  writeFileSync(paths, "");
+
+  const previous = {
+    executable: process.env.SERVE_SIM_MITMDUMP,
+    attempts: process.env.SERVE_SIM_TEST_ATTEMPTS,
+    paths: process.env.SERVE_SIM_TEST_PATHS,
+  };
+  process.env.SERVE_SIM_MITMDUMP = executable;
+  process.env.SERVE_SIM_TEST_ATTEMPTS = attempts;
+  process.env.SERVE_SIM_TEST_PATHS = paths;
+  let unexpectedExits = 0;
+  try {
+    const proxy = await startMitmProxy(new CaptureStore(), {
+      onUnexpectedExit: () => unexpectedExits++,
+    });
+    await proxy.close();
+    expect(readFileSync(attempts, "utf8")).toBe("3");
+    expect(unexpectedExits).toBe(0);
+    for (const path of readFileSync(paths, "utf8").trim().split("\n")) {
+      expect(existsSync(path)).toBe(false);
+    }
+  } finally {
+    if (previous.executable === undefined) delete process.env.SERVE_SIM_MITMDUMP;
+    else process.env.SERVE_SIM_MITMDUMP = previous.executable;
+    if (previous.attempts === undefined) delete process.env.SERVE_SIM_TEST_ATTEMPTS;
+    else process.env.SERVE_SIM_TEST_ATTEMPTS = previous.attempts;
+    if (previous.paths === undefined) delete process.env.SERVE_SIM_TEST_PATHS;
+    else process.env.SERVE_SIM_TEST_PATHS = previous.paths;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

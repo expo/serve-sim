@@ -19,10 +19,7 @@ static void simnet_log(NSString *format, ...) {
     NSLog(@"[simnetproxy] %@", message);
 }
 
-/**
- * HTTPS has no public iOS constants — literal keys CFNetwork expects;
- * without them only cleartext is proxied.
- */
+// CFNetwork requires literal HTTPS keys; iOS exposes no public constants.
 static NSDictionary *SimNetProxyDictionary(void) {
     return @{
         (NSString *)kCFNetworkProxiesHTTPEnable : @YES,

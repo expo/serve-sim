@@ -70,7 +70,7 @@ describe("HAR 1.2 helpers", () => {
 
 describe("toHarEntry", () => {
   it("maps method, url, status, and timings", () => {
-    const entry = toHarEntry(req, null, Date.parse("2026-01-01T00:00:00.000Z"));
+    const entry = toHarEntry({ ...req, startedAt: Date.parse("2026-01-01T00:00:00.000Z") });
     expect(entry.request.method).toBe("GET");
     expect(entry.request.url).toBe("https://example.com/a?x=1");
     expect(entry.request.queryString).toEqual([{ name: "x", value: "1" }]);
@@ -127,8 +127,6 @@ describe("toHarEntry", () => {
   it("never emits negative required timings for in-flight rows", () => {
     const entry = toHarEntry(
       { ...req, status: null, ttfbMs: null, durationMs: null },
-      null,
-      Date.parse("2026-01-01T00:00:00.000Z"),
     );
     expect(entry.timings.send).toBeGreaterThanOrEqual(0);
     expect(entry.timings.wait).toBeGreaterThanOrEqual(0);
@@ -163,16 +161,8 @@ describe("HarAccumulator", () => {
     const acc = new HarAccumulator();
     const t0 = Date.parse("2026-01-01T00:00:02.000Z");
     const t1 = Date.parse("2026-01-01T00:00:01.000Z");
-    acc.upsert({ ...req, id: "late", url: "https://example.com/late" });
-    // Force wall starts by clearing and using known order via sequential upserts with delays —
-    // wallStart is set on first upsert from Date.now(); override by building via toHarEntry path:
-    (acc as unknown as { wallStart: Map<string, number>; entries: Map<string, unknown> }).wallStart.set(
-      "late",
-      t0,
-    );
-    (acc as unknown as { wallStart: Map<string, number> }).wallStart.set("early", t1);
-    acc.upsert({ ...req, id: "late", url: "https://example.com/late" });
-    acc.upsert({ ...req, id: "early", url: "https://example.com/early" });
+    acc.upsert({ ...req, id: "late", url: "https://example.com/late", startedAt: t0 });
+    acc.upsert({ ...req, id: "early", url: "https://example.com/early", startedAt: t1 });
     const urls = acc.toHar().log.entries.map((e) => e.request.url);
     expect(urls).toEqual(["https://example.com/early", "https://example.com/late"]);
   });
@@ -227,4 +217,16 @@ describe("harFromStore", () => {
     expect(entry.response.statusText).toBe("Created");
     expect(isHarEntryCompliant(entry)).toBe(true);
   });
+});
+
+it("keeps original timestamps when an old request is exported again", () => {
+  const recorded = { ...req, startedAt: Date.parse("2026-01-01T00:00:00.000Z") };
+  const entry = toHarEntry(recorded);
+  expect(entry.startedDateTime).toBe("2026-01-01T00:00:00.000Z");
+  const snapshot = harFromStore([recorded], () => null);
+  expect(snapshot.log.entries[0]!.startedDateTime).toBe(entry.startedDateTime);
+  const acc = new HarAccumulator();
+  acc.upsert(recorded);
+  acc.upsert({ ...recorded, responseBytes: 20 });
+  expect(acc.toHar().log.entries[0]!.startedDateTime).toBe(entry.startedDateTime);
 });

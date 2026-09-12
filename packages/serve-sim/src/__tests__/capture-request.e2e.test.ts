@@ -1,11 +1,4 @@
-// Proves a request an app really made arrives in the capture store, settled.
-//
-// Every other capture test stubs either the proxy or the device, so a store that drops finished requests
-// would leave the suite green while the panel stayed empty. Here the real runtime arms a real simulator
-// and a real app makes one cleartext request that has to come back with a status.
-//
-// The HTTPS proxy keys and the simulator CA trust are not exercised here, because a cleartext load never
-// reaches them. simnet-injection.e2e.test.ts covers the CONNECT path.
+// Verify a real HTTP request reaches capture; this does not test HTTPS decryption.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "child_process";

@@ -1,27 +1,6 @@
-// SimCameraHelper — host-side source manager for serve-sim's simulator
-// camera feed. Owns a POSIX shared-memory region the injected dylib mmaps,
-// and writes BGRA frames into it from one of several swappable sources:
-//
-//   - placeholder : programmatically rendered moving frames (default)
-//   - webcam      : live AVCaptureDevice (front Mac camera, Continuity, …)
-//   - image       : a single PNG/JPEG, written once
-//
-// A UNIX-domain control socket lets the CLI (and the in-page Camera tool)
-// switch sources at runtime without relaunching the simulator app — the
-// dylib just keeps reading whatever frames the helper writes.
-//
-// Command line:
-//   serve-sim-camera-helper --shm <name> [--socket <path>]
-//                           [--source placeholder|webcam|image]
-//                           [--arg <value>]   # webcam name / image path
-//                           [--width 1280] [--height 720]
-//   serve-sim-camera-helper --list
-//
-// Control protocol (line-delimited JSON over AF_UNIX, each line one command):
-//   {"action":"switch","source":"webcam","arg":"MacBook Pro Camera"}
-//   {"action":"switch","source":"placeholder"}
-//   {"action":"status"}            -> server replies one JSON line
-//   {"action":"shutdown"}
+// Host camera source manager. The control socket accepts newline-delimited JSON.
+// {"action":"frames"} claims the selected stream source; subsequent messages
+// are a big-endian uint32 length followed by encoded image bytes.
 
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
@@ -32,6 +11,7 @@
 #import <IOSurface/IOSurface.h>
 
 #include <fcntl.h>
+#include <errno.h>
 #include <signal.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -70,10 +50,10 @@ static NSString *MirrorName(uint8_t code);
 // Publish a fully-prepared BGRA frame (gWidth x gHeight, packed at gWidth*4
 // bytes per row) into the next free ring surface. Writers MUST go through this
 // so latestIndex/frameSeq stay coherent for the dylib's tear-detection check.
-static void PublishFrame(const uint8_t *bgra) {
-    if (!gHeader || !gSurfaceTable || !bgra) return;
+static BOOL PublishFrame(const uint8_t *bgra) {
+    if (!gHeader || !gSurfaceTable || !bgra) return NO;
     uint32_t count = gSurfaceTable->surfaceCount;
-    if (count == 0) return;
+    if (count == 0) return NO;
 
     // Render into a surface the reader isn't holding and isn't the one it last
     // published, so an in-flight frame is never overwritten mid-read.
@@ -88,7 +68,7 @@ static void PublishFrame(const uint8_t *bgra) {
             break;
         }
     }
-    if (!found) return;
+    if (!found) return NO;
     gWriteIndex = idx;
 
     IOSurfaceRef surface = gSurfaces[idx];
@@ -110,6 +90,7 @@ static void PublishFrame(const uint8_t *bgra) {
     atomic_thread_fence(memory_order_release);
     uint64_t next = atomic_fetch_add(&gFrameSeq, 1) + 1;
     atomic_store_explicit(&gHeader->frameSeq, next, memory_order_release);
+    return YES;
 }
 
 #pragma mark - Source pipeline (start / stop / switch)
@@ -120,6 +101,7 @@ typedef NS_ENUM(NSInteger, SimCamSourceKind) {
     SimCamSourceWebcam,
     SimCamSourceImage,
     SimCamSourceVideo,
+    SimCamSourceStream,
 };
 
 static SimCamSourceKind gActiveSource = SimCamSourceNone;
@@ -128,6 +110,10 @@ static dispatch_source_t gPlaceholderTimer;
 static dispatch_semaphore_t gPlaceholderStopped;
 static AVCaptureSession *gWebcamSession;
 static SimCamSourceKind gPendingSource;     // for status reporting
+static uint64_t gStreamGeneration = 0;
+static uint64_t gStreamOwner = 0;
+static uint64_t gLastStreamFrameNs = 0;
+static dispatch_source_t gStreamIdleTimer;
 static NSString *gActiveArg = nil;          // selected camera name, image path
 
 @interface SimCamWebcamWriter : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
@@ -408,6 +394,28 @@ static void StopWebcamSource(void) {
 
 #pragma mark Image source
 
+// Aspect-fit a decoded image into a fresh shm-sized BGRA buffer and publish it.
+static BOOL PublishCGImage(CGImageRef img) {
+    size_t bpr = (size_t)gWidth * 4;
+    uint8_t *buf = calloc(1, bpr * gHeight);
+    if (!buf) return NO;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(buf, gWidth, gHeight, 8, bpr, cs,
+        kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(cs);
+    if (!ctx) { free(buf); return NO; }
+    size_t iw = CGImageGetWidth(img), ih = CGImageGetHeight(img);
+    double sx = (double)gWidth / iw, sy = (double)gHeight / ih;
+    // Aspect-fit file sources so the full source frame remains visible.
+    double s = MIN(sx, sy);
+    double dw = iw * s, dh = ih * s;
+    CGContextDrawImage(ctx, CGRectMake((gWidth - dw)/2.0, (gHeight - dh)/2.0, dw, dh), img);
+    CGContextRelease(ctx);
+    BOOL published = PublishFrame(buf);
+    free(buf);
+    return published;
+}
+
 static BOOL StartImageSource(NSString *path, NSString **err) {
     if (!path.length) { if (err) *err = @"image source needs a path"; return NO; }
     CGImageSourceRef src = CGImageSourceCreateWithURL(
@@ -417,29 +425,62 @@ static BOOL StartImageSource(NSString *path, NSString **err) {
     CFRelease(src);
     if (!img) { if (err) *err = @"could not decode image"; return NO; }
 
-    size_t bpr = (size_t)gWidth * 4;
-    uint8_t *buf = calloc(1, bpr * gHeight);
-    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx = CGBitmapContextCreate(buf, gWidth, gHeight, 8, bpr, cs,
-        kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
-    CGColorSpaceRelease(cs);
-    size_t iw = CGImageGetWidth(img), ih = CGImageGetHeight(img);
-    double sx = (double)gWidth / iw, sy = (double)gHeight / ih;
-    // Aspect-fit file sources so the full source frame remains visible.
-    double s = MIN(sx, sy);
-    double dw = iw * s, dh = ih * s;
-    CGContextDrawImage(ctx, CGRectMake((gWidth - dw)/2.0, (gHeight - dh)/2.0, dw, dh), img);
-    CGContextRelease(ctx);
+    PublishCGImage(img);
     CGImageRelease(img);
-
-    PublishFrame(buf);
-    free(buf);
     fprintf(stderr, "[serve-sim-camera] image → %s\n", path.UTF8String);
     return YES;
 }
 
 static void StopImageSource(void) {
     // Nothing live; the published frame stays in shm until next source overwrites.
+}
+
+#pragma mark Stream source (encoded frames pushed in over the control socket)
+
+#define SIMCAM_STREAM_IDLE_NS (2ull * NSEC_PER_SEC)
+#define SIMCAM_MAX_PUSHED_IMAGE_DIMENSION 4096u
+#define SIMCAM_MAX_PUSHED_IMAGE_PIXELS (4096ull * 2160ull)
+
+static BOOL StartStreamSource(NSString **_err) {
+    atomic_store_explicit(&gHeader->active, 0, memory_order_release);
+    if (!gStreamIdleTimer) {
+        gStreamIdleTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, gSourceQueue);
+        dispatch_source_set_timer(gStreamIdleTimer, DISPATCH_TIME_NOW, NSEC_PER_SEC / 5, NSEC_PER_MSEC * 20);
+        dispatch_source_set_event_handler(gStreamIdleTimer, ^{
+            if (gActiveSource == SimCamSourceStream && gStreamOwner &&
+                MachAbsToNs(mach_absolute_time()) - gLastStreamFrameNs >= SIMCAM_STREAM_IDLE_NS) {
+                atomic_store_explicit(&gHeader->active, 0, memory_order_release);
+            }
+        });
+        dispatch_resume(gStreamIdleTimer);
+    }
+    return YES;
+}
+
+static void StopStreamSource(void) {
+    gStreamOwner = 0;
+    gStreamGeneration++;
+    atomic_store_explicit(&gHeader->active, 0, memory_order_release);
+}
+
+static BOOL PublishEncodedFrame(NSData *encoded) {
+    NSDictionary *options = @{ (id)kCGImageSourceShouldCache: @NO };
+    CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)encoded, (__bridge CFDictionaryRef)options);
+    if (!src) return NO;
+    NSDictionary *properties = CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(src, 0, NULL));
+    uint64_t width = [properties[(id)kCGImagePropertyPixelWidth] unsignedLongLongValue];
+    uint64_t height = [properties[(id)kCGImagePropertyPixelHeight] unsignedLongLongValue];
+    if (!width || !height || width > SIMCAM_MAX_PUSHED_IMAGE_DIMENSION ||
+        height > SIMCAM_MAX_PUSHED_IMAGE_DIMENSION || width * height > SIMCAM_MAX_PUSHED_IMAGE_PIXELS) {
+        CFRelease(src);
+        return NO;
+    }
+    CGImageRef img = CGImageSourceCreateImageAtIndex(src, 0, (__bridge CFDictionaryRef)options);
+    CFRelease(src);
+    if (!img) return NO;
+    BOOL published = PublishCGImage(img);
+    CGImageRelease(img);
+    return published;
 }
 
 #pragma mark Video source (looping playback via AVAssetReader)
@@ -632,8 +673,10 @@ static BOOL SwitchSource(SimCamSourceKind kind, NSString *arg, NSString **errOut
             case SimCamSourceWebcam:      StopWebcamSource(); break;
             case SimCamSourceImage:       StopImageSource(); break;
             case SimCamSourceVideo:       StopVideoSource(); break;
+            case SimCamSourceStream:      StopStreamSource(); break;
             default: break;
         }
+        atomic_store_explicit(&gHeader->active, 0, memory_order_release);
         gActiveSource = SimCamSourceNone;
         gActiveArg = nil;
         switch (kind) {
@@ -641,9 +684,15 @@ static BOOL SwitchSource(SimCamSourceKind kind, NSString *arg, NSString **errOut
             case SimCamSourceWebcam:      ok = StartWebcamSource(arg, &err); break;
             case SimCamSourceImage:       ok = StartImageSource(arg, &err); break;
             case SimCamSourceVideo:       ok = StartVideoSource(arg, &err); break;
+            case SimCamSourceStream:      ok = StartStreamSource(&err); break;
             default: ok = YES; break;
         }
-        if (ok) { gActiveSource = kind; gActiveArg = [arg copy]; }
+        if (ok) {
+            gActiveSource = kind;
+            gActiveArg = [arg copy];
+            if (kind != SimCamSourceStream && kind != SimCamSourceNone)
+                atomic_store_explicit(&gHeader->active, 1, memory_order_release);
+        }
     });
     if (errOut) *errOut = err;
     return ok;
@@ -654,6 +703,7 @@ static SimCamSourceKind ParseSourceName(NSString *name) {
     if ([name isEqualToString:@"webcam"])      return SimCamSourceWebcam;
     if ([name isEqualToString:@"image"])       return SimCamSourceImage;
     if ([name isEqualToString:@"video"])       return SimCamSourceVideo;
+    if ([name isEqualToString:@"stream"])      return SimCamSourceStream;
     if ([name isEqualToString:@"none"])        return SimCamSourceNone;
     return -1;
 }
@@ -663,6 +713,7 @@ static NSString *SourceName(SimCamSourceKind k) {
         case SimCamSourceWebcam:      return @"webcam";
         case SimCamSourceImage:       return @"image";
         case SimCamSourceVideo:       return @"video";
+        case SimCamSourceStream:      return @"stream";
         default:                      return @"none";
     }
 }
@@ -674,9 +725,12 @@ static dispatch_source_t gAcceptSource;
 
 static NSData *EncodeReply(NSDictionary *dict) {
     NSMutableDictionary *m = dict.mutableCopy;
-    if (!m[@"source"]) m[@"source"] = SourceName(gActiveSource);
-    if (!m[@"arg"] && gActiveArg) m[@"arg"] = gActiveArg;
-    if (!m[@"mirror"] && gHeader) m[@"mirror"] = MirrorName(gHeader->mirrorMode);
+    dispatch_sync(gSourceQueue, ^{
+        m[@"connected"] = gHeader && atomic_load_explicit(&gHeader->active, memory_order_acquire) ? @YES : @NO;
+        if (!m[@"source"]) m[@"source"] = SourceName(gActiveSource);
+        if (!m[@"arg"] && gActiveArg) m[@"arg"] = gActiveArg;
+        if (!m[@"mirror"] && gHeader) m[@"mirror"] = MirrorName(gHeader->mirrorMode);
+    });
     NSError *e = nil;
     NSData *json = [NSJSONSerialization dataWithJSONObject:m options:0 error:&e];
     if (!json) json = [@"{\"ok\":false}" dataUsingEncoding:NSUTF8StringEncoding];
@@ -685,33 +739,32 @@ static NSData *EncodeReply(NSDictionary *dict) {
     return out;
 }
 
-static void HandleControlLine(int fd, NSString *line) {
-    NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+static BOOL HandleControlLine(int fd, NSData *data, uint64_t *owner) {
     NSError *e = nil;
     NSDictionary *cmd = [NSJSONSerialization JSONObjectWithData:data options:0 error:&e];
     if (![cmd isKindOfClass:[NSDictionary class]]) {
         NSData *r = EncodeReply(@{ @"ok": @NO, @"error": @"invalid json" });
         write(fd, r.bytes, r.length);
-        return;
+        return NO;
     }
     NSString *action = cmd[@"action"];
     if ([action isEqualToString:@"status"]) {
         NSData *r = EncodeReply(@{ @"ok": @YES });
         write(fd, r.bytes, r.length);
-        return;
+        return NO;
     }
     if ([action isEqualToString:@"shutdown"]) {
         NSData *r = EncodeReply(@{ @"ok": @YES, @"shutdown": @YES });
         write(fd, r.bytes, r.length);
         gShouldExit = 1;
-        return;
+        return NO;
     }
     if ([action isEqualToString:@"switch"]) {
         SimCamSourceKind k = ParseSourceName(cmd[@"source"]);
         if (k == (SimCamSourceKind)-1) {
             NSData *r = EncodeReply(@{ @"ok": @NO, @"error": @"unknown source" });
             write(fd, r.bytes, r.length);
-            return;
+            return NO;
         }
         NSString *err = nil;
         BOOL ok = SwitchSource(k, cmd[@"arg"], &err);
@@ -719,7 +772,23 @@ static void HandleControlLine(int fd, NSString *line) {
             ? @{ @"ok": @YES }
             : @{ @"ok": @NO, @"error": err ?: @"switch failed" });
         write(fd, r.bytes, r.length);
-        return;
+        return NO;
+    }
+    if ([action isEqualToString:@"frames"]) {
+        __block BOOL ok = NO;
+        dispatch_sync(gSourceQueue, ^{
+            if (gActiveSource != SimCamSourceStream) return;
+            gStreamOwner = ++gStreamGeneration;
+            *owner = gStreamOwner;
+            gLastStreamFrameNs = MachAbsToNs(mach_absolute_time());
+            atomic_store_explicit(&gHeader->active, 0, memory_order_release);
+            ok = YES;
+        });
+        NSData *r = EncodeReply(ok
+            ? @{ @"ok": @YES, @"frames": @YES }
+            : @{ @"ok": @NO, @"error": @"Select the stream source before sending frames." });
+        write(fd, r.bytes, r.length);
+        return ok;
     }
     if ([action isEqualToString:@"setMirror"]) {
         NSString *mode = cmd[@"mode"] ?: @"auto";
@@ -727,37 +796,79 @@ static void HandleControlLine(int fd, NSString *line) {
         if (code == 0xFE) {
             NSData *r = EncodeReply(@{ @"ok": @NO, @"error": @"unknown mirror mode" });
             write(fd, r.bytes, r.length);
-            return;
+            return NO;
         }
         if (gHeader) gHeader->mirrorMode = code;
         NSData *r = EncodeReply(@{ @"ok": @YES, @"mirror": MirrorName(code) });
         write(fd, r.bytes, r.length);
-        return;
+        return NO;
     }
     NSData *r = EncodeReply(@{ @"ok": @NO, @"error": @"unknown action" });
     write(fd, r.bytes, r.length);
+    return NO;
 }
 
+#define SIMCAM_MAX_PUSHED_FRAME_BYTES (8u * 1024u * 1024u)
+#define SIMCAM_MAX_CONTROL_LINE_BYTES (64u * 1024u)
+
 static void HandleClient(int fd) {
+    int noSigPipe = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, sizeof(noSigPipe));
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSMutableData *buf = [NSMutableData new];
-        char tmp[1024];
-        while (1) {
+        BOOL frameMode = NO;
+        uint64_t owner = 0;
+        BOOL broken = NO;
+        uint8_t tmp[16384];
+        while (!broken) {
             ssize_t n = read(fd, tmp, sizeof(tmp));
             if (n <= 0) break;
-            [buf appendBytes:tmp length:n];
-            while (1) {
-                NSString *all = [[NSString alloc] initWithData:buf encoding:NSUTF8StringEncoding];
-                NSRange nl = [all rangeOfString:@"\n"];
-                if (nl.location == NSNotFound) break;
-                NSString *line = [all substringToIndex:nl.location];
-                NSUInteger consumed = [[all substringToIndex:nl.location + 1]
-                    lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
-                [buf replaceBytesInRange:NSMakeRange(0, consumed) withBytes:NULL length:0];
-                if (line.length > 0) HandleControlLine(fd, line);
+            [buf appendBytes:tmp length:(size_t)n];
+            while (!broken) {
+                if (!frameMode) {
+                    const uint8_t *bytes = buf.bytes;
+                    const uint8_t *newline = memchr(bytes, '\n', buf.length);
+                    if (!newline) {
+                        if (buf.length > SIMCAM_MAX_CONTROL_LINE_BYTES) broken = YES;
+                        break;
+                    }
+                    NSUInteger length = (NSUInteger)(newline - bytes);
+                    if (length > SIMCAM_MAX_CONTROL_LINE_BYTES) { broken = YES; break; }
+                    NSData *line = [buf subdataWithRange:NSMakeRange(0, length)];
+                    [buf replaceBytesInRange:NSMakeRange(0, length + 1) withBytes:NULL length:0];
+                    if (length > 0 && HandleControlLine(fd, line, &owner)) frameMode = YES;
+                    continue;
+                }
+                if (buf.length < 4) break;
+                const uint8_t *bytes = buf.bytes;
+                uint32_t size = ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16)
+                              | ((uint32_t)bytes[2] << 8) | (uint32_t)bytes[3];
+                if (size == 0 || size > SIMCAM_MAX_PUSHED_FRAME_BYTES) {
+                    fprintf(stderr, "[serve-sim-camera] frame stream out of sync (%u bytes) — closing\n", size);
+                    broken = YES;
+                    break;
+                }
+                if (buf.length < (NSUInteger)size + 4) break;
+                @autoreleasepool {
+                    NSData *frame = [buf subdataWithRange:NSMakeRange(4, size)];
+                    [buf replaceBytesInRange:NSMakeRange(0, size + 4) withBytes:NULL length:0];
+                    dispatch_sync(gSourceQueue, ^{
+                        if (gActiveSource != SimCamSourceStream || gStreamOwner != owner || gShouldExit) return;
+                        if (PublishEncodedFrame(frame)) {
+                            gLastStreamFrameNs = MachAbsToNs(mach_absolute_time());
+                            atomic_store_explicit(&gHeader->active, 1, memory_order_release);
+                        }
+                    });
+                }
             }
         }
         close(fd);
+        if (frameMode) dispatch_sync(gSourceQueue, ^{
+            if (gActiveSource == SimCamSourceStream && gStreamOwner == owner) {
+                gStreamOwner = 0;
+                atomic_store_explicit(&gHeader->active, 0, memory_order_release);
+            }
+        });
     });
 }
 
@@ -857,7 +968,7 @@ static int OpenShm(const char *name) {
     gHeader->bytesPerRow = (uint32_t)IOSurfaceGetBytesPerRow(gSurfaces[0]);
     gHeader->pixelByteSize = (uint64_t)gWidth * gHeight * 4;
     gHeader->mirrorMode = SIMCAM_MIRROR_UNSET; // dylib falls back to env
-    atomic_store_explicit(&gHeader->active, 1, memory_order_release);
+    atomic_store_explicit(&gHeader->active, 0, memory_order_release);
     return fd;
 }
 
@@ -947,10 +1058,8 @@ int main(int argc, const char *argv[]) {
         atomic_store_explicit(&gHeader->active, 0, memory_order_release);
         if (gAcceptSource) dispatch_source_cancel(gAcceptSource);
         if (gControlListenFd >= 0) { close(gControlListenFd); if (socketPath) unlink(socketPath); }
-        StopPlaceholderSource();
-        StopWebcamSource();
-        StopVideoSource();
-        ReleaseSurfaces();
+        SwitchSource(SimCamSourceNone, nil, NULL);
+        dispatch_sync(gSourceQueue, ^{ ReleaseSurfaces(); });
         if (gShmName) shm_unlink(gShmName);
         fprintf(stderr, "[serve-sim-camera] stopped\n");
         return 0;

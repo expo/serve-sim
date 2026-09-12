@@ -5,6 +5,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { clearLaunchState, armCapabilityLoader, isCapabilityEnabled, removeCapabilityLoaderSync } from "../launch-manager";
+import { writeCameraFrame, closeCameraFrameStreams, claimCameraFrameStream } from "../camera-frames";
+import { readCameraStatus } from "../camera-helper";
 import { e2eDevice, readInsert, requireE2E } from "./e2e-preconditions";
 
 const PKG_DIR = join(import.meta.dir, "../..");
@@ -137,6 +139,33 @@ describe.skipIf(!ready)("device-wide camera lifecycle", () => {
     cli(["disable"]);
     await waitFor(() => lines(APP, "queue-drained").length > drained);
     expect(lines(APP, "queued-sample").length).toBe(samples);
+  }, 60_000);
+
+  test("browser frame transport disconnects and reconnects the running app", async () => {
+    cli(["disable"]);
+    simctl(["launch", udid!, APP]);
+    const starts = lines(APP, "start");
+    for (const [source, expected] of [[red, "255,0,0"], [blue, "0,0,255"]]) {
+      cli(["enable", "--stream"]);
+      expect((await readCameraStatus(udid!)).connected).toBe(false);
+      const owner = Symbol("browser-frame-test");
+      claimCameraFrameStream(udid!, owner);
+      const before = lines(APP, "frame").length;
+      const frame = readFileSync(source!);
+      const timer = setInterval(() => writeCameraFrame(udid!, frame, owner), 50);
+      let disconnected = lines(APP, "disconnected").length;
+      try {
+        await waitFor(() => lines(APP, "frame").length > before && lines(APP, "frame").at(-1)!.endsWith(expected!));
+        disconnected = lines(APP, "disconnected").length;
+      } finally {
+        clearInterval(timer);
+        closeCameraFrameStreams(owner);
+      }
+      await waitFor(() => lines(APP, "disconnected").length > disconnected);
+      expect((await readCameraStatus(udid!)).connected).toBe(false);
+      expect(lines(APP, "start")).toEqual(starts);
+    }
+    cli(["disable"]);
   }, 60_000);
 
 });

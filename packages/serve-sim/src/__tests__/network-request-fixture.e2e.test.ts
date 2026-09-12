@@ -4,7 +4,9 @@ import { existsSync, readFileSync } from "fs";
 import { createServer, type Server } from "http";
 import { join } from "path";
 
+import type { HarEntry } from "../capture/har";
 import { locateMitmdump } from "../capture/mitm-engine";
+import { simctlSync } from "../simctl";
 import { e2eDevice, readInsert, requireE2E } from "./e2e-preconditions";
 import { freePortAsync, killHelpersForDevice, useTempStateDir } from "./helpers";
 
@@ -29,19 +31,6 @@ const ready =
 requireE2E("network request fixture", ready);
 
 type ReceivedRequest = { method: string; url: string; bodyBytes: number; bodyStart: string };
-type HarEntry = {
-  _captureId: string;
-  request: { method: string; url: string; bodySize: number; postData?: { text?: string } };
-  response: { status: number };
-};
-
-function simctl(args: string[]): string {
-  return execFileSync("xcrun", ["simctl", ...args], {
-    encoding: "utf-8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: 60_000,
-  });
-}
 
 async function waitForAsync(check: () => boolean | Promise<boolean>, timeoutMs = 90_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -64,9 +53,9 @@ describeOrSkip("network request fixture", () => {
     killHelpersForDevice(udid!);
 
     try {
-      simctl(["uninstall", udid!, APP]);
+      simctlSync(["uninstall", udid!, APP]);
     } catch {}
-    simctl(["install", udid!, FIXTURE]);
+    simctlSync(["install", udid!, FIXTURE], 60_000);
 
     const originPort = await freePortAsync();
     origin = createServer((req, res) => {
@@ -90,7 +79,7 @@ describeOrSkip("network request fixture", () => {
       });
     });
     await new Promise<void>((done) => origin!.listen(originPort, "127.0.0.1", done));
-    simctl([
+    simctlSync([
       "spawn",
       udid!,
       "launchctl",
@@ -146,19 +135,20 @@ describeOrSkip("network request fixture", () => {
     }
     try {
       try {
-        simctl(["terminate", udid!, APP]);
+        simctlSync(["terminate", udid!, APP]);
       } catch {}
       try {
-        simctl(["uninstall", udid!, APP]);
+        simctlSync(["uninstall", udid!, APP]);
       } catch {}
       try {
-        simctl(["spawn", udid!, "launchctl", "unsetenv", ORIGIN_ENV]);
+        simctlSync(["spawn", udid!, "launchctl", "unsetenv", ORIGIN_ENV]);
       } catch {}
       if (origin) {
         origin.closeAllConnections();
         await new Promise<void>((done) => origin!.close(() => done()));
       }
       expect(readInsert(udid!), stderr).toBe("");
+      expect(simctlSync(["spawn", udid!, "launchctl", "getenv", "SIMNET_PROXY_PORT_FILE"])).toBe("");
     } finally {
       tempState.restore();
     }
@@ -224,7 +214,7 @@ describeOrSkip("network request fixture", () => {
     expect(capturedBody.requestBody).toHaveLength(CAPTURED_BODY_BYTES);
     expect(capturedBody.requestTruncated).toBe(true);
 
-    const container = simctl(["get_app_container", udid!, APP, "data"]).trim();
+    const container = simctlSync(["get_app_container", udid!, APP, "data"]);
     const resultsPath = join(container, "Documents/network-requests.tsv");
     let appResults = "";
     await waitForAsync(() => {

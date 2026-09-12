@@ -69,7 +69,7 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
 
   const byUdid = new Map<string, CaptureSession>();
   const operations = new Map<string, Promise<void>>();
-  const enables = new Map<string, { cancelled: boolean; started: boolean; promise: Promise<CaptureMeta> }>();
+  const enables = new Map<string, { cancelled: boolean; failed: boolean; promise: Promise<CaptureMeta> }>();
 
   function enqueue<T>(udid: string, operation: () => Promise<T>): Promise<T> {
     const previous = operations.get(udid);
@@ -129,23 +129,26 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
     /** Capturing meta, or {@link CaptureEnableError} after publishing failed meta. */
     enableForDevice(udid: string): Promise<CaptureMeta> {
       const pending = enables.get(udid);
-      if (pending && (!pending.started || byUdid.get(udid)?.meta.attachment !== "failed")) {
+      if (pending && !pending.failed) {
         return pending.promise;
       }
-      const request = { cancelled: false, started: false, promise: Promise.resolve(notEnabledMeta(udid)) };
+      const request = { cancelled: false, failed: false, promise: Promise.resolve(notEnabledMeta(udid)) };
       const promise = enqueue(udid, async () => {
-        request.started = true;
-        if (request.cancelled) {
-          throw new CaptureEnableError({
-            ...notEnabledMeta(udid),
-            attachment: "failed",
-            attachError: "Capture was turned off while it was waiting to start. Enable it again to retry.",
-          });
-        }
+        const assertRequested = () => {
+          if (request.cancelled) {
+            throw new CaptureEnableError({
+              ...notEnabledMeta(udid),
+              attachment: "failed",
+              attachError: "Capture was turned off while it was waiting to start. Enable it again to retry.",
+            });
+          }
+        };
+        assertRequested();
         const existing = byUdid.get(udid);
         if (existing) {
           if (existing.meta.attachment !== "failed") return existing.meta;
           await tearDownSession(udid, existing);
+          assertRequested();
         }
 
         const store = new CaptureStore();
@@ -201,6 +204,7 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
           }
           meta.attachment = "capturing";
         } catch (error) {
+          request.failed = true;
           meta.attachment = "failed";
           meta.attachError = error instanceof Error ? error.message : String(error);
           await tearDownSession(udid, session);

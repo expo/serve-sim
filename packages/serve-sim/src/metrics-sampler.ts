@@ -305,11 +305,7 @@ export async function sampleUserApp(udid: string, deps: SampleDeps = {}): Promis
 export interface MetricsSamplerOptions {
   udid: string;
   deviceName?: string;
-  /**
-   * Network rate from a source that supersedes the host counters, or null to keep using them. Used
-   * when capture is routing the app through a local proxy, which makes its traffic invisible to the
-   * host's per-process accounting.
-   */
+  /** Proxy throughput when host counters cannot see captured traffic. */
   networkRateOverride?: () => NetInOut | null;
   intervalMs?: number;
   sample?: (udid: string) => Promise<AppUsage | null>;

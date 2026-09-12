@@ -65,11 +65,7 @@ import { MAX_MJPEG_STREAM_FPS, MAX_VIDEO_STREAM_FPS } from "./stream-settings";
 import { parseHingeAngle } from "./hinge-angle";
 import { sendHingeAngleToWs } from "./hinge-command";
 
-// `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
-// CLI works under plain `node` too.
-// Covers disabling capture and disarming the loader together. One device's capture teardown is a HAR
-// flush, four `simctl spawn` calls and a proxy that gets up to 5s to stop, so a smaller budget abandons
-// healthy teardowns and leaves the simulator armed.
+// Budget for capture teardown and capability disarming together.
 const SHUTDOWN_TIMEOUT_MS = 20_000;
 const __dirname = dirnameOf(import.meta.url);
 
@@ -1732,11 +1728,13 @@ async function startNetworkCapture(
 ): Promise<void> {
   const capture = await import("./capture");
   loadedCapture = capture;
+  if (sessionStopping) return;
   capture.captureRuntime.setServerEnabled(true);
   capture.captureRuntime.setFields(capture.resolveCaptureFields(fields));
   for (const udid of udids) {
     if (capture.captureRuntime.metaFor(udid).attachment === "capturing") continue;
     await capture.startCaptureForDevice(udid, {
+      shouldStop: () => sessionStopping,
       onStarted: (meta) => {
         if (quiet) return;
         console.log(
@@ -1900,9 +1898,7 @@ async function serve(
     console.log("");
   }
 
-  // Capture is stopped before the devices are disarmed, so a device is never left pointing new launches
-  // at a proxy that is already gone. One budget for both: disabling capture takes the launch state lock,
-  // so bounding only that step leaves the disarm waiting on the work the bound just abandoned.
+  // Capture and capability teardown share one shutdown budget.
   const shutdown = async () => {
     sessionStopping = true;
     const teardown = (async () => {
@@ -2302,13 +2298,17 @@ Examples:
       }
     }
     let targets = devices;
-    // Capture is armed before the run mode starts, so every path out of here has to disarm it again.
+    // Retain exit-hook cleanup ownership even after asynchronous teardown.
     let captureStarted = false;
-    const stopNetworkCapture = async () => {
-      if (!captureStarted) return;
-      captureStarted = false;
-      const capture = await import("./capture");
-      await capture.captureRuntime.disableAll().catch(() => {});
+    let captureStopping: Promise<void> | null = null;
+    const stopNetworkCapture = (): Promise<void> => {
+      if (!captureStarted) return Promise.resolve();
+      captureStopping ??= (async () => {
+        const capture = await import("./capture");
+        capture.captureRuntime.setServerEnabled(false);
+        await capture.captureRuntime.disableAll();
+      })();
+      return captureStopping;
     };
     if (!opts.detach) {
       try {
@@ -2345,8 +2345,7 @@ Examples:
           }
         }
         if (opts.networkCapture) {
-          // Set first: enableForDevice arms each device in turn, and a signal arriving part way through
-          // has to find a teardown that knows about the ones already armed.
+          // Register exit cleanup before arming the first device.
           captureStarted = true;
           await startNetworkCapture(targets, opts.networkCaptureField, !!opts.quiet);
           if (sessionStopping) return;

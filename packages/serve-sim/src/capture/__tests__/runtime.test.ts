@@ -112,6 +112,35 @@ describe("capture runtime", () => {
     expect(runtime.metaFor(UDID).attachment).toBe("not-enabled");
   });
 
+  test("joins a retry cleaning up a failed session and cancels it before another proxy starts", async () => {
+    const clearing = gate();
+    const clear = gate();
+    let killProxy = (_reason: string) => {};
+    let starts = 0;
+    const { runtime } = harness({
+      startProxy: async (_store, deps) => {
+        starts++;
+        killProxy = deps.onUnexpectedExit ?? (() => {});
+        return { address: "127.0.0.1:9123", portFile: PORT_FILE, caPem: async () => CA_PEM, close: async () => {} };
+      },
+      clearInjection: async () => { clearing.release(); await clear.promise; },
+    });
+    await runtime.enableForDevice(UDID);
+    killProxy("proxy stopped");
+    const retry = runtime.enableForDevice(UDID);
+    await clearing.promise;
+    const again = runtime.enableForDevice(UDID);
+    const results = Promise.all([retry, again].map((promise) => promise.catch((error: unknown) => error)));
+    const shutdown = runtime.disableAll();
+    clear.release();
+    await shutdown;
+    const outcomes = await results;
+    expect(again).toBe(retry);
+    expect(outcomes.every((outcome) => outcome instanceof CaptureEnableError)).toBe(true);
+    expect(starts).toBe(1);
+    expect(runtime.metaFor(UDID).attachment).toBe("not-enabled");
+  });
+
   test("shutdown cancels an enable already queued behind teardown", async () => {
     const clear = gate();
     const { runtime, calls } = harness({ clearInjection: () => clear.promise });

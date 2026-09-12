@@ -96,6 +96,7 @@ export async function followCaptureHar(opts: FollowCaptureHarOptions): Promise<F
   const decoder = new TextDecoder();
   let buffer = "";
 
+  let flushFailure: Error | null = null;
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -122,8 +123,10 @@ export async function followCaptureHar(opts: FollowCaptureHarOptions): Promise<F
       }
     }
   } finally {
-    await disk.end({ removeDir: false });
+    flushFailure = await disk.end({ removeDir: false });
   }
+  // The HAR on disk is missing whatever the last write dropped, so reporting a path here would lie.
+  if (flushFailure) throw flushFailure;
 
   return {
     size: disk.size,

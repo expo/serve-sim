@@ -75,4 +75,46 @@ describe("followCaptureHar", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("fails rather than naming a HAR the last write never produced", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-har-gone-"));
+    const outPath = join(dir, "session.har");
+
+    const frames = [
+      'data: {"type":"finished","request":{"id":"r1","method":"GET","url":"https://a.test/","status":200,"mimeType":"text/plain","requestBytes":0,"responseBytes":2,"startedAt":1,"ttfbMs":1,"durationMs":2,"failure":null}}\n\n',
+    ];
+    let i = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (i >= frames.length) {
+          // The output directory disappears under the writer, the way a cleaned temp dir would.
+          rmSync(dir, { recursive: true, force: true });
+          controller.close();
+          return;
+        }
+        controller.enqueue(new TextEncoder().encode(frames[i++]));
+      },
+    });
+    const fetchImpl = async (input: RequestInfo | URL) => {
+      if (String(input).includes("/network-capture/r1")) return new Response("null", { status: 200 });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+
+    try {
+      await expect(
+        followCaptureHar({
+          baseUrl: "http://127.0.0.1:3999",
+          device: "D",
+          outPath,
+          flushIntervalMs: 50,
+          fetchImpl,
+          version: "test",
+          token: "test-token",
+        }),
+      ).rejects.toThrow();
+      expect(existsSync(outPath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

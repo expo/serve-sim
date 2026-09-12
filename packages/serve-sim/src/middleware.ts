@@ -2174,13 +2174,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           return;
         }
         const port = req.socket.localPort ?? 0;
-        void startDeviceInProcess(
-          udid,
-          port,
-          base,
-          streamSettings,
-          requirePreviewToken ? execToken : undefined,
-        ).then(async (error) => {
+        // Recorded whether or not the surface is gated: capture routes need it either way.
+        void startDeviceInProcess(udid, port, base, streamSettings, execToken).then(async (error) => {
           if (!error) {
             await enableNetworkCaptureForStartedDevice(udid, networkCapture);
           }

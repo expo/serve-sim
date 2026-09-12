@@ -79,8 +79,9 @@ Options:
                       Record HTTP(S) for devices this process starts or boots
                       (requires mitmproxy; see Network capture below)
       --network-capture-field <field>
-                      What to keep: header | request-body | response-body
-                      (repeatable or comma-separated; default: header)
+                      What to keep beyond metadata: header | query |
+                      request-body | response-body (repeatable or
+                      comma-separated; default: none)
       --codec <codec> HTTP stream codec: 'auto', 'h264', or 'mjpeg'
       --transport <http|webrtc>
                       Stream transport (default: http)
@@ -244,7 +245,7 @@ serve-sim capture har -o ./capture.har
 | Flag / command | What it does |
 | --- | --- |
 | `--network-capture` | Enable capture for devices this process starts or boots |
-| `--network-capture-field <field>` | Keep `header`, `request-body`, and/or `response-body` (repeatable or comma-separated). Default: `header` |
+| `--network-capture-field <field>` | Keep `header`, `query`, `request-body`, and/or `response-body` beyond metadata (repeatable or comma-separated). Default: none |
 | `serve-sim capture har -o <path>` | Follow the live stream into a HAR (and JSON next to it) |
 
 While capturing, the tools panel lists requests. Session files live under `$TMPDIR/serve-sim/capture-<udid>/` and are removed when capture stops. Capture HTTP routes require the preview session Bearer token.

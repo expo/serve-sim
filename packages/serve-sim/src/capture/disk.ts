@@ -3,6 +3,7 @@ import {
   appendFileSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -11,7 +12,7 @@ import { join } from "node:path";
 import { MAX_HAR_ENTRIES, toHarEntry } from "./har";
 import { compactNdjsonAndStreamHar, emptyHarText } from "./har-stream";
 import type { CapturedBody, CapturedRequest, CaptureEvent, CaptureStore } from "./store";
-import { stateDir } from "../state";
+import { listStateFiles, stateDir } from "../state";
 
 export const NETWORK_CAPTURE_FILENAME = "network-capture.json";
 export const CAPTURE_HAR_FILENAME = "capture.har";
@@ -32,11 +33,34 @@ const CAPTURE_DIR_PREFIX = "capture-";
  * nothing scheduled to collect it. Reclaiming those at the next start is what bounds how long captured
  * traffic can survive on disk.
  */
+/** Devices another running serve-sim is streaming. Its capture is live, so its directory is not abandoned. */
+function devicesWithLiveOwner(): string[] {
+  const devices: string[] = [];
+  for (const file of listStateFiles()) {
+    try {
+      const state = JSON.parse(readFileSync(file, "utf-8")) as { pid?: number; device?: string };
+      if (typeof state.pid !== "number" || !state.device) continue;
+      process.kill(state.pid, 0);
+      devices.push(state.device);
+    } catch {
+      // Unreadable, malformed, or a pid that is gone: nothing there to protect.
+    }
+  }
+  return devices;
+}
+
 export function sweepAbandonedCaptureDirs(
   keepUdids: readonly string[],
-  deps: { list?: () => string[]; remove?: (dir: string) => void } = {},
+  deps: {
+    list?: () => string[];
+    remove?: (dir: string) => void;
+    liveDevices?: () => string[];
+  } = {},
 ): number {
-  const keep = new Set(keepUdids.map((udid) => `${CAPTURE_DIR_PREFIX}${udid}`));
+  const live = deps.liveDevices ?? devicesWithLiveOwner;
+  const keep = new Set(
+    [...keepUdids, ...live()].map((udid) => `${CAPTURE_DIR_PREFIX}${udid}`),
+  );
   const list =
     deps.list ??
     (() => {
@@ -157,7 +181,7 @@ export class CaptureDiskAccumulator {
     this.begin();
     this.unsubscribe = store.subscribe((event) => this.onStoreEvent(store, event));
     this.recordEvent({ type: "session", startedAt: new Date().toISOString() });
-    return () => this.end({ removeDir: true });
+    return async () => void (await this.end({ removeDir: true }));
   }
 
   /** Append one event line to network-capture.json (any SSE payload). */
@@ -190,8 +214,11 @@ export class CaptureDiskAccumulator {
   /**
    * Stop the interval and flush. Session capture passes `removeDir: true`;
    * CLI follow keeps the files (`removeDir: false`).
+   *
+   * Returns the failure when the last write did not land, so a caller that reports a result can say the
+   * file it names is incomplete. Teardown on shutdown ignores it, which is why this never throws.
    */
-  async end(opts: { removeDir?: boolean } = {}): Promise<void> {
+  async end(opts: { removeDir?: boolean } = {}): Promise<Error | null> {
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = null;
@@ -201,15 +228,14 @@ export class CaptureDiskAccumulator {
       this.timer = null;
     }
     this.started = false;
+    let failure: Error | null = null;
     try {
       await this.flush();
     } catch (error) {
-      console.warn(
-        `Network capture: flush before end (${this.dir}) failed:`,
-        error instanceof Error ? error.message : error,
-      );
+      failure = error instanceof Error ? error : new Error(String(error));
+      console.warn(`Network capture: flush before end (${this.dir}) failed:`, failure.message);
     }
-    if (!opts.removeDir) return;
+    if (!opts.removeDir) return failure;
     try {
       rmSync(this.dir, { recursive: true, force: true });
     } catch (error) {
@@ -218,6 +244,7 @@ export class CaptureDiskAccumulator {
         error instanceof Error ? error.message : error,
       );
     }
+    return failure;
   }
 
   /** @deprecated Prefer end({ removeDir: true }). */

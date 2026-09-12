@@ -21,18 +21,19 @@ and not only apps you launched.
 
 Always recorded:
 
-- Method, full URL including query string, status, MIME type
+- Method, URL with its query values redacted, status, MIME type
 - Byte counts, time to first byte, total duration, failure reason
 
-Recorded only when asked for, via `--network-capture-field`:
+Nothing else is recorded unless you ask for it. The default is metadata only:
 
 | Field | Default | Contents |
 | --- | --- | --- |
-| `header` | **on** | Request and response headers, redacted (see below) |
+| `header` | off | Request and response headers, redacted (see below) |
+| `query` | off | Query-string values; the names are kept either way |
 | `request-body` | off | Request bodies, **not redacted** |
 | `response-body` | off | Response bodies, **not redacted** |
 
-Bodies are off by default deliberately. A request body is where passwords, refresh tokens, and
+Everything here is off by default deliberately. A request body is where passwords, refresh tokens, and
 device-attestation blobs actually live, and unlike a header name there is no reliable way to find them
 inside arbitrary JSON, protobuf, or form encoding.
 

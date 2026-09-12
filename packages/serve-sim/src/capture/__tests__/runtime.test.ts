@@ -90,6 +90,28 @@ describe("capture runtime", () => {
     await runtime.disableAll();
   });
 
+  test("coalesces queued retries and cancels them together on shutdown", async () => {
+    const clearing = gate();
+    const clear = gate();
+    const { runtime, calls } = harness({
+      trustCa: async () => { throw new Error("trust failed"); },
+      clearInjection: async () => { clearing.release(); await clear.promise; },
+    });
+    const first = runtime.enableForDevice(UDID).catch((error: unknown) => error);
+    await clearing.promise;
+    const retry = runtime.enableForDevice(UDID);
+    const again = runtime.enableForDevice(UDID);
+    expect(again).toBe(retry);
+    const result = retry.catch((error: unknown) => error);
+    const shutdown = runtime.disableAll();
+    clear.release();
+    await shutdown;
+    expect(await first).toBeInstanceOf(CaptureEnableError);
+    expect(await result).toBeInstanceOf(CaptureEnableError);
+    expect(calls.filter((call) => call === "proxy-started")).toHaveLength(1);
+    expect(runtime.metaFor(UDID).attachment).toBe("not-enabled");
+  });
+
   test("shutdown cancels an enable already queued behind teardown", async () => {
     const clear = gate();
     const { runtime, calls } = harness({ clearInjection: () => clear.promise });

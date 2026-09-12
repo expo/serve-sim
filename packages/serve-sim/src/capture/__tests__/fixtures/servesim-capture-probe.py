@@ -1,9 +1,4 @@
-"""
-Exercises the mitmproxy addon against a real control server and prints one JSON object of results.
-
-The addon holds module-level state (a queue, a reporter thread, a byte counter), so it is loaded once
-here and every check reads back through the same instance the proxy would use.
-"""
+"""Exercise one add-on instance against a real control server."""
 
 import importlib.util
 import json
@@ -39,8 +34,6 @@ os.environ["SERVE_SIM_CAPTURE_CONTROL_TOKEN"] = "probe-token"
 os.environ["SERVE_SIM_CAPTURE_FIELDS"] = os.environ.get(
     "PROBE_FIELDS", "header,request-body,response-body"
 )
-# A proxy nothing is listening on. Any record that arrives proves the addon ignored it; a record that
-# honoured it would fail to send and be swallowed.
 for name in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
     os.environ[name] = "http://127.0.0.1:1"
 
@@ -73,14 +66,10 @@ def wait_for(count, timeout=5.0):
 
 results = {}
 
-# A gzipped body: the wire bytes are what moved, the decoded length is far larger. Reporting the latter
-# as `size` overstated throughput by several hundred times.
 compressed = addon._part(FakeMessage(b"x" * 10_000, b"gzipbytes" * 10), True)
 results["compressedSize"] = compressed["size"]
 results["compressedBody"] = compressed["body"]
 
-# A body whose content-encoding lies. Strict decoding raises, which would kill the hook and leave the
-# row spinning forever.
 lying = addon._part(FakeMessage(b"whatever", b"raw-wire-bytes", raises=True), True)
 results["lyingSize"] = lying["size"]
 results["lyingBody"] = lying["body"]
@@ -147,6 +136,11 @@ class FakeFlow:
         self.response = response
 
 
+addon.request(FakeFlow())
+wait_for(1)
+results["requestStartedAt"] = received[0]["body"]["startedAt"]
+received.clear()
+
 # A completed response was already reported; erroring after it must not produce a second row.
 addon.error(FakeFlow(error="reset", response=FakeResponse(timestamp_end=1001.0)))
 # One worker keeps the order, so a record queued after it arriving alone proves the skip.
@@ -174,8 +168,6 @@ results["connectErrorPaths"] = [item["path"].split("?")[0] for item in received]
 
 received.clear()
 
-# A request that fails before any response still has to build its request part; this is the path that
-# broke when `_part` gained an argument, and the earlier case returns early without reaching it.
 addon.error(FakeFlow(error="connection reset"))
 results["errorWithoutResponseFrames"] = wait_for(1)
 results["errorWithoutResponseMessage"] = received[0]["body"].get("error") if received else None
@@ -194,8 +186,6 @@ time.sleep(0.3)
 results["oversizedRecordDropped"] = len(received) == 0
 results["queuedBytesAfterDrop"] = addon._queued_bytes
 
-# A bodyless record with a large URL: under body-only accounting its size was 0 and it was never
-# dropped, so this is what the accounting change is for.
 received.clear()
 addon.QUEUE_BYTE_LIMIT = 500
 addon._post("/request", {"id": "hdr", "method": "GET", "url": "https://a.test/" + "p" * 3000})
@@ -205,8 +195,6 @@ addon.QUEUE_BYTE_LIMIT = _saved_limit
 
 results["urlQueryRedacted"] = addon._safe_url("https://a.test/cb?code=SECRET&state=xyz")
 results["urlWithoutQueryUntouched"] = addon._safe_url("https://a.test/thing")
-# Short pairs are the shape that EXPANDS under redaction (`a=1` -> `a=[REDACTED]`); a single long value
-# shrinks, so it cannot detect a cap applied before redaction.
 _expanding = "https://a.test/?" + "&".join(f"k{i}=1" for i in range(1000))
 results["urlCappedExpanding"] = len(addon._safe_url(_expanding)) <= addon.MAX_URL_CHARS
 results["urlCapped"] = len(addon._safe_url("https://a.test/?x=" + "y" * 99_000)) <= addon.MAX_URL_CHARS

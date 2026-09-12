@@ -19,9 +19,6 @@ import { CaptureStore } from "../store";
 const MARKER = "serve-sim-capture-Qz7pLm";
 const SELF = 400;
 
-// mitmdump is an app-bundle launcher, so a session has more than one process and the one holding the
-// port is not the one we spawned. Every process started with the session's confdir carries its name,
-// which is what makes the confdir usable as an identifier.
 const psFixture = [
   `  ${SELF} bun run serve-sim --udid ABC ${MARKER}`,
   `  7101 /x/mitmproxy.app/Contents/MacOS/mitmdump -q --listen-port 5555 --set confdir=/var/T/${MARKER}`,
@@ -79,8 +76,6 @@ describe("locateMitmdump", () => {
 
   test("reports nothing when the developer has no mitmproxy at all", () => {
     withOverride(undefined, () => {
-      // Candidates are injected: otherwise this passes or fails depending on whether the machine running
-      // the suite happens to have mitmproxy installed.
       expect(locateMitmdump({ which: () => null, candidates: ["/nope/mitmdump"] })).toBeNull();
     });
   });
@@ -159,10 +154,6 @@ describe("formatOversizedControlBodyWarning", () => {
 });
 
 describe("describeFailure", () => {
-  /**
-   * The proxy reports socket-level errno strings. They are accurate and nearly useless on their own —
-   * a developer seeing "[Errno 61]" in a request list should not have to know what 61 means.
-   */
   test("explains a refused connection", () => {
     const out = describeFailure("[Errno 61] Connect call failed ('127.0.0.1', 9)");
     expect(out).toContain("Nothing was listening");

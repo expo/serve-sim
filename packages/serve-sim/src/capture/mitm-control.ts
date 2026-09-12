@@ -27,6 +27,7 @@ interface RecordPart {
 interface FinishedRecord {
   id?: string;
   method?: string;
+  startedAt?: number;
   url?: string;
   status?: number | null;
   ttfbMs?: number | null;
@@ -110,8 +111,8 @@ export function describeFailure(raw: string): string {
   }
   if (/certificate|CERTIFICATE_VERIFY|SSL|TLS/i.test(raw)) {
     return (
-      "The app rejected the capture certificate, so this request could not be inspected — an app that pins " +
-      `its certificates refuses any proxy. (${raw})`
+      "The TLS connection failed. Check the server certificate and simulator trust; apps with certificate " +
+      `pinning may reject the capture proxy. (${raw})`
     );
   }
   if (/timed out|ETIMEDOUT|Errno 60/i.test(raw)) {
@@ -120,7 +121,12 @@ export function describeFailure(raw: string): string {
   return raw;
 }
 
-function finishRecord(store: CaptureStore, storeId: string, record: FinishedRecord, fields: ReadonlySet<CaptureField>) {
+function finishRecord(
+  store: CaptureStore,
+  storeId: string,
+  record: FinishedRecord,
+  fields: ReadonlySet<CaptureField>,
+): void {
   const request = bodyText(record.req);
   const response = bodyText(record.res);
   const requestBytes = record.req?.size ?? 0;
@@ -183,7 +189,7 @@ export async function startMitmControl(options: {
       if (record.id == null) return reply(res, 200, { ok: false });
       if (route.pathname === "/request") {
         while (flowIds.size >= PENDING_LIMIT) flowIds.delete(flowIds.keys().next().value!);
-        flowIds.set(record.id, options.store.start(record.method ?? "GET", record.url ?? ""));
+        flowIds.set(record.id, options.store.start(record.method ?? "GET", record.url ?? "", record.startedAt));
         return reply(res, 200, { ok: true });
       }
       if (route.pathname === "/response") {

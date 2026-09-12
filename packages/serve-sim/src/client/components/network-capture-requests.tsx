@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import {
   fetchCapturedBody,
@@ -79,9 +79,9 @@ export function DomainSection({
         className="w-full flex items-center gap-1.5 py-1.5 text-left"
       >
         {open ? (
-          <ChevronDown aria-hidden="true" className="w-3 h-3 shrink-0 text-white/30" />
+          <ChevronDown aria-hidden="true" className="w-3 h-3 shrink-0 text-white/70" />
         ) : (
-          <ChevronRight aria-hidden="true" className="w-3 h-3 shrink-0 text-white/30" />
+          <ChevronRight aria-hidden="true" className="w-3 h-3 shrink-0 text-white/70" />
         )}
         <span className="flex-1 truncate text-[11px] text-white/80" title={group.host}>
           {group.host}
@@ -175,9 +175,9 @@ function DetailSection({
         className="w-full flex items-center gap-1.5 py-1 text-left"
       >
         {open ? (
-          <ChevronDown aria-hidden="true" className="w-2.5 h-2.5 shrink-0 text-white/30" />
+          <ChevronDown aria-hidden="true" className="w-2.5 h-2.5 shrink-0 text-white/70" />
         ) : (
-          <ChevronRight aria-hidden="true" className="w-2.5 h-2.5 shrink-0 text-white/30" />
+          <ChevronRight aria-hidden="true" className="w-2.5 h-2.5 shrink-0 text-white/70" />
         )}
         <span className="flex-1 text-[10px] text-white/50">{label}</span>
         <span className="text-[10px] tabular-nums text-white/30">{hint}</span>
@@ -204,18 +204,24 @@ export function RequestRow({
   const { host, path } = splitUrl(request.url);
   const payload = Math.max(request.requestBytes, request.responseBytes);
 
-  async function toggle() {
-    const next = !expanded;
-    setExpanded(next);
-    if (!next || body || loading) return;
+  const settled = request.status !== null || request.failure !== null;
+
+  useEffect(() => {
+    if (!expanded || !settled) return;
+    let active = true;
+    setBody(null);
     setLoading(true);
-    setBody(await fetchCapturedBody(bodyBase, request.id, udid));
-    setLoading(false);
-  }
+    void fetchCapturedBody(bodyBase, request.id, udid).then((captured) => {
+      if (!active) return;
+      setBody(captured);
+      setLoading(false);
+    });
+    return () => { active = false; };
+  }, [expanded, settled, bodyBase, request.id, udid]);
 
   return (
     <div className="py-1.5 border-b border-white/5 last:border-b-0">
-      <button type="button" onClick={toggle} className="w-full text-left">
+      <button type="button" onClick={() => setExpanded((open) => !open)} className="w-full text-left">
         <div className="flex items-center gap-1.5">
           <span className={`shrink-0 rounded px-1 text-[10px] tabular-nums ${statusTint(request)}`}>
             {request.failure ? "err" : (request.status ?? "···")}
@@ -282,7 +288,7 @@ function BodyDetail({ body }: { body: CapturedBody }) {
   );
 }
 
-function BodySection({
+export function BodySection({
   label,
   text,
   binary,
@@ -302,7 +308,7 @@ function BodySection({
   }
   if (!text) return null;
   return (
-    <DetailSection label={label} hint={truncated ? "truncated" : formatBytes(text.length)}>
+    <DetailSection label={label} hint={truncated ? "truncated" : formatBytes(new TextEncoder().encode(text).byteLength)}>
       <pre className="thin-scroll max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-black/30 px-1.5 py-1 text-[10px] text-white/60">
         {text}
       </pre>

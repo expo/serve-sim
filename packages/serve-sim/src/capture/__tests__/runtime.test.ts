@@ -42,7 +42,70 @@ function harness(
   return { runtime, calls };
 }
 
+function gate() {
+  let release = () => {};
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+
 describe("capture runtime", () => {
+  test("joins startup instead of resolving another enable with starting metadata", async () => {
+    const trust = gate();
+    const { runtime, calls } = harness({ trustCa: () => trust.promise });
+    const first = runtime.enableForDevice(UDID);
+    const second = runtime.enableForDevice(UDID);
+    expect(second).toBe(first);
+    trust.release();
+    expect((await second).attachment).toBe("capturing");
+    expect(calls.filter((call) => call === "proxy-started")).toHaveLength(1);
+    await runtime.disableAll();
+  });
+
+  test("finishes failed startup cleanup before retrying and never clears its successor", async () => {
+    const clearing = gate();
+    const clear = gate();
+    let trusts = 0;
+    let clears = 0;
+    let armed = false;
+    const { runtime, calls } = harness({
+      trustCa: async () => { if (++trusts === 1) throw new Error("first trust failed"); },
+      clearInjection: async () => {
+        if (++clears === 1) {
+          clearing.release();
+          await clear.promise;
+        }
+        armed = false;
+      },
+      inject: async () => { armed = true; },
+    });
+    const first = runtime.enableForDevice(UDID).catch((error: unknown) => error);
+    await clearing.promise;
+    const retry = runtime.enableForDevice(UDID);
+    clear.release();
+    expect(await first).toBeInstanceOf(CaptureEnableError);
+    expect((await retry).attachment).toBe("capturing");
+    expect(armed).toBe(true);
+    expect(clears).toBe(1);
+    expect(calls.filter((call) => call === "proxy-started")).toHaveLength(2);
+    await runtime.disableAll();
+  });
+
+  test("shutdown cancels an enable already queued behind teardown", async () => {
+    const clear = gate();
+    const { runtime, calls } = harness({ clearInjection: () => clear.promise });
+    await runtime.enableForDevice(UDID);
+    const stopping = runtime.disableForDevice(UDID);
+    const queued = runtime.enableForDevice(UDID).catch((error: unknown) => error);
+    const shutdown = runtime.disableAll();
+    clear.release();
+    await Promise.all([stopping, shutdown]);
+    expect(await queued).toBeInstanceOf(CaptureEnableError);
+    expect(runtime.metaFor(UDID).attachment).toBe("not-enabled");
+    expect(calls.filter((call) => call === "proxy-started")).toHaveLength(1);
+    expect((await runtime.enableForDevice(UDID)).attachment).toBe("capturing");
+    await runtime.disableAll();
+  });
+
   test("starts the proxy, trusts the CA, then points the device at it", async () => {
     const { runtime, calls } = harness();
     const meta = await runtime.enableForDevice(UDID);
@@ -320,10 +383,11 @@ describe("capture runtime", () => {
     });
 
     const enabling = runtime.enableForDevice(UDID);
-    await runtime.disableForDevice(UDID);
+    const stopping = runtime.disableForDevice(UDID);
     releaseProxy();
 
     await expect(enabling).rejects.toBeInstanceOf(CaptureEnableError);
+    await stopping;
     // The device must not be left armed, and the proxy nobody can reach must not be left running.
     expect(calls).not.toContain(`injected:${PORT_FILE}`);
     expect(calls).toContain("proxy-closed");

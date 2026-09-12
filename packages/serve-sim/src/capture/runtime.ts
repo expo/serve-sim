@@ -28,6 +28,7 @@ interface CaptureSession {
   store: CaptureStore;
   meta: CaptureMeta;
   proxy: CaptureProxy | null;
+  cleaned?: boolean;
 }
 
 export interface CaptureRuntimeOptions {
@@ -67,9 +68,23 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   const stillCleared = options.injectionCleared ?? bootInjectionCleared;
 
   const byUdid = new Map<string, CaptureSession>();
-  const teardowns = new Map<string, Promise<void>>();
+  const operations = new Map<string, Promise<void>>();
+  const enables = new Map<string, { cancelled: boolean; promise: Promise<CaptureMeta> }>();
+
+  function enqueue<T>(udid: string, operation: () => Promise<T>): Promise<T> {
+    const previous = operations.get(udid);
+    const result = previous ? previous.then(operation) : operation();
+    const settled = result.then(() => {}, () => {});
+    operations.set(udid, settled);
+    void settled.then(() => {
+      if (operations.get(udid) === settled) operations.delete(udid);
+    });
+    return result;
+  }
 
   const tearDownSession = async (udid: string, session: CaptureSession): Promise<void> => {
+    if (session.cleaned) return;
+    session.cleaned = true;
     // Clear injection before closing the proxy so launches aren't aimed at a dead port.
     try {
       await clearInjection(udid);
@@ -94,21 +109,16 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
     }
   };
 
-  /**
-   * Stop capturing on a device, once.
-   *
-   * A second caller joins the teardown already running instead of finding an empty map and returning
-   * straight away. Shutdown has two callers, and one of them exits the process when it returns.
-   */
   const disableDevice = (udid: string): Promise<void> => {
-    const running = teardowns.get(udid);
-    if (running) return running;
-    const session = byUdid.get(udid);
-    if (!session) return Promise.resolve();
-    byUdid.delete(udid);
-    const teardown = tearDownSession(udid, session).finally(() => teardowns.delete(udid));
-    teardowns.set(udid, teardown);
-    return teardown;
+    const pending = enables.get(udid);
+    if (pending) pending.cancelled = true;
+    enables.delete(udid);
+    return enqueue(udid, async () => {
+      const session = byUdid.get(udid);
+      if (!session) return;
+      byUdid.delete(udid);
+      await tearDownSession(udid, session);
+    });
   };
 
   return {
@@ -117,109 +127,101 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
     },
 
     /** Capturing meta, or {@link CaptureEnableError} after publishing failed meta. */
-    async enableForDevice(udid: string): Promise<CaptureMeta> {
-      // A teardown owns the device's injection until it finishes. Arming on top of one means its clear
-      // lands after this call's inject, leaving a session that reports capturing over a bare device.
-      // Only awaited when one is running, so an ordinary enable still registers its session synchronously.
-      const tearingDown = teardowns.get(udid);
-      if (tearingDown) await tearingDown;
-
-      const existing = byUdid.get(udid);
-      if (existing) {
-        if (existing.meta.attachment !== "failed") return existing.meta;
-        await disableDevice(udid);
-      }
-
-      const store = new CaptureStore();
-      const meta: CaptureMeta = {
-        schemaVersion: CAPTURE_SCHEMA_VERSION,
-        udid,
-        proxyAddress: null,
-        attachment: "starting",
-        attachError: null,
-        droppedOversizedBodies: 0,
-      };
-      const session: CaptureSession = { store, meta, proxy: null };
-      byUdid.set(udid, session);
-
-      const reportProxyDeath = (reason: string) => {
-        if (byUdid.get(udid) !== session) return;
-        meta.attachment = "failed";
-        meta.attachError =
-          `${reason}\n\nApps launched on this device are still pointed at the stopped proxy, so their ` +
-          "requests will fail until they are relaunched.";
-        store.publishMeta(meta);
-      };
-
-      // disableForDevice tore down whatever existed when it ran, so anything started after that point is
-      // this call's alone to undo.
-      const assertStillOurs = () => {
-        if (byUdid.get(udid) !== session) {
-          throw new Error("Capture was turned off for this device while it was starting.");
+    enableForDevice(udid: string): Promise<CaptureMeta> {
+      const pending = enables.get(udid);
+      if (pending && byUdid.get(udid)?.meta.attachment !== "failed") return pending.promise;
+      const request = { cancelled: false, promise: Promise.resolve(notEnabledMeta(udid)) };
+      const promise = enqueue(udid, async () => {
+        if (request.cancelled) {
+          throw new CaptureEnableError({
+            ...notEnabledMeta(udid),
+            attachment: "failed",
+            attachError: "Capture was turned off while it was waiting to start. Enable it again to retry.",
+          });
         }
-      };
-
-      try {
-        const proxy = await startProxy(store, {
-          fields: policy,
-          onUnexpectedExit: reportProxyDeath,
-          onOversizedControlBody: () => {
-            if (byUdid.get(udid) !== session) return;
-            meta.droppedOversizedBodies += 1;
-            store.publishMeta(meta);
-          },
-        });
-        session.proxy = proxy;
-        meta.proxyAddress = proxy.address;
-        assertStillOurs();
-
-        await trustCa(udid, await proxy.caPem());
-        assertStillOurs();
-
-        await inject(udid, proxy.portFile);
-        assertStillOurs();
-        // The proxy can die during the two steps above. Overwriting the failure it published with
-        // "capturing" reports a dead proxy as a healthy one.
-        if (meta.attachment === "failed") {
-          throw new Error(meta.attachError ?? "The capture proxy stopped while capture was starting.");
+        const existing = byUdid.get(udid);
+        if (existing) {
+          if (existing.meta.attachment !== "failed") return existing.meta;
+          await tearDownSession(udid, existing);
         }
-        meta.attachment = "capturing";
-      } catch (error) {
-        meta.attachment = "failed";
-        meta.attachError = error instanceof Error ? error.message : String(error);
-        const successor = byUdid.get(udid);
-        // A successor armed the device after this call was superseded, so its injection is not ours to clear.
-        if (!successor || successor === session) {
-          try {
-            await clearInjection(udid);
-          } catch (clearError) {
-            console.warn(
-              `Network capture: clearing injection after failed enable for ${udid}:`,
-              clearError instanceof Error ? clearError.message : clearError,
-            );
+
+        const store = new CaptureStore();
+        const meta: CaptureMeta = {
+          schemaVersion: CAPTURE_SCHEMA_VERSION,
+          udid,
+          proxyAddress: null,
+          attachment: "starting",
+          attachError: null,
+          droppedOversizedBodies: 0,
+        };
+        const session: CaptureSession = { store, meta, proxy: null };
+        byUdid.set(udid, session);
+
+        const reportProxyDeath = (reason: string) => {
+          if (byUdid.get(udid) !== session) return;
+          meta.attachment = "failed";
+          meta.attachError =
+            `${reason}\n\nApps launched on this device are still pointed at the stopped proxy, so their ` +
+            "requests will fail until they are relaunched.";
+          store.publishMeta(meta);
+        };
+
+        const assertStillOurs = () => {
+          if (request.cancelled) {
+            throw new Error("Capture was turned off for this device while it was starting.");
           }
-        }
+        };
+
         try {
-          await session.proxy?.close();
-        } catch (closeError) {
-          console.warn(
-            `Network capture: closing proxy after failed enable for ${udid}:`,
-            closeError instanceof Error ? closeError.message : closeError,
-          );
+          const proxy = await startProxy(store, {
+            fields: policy,
+            onUnexpectedExit: reportProxyDeath,
+            onOversizedControlBody: () => {
+              if (byUdid.get(udid) !== session) return;
+              meta.droppedOversizedBodies += 1;
+              store.publishMeta(meta);
+            },
+          });
+          session.proxy = proxy;
+          meta.proxyAddress = proxy.address;
+          assertStillOurs();
+
+          await trustCa(udid, await proxy.caPem());
+          assertStillOurs();
+
+          await inject(udid, proxy.portFile);
+          assertStillOurs();
+          // The proxy can die during the two steps above. Overwriting the failure it published with
+          // "capturing" reports a dead proxy as a healthy one.
+          if (meta.attachment === "failed") {
+            throw new Error(meta.attachError ?? "The capture proxy stopped while capture was starting.");
+          }
+          meta.attachment = "capturing";
+        } catch (error) {
+          meta.attachment = "failed";
+          meta.attachError = error instanceof Error ? error.message : String(error);
+          await tearDownSession(udid, session);
+          session.proxy = null;
+          meta.proxyAddress = null;
+          store.publishMeta(meta);
+          throw new CaptureEnableError(meta);
         }
-        session.proxy = null;
-        meta.proxyAddress = null;
         store.publishMeta(meta);
-        throw new CaptureEnableError(meta);
-      }
-      store.publishMeta(meta);
-      return meta;
+        return meta;
+      });
+      request.promise = promise;
+      enables.set(udid, request);
+      const forget = () => {
+        if (enables.get(udid) === request) enables.delete(udid);
+      };
+      void promise.then(forget, forget);
+      return promise;
     },
 
     disableForDevice: disableDevice,
 
     async disableAll(): Promise<void> {
-      const devices = new Set([...byUdid.keys(), ...teardowns.keys()]);
+      const devices = new Set([...byUdid.keys(), ...operations.keys()]);
       await Promise.all([...devices].map(disableDevice));
     },
 

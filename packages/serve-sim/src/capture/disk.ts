@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { appendFile } from "node:fs/promises";
 import {
   appendFileSync,
@@ -6,12 +7,14 @@ import {
   readFileSync,
   rmSync,
   writeFileSync,
+  unlinkSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { MAX_HAR_ENTRIES, toHarEntry } from "./har";
 import { compactNdjsonAndStreamHar, emptyHarText } from "./har-stream";
 import type { CapturedBody, CapturedRequest, CaptureEvent, CaptureStore } from "./store";
+import { withLaunchStateLockSync } from "../launch-state-lock";
 import { stateDir } from "../state";
 
 export const NETWORK_CAPTURE_FILENAME = "network-capture.json";
@@ -25,6 +28,11 @@ export function captureDirForDevice(udid: string): string {
 
 const CAPTURE_DIR_PREFIX = "capture-";
 
+function withArtifactLock<T>(dir: string, operation: () => T): T {
+  const key = createHash("sha256").update(resolve(dir)).digest("hex");
+  return withLaunchStateLockSync(`capture-artifacts-${key}`, operation);
+}
+
 export const CAPTURE_OWNER_FILENAME = "owner.pid";
 
 /**
@@ -37,16 +45,16 @@ export const CAPTURE_OWNER_FILENAME = "owner.pid";
 function ownerIsRunning(dir: string): boolean {
   let pid: number;
   try {
-    pid = Number(readFileSync(join(dir, CAPTURE_OWNER_FILENAME), "utf-8").trim());
+    pid = Number(readFileSync(join(dir, CAPTURE_OWNER_FILENAME), "utf-8").trim().split("\n")[0]);
   } catch {
     return false;
   }
-  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
   }
 }
 
@@ -82,11 +90,12 @@ export function sweepAbandonedCaptureDirs(
   let swept = 0;
   for (const name of list()) {
     if (!name.startsWith(CAPTURE_DIR_PREFIX) || keep.has(name)) continue;
-    // Another serve-sim is recording into it right now.
-    if (owned(join(stateDir(), name))) continue;
     try {
-      remove(join(stateDir(), name));
-      swept++;
+      withArtifactLock(join(stateDir(), name), () => {
+        if (owned(join(stateDir(), name))) return;
+        remove(join(stateDir(), name));
+        swept++;
+      });
     } catch {
       // Another process may be sweeping the same directory.
     }
@@ -140,10 +149,11 @@ export class CaptureDiskAccumulator {
   private pendingEntryLines: string[] = [];
   private writeChain: Promise<void> = Promise.resolve();
   private started = false;
+  private owner: string | null = null;
+  private ending: Promise<Error | null> | null = null;
 
   constructor(opts: CaptureDiskAccumulatorOptions) {
     this.dir = opts.dir;
-    mkdirSync(opts.dir, { recursive: true });
     this.networkCapturePath =
       opts.networkCapturePath ?? join(opts.dir, NETWORK_CAPTURE_FILENAME);
     this.harPath = opts.harPath ?? join(opts.dir, CAPTURE_HAR_FILENAME);
@@ -159,6 +169,25 @@ export class CaptureDiskAccumulator {
 
   /** Open empty artifact files and start the HAR rebuild interval. */
   begin(): void {
+    if (this.started) return;
+    withArtifactLock(this.dir, () => {
+      if (ownerIsRunning(this.dir)) {
+        throw new Error(`Network capture already owns ${this.dir}. Stop that recording before starting another for this device or output directory.`);
+      }
+      mkdirSync(this.dir, { recursive: true });
+      const owner = `${process.pid}\n${randomUUID()}`;
+      writeFileSync(join(this.dir, CAPTURE_OWNER_FILENAME), owner);
+      try {
+        writeFileSync(this.networkCapturePath, "");
+        writeFileSync(this.entriesPath, "");
+        writeFileSync(this.harPath, emptyHarText(this.creatorVersion));
+        this.owner = owner;
+      } catch (error) {
+        unlinkSync(join(this.dir, CAPTURE_OWNER_FILENAME));
+        throw error;
+      }
+    });
+    this.ending = null;
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = null;
@@ -173,13 +202,6 @@ export class CaptureDiskAccumulator {
     this.diskEntryCount = 0;
     this.harDirty = false;
     this.lastWriteError = null;
-    mkdirSync(this.dir, { recursive: true });
-    // Written before anything is recorded, so another serve-sim's sweep can never mistake this directory
-    // for one a crash left behind.
-    writeFileSync(join(this.dir, CAPTURE_OWNER_FILENAME), String(process.pid));
-    writeFileSync(this.networkCapturePath, "");
-    writeFileSync(this.entriesPath, "");
-    writeFileSync(this.harPath, emptyHarText(this.creatorVersion));
 
     this.timer = setInterval(() => {
       void this.rebuildHarIfDirty();
@@ -232,7 +254,12 @@ export class CaptureDiskAccumulator {
    * Returns the failure when the last write did not land, so a caller that reports a result can say the
    * file it names is incomplete. Teardown on shutdown ignores it, which is why this never throws.
    */
-  async end(opts: { removeDir?: boolean } = {}): Promise<Error | null> {
+  end(opts: { removeDir?: boolean } = {}): Promise<Error | null> {
+    if (!this.ending) this.ending = this.finish(opts);
+    return this.ending;
+  }
+
+  private async finish(opts: { removeDir?: boolean }): Promise<Error | null> {
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = null;
@@ -249,15 +276,19 @@ export class CaptureDiskAccumulator {
       failure = error instanceof Error ? error : new Error(String(error));
       console.warn(`Network capture: flush before end (${this.dir}) failed:`, failure.message);
     }
-    if (!opts.removeDir) return failure;
     try {
-      rmSync(this.dir, { recursive: true, force: true });
+      withArtifactLock(this.dir, () => {
+        if (!this.owner) return;
+        let owner: string;
+        try { owner = readFileSync(join(this.dir, CAPTURE_OWNER_FILENAME), "utf8"); } catch { return; }
+        if (owner !== this.owner) return;
+        if (opts.removeDir) rmSync(this.dir, { recursive: true, force: true });
+        else unlinkSync(join(this.dir, CAPTURE_OWNER_FILENAME));
+      });
     } catch (error) {
-      console.warn(
-        `Network capture: removing ${this.dir} failed:`,
-        error instanceof Error ? error.message : error,
-      );
+      console.warn(`Network capture: releasing ${this.dir} failed:`, error);
     }
+    this.owner = null;
     return failure;
   }
 

@@ -15,7 +15,7 @@ import type { Socket } from "net";
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
-import { CaptureEnableError, captureRuntime, type CaptureRuntime } from "./capture";
+import { captureRuntime, startCaptureForDevice, type CaptureRuntime } from "./capture";
 import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./metrics-sampler";
 import { foregroundTracker, type ForegroundApp, type ForegroundTrackerCache } from "./foreground-tracker";
 import { corsAllowOriginHeaders, frameAncestorsPolicy } from "./middleware-utils";
@@ -935,7 +935,6 @@ export async function startDeviceInProcess(
   return null;
 }
 
-/** Enable capture for a freshly booted/started device when the server was launched with `--network-capture`. */
 export async function enableNetworkCaptureForStartedDevice(
   udid: string,
   enabled: boolean,
@@ -951,24 +950,17 @@ export async function enableNetworkCaptureForStartedDevice(
     (async (id) => captureRuntime.enableForDevice(id));
   const log = deps.log ?? ((message) => console.log(message));
   const error = deps.error ?? ((message) => console.error(message));
-  try {
-    const meta = await enable(udid);
-    log(
-      `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from this device is ` +
-        "recorded for its whole boot session; HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
-    );
-  } catch (err) {
-    const reason =
-      err instanceof CaptureEnableError
-        ? err.meta.attachError
-        : err instanceof Error
-          ? err.message
-          : String(err);
-    error(`Network capture could not start for ${udid}. ${reason ?? ""}`);
-  }
+  await startCaptureForDevice(udid, {
+    enable,
+    onStarted: (meta) =>
+      log(
+        `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from this device is ` +
+          "recorded for its whole boot session; HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
+      ),
+    onFailed: (reason) => error(`Network capture could not start for ${udid}. ${reason}`),
+  });
 }
 
-/** Tear down capture when a device is shut down from the grid. */
 export async function disableNetworkCaptureForStoppedDevice(
   udid: string,
   enabled: boolean,

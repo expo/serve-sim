@@ -223,6 +223,7 @@ describe("concurrent arming", () => {
       const entries = (env.get("DYLD_INSERT_LIBRARIES") ?? "").split(":").filter(Boolean);
       expect(entries).toContain(LOADER);
       expect(entries).toContain(DYLIB);
+      expect(env.get("SIMNET_PROXY_PORT_FILE")).toBe("/tmp/port");
     } finally {
       shims.restore();
     }
@@ -260,6 +261,8 @@ describe("concurrent arming", () => {
       await Promise.all([clearBootInjection(UDID, { run }), armLoader()]);
 
       expect((env.get("DYLD_INSERT_LIBRARIES") ?? "").split(":").filter(Boolean)).toEqual([LOADER]);
+      // Both variables clear together, or the device reads as injected with nothing to route to.
+      expect(env.has("SIMNET_PROXY_PORT_FILE")).toBe(false);
     } finally {
       shims.restore();
     }

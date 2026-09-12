@@ -106,7 +106,6 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
     // The fixture app is the only thing this test adds to the device, and it does not outlive the test.
     terminateProbeApp();
     spawnSync("xcrun", ["simctl", "uninstall", udid!, BUNDLE_ID], { stdio: "ignore" });
-    // Only the port files this test writes; the app itself comes from dist.
     if (appDir) rmSync(appDir, { recursive: true, force: true });
   });
 

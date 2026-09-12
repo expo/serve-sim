@@ -6,6 +6,46 @@ import { join } from "node:path";
 import { followCaptureHar } from "../har-follow";
 
 describe("followCaptureHar", () => {
+  it("reports a failed flush even when the stream was aborted", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-har-abort-"));
+    let abortStream = () => {};
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"type":"finished","request":{"id":"r1","method":"GET","url":"https://a.test/","status":200,"mimeType":"text/plain","requestBytes":0,"responseBytes":2,"startedAt":1,"ttfbMs":1,"durationMs":2,"failure":null}}\n\n'));
+        abortStream = () => controller.error(new DOMException("Stopped", "AbortError"));
+      },
+    });
+    try {
+      await expect(followCaptureHar({
+        baseUrl: "http://127.0.0.1:3999", device: "D", outPath: join(dir, "session.har"), token: "test",
+        fetchImpl: async (input) => {
+          if (String(input).includes("/network-capture/r1")) {
+            rmSync(dir, { recursive: true, force: true });
+            abortStream();
+            return new Response("null");
+          }
+          return new Response(stream);
+        },
+      })).rejects.toThrow(/ENOENT/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("releases the writer after the initial fetch fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-har-fetch-"));
+    const options = { baseUrl: "http://127.0.0.1:3999", device: "D", outPath: join(dir, "session.har"), token: "test" };
+    const abort = new DOMException("Stopped", "AbortError");
+    try {
+      await expect(followCaptureHar({ ...options, fetchImpl: async () => { throw abort; } })).rejects.toBe(abort);
+      const result = await followCaptureHar({ ...options, fetchImpl: async () => new Response("") });
+      expect(result.size).toBe(0);
+      expect(existsSync(result.harPath)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("accumulates SSE frames and rewrites the HAR file", async () => {
     const dir = mkdtempSync(join(tmpdir(), "serve-sim-har-"));
     const outPath = join(dir, "session.har");

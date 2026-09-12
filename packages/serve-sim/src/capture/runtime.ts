@@ -160,16 +160,6 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   const tearDownSession = async (udid: string, session: CaptureSession): Promise<void> => {
     session.cleanup ??= (async () => {
       try {
-        await session.stopDisk?.();
-      } catch (error) {
-        console.warn(
-          `Network capture: closing disk capture for ${udid} failed:`,
-          error instanceof Error ? error.message : error,
-        );
-      }
-      session.stopDisk = null;
-      session.disk = null;
-      try {
         await clearInjection(udid);
         if (!(await stillCleared(udid))) {
           console.error(
@@ -188,6 +178,16 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
           error instanceof Error ? error.message : error,
         );
       }
+      try {
+        await session.stopDisk?.();
+      } catch (error) {
+        console.warn(
+          `Network capture: closing disk capture for ${udid} failed:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+      session.stopDisk = null;
+      session.disk = null;
     })();
     await session.cleanup;
   };

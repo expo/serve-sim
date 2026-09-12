@@ -41,6 +41,62 @@ function recordFinished(store: CaptureStore, url: string, body = "ok") {
 }
 
 describe("CaptureDiskAccumulator", () => {
+  it("rejects another process before it overwrites a live recording", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-exclusive-"));
+    const disk = new CaptureDiskAccumulator({ dir });
+    const store = new CaptureStore();
+    const stop = disk.attach(store);
+    try {
+      recordFinished(store, "https://first.test/");
+      await disk.flush();
+      const before = readFileSync(disk.harPath, "utf8");
+      const child = Bun.spawnSync([process.execPath, "-e", `
+        import { CaptureDiskAccumulator } from ${JSON.stringify(import.meta.resolve("../disk"))};
+        const disk = new CaptureDiskAccumulator({ dir: process.argv[1] });
+        try { disk.begin(); process.exit(2); }
+        catch (error) { console.log(error.message); }
+      `, dir]);
+      expect(child.exitCode).toBe(0);
+      expect(child.stdout.toString()).toContain("already owns");
+      expect(readFileSync(disk.harPath, "utf8")).toBe(before);
+      recordFinished(store, "https://still-first.test/");
+      await disk.flush();
+      expect(JSON.parse(readFileSync(disk.harPath, "utf8")).log.entries).toHaveLength(2);
+    } finally {
+      await stop();
+    }
+  });
+
+  it("rejects a second writer in this process and makes old cleanup harmless", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-owner-retry-"));
+    const first = new CaptureDiskAccumulator({ dir });
+    first.begin();
+    const second = new CaptureDiskAccumulator({ dir });
+    try {
+      expect(() => second.begin()).toThrow("already owns");
+      await first.end({ removeDir: true });
+      second.begin();
+      await first.end({ removeDir: true });
+      expect(existsSync(second.harPath)).toBe(true);
+    } finally {
+      await second.end({ removeDir: true });
+    }
+  });
+
+  it("reclaims the recording of an exited owner", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-owner-exited-"));
+    const child = Bun.spawnSync([process.execPath, "-e", "console.log(process.pid)"]);
+    expect(child.exitCode).toBe(0);
+    writeFileSync(join(dir, CAPTURE_OWNER_FILENAME), child.stdout.toString().trim());
+    const disk = new CaptureDiskAccumulator({ dir });
+    try {
+      disk.begin();
+      expect(existsSync(disk.harPath)).toBe(true);
+    } finally {
+      await disk.end({ removeDir: true });
+    }
+  });
+
   it("appends NDJSON events and rewrites a HAR while the session is live", async () => {
     const dir = mkdtempSync(join(tmpdir(), "serve-sim-disk-"));
     const store = new CaptureStore();
@@ -244,7 +300,7 @@ describe("sweepAbandonedCaptureDirs", () => {
     expect(removed).toEqual(["capture-CRASHED-EARLIER"]);
   });
 
-  it("reads ownership from the directory, not from a state file written later", () => {
+  it("reads ownership from the directory, not from a state file written later", async () => {
     // A live owner is proven by the file the directory carries, so a session is protected from the moment
     // it starts writing — long before the preview server records its state.
     const dir = mkdtempSync(join(tmpdir(), "serve-sim-owner-"));
@@ -252,8 +308,8 @@ describe("sweepAbandonedCaptureDirs", () => {
     const disk = new CaptureDiskAccumulator({ dir, flushIntervalMs: 60_000 });
     try {
       const stop = disk.attach(store);
-      expect(readFileSync(join(dir, CAPTURE_OWNER_FILENAME), "utf8")).toBe(String(process.pid));
-      void stop;
+      expect(readFileSync(join(dir, CAPTURE_OWNER_FILENAME), "utf8").split("\n")[0]).toBe(String(process.pid));
+      await stop();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

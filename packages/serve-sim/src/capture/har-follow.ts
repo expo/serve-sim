@@ -80,24 +80,25 @@ export async function followCaptureHar(opts: FollowCaptureHarOptions): Promise<F
     opts.baseUrl,
   ).toString();
 
-  const res = await fetchImpl(streamUrl, {
-    headers: {
-      accept: "text/event-stream",
-      Authorization: `Bearer ${opts.token}`,
-    },
-    signal: opts.signal,
-  });
-  if (!res.ok || !res.body) {
-    await disk.end({ removeDir: false });
-    throw new Error(`capture stream HTTP ${res.status}`);
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let streamFailure: { error: unknown } | undefined;
   let flushFailure: Error | null = null;
   try {
+    const res = await fetchImpl(streamUrl, {
+      headers: {
+        accept: "text/event-stream",
+        Authorization: `Bearer ${opts.token}`,
+      },
+      signal: opts.signal,
+    });
+    if (!res.ok || !res.body) {
+      throw new Error(`capture stream HTTP ${res.status}`);
+    }
+
+    reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -122,11 +123,15 @@ export async function followCaptureHar(opts: FollowCaptureHarOptions): Promise<F
         disk.recordFinished(finished, body);
       }
     }
+  } catch (error) {
+    streamFailure = { error };
   } finally {
+    await reader?.cancel().catch(() => {});
+    reader?.releaseLock();
     flushFailure = await disk.end({ removeDir: false });
   }
-  // The HAR on disk is missing whatever the last write dropped.
   if (flushFailure) throw flushFailure;
+  if (streamFailure) throw streamFailure.error;
 
   return {
     size: disk.size,

@@ -1974,7 +1974,7 @@ program
     "--network-capture-field <field>",
     "What network capture may keep, beyond method/URL/status/timing/size: header, query, request-body, " +
       "response-body. Repeatable or comma-separated. Default: none of them, because each can carry " +
-      "credentials and only header names are redacted.",
+      "credentials; header values are redacted by name.",
     (value: string, prev: string[]) => {
       // Rejected here, like --codec, so a typo fails at the flag instead of silently capturing less.
       try {

@@ -52,7 +52,6 @@ describe("redactHeaders", () => {
   });
 
   test("redacts vendor headers the list never enumerated", () => {
-    // The denylist cannot keep up with these, and recording one is worse than over-redacting.
     expect(
       redactHeaders({
         "X-Goog-Api-Key": "k",
@@ -75,7 +74,6 @@ describe("redactHeaders", () => {
   });
 
   test("keeps headers that only look sensitive at a glance", () => {
-    // Over-redaction has a cost too: these are what make a captured request readable.
     expect(
       redactHeaders({
         "Content-Type": "application/json",
@@ -98,7 +96,6 @@ describe("redactHeaders", () => {
   });
 
   test("still redacts the names dropped from the explicit list", () => {
-    // These were enumerated once. The pattern covers them now, and this is what makes removing them safe.
     for (const name of [
       "x-access-token",
       "x-refresh-token",
@@ -116,14 +113,12 @@ describe("redactHeaders", () => {
   });
 
   test("redacts the names no pattern would catch", () => {
-    // `cookie2` has no word boundary after `cookie`, and nothing about `appcheck` reads as a credential.
     for (const name of ["cookie2", "set-cookie2", "x-firebase-appcheck", "x-amz-content-sha256"]) {
       expect(isSensitiveHeaderName(name)).toBe(true);
     }
   });
 
   test("redacts a credential a proxy re-presents under its own name", () => {
-    // The caller's bearer token arrives again under one of these, while `Authorization` itself is redacted.
     for (const name of [
       "authorization",
       "x-authorization",
@@ -142,7 +137,6 @@ describe("redactHeaders", () => {
   });
 
   test("leaves the headers that make a capture readable", () => {
-    // Over-redaction has a cost: these are how a developer tells one request from another.
     for (const name of [
       "content-type",
       "content-length",

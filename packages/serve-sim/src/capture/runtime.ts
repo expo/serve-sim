@@ -118,6 +118,12 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
 
     /** Capturing meta, or {@link CaptureEnableError} after publishing failed meta. */
     async enableForDevice(udid: string): Promise<CaptureMeta> {
+      // A teardown owns the device's injection until it finishes. Arming on top of one means its clear
+      // lands after this call's inject, leaving a session that reports capturing over a bare device.
+      // Only awaited when one is running, so an ordinary enable still registers its session synchronously.
+      const tearingDown = teardowns.get(udid);
+      if (tearingDown) await tearingDown;
+
       const existing = byUdid.get(udid);
       if (existing) {
         if (existing.meta.attachment !== "failed") return existing.meta;

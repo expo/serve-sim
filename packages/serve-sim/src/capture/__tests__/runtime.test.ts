@@ -178,8 +178,40 @@ describe("capture runtime", () => {
     expect(calls).toContain("proxy-closed");
   });
 
+  test("waits for a teardown in flight before it arms the device again", async () => {
+    let releaseClear: () => void = () => {};
+    const pending = new Promise<void>((done) => {
+      releaseClear = done;
+    });
+    let clears = 0;
+    const { runtime, calls } = harness({
+      clearInjection: async () => {
+        clears += 1;
+        if (clears === 1) await pending;
+        calls.push("injection-cleared");
+      },
+    });
+    await runtime.enableForDevice(UDID);
+
+    const stopping = runtime.disableForDevice(UDID);
+    const starting = runtime.enableForDevice(UDID);
+    await Bun.sleep(10);
+    releaseClear();
+    await Promise.all([stopping, starting]);
+
+    // The old teardown's clear must land before the new session's inject, or the device is left bare
+    // while the runtime reports it as capturing.
+    expect(calls.indexOf("injection-cleared")).toBeLessThan(calls.lastIndexOf(`injected:${PORT_FILE}`));
+    expect(runtime.metaFor(UDID).attachment).toBe("capturing");
+
+    // And the session that survived is the one shutdown has to find.
+    await runtime.disableAll();
+    expect(runtime.metaFor(UDID).attachment).toBe("not-enabled");
+    expect(calls.filter((call) => call === "proxy-closed")).toHaveLength(2);
+  });
+
   test("makes a second shutdown wait for the first, not walk past it", async () => {
-    // Both callers exit the process when they return, so returning early is how a device stays injected.
+    // Both callers exit the process when they return.
     let releaseClear: () => void = () => {};
     const pending = new Promise<void>((done) => {
       releaseClear = done;

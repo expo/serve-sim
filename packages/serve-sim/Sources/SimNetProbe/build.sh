@@ -1,5 +1,4 @@
 #!/bin/bash
-# Builds the SimNetProbe test app bundle. Test fixture only: it is never shipped.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

@@ -3,8 +3,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-# These fixtures arrive in separate PRs. Build every fixture present in the
-# checkout so either PR can land first without changing the CI entry point.
+# Skip a fixture this checkout does not have.
 for BUILD_SCRIPT in \
   "$HERE/ServeSimProbe/build.sh" \
   "$HERE/ServeSimLaunchFixture/build.sh" \

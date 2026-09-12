@@ -31,6 +31,10 @@ function runProbe(): Record<string, unknown> {
 describeOrSkip("servesim_capture addon", () => {
   const probe = PYTHON ? runProbe() : {};
 
+  test("reports the proxy's original request time in milliseconds", () => {
+    expect(probe.requestStartedAt).toBe(1_000_000);
+  });
+
   test("captures bounded wire bytes without decompressing hostile content", () => {
     expect(probe.compressedSize).toBe(90);
     expect(probe.compressedBody).toBe("gzipbytes".repeat(10));
@@ -69,8 +73,6 @@ describeOrSkip("servesim_capture addon", () => {
   });
 
   test("ignores a configured http_proxy when reporting", () => {
-    // Records travelling through a developer's corporate proxy would be swallowed, and capture would
-    // report itself healthy while recording nothing.
     expect(probe.proxyBypassed).toBe(true);
   });
 
@@ -101,8 +103,6 @@ describeOrSkip("servesim_capture addon", () => {
   });
 
   test("shuts down cleanly when it was loaded without a control url", () => {
-    // The reporter thread only starts when there is somewhere to report to, and joining a thread that
-    // never started raises.
     const result = spawnSync(
       PYTHON!,
       [
@@ -133,8 +133,6 @@ describeOrSkip("servesim_capture addon", () => {
   });
 
   test("caps a URL whose redaction makes it longer, not just one long value", () => {
-    // `a=1` becomes `a=[REDACTED]`, so a query of short pairs expands. Clipping before redacting looked
-    // correct against a single long value and was 3x over the cap here.
     expect(probe.urlCappedExpanding).toBe(true);
     expect(probe.urlCapped).toBe(true);
   });
@@ -149,8 +147,6 @@ describeOrSkip("servesim_capture addon", () => {
   });
 
   test("reports a request that failed before any response", () => {
-    // This path builds the request part, so a signature change here used to raise inside the hook and the
-    // row would never settle.
     expect(probe.errorWithoutResponseFrames).toBe(1);
     expect(probe.errorWithoutResponseMessage).toBe("connection reset");
   });

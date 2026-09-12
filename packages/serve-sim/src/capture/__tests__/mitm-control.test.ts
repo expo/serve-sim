@@ -21,7 +21,7 @@ describe("mitm control server", () => {
       expect((await post("/ready", {}, "wrong")).status).toBe(403);
       expect((await post("/ready", {})).status).toBe(200);
       await control.ready;
-      expect((await post("/request", { id: "flow-1", method: "GET", url: "https://example.com" })).status).toBe(200);
+      expect((await post("/request", { id: "flow-1", method: "GET", url: "https://example.com", startedAt: 1_700_000_000_000 })).status).toBe(200);
       expect((await post("/response", {
         id: "flow-1",
         status: 200,
@@ -35,7 +35,7 @@ describe("mitm control server", () => {
         },
       })).status).toBe(200);
 
-      expect(store.list()[0]).toMatchObject({ status: 200, responseBytes: 2, durationMs: 12 });
+      expect(store.list()[0]).toMatchObject({ status: 200, responseBytes: 2, durationMs: 12, startedAt: 1_700_000_000_000 });
       expect(store.body("r1")).toMatchObject({
         responseHeaders: { authorization: "[REDACTED]", "content-type": "text/plain" },
         responseBody: "ok",

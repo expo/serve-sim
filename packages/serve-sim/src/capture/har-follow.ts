@@ -125,7 +125,7 @@ export async function followCaptureHar(opts: FollowCaptureHarOptions): Promise<F
   } finally {
     flushFailure = await disk.end({ removeDir: false });
   }
-  // The HAR on disk is missing whatever the last write dropped, so reporting a path here would lie.
+  // The HAR on disk is missing whatever the last write dropped.
   if (flushFailure) throw flushFailure;
 
   return {

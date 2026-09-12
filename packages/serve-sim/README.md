@@ -25,6 +25,7 @@ https://github.com/user-attachments/assets/fbf890f4-c8c7-4684-82be-d677b8a188f8
 - Drag and drop videos and images to add them to the simulator device. 
 - Keyboard commands and hot keys are forwarded to the simulator, including CMD+SHIFT+H to go home.
 - Apple Watch, iPad, and iOS support.
+- Network capture: decrypt and inspect a simulator's HTTPS traffic (see [Network capture](#network-capture)).
 
 ## Why?
 
@@ -55,6 +56,8 @@ serve-sim ca-debug <option> <on|off> [-d udid]
                                       (blended|copies|misaligned|offscreen|slow-animations)
 serve-sim memory-warning [-d udid]    Simulate a memory warning
 serve-sim event-log [-d udid]         Show recent simulator events
+serve-sim capture har -o <path> [-d udid]
+                                      Follow a live capture into HAR + JSON files
 
 serve-sim camera enable [-d udid] [source-options]
                                       Enable the camera for all apps without restarting them
@@ -72,6 +75,13 @@ Options:
       --detach        Spawn server and exit (daemon mode)
   -q, --quiet         JSON-only output
       --no-preview    Skip the web UI; stream in foreground only
+      --network-capture
+                      Record HTTP(S) for devices this process starts or boots
+                      (requires mitmproxy; see Network capture below)
+      --network-capture-field <field>
+                      What to keep beyond metadata: header | query |
+                      request-body | response-body (repeatable or
+                      comma-separated; default: none)
       --codec <codec> HTTP stream codec: 'auto', 'h264', or 'mjpeg'
       --transport <http|webrtc>
                       Stream transport (default: http)
@@ -216,6 +226,31 @@ Sources:
 - **file** — image (PNG/JPEG/HEIC/…) or video (mp4/mov/m4v/webm/…). The CLI sniffs the kind from the extension and falls back to magic bytes for files without an extension.
 - **webcam** — live `AVCaptureDevice` on the host Mac (built-in, Continuity, external).
 - **stream** — JPEG frames from the viewing browser over the authenticated control connection.
+
+## Network capture
+
+Decrypts HTTPS from third-party apps on a simulator for the whole boot session (local mitmproxy + trusted CA). Apple system apps such as Safari are left unproxied. Certificate-pinned apps will fail while capture is on.
+
+```sh
+# Headers only (default). Bodies are opt-in and never redacted.
+serve-sim --network-capture
+
+# Include request and/or response bodies
+serve-sim --network-capture --network-capture-field header,request-body,response-body
+
+# Optional: follow the live stream into files you keep
+serve-sim capture har -o ./capture.har
+```
+
+| Flag / command | What it does |
+| --- | --- |
+| `--network-capture` | Enable capture for devices this process starts or boots |
+| `--network-capture-field <field>` | Keep `header`, `query`, `request-body`, and/or `response-body` beyond metadata (repeatable or comma-separated). Default: none |
+| `serve-sim capture har -o <path>` | Follow the live stream into a HAR (and JSON next to it) |
+
+While capturing, the tools panel lists requests. Session files live under `$TMPDIR/serve-sim/capture-<udid>/` and are removed when capture stops. Capture HTTP routes require the preview session Bearer token.
+
+Requires [mitmproxy](https://mitmproxy.org/) on the host. Relaunch apps after enabling so they pick up the proxy. Details on redaction and risks: [docs/network-capture-security.md](docs/network-capture-security.md).
 
 ## Connectors
 

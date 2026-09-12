@@ -41,6 +41,7 @@ export interface CaptureMeta {
   attachment: CaptureAttachment;
   attachError: string | null;
   droppedOversizedBodies: number;
+  fields: string[];
 }
 
 export function isCapturing(meta: CaptureMeta): boolean {

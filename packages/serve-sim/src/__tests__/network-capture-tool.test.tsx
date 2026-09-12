@@ -4,11 +4,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { fetchCapturedBody } from "../client/hooks/use-capture-stream";
 import {
   CaptureState,
+  CaptureStatusTooltip,
   DomainSection,
   OversizedBodiesNotice,
   RequestFacts,
   RequestRow,
   TimingBar,
+  captureStatusLabel,
   rebootControl,
   formatMs,
   groupByDomain,
@@ -139,11 +141,13 @@ describe("groupByDomain", () => {
     ]);
 
     expect(groups.map((group) => group.host)).toEqual(["a.test", "b.test"]);
-    expect(groups[0]!.requests).toHaveLength(2);
-    expect(groups[0]!.bytes).toBe(500);
-    expect(groups[0]!.failed).toBe(1);
-    expect(groups[1]!.bytes).toBe(60);
-    expect(groups[1]!.failed).toBe(0);
+    const [a, b] = groups;
+    if (a === undefined || b === undefined) throw new Error("expected two domain groups");
+    expect(a.requests).toHaveLength(2);
+    expect(a.bytes).toBe(500);
+    expect(a.failed).toBe(1);
+    expect(b.bytes).toBe(60);
+    expect(b.failed).toBe(0);
   });
 
   test("counts a transport failure as failed even without a status", () => {
@@ -151,13 +155,17 @@ describe("groupByDomain", () => {
       request({ url: "https://a.test/x", status: null, failure: "connection refused" }),
     ]);
 
-    expect(groups[0]!.failed).toBe(1);
+    const [group] = groups;
+    if (group === undefined) throw new Error("expected one domain group");
+    expect(group.failed).toBe(1);
   });
 
   test("keeps an unparseable url visible under a named group", () => {
     const groups = groupByDomain([request({ url: "not-a-url" })]);
 
-    expect(groups[0]!.host).toBe("unknown");
+    const [group] = groups;
+    if (group === undefined) throw new Error("expected one domain group");
+    expect(group.host).toBe("unknown");
   });
 });
 
@@ -224,6 +232,39 @@ describe("CaptureState", () => {
     );
 
     expect(html).toBe("");
+  });
+});
+
+describe("CaptureStatusTooltip", () => {
+  test("notes when response bodies are off while capturing", () => {
+    const html = renderToStaticMarkup(
+      <CaptureStatusTooltip
+        capturing
+        starting={false}
+        fields={["header", "request-body"]}
+      />,
+    );
+    expect(html).toContain("Capture enabled");
+    expect(html).toContain("Response bodies not captured");
+  });
+
+  test("stays single-line when response bodies are allowlisted", () => {
+    const html = renderToStaticMarkup(
+      <CaptureStatusTooltip
+        capturing
+        starting={false}
+        fields={["header", "request-body", "response-body"]}
+      />,
+    );
+    expect(html).toBe("Capture enabled");
+  });
+});
+
+describe("captureStatusLabel", () => {
+  test("folds the response-body note into the accessible label", () => {
+    expect(captureStatusLabel(true, false, ["header", "request-body"])).toBe(
+      "Capture enabled. Response bodies not captured.",
+    );
   });
 });
 
@@ -309,6 +350,7 @@ describe("rebootControl", () => {
     attachError: null,
     proxyAddress: null,
     droppedOversizedBodies: 0,
+    fields: [],
   });
 
   test("waits for the first frame rather than offering a reboot it cannot describe", () => {

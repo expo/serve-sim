@@ -1,6 +1,7 @@
 export {
   bootInjectionCleared,
   clearBootInjection,
+  clearBootInjectionSync,
   injectAtBoot,
 } from "./device";
 export {

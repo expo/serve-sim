@@ -1,8 +1,3 @@
-// Proves the injected dylib actually routes an app's traffic through the capture proxy.
-//
-// Every other capture test fakes this step, so a swizzle that stopped working — an OS change, or the
-// undocumented HTTPS proxy keys being ignored — would leave the whole suite green while the panel showed
-// an empty list. Here a real app runs in a real simulator and its request has to arrive on a real socket.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -69,8 +64,6 @@ function launchProbeApp(
     timeout: 30_000,
     env: {
       ...process.env,
-      // Empty rather than absent: the simulator's launchd may carry an injection of its own, and the
-      // control case has to prove this app was not proxied by anything.
       SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: inject ? DYLIB : "",
       // A device booted for capture is given the file; the bare port is the single-launch form.
       ...(inject
@@ -118,8 +111,6 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
         launchProbeApp(probe.port, { inject: true });
 
         const line = await probe.firstLine(25_000);
-        // A CONNECT proves the HTTPS keys took effect. Those keys have no public constants on iOS, so
-        // this is the assertion that catches CFNetwork ignoring them.
         expect(line).not.toBeNull();
         expect(line).toStartWith(`CONNECT ${PROBE_HOST}:443`);
       } finally {
@@ -159,8 +150,6 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
         terminateProbeApp();
         launchProbeApp(probe.port, { inject: true, portFile: missing });
 
-        // This is what makes a crashed proxy safe: the file dies with it, so an app launched afterwards
-        // finds nothing and leaves its own networking alone rather than trusting a stale port number.
         expect(await probe.firstLine(8_000)).toBeNull();
       } finally {
         probe.close();
@@ -177,8 +166,6 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
         terminateProbeApp();
         launchProbeApp(probe.port, { inject: false });
 
-        // Without this control the test above would pass even if something other than the dylib were
-        // routing the traffic.
         expect(await probe.firstLine(8_000)).toBeNull();
       } finally {
         probe.close();

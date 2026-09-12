@@ -1,8 +1,4 @@
-// A minimal app whose only job is to make one NSURLSession request, so a test can prove the injected
-// SimNetProxy dylib actually routes that request through the capture proxy.
-//
-// The request is built from `defaultSessionConfiguration` because that is the path the dylib swizzles,
-// and it is the path React Native and the Expo modules use.
+// Exercise the configuration factory used by the capture swizzle.
 
 #import <UIKit/UIKit.h>
 

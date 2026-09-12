@@ -10,8 +10,7 @@ import {
 import { join } from "path";
 import { stateDir } from "./state";
 
-// A holder can be arming a capability across a dylib build, a 15s terminate and a 30s launch, and
-// capture waits on this same lock. Shorter than that and a healthy command looks like a stuck one.
+// Allow time for the holder to build, terminate, and relaunch an app.
 const LOCK_TIMEOUT_MS = 90_000;
 export const LOCK_POLL_MS = 50;
 

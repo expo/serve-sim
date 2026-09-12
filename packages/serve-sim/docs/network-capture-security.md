@@ -24,7 +24,7 @@ Always recorded:
 - Method, URL with its query values redacted, status, MIME type
 - Byte counts, time to first byte, total duration, failure reason
 
-Nothing else is recorded unless you ask for it. The default is metadata only:
+Recorded only when you ask for it, via `--network-capture-field`. The default is metadata only:
 
 | Field | Default | Contents |
 | --- | --- | --- |
@@ -33,9 +33,10 @@ Nothing else is recorded unless you ask for it. The default is metadata only:
 | `request-body` | off | Request bodies, **not redacted** |
 | `response-body` | off | Response bodies, **not redacted** |
 
-Everything here is off by default deliberately. A request body is where passwords, refresh tokens, and
-device-attestation blobs actually live, and unlike a header name there is no reliable way to find them
-inside arbitrary JSON, protobuf, or form encoding.
+All of it is off by default deliberately. Headers and query values carry credentials that redaction only
+catches by name. A request body is worse: it is where passwords, refresh tokens, and device-attestation
+blobs actually live, and unlike a header name there is no reliable way to find them inside arbitrary
+JSON, protobuf, or form encoding.
 
 To capture bodies, ask for them:
 
@@ -70,9 +71,8 @@ This list is not a formality. Read it as the actual limit of the feature.
   token.
 - **A credential in an unusual header name survives.** The pattern matches names that read like
   credentials. A token in `x-acme-blob` does not, and is recorded in full.
-- **Credentials in the URL survive.** Query strings are recorded in full, always, including
-  `?access_token=…`. The URL is how a request is identified in the panel, so redacting it would make
-  capture useless.
+- **A query name can be a credential on its own.** Query values are redacted unless `query` is asked for,
+  but the names are always kept, and a name like `reset_token` already tells a reader what the request is.
 - **Redaction is name-based, not value-based.** There is no secret scanner. We do not try to detect
   JWT-shaped or key-shaped strings, and would not trust it if we did.
 - **Capture is device-wide.** System services and every other app on that simulator are recorded too.
@@ -107,8 +107,9 @@ Lifetime:
 The capture routes are reachable over HTTP. In a tunnelled or hosted setup, that means reachable by
 anything that can reach the tunnel.
 
-- Every capture route requires `Authorization: Bearer <session token>`, generated per server start, plus a
-  same-origin check. The token is injected into the same-origin preview page and never appears in a URL.
+- Every capture route requires the session token, generated per server start, plus a same-origin check.
+  The preview page carries the token for you. A caller of its own can send it as `Authorization: Bearer
+  <token>` or as `?token=<token>`, and a URL is logged by every proxy it passes, so prefer the header.
 - The rest of the serve-sim API is **not** token-gated today. Exposing an instance beyond loopback
   protects the capture data but not other endpoints.
 - Nothing here uploads capture data. If a hosted deployment collects `$TMPDIR` or the process logs, that

@@ -40,7 +40,6 @@ export interface CaptureMeta {
   proxyAddress: string | null;
   attachment: CaptureAttachment;
   attachError: string | null;
-  /** Control POSTs dropped for exceeding SERVE_SIM_CAPTURE_MAX_CONTROL_BODY_BYTES. */
   droppedOversizedBodies: number;
 }
 
@@ -113,10 +112,12 @@ export class CaptureStore {
 
   setBody(id: string, body: CapturedBody): void {
     if (!this.requests.has(id)) return;
+    const previous = this.bodies.get(id);
     const size = chargedBytes(body);
-    if (this.totalBodyBytes + size > MAX_TOTAL_BODY_BYTES) return;
+    const nextTotal = this.totalBodyBytes - (previous ? chargedBytes(previous) : 0) + size;
+    if (nextTotal > MAX_TOTAL_BODY_BYTES) return;
     this.bodies.set(id, body);
-    this.totalBodyBytes += size;
+    this.totalBodyBytes = nextTotal;
   }
 
   publishMeta(meta: CaptureMeta): void {
@@ -130,7 +131,6 @@ export class CaptureStore {
     this.emit({ type: "cleared" });
   }
 
-  /** Spread bytes across the slices the transfer spanned. */
   noteTraffic(inBytes: number, outBytes: number, durationMs = 0): void {
     const current = Math.floor(this.now() / TRAFFIC_BUCKET_MS);
     const slices = Math.ceil(Math.max(TRAFFIC_BUCKET_MS, durationMs) / TRAFFIC_BUCKET_MS);
@@ -183,19 +183,12 @@ export class CaptureStore {
       try {
         listener(event);
       } catch {
-        // A failing subscriber must not starve other viewers.
+        // Keep notifying the remaining listeners.
       }
     }
   }
 }
 
-/**
- * What one record costs the budget. Charging and refunding both go through here: a refund that missed a
- * charged byte would ratchet the total upward until the store refused every body while holding none.
- *
- * Headers are counted because a header-only capture would otherwise be free, and 500 records of them is
- * the same memory as the bodies this cap exists to bound.
- */
 function chargedBytes(body: CapturedBody): number {
   let total = byteLength(body.requestBody) + byteLength(body.responseBody);
   for (const headers of [body.requestHeaders, body.responseHeaders]) {

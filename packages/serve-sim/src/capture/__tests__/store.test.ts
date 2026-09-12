@@ -84,6 +84,29 @@ describe("CaptureStore", () => {
     expect(store.list()).toHaveLength(0);
   });
 
+  test("replacing a body replaces its memory charge", () => {
+    const store = new CaptureStore(() => 0);
+    const body = (responseBody: string) => ({
+      requestHeaders: {},
+      responseHeaders: {},
+      requestBody: null,
+      responseBody,
+      requestTruncated: false,
+      responseTruncated: false,
+      requestBinary: false,
+      responseBinary: false,
+    });
+    const first = store.start("GET", "https://example.com/first");
+    const second = store.start("GET", "https://example.com/second");
+
+    store.setBody(first, body("x".repeat(15 * 1024 * 1024)));
+    store.setBody(first, body("x"));
+    store.setBody(second, body("x".repeat(15 * 1024 * 1024)));
+
+    expect(store.body(first)?.responseBody).toBe("x");
+    expect(store.body(second)).not.toBeNull();
+  });
+
   test("refuses a body for an unknown request", () => {
     const store = new CaptureStore(() => 0);
     store.setBody("r404", {

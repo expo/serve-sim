@@ -2655,6 +2655,14 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       return;
     }
 
+    // Not under "/network-capture/", so it can never be read as a request id.
+    if (url === base + "/network-capture.har") {
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      await handleCaptureHarRequest(req, res, state, captureRuntime);
+      return;
+    }
+
     if (url.startsWith(base + "/network-capture/")) {
       const id = url.slice((base + "/network-capture/").length);
       const states = await readServeSimStates();

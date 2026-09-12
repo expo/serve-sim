@@ -1840,8 +1840,7 @@ async function serve(
   // CLI input subcommands can reach the same-origin /helper ws.
   for (const udid of targetDevices) {
     const state = inProcessServeSimState(udid, boundPort, "/", host, options.stream);
-    // Always recorded: capture routes are gated whether or not the rest of the surface is, and the CLI
-    // subcommands reach them with this. The file is written 0600.
+    // Capture CLI commands need this token even when the preview is public.
     writeState({ ...state, token: previewToken });
   }
   const clearAll = () => {

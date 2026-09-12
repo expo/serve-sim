@@ -186,7 +186,7 @@ function contentFrom(
 export function harTimings(request: CapturedRequest): { timings: HarTimings; time: number } {
   const duration = Math.max(0, request.durationMs ?? 0);
   const ttfb = request.ttfbMs;
-  let send = 0;
+  const send = 0;
   let wait = 0;
   let receive = 0;
   if (ttfb != null && request.durationMs != null) {
@@ -215,7 +215,6 @@ function statusTextFor(status: number, failure: string | null): string {
 export function toHarEntry(
   request: CapturedRequest,
   body: CapturedBody | null = null,
-  startedAtMs: number = Date.now() - (request.durationMs ?? 0),
 ): HarEntry {
   const { timings, time } = harTimings(request);
   const reqHeaders = headersFrom(body?.requestHeaders);
@@ -226,7 +225,7 @@ export function toHarEntry(
   const status = request.status ?? 0;
 
   const entry: HarEntry = {
-    startedDateTime: new Date(startedAtMs).toISOString(),
+    startedDateTime: new Date(request.startedAt).toISOString(),
     time,
     request: {
       method: request.method,
@@ -297,7 +296,6 @@ export function isHarEntryCompliant(entry: HarEntry): boolean {
 
 export class HarAccumulator {
   private readonly entries = new Map<string, HarEntry>();
-  private readonly wallStart = new Map<string, number>();
 
   constructor(
     private readonly creatorVersion = "0.0.0",
@@ -309,23 +307,16 @@ export class HarAccumulator {
   }
 
   upsert(request: CapturedRequest, body: CapturedBody | null = null): void {
-    let startedAtMs = this.wallStart.get(request.id);
-    if (startedAtMs === undefined) {
-      startedAtMs = Date.now() - (request.durationMs ?? 0);
-      this.wallStart.set(request.id, startedAtMs);
-    }
-    this.entries.set(request.id, toHarEntry(request, body, startedAtMs));
+    this.entries.set(request.id, toHarEntry(request, body));
     while (this.entries.size > this.maxEntries) {
       const oldest = this.entries.keys().next().value;
       if (oldest === undefined) break;
       this.entries.delete(oldest);
-      this.wallStart.delete(oldest);
     }
   }
 
   clear(): void {
     this.entries.clear();
-    this.wallStart.clear();
   }
 
   toHar(): HarFile {

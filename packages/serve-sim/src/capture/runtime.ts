@@ -131,8 +131,7 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
 
   const attachDisk = (udid: string, store: CaptureStore): Pick<CaptureSession, "disk" | "stopDisk"> => {
     if (!writeDiskArtifacts) return { disk: null, stopDisk: null };
-    // Reclaim what a crashed run left behind before adding to it. Directories for devices this server is
-    // capturing are kept; everything else under the state directory has no owner.
+    // Sweep abandoned recordings while preserving live owners.
     if (!options.captureDirFor) sweepAbandonedCaptureDirs([...byUdid.keys(), udid]);
     const paths = options.captureDirFor
       ? {

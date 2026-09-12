@@ -26,9 +26,19 @@ function harEnvelope(creatorVersion: string): { open: Buffer; close: Buffer } {
 }
 
 export async function writeChunk(stream: WriteStream, chunk: string | Buffer): Promise<void> {
+  if (stream.destroyed) {
+    throw stream.errored ?? new Error("HAR output stream closed before writing finished.");
+  }
   if (!stream.write(chunk)) {
     await once(stream, "drain");
   }
+}
+
+function observeCompletion(stream: WriteStream): Promise<void> {
+  const done = finished(stream);
+  // Observe early failures while the caller is still reading or writing.
+  void done.catch(() => {});
+  return done;
 }
 
 async function streamHarBody(
@@ -39,7 +49,7 @@ async function streamHarBody(
   const { open, close } = harEnvelope(creatorVersion);
   const tmp = `${outPath}.${process.pid}.tmp`;
   const out = createWriteStream(tmp);
-  const done = finished(out);
+  const done = observeCompletion(out);
   try {
     await writeChunk(out, open);
     await writeEntries(out);
@@ -49,6 +59,7 @@ async function streamHarBody(
     await rename(tmp, outPath);
   } catch (err) {
     out.destroy();
+    await Promise.allSettled([done]);
     await unlink(tmp).catch(() => {});
     throw err;
   }
@@ -92,11 +103,7 @@ export async function streamHarFromEntries(
   });
 }
 
-/**
- * One pass count + optional compact: drop oldest NDJSON lines past `maxEntries`
- * and stream-rebuild the HAR. Line count comes from the file, not a caller counter.
- * Returns the kept line count.
- */
+/** Keep the newest maxEntries lines, rebuild HAR, and return the retained count. */
 export async function compactNdjsonAndStreamHar(
   entriesPath: string,
   harPath: string,
@@ -128,8 +135,8 @@ export async function compactNdjsonAndStreamHar(
   const harTmp = `${harPath}.${process.pid}.tmp`;
   const entriesOut = createWriteStream(entriesTmp);
   const harOut = createWriteStream(harTmp);
-  const entriesDone = finished(entriesOut);
-  const harDone = finished(harOut);
+  const entriesDone = observeCompletion(entriesOut);
+  const harDone = observeCompletion(harOut);
   let skipped = 0;
   let kept = 0;
   const input = createReadStream(entriesPath, { encoding: "utf8" });
@@ -157,6 +164,7 @@ export async function compactNdjsonAndStreamHar(
   } catch (err) {
     entriesOut.destroy();
     harOut.destroy();
+    await Promise.allSettled([entriesDone, harDone]);
     await unlink(entriesTmp).catch(() => {});
     await unlink(harTmp).catch(() => {});
     throw err;

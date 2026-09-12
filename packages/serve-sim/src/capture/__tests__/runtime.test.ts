@@ -272,8 +272,6 @@ describe("capture runtime", () => {
 
     await runtime.disableForDevice(UDID);
 
-    // A proxy that outlives the injection wastes a port; an injection that outlives the proxy points every
-    // new launch at a dead one.
     expect(calls).toEqual(["injection-cleared", "proxy-closed"]);
     expect(runtime.storeFor(UDID)).toBeNull();
   });
@@ -313,8 +311,6 @@ describe("capture runtime", () => {
     releaseClear();
     await Promise.all([stopping, starting]);
 
-    // The old teardown's clear must land before the new session's inject, or the device is left bare
-    // while the runtime reports it as capturing.
     expect(calls.indexOf("injection-cleared")).toBeLessThan(calls.lastIndexOf(`injected:${PORT_FILE}`));
     expect(runtime.metaFor(UDID).attachment).toBe("capturing");
 

@@ -1,7 +1,6 @@
-import { execFile, execSync } from "child_process";
-import { promisify } from "node:util";
+import { execSync } from "child_process";
 
-const execFileAsync = promisify(execFile);
+import { simctl } from "./simctl";
 
 const SHUTDOWN_TIMEOUT_MS = 60_000;
 const BOOT_TIMEOUT_MS = 120_000;
@@ -54,20 +53,14 @@ export function resolveDevice(nameOrUDID: string): string {
   process.exit(1);
 }
 
-/**
- * Ignore a device that is already off — every other failure propagates.
- *
- * Anchored to simctl's own sentence. `execFile` puts the command line in the message, so a bare `shutdown`
- * or `current state` match is true of every failure, including `Invalid device`, and would report a device
- * that never shut down as shut down.
- */
+// Match simctl output, not the command echoed in every execution error.
 export function isAlreadyShutDown(error: unknown): boolean {
   const text = error instanceof Error ? error.message : String(error);
   return /Unable to shutdown device in current state: Shutdown/i.test(text);
 }
 
 export async function shutdownDevice(udid: string): Promise<void> {
-  await execFileAsync("xcrun", ["simctl", "shutdown", udid], { timeout: SHUTDOWN_TIMEOUT_MS }).catch(
+  await simctl(["shutdown", udid], SHUTDOWN_TIMEOUT_MS).catch(
     (error: unknown) => {
       if (!isAlreadyShutDown(error)) throw error;
     },
@@ -75,8 +68,6 @@ export async function shutdownDevice(udid: string): Promise<void> {
 }
 
 export async function bootDevice(udid: string): Promise<void> {
-  await execFileAsync("xcrun", ["simctl", "boot", udid], { timeout: BOOT_TIMEOUT_MS });
-  await execFileAsync("xcrun", ["simctl", "bootstatus", udid, "-b"], {
-    timeout: BOOT_TIMEOUT_MS,
-  });
+  await simctl(["boot", udid], BOOT_TIMEOUT_MS);
+  await simctl(["bootstatus", udid, "-b"], BOOT_TIMEOUT_MS);
 }

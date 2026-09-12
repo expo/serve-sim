@@ -2,6 +2,7 @@ import {
   bootInjectionCleared,
   clearBootInjection,
   injectAtBoot,
+  isDeviceInjected,
   trustCaInSimulator,
 } from "./device";
 import {
@@ -23,11 +24,17 @@ export class CaptureEnableError extends Error {
   }
 }
 
+const CHECK_INTERVAL_MS = 10_000;
+const INJECT_MISS_THRESHOLD = 2;
+
 interface CaptureSession {
   store: CaptureStore;
   meta: CaptureMeta;
   proxy: CaptureProxy | null;
   cleanup?: Promise<void>;
+  checking?: Promise<CaptureMeta>;
+  checkedAt?: number;
+  injectMisses?: number;
 }
 
 interface EnableRequest {
@@ -65,6 +72,8 @@ export interface CaptureRuntimeOptions {
   inject?: (udid: string, portFile: string) => Promise<void>;
   clearInjection?: (udid: string) => Promise<void>;
   injectionCleared?: (udid: string) => Promise<boolean>;
+  isInjected?: (udid: string, portFile: string) => Promise<boolean>;
+  checkIntervalMs?: number;
 }
 
 function notEnabledMeta(udid: string): CaptureMeta {
@@ -102,6 +111,8 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   const inject = options.inject ?? injectAtBoot;
   const clearInjection = options.clearInjection ?? clearBootInjection;
   const stillCleared = options.injectionCleared ?? bootInjectionCleared;
+  const isInjected = options.isInjected ?? isDeviceInjected;
+  const checkIntervalMs = options.checkIntervalMs ?? CHECK_INTERVAL_MS;
 
   const byUdid = new Map<string, CaptureSession>();
   const operations = new DeviceOperationQueue();
@@ -258,6 +269,52 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
 
     metaFor(udid: string): CaptureMeta {
       return byUdid.get(udid)?.meta ?? notEnabledMeta(udid);
+    },
+
+    /** Re-check injection; publish meta only on change. */
+    async refreshForDevice(udid: string): Promise<CaptureMeta> {
+      const session = byUdid.get(udid);
+      if (!session) return notEnabledMeta(udid);
+      if (session.meta.attachment !== "capturing" || !session.proxy) return session.meta;
+
+      const now = Date.now();
+      if (session.checking) return session.checking;
+      if (session.checkedAt !== undefined && now - session.checkedAt < checkIntervalMs) return session.meta;
+
+      const portFile = session.proxy.portFile;
+      session.checking = (async () => {
+        try {
+          let live: boolean;
+          try {
+            live = await isInjected(udid, portFile);
+          } catch (error) {
+            console.warn(
+              `Network capture: injection probe for ${udid} failed:`,
+              error instanceof Error ? error.message : error,
+            );
+            return session.meta;
+          }
+          if (live) {
+            session.injectMisses = 0;
+            return session.meta;
+          }
+
+          session.injectMisses = (session.injectMisses ?? 0) + 1;
+          if (session.injectMisses < INJECT_MISS_THRESHOLD) return session.meta;
+
+          session.meta.attachment = "failed";
+          session.meta.attachError =
+            "This device stopped capturing. It was restarted, or shut down, since capture was applied — " +
+            "capture is set up when a device boots, so it does not survive a restart. Reboot with capture " +
+            "to start again.";
+          session.store.publishMeta(session.meta);
+          return session.meta;
+        } finally {
+          session.checkedAt = Date.now();
+          session.checking = undefined;
+        }
+      })();
+      return session.checking;
     },
 
     storeFor(udid: string): CaptureStore | null {

@@ -103,6 +103,23 @@ async function readInjectedVar(udid: string, name: string, read: ReadEnv): Promi
   return injectedLines(await read(launchctl(udid, "getenv", name)));
 }
 
+function hasProxyEntry(values: string[]): boolean {
+  return values
+    .flatMap((line) => line.split(":"))
+    .some((entry) => basename(entry.trim()) === DYLIB_NAME);
+}
+
+export async function isDeviceInjected(
+  udid: string,
+  portFile: string,
+  deps: { read?: ReadEnv } = {},
+): Promise<boolean> {
+  const read = deps.read ?? simctl;
+  const ports = await readInjectedVar(udid, PORT_FILE_VAR, read);
+  if (!ports.includes(portFile)) return false;
+  return hasProxyEntry(await readInjectedVar(udid, DYLD_VAR, read));
+}
+
 function isDeviceUnavailable(error: unknown): boolean {
   const text = error instanceof Error ? error.message : String(error);
   return /Unable to lookup device|Invalid device|current state: Shutdown|device is not booted/i.test(
@@ -155,9 +172,7 @@ export async function bootInjectionCleared(
   const read = deps.read ?? simctl;
   try {
     const dylibs = await readInjectedVar(udid, DYLD_VAR, read);
-    if (dylibs.flatMap((line) => line.split(":")).some((entry) => basename(entry.trim()) === DYLIB_NAME)) {
-      return false;
-    }
+    if (hasProxyEntry(dylibs)) return false;
     return (await readInjectedVar(udid, PORT_FILE_VAR, read)).length === 0;
   } catch (error) {
     return isDeviceUnavailable(error);

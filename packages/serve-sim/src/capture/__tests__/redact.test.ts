@@ -116,16 +116,46 @@ describe("redactHeaders", () => {
   });
 
   test("redacts the names no pattern would catch", () => {
-    // `authorization` has no word boundary after `auth`; `cookie2` none after `cookie`. Kept by name.
+    // `cookie2` has no word boundary after `cookie`, and nothing about `appcheck` reads as a credential.
+    for (const name of ["cookie2", "set-cookie2", "x-firebase-appcheck", "x-amz-content-sha256"]) {
+      expect(isSensitiveHeaderName(name)).toBe(true);
+    }
+  });
+
+  test("redacts a credential a proxy re-presents under its own name", () => {
+    // The caller's bearer token arrives again under one of these, while `Authorization` itself is redacted.
     for (const name of [
       "authorization",
-      "proxy-authorization",
-      "authentication",
-      "cookie2",
-      "set-cookie2",
-      "x-firebase-appcheck",
+      "x-authorization",
+      "x-forwarded-authorization",
+      "x-serverless-authorization",
+      "x-amzn-oidc-accesstoken",
+      "x-amzn-oidc-data",
+      "x-goog-iap-jwt-assertion",
+      "x-ms-client-principal",
+      "sessionid",
+      "x-goog-encryption-key",
+      "x-amz-server-side-encryption-customer-key",
     ]) {
       expect(isSensitiveHeaderName(name)).toBe(true);
+    }
+  });
+
+  test("leaves the headers that make a capture readable", () => {
+    // Over-redaction has a cost: these are how a developer tells one request from another.
+    for (const name of [
+      "content-type",
+      "content-length",
+      "accept",
+      "user-agent",
+      "host",
+      ":authority",
+      "cache-control",
+      "x-request-id",
+      "traceparent",
+      "x-forwarded-for",
+    ]) {
+      expect(isSensitiveHeaderName(name)).toBe(false);
     }
   });
 

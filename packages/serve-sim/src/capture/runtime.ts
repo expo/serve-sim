@@ -154,13 +154,14 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   const closeSession = async (udid: string, session: CaptureSession): Promise<void> => {
     session.cleanup ??= (async () => {
       await session.proxy?.close();
+      session.proxy = null;
+      session.meta.proxyAddress = null;
       await session.stopDisk?.();
       session.stopDisk = null;
       session.disk = null;
-      session.proxy = null;
-      session.meta.proxyAddress = null;
     })().catch((error: unknown) => {
       session.cleanup = undefined;
+      console.warn(`Network capture: cleanup for ${udid} failed:`, error);
       throw error;
     });
     await session.cleanup;

@@ -10,14 +10,15 @@ Read it before enabling capture on a device that talks to anything you care abou
 
 A device booted with `--network-capture` runs a local mitmproxy for the life of its boot session, trusts
 that proxy's certificate authority inside the simulator, and sets `DYLD_INSERT_LIBRARIES` in the
-simulator's launchd so every app launched afterwards routes its `NSURLSession` traffic through the proxy.
+simulator's launchd so supported `NSURLSession` configurations in subsequently launched third-party apps
+route traffic through the proxy. Apple system apps are excluded, and `URLSession.shared` bypasses capture.
 Nothing on the host changes: no system proxy, no host keychain entry. The interception lives and dies with
 the simulator's boot session.
 
 ## What is recorded
 
-Every exchange the proxy sees, from **every app on that device** — not only the app you are looking at,
-and not only apps you launched.
+Every exchange the proxy sees from supported sessions in third-party apps on that device, including
+apps other than the one you are looking at. This is not a complete record of device traffic.
 
 Always recorded:
 
@@ -49,15 +50,14 @@ Bodies are capped at 512 KB each, and 16 MB across the whole buffer.
 ## What is redacted
 
 Header **values** are replaced with `[REDACTED]` when the header **name** reads as credential-bearing.
-Two rules, both in `src/capture/redact.ts`:
+Three rules in `src/capture/redact.ts`:
 
-1. **A pattern over the name.** Any header whose name contains `auth`, `authz`, `token`, `secret`,
-   `password`, `credential`, `session`, `cookie`, `apikey`, `api-key`, `access-key`, `private-key`,
-   `signature`, or `bearer` as a whole word. This is what catches `x-goog-api-key`, `x-refresh-token`,
-   and `x-acme-session-id` without anyone enumerating them.
-2. **A short list of names the pattern cannot match** — `authorization` and `proxy-authorization` (no word
-   boundary after `auth`), `authentication`, `cookie2`, `set-cookie2`, `x-firebase-appcheck`,
-   `x-amz-content-sha256`.
+1. **Delimited credential words.** Names containing words such as `auth`, `token`, `secret`, `password`,
+   `session`, `cookie`, or `key` are redacted. This is conservative: it also catches non-secret headers
+   such as `Idempotency-Key` and `Sec-WebSocket-Key`.
+2. **Credential prefixes.** Names beginning with, or containing a delimited prefix such as,
+   `authorization`, `authentication`, `sessionid`, `oidc`, `jwt`, `principal`, or `assertion` are redacted.
+3. **Explicit names.** `cookie2`, `set-cookie2`, `x-firebase-appcheck`, and `x-amz-content-sha256`.
 
 Redaction happens where the record is built, before it reaches the in-memory store, the panel, the stream,
 or disk. The raw value is never held anywhere we would later have to remember to scrub.
@@ -75,7 +75,8 @@ This list is not a formality. Read it as the actual limit of the feature.
   but the names are always kept, and a name like `reset_token` already tells a reader what the request is.
 - **Redaction is name-based, not value-based.** There is no secret scanner. We do not try to detect
   JWT-shaped or key-shaped strings, and would not trust it if we did.
-- **Capture is device-wide.** System services and every other app on that simulator are recorded too.
+- **Capture can include other apps.** Supported sessions in other third-party apps are recorded too.
+  Apple system apps, `URLSession.shared`, and traffic that bypasses the configured proxy are not captured.
 
 If you need a guarantee rather than a best effort, do not capture against production credentials. Use a
 throwaway account or a staging environment.

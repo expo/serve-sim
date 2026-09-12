@@ -644,6 +644,48 @@ describe("capture runtime", () => {
     expect(runtime.metaFor(UDID).attachment).toBe("capturing");
   });
 
+  test("reports failed capability removal and retains the proxy for cleanup", async () => {
+    let failRemoval = true;
+    const { runtime, calls } = harness({
+      clearInjection: async () => {
+        if (failRemoval) throw new Error("Capability is still armed");
+      },
+    });
+    await runtime.enableForDevice(UDID);
+    await expect(runtime.disableForDevice(UDID)).rejects.toThrow("still armed");
+    expect(calls).not.toContain("proxy-closed");
+    failRemoval = false;
+    await runtime.disableForDevice(UDID);
+    expect(calls).toContain("proxy-closed");
+  });
+
+  test("holds recording ownership until device cleanup finishes", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-runtime-owner-"));
+    const clear = gate();
+    const clearing = gate();
+    const first = harness({ writeDiskArtifacts: true, captureDirFor: () => dir,
+      clearInjection: async () => { clearing.release(); await clear.promise; },
+    });
+    const second = harness({ writeDiskArtifacts: true, captureDirFor: () => dir });
+    await first.runtime.enableForDevice(UDID);
+    const stopping = first.runtime.disableForDevice(UDID);
+    await clearing.promise;
+    try {
+      await expect(second.runtime.enableForDevice(UDID)).rejects.toThrow("already owns");
+      expect(second.calls).toEqual([]);
+    } finally {
+      clear.release();
+      await stopping;
+    }
+    await second.runtime.enableForDevice(UDID);
+    await first.runtime.disableAll();
+    expect(await second.runtime.flushHarPathFor(UDID)).not.toBeNull();
+    await second.runtime.disableAll();
+  });
+
   test("writes network-capture.json + capture.har while capturing, then removes them on disable", async () => {
     const { existsSync, mkdtempSync, readFileSync, rmSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");

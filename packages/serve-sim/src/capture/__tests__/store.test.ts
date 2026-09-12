@@ -59,7 +59,6 @@ describe("CaptureStore", () => {
 
     store.update("r999", { status: 200 }, true);
 
-    // No resurrected record, and no `finished` for a request no viewer has ever seen started.
     expect(store.list()).toHaveLength(0);
     expect(seen).toHaveLength(0);
   });
@@ -127,7 +126,6 @@ describe("CaptureStore", () => {
     for (let i = 0; i < 520; i++) store.start("GET", `https://example.com/${i}`);
     const list = store.list();
     expect(list).toHaveLength(500);
-    // The window slid: the earliest urls are gone, the newest are kept.
     expect(list[0]!.url).toBe("https://example.com/20");
     expect(list.at(-1)!.url).toBe("https://example.com/519");
   });
@@ -175,7 +173,6 @@ describe("clampBody", () => {
 });
 
 describe("CaptureStore throughput", () => {
-  /** A clock the test advances, so the trailing window can be exercised deterministically. */
   function clocked() {
     let ms = 0;
     const store = new CaptureStore(() => ms);
@@ -223,8 +220,7 @@ describe("CaptureStore throughput", () => {
   test("reports a long transfer as a rate, not as a spike when it finishes", () => {
     const { store, advance } = clocked();
     advance(30_000);
-    // 10MB that took 30s is 333KB/s. Charging it all to the settle instant would read 10MB/s for one
-    // second and zero either side, which is what made the graph spiky.
+    // Spread 10 MB over 30 seconds: about 333 KB/s.
     store.noteTraffic(10_000_000, 0, 30_000);
     expect(store.throughput().netInBytesPerSec).toBe(333_333);
   });
@@ -238,8 +234,7 @@ describe("CaptureStore throughput", () => {
 
   test("drops traffic that has aged out, so throughput is a rate and not a lifetime total", () => {
     const { store, advance } = clocked();
-    // The window is 10 buckets of 100ms. Write one bucket's worth, 50 buckets apart, so an
-    // implementation that never prunes reports the sum of all 50 instead of the last few.
+    // Space writes beyond the one-second window to detect missing pruning.
     for (let i = 0; i < 50; i++) {
       store.noteTraffic(1_000, 500);
       advance(100);
@@ -274,14 +269,13 @@ describe("CaptureStore throughput", () => {
 
     // Headers are charged, so 400KB records fill the 16MB cap long before the 500-record limit.
     expect(ids.filter((id) => store.body(id) !== null).length).toBeLessThan(ids.length);
-    // And refunded on eviction: without that, the cap fills once and the store refuses every body after,
-    // while holding none — so the newest records, written after evictions began, must still have theirs.
+    // Eviction must refund the budget for newer bodies.
     expect(ids.slice(-100).some((id) => store.body(id) !== null)).toBe(true);
   });
 
   test("charges bodies by byte, not by character", () => {
     const store = new CaptureStore(() => 0);
-    // Four bytes per emoji, two UTF-16 units. Counting units undercharged multi-byte text 2x.
+    // Each emoji uses four UTF-8 bytes but two UTF-16 units.
     const emoji = "\u{1F600}".repeat(5_000_000);
     const id = store.start("POST", "https://example.com/upload");
     store.setBody(id, {

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 
-// Type-only — the capture backend's node: imports must not reach the client bundle.
 import {
   MAX_REQUESTS,
   type CaptureEvent,
@@ -9,8 +8,7 @@ import {
   type CapturedBody,
   type CapturedRequest,
 } from "../../capture/store";
-import { runHostAction } from "../utils/exec";
-import { openHostEventStream } from "../utils/exec";
+import { openHostEventStream, runHostAction } from "../utils/exec";
 
 export type { CaptureMeta, CaptureAttachment, CapturedBody, CapturedRequest };
 
@@ -83,12 +81,7 @@ export function useCaptureStream(
   return { meta, requests, errored, clear, setMeta };
 }
 
-/**
- * Fetch one request's headers and bodies, which the live stream omits.
- *
- * `device` is required: ids restart at `r1` per device, so a body request without it resolves against
- * whichever device the server picks by default and can return another simulator's traffic.
- */
+// Request IDs are per device; always include the device in body lookups.
 export async function fetchCapturedBody(
   basePath: string,
   id: string,

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import { BodySection } from "../client/components/network-capture-requests";
+
 import { fetchCapturedBody } from "../client/hooks/use-capture-stream";
 import {
   CaptureState,
@@ -347,4 +349,12 @@ describe("rebootControl", () => {
       label: "Reboot with capture",
     });
   });
+});
+
+test("body previews report UTF-8 bytes instead of UTF-16 length", () => {
+  const html = renderToStaticMarkup(
+    <BodySection label="Response body" text="é🙂" binary={false} truncated={false} />,
+  );
+  expect(html).toContain("6 B");
+  expect(html).not.toContain("3 B");
 });

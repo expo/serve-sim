@@ -24,6 +24,7 @@ export interface HarPostData {
   mimeType: string;
   text: string;
   params: [];
+  _encoding?: "base64";
 }
 
 export interface HarRequest {
@@ -172,9 +173,13 @@ function contentFrom(
   binary: boolean | undefined,
 ): HarContent {
   const mime = mimeType || "application/octet-stream";
-  if (binary) return { size, mimeType: mime };
   if (text == null) return { size, mimeType: mime };
-  return { size: size || Buffer.byteLength(text, "utf8"), mimeType: mime, text };
+  return {
+    size: size || Buffer.byteLength(text, "utf8"),
+    mimeType: mime,
+    text,
+    ...(binary ? { encoding: "base64" } : {}),
+  };
 }
 
 /** send/wait/receive ≥ 0; time equals their sum. */
@@ -254,8 +259,13 @@ export function toHarEntry(
     _captureId: request.id,
   };
 
-  if (body?.requestBody && !body.requestBinary) {
-    entry.request.postData = { mimeType: reqMime, text: body.requestBody, params: [] };
+  if (body?.requestBody) {
+    entry.request.postData = {
+      mimeType: reqMime,
+      text: body.requestBody,
+      params: [],
+      ...(body.requestBinary ? { _encoding: "base64" } : {}),
+    };
   }
 
   return entry;

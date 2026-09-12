@@ -260,7 +260,7 @@ describe("handleCaptureBodyRequest", () => {
 
 describe("handleCaptureHarRequest", () => {
   test("returns the session capture.har from disk", async () => {
-    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { appendFileSync, mkdtempSync, rmSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const dir = mkdtempSync(join(tmpdir(), "serve-sim-har-route-"));
@@ -288,6 +288,9 @@ describe("handleCaptureHarRequest", () => {
       if (!store) throw new Error("expected capture store");
       const id = store.start("GET", "https://example.com/har");
       store.update(id, { status: 200, durationMs: 4 }, true);
+      const harPath = await runtime.flushHarPathFor("UDID-1");
+      if (!harPath) throw new Error("expected capture HAR");
+      appendFileSync(harPath, " ".repeat(200_000));
 
       const { req } = createFakeReq();
       const { res, writes, status } = createFakeRes();
@@ -298,6 +301,7 @@ describe("handleCaptureHarRequest", () => {
       expect(har.log.version).toBe("1.2");
       expect(har.log.entries).toHaveLength(1);
       expect(har.log.entries[0].request.url).toBe("https://example.com/har");
+      expect(writes.length).toBeGreaterThan(1);
     } finally {
       await runtime.disableForDevice("UDID-1");
       rmSync(dir, { recursive: true, force: true });

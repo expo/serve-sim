@@ -1,5 +1,5 @@
 import { execFile, execSync, spawn, type ChildProcess } from "child_process";
-import { readdirSync, readFileSync, existsSync, unlinkSync, watch, type FSWatcher } from "fs";
+import { createReadStream, readdirSync, readFileSync, existsSync, unlinkSync, watch, type FSWatcher } from "fs";
 import { readFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -1725,6 +1725,29 @@ export function handleCaptureBodyRequest(
   res.end(JSON.stringify(body));
 }
 
+function waitForResponseDrain(res: SimRes): Promise<void> {
+  if (res.destroyed) return Promise.reject(new Error("Capture download closed before it finished."));
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      res.off("drain", drained);
+      res.off("error", failed);
+      res.off("close", closed);
+    };
+    const drained = () => {
+      cleanup();
+      resolve();
+    };
+    const failed = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const closed = () => failed(new Error("Capture download closed before it finished."));
+    res.once("drain", drained);
+    res.once("error", failed);
+    res.once("close", closed);
+  });
+}
+
 /** Session capture.har from disk (flushed). Same file the CLI follow writer uses. */
 export async function handleCaptureHarRequest(
   req: SimReq,
@@ -1755,7 +1778,6 @@ export async function handleCaptureHarRequest(
     return;
   }
   const filename = `serve-sim-${state.device.slice(0, 8)}.har`;
-  // The whole decrypted session in one response, so no intermediary may keep a copy.
   const headers = {
     "Content-Type": "application/json",
     "Content-Disposition": `attachment; filename="${filename}"`,
@@ -1766,20 +1788,18 @@ export async function handleCaptureHarRequest(
     res.end();
     return;
   }
-  let har: Buffer;
   try {
-    har = readFileSync(harPath);
+    res.writeHead(200, headers);
+    for await (const chunk of createReadStream(harPath)) {
+      if (res.destroyed) return;
+      if (!res.write(chunk)) await waitForResponseDrain(res);
+    }
+    res.end();
   } catch (error) {
-    // With bodies captured this file has no bound, so the read can fail on size alone. Throwing here
-    // would reject out of the request handler and take the preview server, and the session, with it.
-    res.writeHead(500, { "Content-Type": "application/json", ...NO_STORE });
-    res.end(
-      JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
-    );
-    return;
+    if (!res.destroyed) {
+      res.destroy(error instanceof Error ? error : new Error(String(error)));
+    }
   }
-  res.writeHead(200, headers);
-  res.end(har);
 }
 
 export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {

@@ -183,9 +183,7 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
                       anchor.download = `serve-sim-${udid.slice(0, 8)}.har`;
                       anchor.click();
                       URL.revokeObjectURL(objectUrl);
-                    } catch {
-                      // Ignore download failures.
-                    }
+                    } catch {}
                   })();
                 }}
               >

@@ -2167,7 +2167,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           port,
           base,
           streamSettings,
-          requirePreviewToken ? execToken : undefined,
+          execToken,
           () => enableNetworkCaptureForStartedDevice(udid, networkCapture),
         ).then((error) => {
           if (res.writableEnded) return;

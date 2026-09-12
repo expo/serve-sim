@@ -15,6 +15,7 @@ export interface CapturedRequest {
   mimeType: string | null;
   requestBytes: number;
   responseBytes: number;
+  /** Unix time in milliseconds, preserved across exports. */
   startedAt: number;
   ttfbMs: number | null;
   durationMs: number | null;
@@ -82,7 +83,7 @@ export class CaptureStore {
     return this.bodies.get(id) ?? null;
   }
 
-  start(method: string, url: string): string {
+  start(method: string, url: string, startedAt = Date.now()): string {
     const id = `r${++this.seq}`;
     const request: CapturedRequest = {
       id,
@@ -92,7 +93,7 @@ export class CaptureStore {
       mimeType: null,
       requestBytes: 0,
       responseBytes: 0,
-      startedAt: this.now(),
+      startedAt,
       ttfbMs: null,
       durationMs: null,
       failure: null,

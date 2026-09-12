@@ -29,7 +29,7 @@ describe("CaptureStore", () => {
 
   test("starts a request with null status/timings so the UI can show it in flight", () => {
     const store = new CaptureStore(() => 5);
-    const id = store.start("POST", "https://example.com/upload");
+    const id = store.start("POST", "https://example.com/upload", 5);
     const [request] = store.list();
     expect(request).toMatchObject({
       id,
@@ -41,6 +41,14 @@ describe("CaptureStore", () => {
       failure: null,
       startedAt: 5,
     });
+  });
+
+  test("records wall time independently of the throughput clock", () => {
+    const before = Date.now();
+    const store = new CaptureStore(() => 0);
+    store.start("GET", "https://example.com/");
+    expect(store.list()[0]!.startedAt).toBeGreaterThanOrEqual(before);
+    expect(store.list()[0]!.startedAt).toBeLessThanOrEqual(Date.now());
   });
 
   test("keeps a failure reason for a request that never produced a status", () => {

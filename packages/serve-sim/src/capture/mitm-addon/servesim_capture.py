@@ -10,8 +10,7 @@ import urllib.request
 
 CONTROL = os.environ.get("SERVE_SIM_CAPTURE_CONTROL_URL")
 TOKEN = os.environ.get("SERVE_SIM_CAPTURE_CONTROL_TOKEN", "")
-# Which parts of an exchange the session asked for. Absent means metadata only: the safe default is that
-# nothing carrying credentials leaves this process.
+# Absent fields mean metadata only.
 FIELDS = {
     part.strip()
     for part in os.environ.get("SERVE_SIM_CAPTURE_FIELDS", "").split(",")
@@ -20,23 +19,20 @@ FIELDS = {
 WANT_HEADERS = "header" in FIELDS
 WANT_REQUEST_BODY = "request-body" in FIELDS
 WANT_RESPONSE_BODY = "response-body" in FIELDS
-# Query values are where OAuth codes, signed-URL credentials and reset tokens live. Names are kept so a
-# developer can still tell one request from another; values never leave here unless asked for.
+# Query values require explicit opt-in.
 WANT_QUERY = "query" in FIELDS
 REDACTED = "[REDACTED]"
 
 MAX_BODY_BYTES = 512 * 1024
 TIMEOUT_SECONDS = 2
 QUEUE_BYTE_LIMIT = 32 * 1024 * 1024
-# A record with no body still carries a URL, headers and an error string, none of which the body cap
-# bounds. These cap each field before the record is built, so one hostile request cannot outweigh the
-# queue limit on its own.
+# Bound metadata independently of the body cap.
 MAX_URL_CHARS = 4096
 MAX_HEADER_NAME_CHARS = 256
 MAX_HEADER_VALUE_CHARS = 4096
 MAX_HEADERS = 100
 MAX_ERROR_CHARS = 1024
-# Item count matters as much as bytes: many tiny records still cost memory per object.
+# Bound object overhead as well as serialized bytes.
 QUEUE_ITEM_LIMIT = 10_000
 
 # Single worker preserves /request-before-/response order.
@@ -95,8 +91,7 @@ def _post(path, payload):
     global _queued_bytes
     if not CONTROL:
         return
-    # Measure what is actually queued, not just its bodies: a bodyless request with huge headers or a
-    # 100KB URL used to count as zero.
+    # Charge metadata as well as bodies.
     body = json.dumps(payload).encode("utf-8")
     size = len(body)
     with _queued_lock:
@@ -125,13 +120,12 @@ def _headers_of(message):
 
 
 def _mime_of(message):
-    # Metadata, not a header dump: the panel labels every row with this, so it survives the default policy.
+    # MIME type survives metadata-only capture.
     value = message.headers.get("content-type") if hasattr(message, "headers") else None
     return _clip(value, MAX_HEADER_VALUE_CHARS) or None
 
 
 def _safe_url(raw):
-    # Names alone still identify a request; the values are what carry credentials.
     text = str(raw or "")
     if WANT_QUERY or "?" not in text:
         return _clip(text, MAX_URL_CHARS)
@@ -143,42 +137,42 @@ def _safe_url(raw):
         if not pair:
             continue
         name, sep, _value = pair.partition("=")
-        # A pair with no `=` is a bare value — a signature or a token, never a name worth keeping.
+        # A bare query token is a value, not a field name.
         parts.append(f"{name}={REDACTED}" if sep else REDACTED)
-    # Clipped last: redaction lengthens short values, so capping the input does not cap the output.
+    # Redaction can expand the URL; clip afterward.
     return _clip(f"{head}?{'&'.join(parts)}", MAX_URL_CHARS)
 
 
 def _part(message, want_body):
     wire = message.raw_content or b""
-    if not want_body or not wire:
-        return {
-            "headers": _headers_of(message),
-            "mime": _mime_of(message),
-            "size": len(wire),
-            "body": "",
-            "base64": None,
-            "truncated": False,
-        }
-    head = wire[:MAX_BODY_BYTES]
-    try:
-        text, encoded = head.decode("utf-8"), None
-    except UnicodeDecodeError:
-        text, encoded = None, b64.b64encode(head).decode("ascii")
-    return {
+    part = {
         "headers": _headers_of(message),
         "mime": _mime_of(message),
         "size": len(wire),
-        "body": text,
-        "base64": encoded,
-        "truncated": len(wire) > MAX_BODY_BYTES,
+        "body": "",
+        "base64": None,
+        "truncated": False,
     }
+    if want_body and wire:
+        head = wire[:MAX_BODY_BYTES]
+        part["truncated"] = len(wire) > MAX_BODY_BYTES
+        try:
+            part["body"] = head.decode("utf-8")
+        except UnicodeDecodeError:
+            part["body"] = None
+            part["base64"] = b64.b64encode(head).decode("ascii")
+    return part
 
 
 def request(flow):
     _post(
         "/request",
-        {"id": flow.id, "method": flow.request.method, "url": _safe_url(flow.request.pretty_url)},
+        {
+            "id": flow.id,
+            "method": flow.request.method,
+            "url": _safe_url(flow.request.pretty_url),
+            "startedAt": flow.request.timestamp_start * 1000,
+        },
     )
 
 
@@ -200,7 +194,7 @@ def response(flow):
 
 def error(flow):
     reply = flow.response
-    # No end timestamp means the response never completed, so the `response` hook never reported it.
+    # Completed responses have already been reported.
     if reply is not None and reply.timestamp_end is not None:
         return
     _post(
@@ -221,6 +215,7 @@ def http_connect_error(flow):
         {
             "id": flow.id,
             "method": "CONNECT",
+            "startedAt": flow.request.timestamp_start * 1000,
             "url": _clip(f"{flow.request.pretty_host}:{flow.request.port}", MAX_URL_CHARS),
         },
     )

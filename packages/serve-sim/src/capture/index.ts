@@ -24,6 +24,7 @@ export {
   CaptureEnableError,
   type CaptureRuntime,
 } from "./runtime";
+export { startCaptureForDevice, type StartCaptureDeps } from "./start";
 export {
   CAPTURE_SCHEMA_VERSION,
   CaptureStore,

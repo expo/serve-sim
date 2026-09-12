@@ -1096,7 +1096,6 @@ function resolveTargetDevices(devices: string[]): string[] {
 // Kept so a synchronous exit can still reach the capture module; `import()` cannot be awaited there.
 let loadedCapture: typeof import("./capture") | null = null;
 
-/** Last resort on a synchronous exit, where the async teardown never runs. */
 function clearCaptureInjectionSync(udids: readonly string[]): void {
   if (!loadedCapture) return;
   for (const udid of udids) {
@@ -1110,12 +1109,6 @@ function clearCaptureInjectionSync(udids: readonly string[]): void {
   }
 }
 
-/**
- * Point a device's future app launches at the capture proxy.
- *
- * An app only loads the capture library if it was inserted at launch, so this has to run before anything
- * launches an app on the device, not when the preview server comes up.
- */
 async function startNetworkCapture(
   udids: string[],
   fields: string[] | undefined,
@@ -1124,27 +1117,20 @@ async function startNetworkCapture(
   const capture = await import("./capture");
   loadedCapture = capture;
   capture.captureRuntime.setServerEnabled(true);
-  // Set once, so the panel's reboot and a sidebar boot capture the same fields as the CLI asked for.
   capture.captureRuntime.setFields(capture.resolveCaptureFields(fields));
   for (const udid of udids) {
     if (capture.captureRuntime.metaFor(udid).attachment === "capturing") continue;
-    try {
-      const meta = await capture.captureRuntime.enableForDevice(udid);
-      if (quiet) continue;
-      console.log(
-        `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from third-party apps on ` +
-          "this device is recorded for the whole boot session (Apple system apps like Safari are left unproxied); " +
-          "HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
-      );
-    } catch (error) {
-      const reason =
-        error instanceof capture.CaptureEnableError
-          ? error.meta.attachError
-          : error instanceof Error
-            ? error.message
-            : String(error);
-      console.error(`Network capture could not start for ${udid}. ${reason ?? ""}`);
-    }
+    await capture.startCaptureForDevice(udid, {
+      onStarted: (meta) => {
+        if (quiet) return;
+        console.log(
+          `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from third-party apps on ` +
+            "this device is recorded for the whole boot session (Apple system apps like Safari are left unproxied); " +
+            "HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
+        );
+      },
+      onFailed: (reason) => console.error(`Network capture could not start for ${udid}. ${reason}`),
+    });
   }
 }
 

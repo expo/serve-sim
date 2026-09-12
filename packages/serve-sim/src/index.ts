@@ -53,7 +53,10 @@ import { MAX_MJPEG_STREAM_FPS, MAX_VIDEO_STREAM_FPS } from "./stream-settings";
 
 // `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
 // CLI works under plain `node` too.
-const SHUTDOWN_TIMEOUT_MS = 5_000;
+// Covers disabling capture and disarming the loader together. One device's capture teardown is a HAR
+// flush, four `simctl spawn` calls and a proxy that gets up to 5s to stop, so a smaller budget abandons
+// healthy teardowns and leaves the simulator armed.
+const SHUTDOWN_TIMEOUT_MS = 20_000;
 const __dirname = dirnameOf(import.meta.url);
 
 // Stamped in at build time (see build.ts), mirroring __PREVIEW_HTML_B64__. In
@@ -1678,10 +1681,11 @@ Examples:
             if (sessionStopping) return;
           }
         }
-        // Before any launch: an app carries the capture library only if it was inserted at launch.
         if (opts.networkCapture) {
-          await startNetworkCapture(targets, opts.networkCaptureField, !!opts.quiet);
+          // Set first: enableForDevice arms each device in turn, and a signal arriving part way through
+          // has to find a teardown that knows about the ones already armed.
           captureStarted = true;
+          await startNetworkCapture(targets, opts.networkCaptureField, !!opts.quiet);
           if (sessionStopping) return;
         }
         for (const udid of launchesBeforeStreaming ? targets : []) {

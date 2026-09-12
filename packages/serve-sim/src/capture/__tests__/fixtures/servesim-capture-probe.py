@@ -77,13 +77,22 @@ results = {}
 # as `size` overstated throughput by several hundred times.
 compressed = addon._part(FakeMessage(b"x" * 10_000, b"gzipbytes" * 10), True)
 results["compressedSize"] = compressed["size"]
-results["compressedDecodedSize"] = compressed["decodedSize"]
+results["compressedBody"] = compressed["body"]
 
 # A body whose content-encoding lies. Strict decoding raises, which would kill the hook and leave the
 # row spinning forever.
 lying = addon._part(FakeMessage(b"whatever", b"raw-wire-bytes", raises=True), True)
 results["lyingSize"] = lying["size"]
 results["lyingBody"] = lying["body"]
+
+
+class ExplodingMessage(FakeMessage):
+    def get_content(self, strict=True):
+        raise AssertionError("body decoding must not run")
+
+
+metadata_only = addon._part(ExplodingMessage(b"decoded", b"compressed"), False)
+results["metadataBody"] = metadata_only["body"]
 
 binary = addon._part(FakeMessage(b"\xff\xfe\x00\x01", b"\xff\xfe\x00\x01"), True)
 results["binaryBody"] = binary["body"]
@@ -92,7 +101,6 @@ results["binaryBase64"] = binary["base64"]
 oversized = addon._part(FakeMessage(b"a" * (MAX_BODY_BYTES + 10), b"a" * (MAX_BODY_BYTES + 10)), True)
 results["oversizedTruncated"] = oversized["truncated"]
 results["oversizedBodyLength"] = len(oversized["body"])
-results["oversizedDecodedSize"] = oversized["decodedSize"]
 
 empty = addon._part(FakeMessage(b"", b""), True)
 results["emptySize"] = empty["size"]

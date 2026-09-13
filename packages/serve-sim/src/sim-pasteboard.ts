@@ -1,12 +1,14 @@
 import { randomUUID } from "crypto";
+import { execFileSync, spawn } from "child_process";
 import { existsSync, promises as fs } from "fs";
 import { join, resolve } from "path";
 import { setTimeout as sleep } from "timers/promises";
+import type { CapabilityDefinition } from "./capabilities";
 import { debugPasteboard } from "./debug";
 import { frontmostAppOf } from "./foreground-tracker";
-import { enableCapability } from "./launch-manager";
+import { setCapabilityEnabled } from "./launch-manager";
 import { dirnameOf } from "./runtime";
-import { simctl } from "./simctl";
+import { simctl, simctlRaw } from "./simctl";
 
 // Resolve this path at runtime, not during the Bun build.
 const __dirname = dirnameOf(import.meta.url);
@@ -15,16 +17,33 @@ export const CLIPBOARD_CAPABILITY = "clipboard";
 
 const INJECTED_TIMEOUT_MS = 1200;
 const INJECTED_POLL_MS = 25;
-// The trampoline defers its dlopen by a delay we are told not to depend on, so
-// give a relaunched app a wide window rather than a tuned one.
 const RELAUNCH_TIMEOUT_MS = 8000;
 
 export function locatePasteboardTool(): string | null {
   return locateSimpbArtifact("serve-sim-pasteboard");
 }
 
+export function buildPasteboardTool(): string {
+  return buildSimpbArtifact("SimPasteboard", "serve-sim-pasteboard");
+}
+
 export function locatePasteboardReaderDylib(): string | null {
   return locateSimpbArtifact("libSimPasteboardReader.dylib");
+}
+
+export function buildPasteboardReaderDylib(): string {
+  return buildSimpbArtifact("SimPasteboardReader", "libSimPasteboardReader.dylib");
+}
+
+function buildSimpbArtifact(source: string, artifact: string): string {
+  const buildScript = join(__dirname, "..", "Sources", source, "build.sh");
+  if (!existsSync(buildScript)) {
+    throw new Error(`${source} source not found. Reinstall from a build that includes clipboard support.`);
+  }
+  execFileSync("bash", [buildScript], { stdio: "inherit" });
+  const output = locateSimpbArtifact(artifact);
+  if (!output) throw new Error(`${source} build succeeded but ${artifact} was not found.`);
+  return output;
 }
 
 export function locateSimpbArtifact(file: string): string | null {
@@ -38,24 +57,58 @@ export function locateSimpbArtifact(file: string): string | null {
 }
 const SPRINGBOARD_BUNDLE = "com.apple.springboard";
 
-/**
- * A programmatic UIPasteboard read needs the grant; the reader does nothing
- * else. Both places that load the reader call this first.
- */
-export async function grantPasteboardAccess(udid: string, bundleId: string): Promise<void> {
-  // A denied read returns nil, which the reader writes as "", which is what a
-  // genuinely empty clipboard looks like. Swallowing this would make the two
-  // indistinguishable, so say when the grant did not go through.
-  const failure = await simctl(["privacy", udid, "grant", "pasteboard", bundleId]).then(
-    () => null,
-    (error: unknown) => (error instanceof Error ? error.message : String(error)),
-  );
-  if (failure) debugPasteboard("pasteboard grant failed for %s on %s: %s", bundleId, udid, failure);
+export const clipboardCapability: CapabilityDefinition = {
+  name: CLIPBOARD_CAPABILITY,
+  defaultEnabled: true,
+  scope: "allApps",
+  loadDelayMs: 0,
+  async setEnabled({ udid, bundleId, enabled }) {
+    if (!enabled) return null;
+    if (bundleId) await simctl(["privacy", udid, "grant", "pasteboard", bundleId]);
+    return { dylib: locatePasteboardReaderDylib() ?? buildPasteboardReaderDylib() };
+  },
+};
+
+export function writeSimPasteboard(udid: string, text: string): Promise<void> {
+  const tool = locatePasteboardTool() ?? buildPasteboardTool();
+  return new Promise((resolveWrite, rejectWrite) => {
+    const child = spawn("xcrun", ["simctl", "spawn", udid, tool], {
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.setEncoding("utf-8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectWrite(new Error("simctl pasteboard write timed out"));
+    }, 30_000);
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      rejectWrite(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timeout);
+      if (code === 0) resolveWrite();
+      else rejectWrite(new Error(stderr.trim() || `simctl pasteboard write exited ${code}`));
+    });
+    child.stdin.end(text, "utf-8");
+  });
 }
 
-const readsInFlight = new Map<string, Promise<string>>();
+export interface PasteboardReadResult {
+  text: string;
+  relaunchedApp: string | null;
+}
 
-export function readSimPasteboard(udid: string): Promise<string> {
+const readsInFlight = new Map<string, Promise<PasteboardReadResult>>();
+
+export async function readSimPasteboard(udid: string): Promise<string> {
+  return (await readSimPasteboardResult(udid)).text;
+}
+
+export function readSimPasteboardResult(udid: string): Promise<PasteboardReadResult> {
   const queued = (readsInFlight.get(udid) ?? Promise.resolve())
     .catch(() => {})
     .then(() => readPasteboardOnce(udid));
@@ -66,13 +119,16 @@ export function readSimPasteboard(udid: string): Promise<string> {
   return queued;
 }
 
-async function readPasteboardOnce(udid: string): Promise<string> {
+async function readPasteboardOnce(udid: string): Promise<PasteboardReadResult> {
   let pbpasteError: unknown;
   if (process.env.SERVE_SIM_SKIP_PBPASTE !== "1") {
     try {
-      return await simctl(["pbpaste", udid], {
-        env: { LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" },
-      });
+      return {
+        text: await simctlRaw(["pbpaste", udid], {
+          env: { LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" },
+        }),
+        relaunchedApp: null,
+      };
     } catch (error: unknown) {
       pbpasteError = error;
     }
@@ -94,7 +150,7 @@ async function readPasteboardOnce(udid: string): Promise<string> {
   );
 }
 
-async function readViaInjectedReader(udid: string): Promise<string | null> {
+async function readViaInjectedReader(udid: string): Promise<PasteboardReadResult | null> {
   const frontmost = await frontmostAppOf(udid);
   if (!frontmost || frontmost.bundleId === SPRINGBOARD_BUNDLE) return null;
   const bundleId = frontmost.bundleId;
@@ -102,21 +158,30 @@ async function readViaInjectedReader(udid: string): Promise<string | null> {
   // System apps like Settings have no data container: get_app_container exits 0
   // and prints "(null)". There is nowhere to exchange files, so relaunching the
   // app would not help.
-  const container = (await simctl(["get_app_container", udid, bundleId, "data"])).trim();
+  const container = await simctl(["get_app_container", udid, bundleId, "data"]);
   if (!isContainerPath(container)) return null;
-  const first = await requestInjectedPasteboard(container);
-  if (first !== null) return first;
+  // A denied read and an empty pasteboard both produce an empty string, so grant first.
+  await setCapabilityEnabled(udid, clipboardCapability, {
+    bundleId,
+    enabled: true,
+    relaunch: false,
+  });
+  const afterArming = await requestInjectedPasteboard(container);
+  if (afterArming !== null) return { text: afterArming, relaunchedApp: null };
 
-  const dylib = locatePasteboardReaderDylib();
-  if (!dylib) return null;
-
-  // The app started before the reader was armed, so it has no copy of it. The
-  // capability loads everywhere, but a dylib can only enter a live process at
-  // launch, so this relaunches the one app we need an answer from.
-  debugPasteboard("%s did not answer on %s; relaunching it with %s", bundleId, udid, CLIPBOARD_CAPABILITY);
-  await grantPasteboardAccess(udid, bundleId);
-  await enableCapability(udid, bundleId, { name: CLIPBOARD_CAPABILITY, dylib, allApps: true });
-  return requestInjectedPasteboard(container, RELAUNCH_TIMEOUT_MS);
+  debugPasteboard(
+    "%s did not answer on %s after arming %s; relaunching as a last resort",
+    bundleId,
+    udid,
+    CLIPBOARD_CAPABILITY,
+  );
+  await setCapabilityEnabled(udid, clipboardCapability, {
+    bundleId,
+    enabled: true,
+    relaunch: true,
+  });
+  const afterRelaunch = await requestInjectedPasteboard(container, RELAUNCH_TIMEOUT_MS);
+  return afterRelaunch === null ? null : { text: afterRelaunch, relaunchedApp: bundleId };
 }
 
 /**

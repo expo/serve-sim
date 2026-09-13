@@ -46,33 +46,47 @@ export function useClipboardToast(
   sendCopyShortcut: () => Promise<void>,
   sendTextToSim: (text: string) => Promise<boolean>,
 ) {
-  const showManual = useCallback((message: string, text: string) => {
-    renderToast("manual", message, MANUAL_TOAST_ID, { onCopy: () => {
-      const copied = copyTextViaSelection(text);
-      renderToast(
-        copied ? "copied" : "error",
-        copied ? "Copied from simulator" : "Copy failed",
-        MANUAL_TOAST_ID,
-      );
-    } });
-  }, []);
-
   const copyFromSim = useCallback(async () => {
     renderToast("pending", "Reading simulator clipboard…", COPY_TOAST_ID);
     try {
       await sendCopyShortcut();
-      const text = await readSimClipboard(deviceUdid);
+      const { text, relaunchedApp } = await readSimClipboard(deviceUdid);
+      const copiedMessage = relaunchedApp
+        ? `Copied after relaunching ${relaunchedApp} to enable clipboard access`
+        : "Copied from simulator";
       if (!text) {
-        renderToast("copied", "Simulator clipboard is empty", COPY_TOAST_ID);
+        renderToast(
+          "copied",
+          relaunchedApp
+            ? `Clipboard is empty after relaunching ${relaunchedApp}`
+            : "Simulator clipboard is empty",
+          COPY_TOAST_ID,
+        );
         return;
       }
 
       try {
         await writeTextToBrowserClipboard(text);
-        renderToast("copied", "Copied from simulator", COPY_TOAST_ID);
+        renderToast("copied", copiedMessage, COPY_TOAST_ID);
       } catch {
         sonnerToast.dismiss(COPY_TOAST_ID);
-        showManual("Ready — one click to copy", text);
+        renderToast(
+          "manual",
+          relaunchedApp
+            ? `${relaunchedApp} was relaunched. Click to copy`
+            : "Ready — one click to copy",
+          MANUAL_TOAST_ID,
+          {
+            onCopy: () => {
+              const copied = copyTextViaSelection(text);
+              renderToast(
+                copied ? "copied" : "error",
+                copied ? "Copied from simulator" : "Copy failed",
+                MANUAL_TOAST_ID,
+              );
+            },
+          },
+        );
       }
     } catch (error) {
       renderToast(
@@ -81,7 +95,7 @@ export function useClipboardToast(
         COPY_TOAST_ID,
       );
     }
-  }, [deviceUdid, sendCopyShortcut, showManual]);
+  }, [deviceUdid, sendCopyShortcut]);
 
   const pasteText = useCallback(
     async (text: string) => {
@@ -104,9 +118,6 @@ export function useClipboardToast(
     [sendTextToSim],
   );
 
-  // A phone reaches serve-sim over plain http, where navigator.clipboard does
-  // not exist, so there is no way to read the device clipboard. Ask the user to
-  // paste into a field instead; that needs no secure context.
   const pasteFromDevice = useCallback(async () => {
     let text: string;
     try {

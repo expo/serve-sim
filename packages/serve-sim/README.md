@@ -106,7 +106,7 @@ Options:
                       Turn on a capability that is off by default (repeatable)
       --disable <capability>
                       Turn off a capability that is on by default (repeatable).
-                      Capabilities: clipboard (on), probe (off)
+                      Capabilities: camera (off), clipboard (on)
       --list [device] List running streams
       --kill [device] Kill running stream(s)
 

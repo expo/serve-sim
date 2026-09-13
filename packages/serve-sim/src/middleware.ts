@@ -25,7 +25,8 @@ import {
   sendCorsPreflight,
   type HidSocket,
 } from "./device-session";
-import { assertPreviewAccess, assertUpgradeAccess } from "./session-auth";
+import { assertPreviewAccess, assertUpgradeAccess, matchesBearerToken } from "./session-auth";
+import { readRequestBodyAsync, RequestBodyTooLargeError } from "./runtime-utils";
 import {
   eventLogEventForAction,
   readEventLog,
@@ -46,7 +47,7 @@ import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
 import { type WebMiddleware } from "./runtime-utils";
 import { connectToFetch, type ConnectMiddleware } from "./connect-to-fetch";
-import { locatePasteboardTool, readSimPasteboard } from "./sim-pasteboard";
+import { readSimPasteboardResult, writeSimPasteboard } from "./sim-pasteboard";
 
 type SimReq = IncomingMessage;
 type SimRes = ServerResponse;
@@ -982,7 +983,6 @@ export function previewConfigForState(
   execToken: string,
   streamSettingsOrCodec?: StreamSettings | string,
   proxyHelpers = false,
-  pasteboardTool: string | null = null,
 ): ServeSimState & {
   basePath: string;
   logsEndpoint: string;
@@ -994,7 +994,6 @@ export function previewConfigForState(
   cameraStatusEndpoint: string;
   devtoolsEndpoint: string;
   streamSettingsEndpoint: string;
-  pasteboardTool: string | null;
   gridApiEndpoint: string;
   gridCatalogEndpoint: string;
   gridStatusEndpoint: string;
@@ -1031,7 +1030,6 @@ export function previewConfigForState(
     cameraStatusEndpoint: `${base === "/" ? "" : base}/helper/${encodeURIComponent(state.device)}/camera/status`,
     devtoolsEndpoint: endpoint(base, "/devtools", state.device),
     streamSettingsEndpoint: streamSettingsEndpointFrom(state.streamUrl),
-    pasteboardTool,
     gridApiEndpoint: gridApiBase,
     gridCatalogEndpoint: gridApiBase + "/catalog",
     gridStatusEndpoint: gridApiBase + "/status",
@@ -1585,7 +1583,6 @@ export function handleMetricsRequest(
 export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const streamSettings = options?.streamSettings ?? httpStreamSettingsFromLegacyCodec(options?.codec);
   const base = (options?.basePath ?? "/.sim").replace(/\/+$/, "");
-  const pasteboardTool = locatePasteboardTool();
   const helperPrefix = helperProxyPrefix(base);
   const devtoolsPrefix = devtoolsProxyPrefix(base);
   const proxyHelpers = options?.proxyHelpers ?? false;
@@ -1725,7 +1722,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       if (state) {
         const remoteState = rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers);
         const config = JSON.stringify(
-          previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers, pasteboardTool),
+          previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers),
         );
         const configScript = `<script>window.__SIM_PREVIEW__=${config}</script>`;
         html = html.replace("<!--__SIM_PREVIEW_CONFIG__-->", configScript);
@@ -2166,7 +2163,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
       res.end(JSON.stringify(
         remoteState
-          ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers, pasteboardTool)
+          ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers)
           : null,
       ));
       return;
@@ -2245,7 +2242,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
 
     if (url === base + "/api/pasteboard") {
-      if (req.method !== "POST") {
+      if (req.method !== "POST" && req.method !== "PUT") {
         res.writeHead(405, {
           ...PASTEBOARD_RESPONSE_HEADERS,
           "Content-Type": "text/plain; charset=utf-8",
@@ -2253,9 +2250,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         res.end("method not allowed");
         return;
       }
-      const authHeader = req.headers.authorization ?? "";
-      const match = /^Bearer\s+(.+)$/i.exec(authHeader);
-      if (!match || !safeEqualString(match[1]!.trim(), execToken)) {
+      if (!matchesBearerToken(req.headers.authorization, execToken)) {
         res.writeHead(401, {
           ...PASTEBOARD_RESPONSE_HEADERS,
           "Content-Type": "application/json",
@@ -2281,16 +2276,57 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           ...PASTEBOARD_RESPONSE_HEADERS,
           "Content-Type": "application/json",
         });
-        res.end(JSON.stringify({ ok: false, error: "No booted simulator to read the pasteboard from" }));
+        res.end(JSON.stringify({ ok: false, error: "No booted simulator available" }));
         return;
       }
       try {
-        const text = await readSimPasteboard(udid);
+        if (req.method === "PUT") {
+          let body: Buffer | undefined;
+          try {
+            body = await readRequestBodyAsync(req, 4 * 1024 * 1024);
+          } catch (error) {
+            if (!(error instanceof RequestBodyTooLargeError)) throw error;
+            res.writeHead(413, {
+              ...PASTEBOARD_RESPONSE_HEADERS,
+              "Content-Type": "application/json",
+            });
+            res.end(JSON.stringify({ ok: false, error: "Clipboard text is too large" }));
+            return;
+          }
+          let parsed: { text?: unknown };
+          try {
+            parsed = JSON.parse(body?.toString("utf-8") ?? "") as { text?: unknown };
+          } catch {
+            res.writeHead(400, {
+              ...PASTEBOARD_RESPONSE_HEADERS,
+              "Content-Type": "application/json",
+            });
+            res.end(JSON.stringify({ ok: false, error: "Invalid JSON" }));
+            return;
+          }
+          if (typeof parsed.text !== "string") {
+            res.writeHead(400, {
+              ...PASTEBOARD_RESPONSE_HEADERS,
+              "Content-Type": "application/json",
+            });
+            res.end(JSON.stringify({ ok: false, error: "Clipboard text must be a string" }));
+            return;
+          }
+          await writeSimPasteboard(udid, parsed.text);
+          res.writeHead(200, {
+            ...PASTEBOARD_RESPONSE_HEADERS,
+            "Content-Type": "application/json",
+          });
+          res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+
+        const result = await readSimPasteboardResult(udid);
         res.writeHead(200, {
           ...PASTEBOARD_RESPONSE_HEADERS,
           "Content-Type": "application/json",
         });
-        res.end(JSON.stringify({ ok: true, text }));
+        res.end(JSON.stringify({ ok: true, ...result }));
       } catch (error) {
         res.writeHead(500, {
           ...PASTEBOARD_RESPONSE_HEADERS,
@@ -2298,7 +2334,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         });
         res.end(JSON.stringify({
           ok: false,
-          error: error instanceof Error ? error.message : "Could not read the simulator pasteboard",
+          error: error instanceof Error ? error.message : "Could not access the simulator pasteboard",
         }));
       }
       return;
@@ -2365,7 +2401,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
         return JSON.stringify(
           remoteState
-            ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers, pasteboardTool)
+            ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers)
             : null,
         );
       };

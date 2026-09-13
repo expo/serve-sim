@@ -8,7 +8,7 @@ mkdir -p "$OUT_DIR"
 SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 READER="$OUT_DIR/libSimPasteboardReader.dylib"
 
-# The launch manager's trampoline dlopens this inside the app container, so
+# The capability loader dlopens this inside the app container, so
 # unlike a global insert it can link UIKit.
 xcrun --sdk iphonesimulator clang \
     -arch arm64 \

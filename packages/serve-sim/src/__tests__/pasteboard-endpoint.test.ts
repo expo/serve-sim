@@ -1,7 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { execSync } from "child_process";
 import { simMiddleware } from "../middleware";
-import { pbcopyCommand } from "../client/utils/sim-clipboard";
 import {
   ensureFixtureInstalled,
   firstBootedIosSim,
@@ -11,20 +9,22 @@ import {
   pasteboardFixture,
   pasteboardTool,
   SAFARI_BUNDLE,
+  writeTestPasteboard,
 } from "./pasteboard-sim";
 
 const TEST_TOKEN = "test-token";
 const middleware = simMiddleware({ basePath: "/preview", execToken: TEST_TOKEN });
 
-function pasteboardRequest(query = "", method = "POST"): Request {
+function pasteboardRequest(query = "", method = "POST", body?: BodyInit): Request {
   return new Request(`http://localhost:3200/preview/api/pasteboard${query}`, {
     method,
     headers: { Authorization: `Bearer ${TEST_TOKEN}` },
+    body,
   });
 }
 
-describe("POST /api/pasteboard", () => {
-  test("rejects non-POST methods", async () => {
+describe("/api/pasteboard", () => {
+  test("rejects unsupported methods", async () => {
     const res = await middleware(pasteboardRequest("", "GET"));
     expect(res?.status).toBe(405);
     expect(res?.headers.get("access-control-allow-origin")).toBeNull();
@@ -55,6 +55,15 @@ describe("POST /api/pasteboard", () => {
     const body = (await res!.json()) as { ok: boolean; error: string };
     expect(body.ok).toBe(false);
   });
+
+  test("rejects invalid JSON before writing", async () => {
+    const unavailableUdid = "00000000-0000-0000-0000-000000000000";
+    const res = await middleware(
+      pasteboardRequest(`?device=${unavailableUdid}`, "PUT", "{"),
+    );
+    expect(res?.status).toBe(400);
+    expect(await res!.json()).toEqual({ ok: false, error: "Invalid JSON" });
+  });
 });
 
 const bootedUdid = firstBootedIosSim();
@@ -76,7 +85,7 @@ for (const app of PASTEBOARD_TEST_APPS) {
 
     test("returns JSON text for an explicit device", async () => {
       const probe = `serve-sim-pasteboard-probe-${app.label.replace(/\s+/g, "-")}`;
-      execSync(pbcopyCommand(bootedUdid!, probe, pasteboardTool!));
+      writeTestPasteboard(bootedUdid!, probe);
       const res = await middleware(
         pasteboardRequest(`?device=${encodeURIComponent(bootedUdid!)}`),
       );
@@ -89,6 +98,20 @@ for (const app of PASTEBOARD_TEST_APPS) {
     }, 45_000);
 
     if (app.bundleId === SAFARI_BUNDLE) {
+      test("PUT writes text that POST reads back", async () => {
+        const probe = "café 🎉 email+tag@x.com 日本語";
+        const query = `?device=${encodeURIComponent(bootedUdid!)}`;
+        const write = await middleware(
+          pasteboardRequest(query, "PUT", JSON.stringify({ text: probe })),
+        );
+        expect(write?.status).toBe(200);
+        expect(await write!.json()).toEqual({ ok: true });
+
+        const read = await middleware(pasteboardRequest(query));
+        expect(read?.status).toBe(200);
+        expect(await read!.json()).toMatchObject({ ok: true, text: probe });
+      }, 45_000);
+
       test("falls back to a booted simulator when no device is given", async () => {
         const res = await middleware(pasteboardRequest());
         expect(res?.status).toBe(200);

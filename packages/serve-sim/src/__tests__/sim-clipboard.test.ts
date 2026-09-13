@@ -1,78 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { HID_USAGE_BY_CODE } from "../client/utils/hid";
 import {
-  PBCOPY_INLINE_MAX,
   copyTextToSim,
-  pbcopyCommand,
   readSimClipboard,
   readTextFromBrowserClipboard,
   simCopyHidEvents,
   simPasteHidEvents,
   simSelectAllHidEvents,
 } from "../client/utils/sim-clipboard";
-
-const TOOL = "/pkg/dist/simpb/serve-sim-pasteboard";
-
-describe("sim clipboard commands", () => {
-  test("the write quotes text so shell metacharacters stay literal", () => {
-    const text = "it's 100% café";
-    expect(pbcopyCommand("UDID-1", text, TOOL)).toBe(
-      `printf '%s' 'it'\\''s 100% café' | xcrun simctl spawn 'UDID-1' '${TOOL}'`,
-    );
-  });
-
-  test("the write runs inside the simulator, not through the host bridge", () => {
-    const command = pbcopyCommand("UDID-1", "hi", TOOL);
-    expect(command).toContain("simctl spawn");
-    expect(command).not.toContain("pbcopy");
-    expect(command).not.toContain("LANG=");
-  });
-
-  test("copyTextToSim inlines short text", async () => {
-    const cmds: string[] = [];
-    const ok = await copyTextToSim("UDID-1", "hello", async (cmd) => {
-      cmds.push(cmd);
-      return { stdout: "", stderr: "", exitCode: 0 };
-    }, TOOL);
-    expect(ok).toBe(true);
-    expect(cmds).toEqual([pbcopyCommand("UDID-1", "hello", TOOL)]);
-  });
-
-  test("copyTextToSim stages a temp file above the inline limit", async () => {
-    const cmds: string[] = [];
-    const text = "x".repeat(PBCOPY_INLINE_MAX + 1);
-    const ok = await copyTextToSim("UDID-1", text, async (cmd) => {
-      cmds.push(cmd);
-      return { stdout: "", stderr: "", exitCode: 0 };
-    }, TOOL);
-    expect(ok).toBe(true);
-    expect(cmds.some((c) => c.includes("base64 -d"))).toBe(true);
-    expect(cmds.some((c) => c.includes("simctl spawn") && c.includes(" < "))).toBe(true);
-    expect(cmds.some((c) => c.startsWith("rm -f "))).toBe(true);
-    expect(cmds.some((c) => c.includes("printf '%s'"))).toBe(false);
-  });
-
-  test("copyTextToSim returns false when the write exits non-zero", async () => {
-    const ok = await copyTextToSim("UDID-1", "hello", async () => {
-      return { stdout: "", stderr: "boom", exitCode: 1 };
-    }, TOOL);
-    expect(ok).toBe(false);
-  });
-
-  test("copyTextToSim uses UTF-8 byte length for the inline limit", async () => {
-    const cmds: string[] = [];
-    const text = "你".repeat(Math.floor(PBCOPY_INLINE_MAX / 3) + 1);
-    expect(text.length).toBeLessThanOrEqual(PBCOPY_INLINE_MAX);
-    expect(new TextEncoder().encode(text).length).toBeGreaterThan(PBCOPY_INLINE_MAX);
-    const ok = await copyTextToSim("UDID-1", text, async (cmd) => {
-      cmds.push(cmd);
-      return { stdout: "", stderr: "", exitCode: 0 };
-    }, TOOL);
-    expect(cmds.some((c) => c.includes("printf '%s'"))).toBe(false);
-    expect(cmds.some((c) => c.includes("base64 -d"))).toBe(true);
-    expect(ok).toBe(true);
-  });
-});
 
 describe("sim paste HID", () => {
   const usage = (code: string): number => {
@@ -214,9 +149,33 @@ describe("readSimClipboard", () => {
     });
   }
 
-  test("POSTs the selected device and returns the text the endpoint reports", async () => {
-    await withStubs(Response.json({ ok: true, text: "café 🎉" }), async (requests) => {
-      expect(await readSimClipboard("UDID-1")).toBe("café 🎉");
+  test("PUTs text to the selected device", async () => {
+    await withStubs(Response.json({ ok: true }), async (requests) => {
+      expect(await copyTextToSim("UDID-1", "café 🎉")).toBe(true);
+      expect(requests).toEqual([
+        {
+          input: "/api/pasteboard?device=UDID-1",
+          init: {
+            method: "PUT",
+            headers: {
+              Authorization: "Bearer test-token",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ text: "café 🎉" }),
+          },
+        },
+      ]);
+    });
+  });
+
+  test("POSTs the selected device and returns the endpoint result", async () => {
+    await withStubs(
+      Response.json({ ok: true, text: "café 🎉", relaunchedApp: "dev.example.app" }),
+      async (requests) => {
+      expect(await readSimClipboard("UDID-1")).toEqual({
+        text: "café 🎉",
+        relaunchedApp: "dev.example.app",
+      });
       expect(requests).toEqual([
         {
           input: "/api/pasteboard?device=UDID-1",
@@ -226,7 +185,8 @@ describe("readSimClipboard", () => {
           },
         },
       ]);
-    });
+      },
+    );
   });
 
   test("surfaces the endpoint's own error message", async () => {

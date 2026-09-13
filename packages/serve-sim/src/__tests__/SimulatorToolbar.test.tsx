@@ -123,7 +123,7 @@ describe("SimulatorToolbar.Button", () => {
 
   test("CopyButton exposes an accessible name", () => {
     const html = renderToStaticMarkup(
-      <SimulatorToolbar exec={exec} deviceUdid="booted" streaming>
+      <SimulatorToolbar deviceUdid="booted" streaming>
         <SimulatorToolbar.CopyButton title="Copy simulator clipboard" />
       </SimulatorToolbar>,
     );

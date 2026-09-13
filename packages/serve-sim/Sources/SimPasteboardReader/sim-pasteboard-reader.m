@@ -4,16 +4,12 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-/**
- * Write the whole file or report nothing written. fclose is checked too: a
- * short write often surfaces on the flush rather than at fputs.
- */
-static int write_whole_file(const char *path, const char *contents) {
+static int write_whole_file(const char *path, const void *contents, size_t length) {
   FILE *file = fopen(path, "w");
   if (file == NULL) return 0;
-  int wrote = fputs(contents, file);
+  size_t wrote = fwrite(contents, 1, length, file);
   int closed = fclose(file);
-  return wrote != EOF && closed == 0;
+  return wrote == length && closed == 0;
 }
 
 static void answer(void) {
@@ -42,7 +38,8 @@ static void answer(void) {
   // Publishing `done` is what makes the answer visible, so it must not happen
   // unless the value was written whole. A short write here would otherwise
   // reach the host as a successful read of truncated clipboard text.
-  if (!write_whole_file(value, text.UTF8String ?: "")) {
+  NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
+  if (!write_whole_file(value, data.bytes, data.length)) {
     fprintf(stderr, "[serve-sim] could not write the pasteboard answer to %s\n", value);
     return;
   }
@@ -50,7 +47,7 @@ static void answer(void) {
   unlink(request);
 
   // Rename so the host never reads a half-written done file.
-  if (!write_whole_file(pending, nonce) || rename(pending, done) != 0) {
+  if (!write_whole_file(pending, nonce, length) || rename(pending, done) != 0) {
     fprintf(stderr, "[serve-sim] could not publish the pasteboard answer to %s\n", done);
   }
 }

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, promises as fs, readdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { requestInjectedPasteboard } from "../sim-pasteboard";
+import { clipboardCapability, requestInjectedPasteboard } from "../sim-pasteboard";
 
 function container(): string {
   return mkdtempSync(join(tmpdir(), "serve-sim-pasteboard-"));
@@ -14,7 +14,20 @@ function paths(root: string) {
   return { dir, value, done: `${value}.done`, request: join(dir, "serve-sim-pasteboard.request") };
 }
 
-/** Stand in for the injected reader: take the pending request and answer it once. */
+test("clipboard is a default all-apps capability with no load delay", () => {
+  expect({
+    name: clipboardCapability.name,
+    defaultEnabled: clipboardCapability.defaultEnabled,
+    scope: clipboardCapability.scope,
+    loadDelayMs: clipboardCapability.loadDelayMs,
+  }).toEqual({
+    name: "clipboard",
+    defaultEnabled: true,
+    scope: "allApps",
+    loadDelayMs: 0,
+  });
+});
+
 async function answerOnce(root: string, text: string): Promise<boolean> {
   const { value, done, request } = paths(root);
   for (let attempt = 0; attempt < 200; attempt++) {

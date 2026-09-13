@@ -1049,10 +1049,8 @@ function AppWithConfig({
 
   const sendTextToSim = useCallback(
     (text: string): Promise<boolean> => {
-      const tool = config.pasteboardTool;
-      if (tool == null) return Promise.reject(new Error("Pasteboard helper is not available"));
       const run = pasteChainRef.current.catch(() => {}).then(async () => {
-        if (!(await copyTextToSim(config.device, text, execOnHost, tool))) return false;
+        if (!(await copyTextToSim(config.device, text))) return false;
         await sendSimPaste();
         return true;
       });
@@ -1062,7 +1060,7 @@ function AppWithConfig({
       );
       return run;
     },
-    [config.device, config.pasteboardTool, sendSimPaste],
+    [config.device, sendSimPaste],
   );
 
   const clipboard = useClipboardToast(config.device, sendSimCopy, sendTextToSim);

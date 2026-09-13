@@ -7,8 +7,8 @@ import { foregroundTracker } from "../foreground-tracker";
 import {
   clearLaunchState,
   enableCapabilities,
-  enableCapability,
-  removeTrampoline,
+  removeCapabilityLoader,
+  removeCapabilityLoaderSync,
 } from "../launch-manager";
 import {
   CLIPBOARD_CAPABILITY,
@@ -49,12 +49,15 @@ export function firstBootedIosSim(): string | null {
   return null;
 }
 
-export function consoleUser(): string {
-  return execFileSync("stat", ["-f", "%Su", "/dev/console"], { encoding: "utf-8" }).trim();
-}
-
 export function isHeadlessPasteboard(): boolean {
-  return consoleUser() !== execFileSync("whoami", { encoding: "utf-8" }).trim();
+  const udid = firstBootedIosSim();
+  if (!udid) return false;
+  try {
+    simctlSync(["pbpaste", udid], { timeout: 5000 });
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 export async function withSkipPbpaste<T>(fn: () => Promise<T>): Promise<T> {
@@ -68,7 +71,20 @@ export async function withSkipPbpaste<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** The running pid of `bundleId`, or null when it is not running. */
+export function writeTestPasteboard(
+  udid: string,
+  text: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const tool = locatePasteboardTool();
+  if (!tool) throw new Error("serve-sim-pasteboard is missing; run build.ts");
+  execFileSync("xcrun", ["simctl", "spawn", udid, tool], {
+    input: text,
+    env,
+    stdio: ["pipe", "ignore", "pipe"],
+  });
+}
+
 export function runningPid(udid: string, bundleId: string): number | null {
   const out = simctlSync(["spawn", udid, "launchctl", "list"], { maxBuffer: 8 * 1024 * 1024 });
   const line = out.split("\n").find((row) => row.includes(bundleId));
@@ -84,11 +100,15 @@ export async function armClipboardForAllApps(udid: string): Promise<void> {
   const dylib = locatePasteboardReaderDylib();
   if (!dylib) throw new Error("libSimPasteboardReader.dylib is missing; run build.ts");
   await enableCapabilities(udid, null, [
-    { name: CLIPBOARD_CAPABILITY, dylib, allApps: true },
-  ]);
+    {
+      name: CLIPBOARD_CAPABILITY,
+      dylib,
+      scope: "allApps",
+      loadDelayMs: 0,
+    },
+  ], { relaunch: false });
 }
 
-/** Host pids of the dylibs mapped into `pid`, as the launch manager e2e does it. */
 export function mappedDylibCount(udid: string, pid: number, name: string): number {
   const out = simctlSync(["spawn", udid, "vmmap", String(pid)], { maxBuffer: 32 * 1024 * 1024 });
   return out.split("\n").filter((line) => line.includes(name)).length;
@@ -154,11 +174,10 @@ function simctlLaunch(udid: string, bundleId: string): number | null {
   );
 }
 
-/** Put the device back to no capabilities and no recorded launch. */
 async function resetLaunchState(udid: string, bundleId: string): Promise<void> {
   killSimApp(udid, bundleId);
   clearLaunchState(udid);
-  await removeTrampoline(udid);
+  await removeCapabilityLoader(udid);
 }
 
 /**
@@ -174,7 +193,6 @@ export async function launchWithoutReader(
   return finishLaunch(udid, bundleId, subscription);
 }
 
-/** Launch and wait, leaving the capability configuration as it is. */
 export async function launchTrackedApp(
   udid: string,
   bundleId: string,
@@ -217,19 +235,24 @@ export async function openAppForPasteboard(
     subscription.unsubscribe();
     killSimApp(udid, bundleId);
     clearLaunchState(udid);
-    void removeTrampoline(udid);
+    removeCapabilityLoaderSync(udid);
   };
 
   try {
     await resetLaunchState(udid, bundleId);
     grantPasteboard(udid, bundleId);
-    const pid = withInsert
-      ? await enableCapability(udid, bundleId, {
+    let pid: number | null;
+    if (withInsert) {
+      await enableCapabilities(udid, bundleId, [{
           name: CLIPBOARD_CAPABILITY,
           dylib: dylib!,
-          allApps: true,
-        })
-      : simctlLaunch(udid, bundleId);
+          scope: "allApps",
+          loadDelayMs: 0,
+        }]);
+      pid = runningPid(udid, bundleId);
+    } else {
+      pid = simctlLaunch(udid, bundleId);
+    }
     return { unsubscribe: cleanup, pid: await waitForLaunch(udid, bundleId, pid) };
   } catch (error: unknown) {
     cleanup();
@@ -240,7 +263,7 @@ export async function openAppForPasteboard(
 export async function askAppPasteboard(udid: string, bundleId: string): Promise<string | null> {
   const container = simctlSync(["get_app_container", udid, bundleId, "data"]).trim();
   if (!container) return null;
-  return requestInjectedPasteboard(container, 2000);
+  return requestInjectedPasteboard(container, 8000);
 }
 
 export function nativeAddonExists(): boolean {

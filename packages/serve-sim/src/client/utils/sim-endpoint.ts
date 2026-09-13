@@ -30,7 +30,6 @@ declare global {
       streamSettingsEndpoint?: string;
       /** Bezel geometry for `device`; the grid catalog carries it too, a fetch later. */
       chrome?: DeviceKitChromeDescriptor | null;
-      pasteboardTool?: string | null;
       /** Bearer token required by the /exec shell-exec route. */
       execToken?: string;
       streamSettings?: StreamSettings;

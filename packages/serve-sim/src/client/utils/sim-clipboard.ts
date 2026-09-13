@@ -1,17 +1,8 @@
-import { uploadFileToTmp } from "./drop";
-import { shellEscape, type ExecResult } from "./exec";
 import { HID_USAGE_BY_CODE } from "./hid";
 import { simEndpoint } from "./sim-endpoint";
+import type { KeyEvent } from "../../text-to-keys";
 
-export const PBCOPY_INLINE_MAX = 48 * 1024;
-
-export function pbcopyCommand(udid: string, text: string, tool: string): string {
-  return `printf '%s' ${shellEscape(text)} | xcrun simctl spawn ${shellEscape(udid)} ${shellEscape(tool)}`;
-}
-
-type ExecFn = (command: string) => Promise<ExecResult>;
-
-export type HidKeyEvent = { type: "down" | "up"; usage: number };
+export type { KeyEvent as HidKeyEvent } from "../../text-to-keys";
 
 function hidUsage(code: keyof typeof HID_USAGE_BY_CODE): number {
   const value = HID_USAGE_BY_CODE[code];
@@ -23,13 +14,13 @@ function hidUsage(code: keyof typeof HID_USAGE_BY_CODE): number {
 function simCommandShortcutHidEvents(
   pressed: ReadonlySet<number>,
   code: "KeyV" | "KeyC" | "KeyA",
-): HidKeyEvent[] {
+): KeyEvent[] {
   const controlLeft = hidUsage("ControlLeft");
   const controlRight = hidUsage("ControlRight");
   const metaLeft = hidUsage("MetaLeft");
   const metaRight = hidUsage("MetaRight");
   const shortcutKey = hidUsage(code);
-  const events: HidKeyEvent[] = [];
+  const events: KeyEvent[] = [];
   if (pressed.has(controlLeft)) events.push({ type: "up", usage: controlLeft });
   if (pressed.has(controlRight)) events.push({ type: "up", usage: controlRight });
   const commandAlreadyDown = pressed.has(metaLeft) || pressed.has(metaRight);
@@ -40,59 +31,66 @@ function simCommandShortcutHidEvents(
   return events;
 }
 
-export function simPasteHidEvents(pressed: ReadonlySet<number>): HidKeyEvent[] {
+export function simPasteHidEvents(pressed: ReadonlySet<number>): KeyEvent[] {
   return simCommandShortcutHidEvents(pressed, "KeyV");
 }
 
-export function simCopyHidEvents(pressed: ReadonlySet<number>): HidKeyEvent[] {
+export function simCopyHidEvents(pressed: ReadonlySet<number>): KeyEvent[] {
   return simCommandShortcutHidEvents(pressed, "KeyC");
 }
 
-export function simSelectAllHidEvents(pressed: ReadonlySet<number>): HidKeyEvent[] {
+export function simSelectAllHidEvents(pressed: ReadonlySet<number>): KeyEvent[] {
   return simCommandShortcutHidEvents(pressed, "KeyA");
 }
 
-export async function copyTextToSim(
-  udid: string,
-  text: string,
-  exec: ExecFn,
-  tool: string,
-): Promise<boolean> {
-  const bytes = new TextEncoder().encode(text);
-  if (bytes.length <= PBCOPY_INLINE_MAX) {
-    const result = await exec(pbcopyCommand(udid, text, tool));
-    return result.exitCode === 0;
-  }
-
-  try {
-    const tmpPath = await uploadFileToTmp(new File([bytes], "clip.txt"), "serve-sim-pbcopy", "txt", exec);
-    try {
-      const copied = await exec(
-        `xcrun simctl spawn ${shellEscape(udid)} ${shellEscape(tool)} < ${shellEscape(tmpPath)}`,
-      );
-      return copied.exitCode === 0;
-    } finally {
-      await exec(`rm -f ${shellEscape(tmpPath)}`).catch(() => {});
-    }
-  } catch {
-    return false;
-  }
-}
-
-export async function readSimClipboard(udid: string): Promise<string> {
+function pasteboardEndpoint(udid: string): string {
   const endpoint = simEndpoint("api/pasteboard");
   const separator = endpoint.includes("?") ? "&" : "?";
-  const response = await fetch(`${endpoint}${separator}device=${encodeURIComponent(udid)}`, {
-    method: "POST",
+  return `${endpoint}${separator}device=${encodeURIComponent(udid)}`;
+}
+
+function pasteboardHeaders(): Record<string, string> {
+  return {
+    Authorization: `Bearer ${window.__SIM_PREVIEW__?.execToken ?? ""}`,
+  };
+}
+
+export async function copyTextToSim(udid: string, text: string): Promise<boolean> {
+  const response = await fetch(pasteboardEndpoint(udid), {
+    method: "PUT",
     headers: {
-      Authorization: `Bearer ${window.__SIM_PREVIEW__?.execToken ?? ""}`,
+      ...pasteboardHeaders(),
+      "Content-Type": "application/json",
     },
+    body: JSON.stringify({ text }),
   });
-  const body = (await response.json()) as { ok?: boolean; text?: string; error?: string };
+  const body = (await response.json()) as { ok?: boolean };
+  return response.ok && body.ok === true;
+}
+
+export interface SimulatorClipboardRead {
+  text: string;
+  relaunchedApp: string | null;
+}
+
+export async function readSimClipboard(udid: string): Promise<SimulatorClipboardRead> {
+  const response = await fetch(pasteboardEndpoint(udid), {
+    method: "POST",
+    headers: pasteboardHeaders(),
+  });
+  const body = (await response.json()) as {
+    ok?: boolean;
+    text?: string;
+    relaunchedApp?: string | null;
+    error?: string;
+  };
   if (!response.ok || !body.ok) {
     throw new Error(body.error ?? `Could not read the simulator pasteboard (${response.status})`);
   }
-  return body.text ?? "";
+  return {
+    text: body.text ?? "",
+    relaunchedApp: body.relaunchedApp ?? null,
+  };
 }
 
 export function copyTextViaSelection(text: string): boolean {

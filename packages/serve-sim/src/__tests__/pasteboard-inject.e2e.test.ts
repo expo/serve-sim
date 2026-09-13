@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { execFileSync, execSync } from "child_process";
-import { pbcopyCommand } from "../client/utils/sim-clipboard";
+import { execFileSync } from "child_process";
+import { clearLaunchState, removeCapabilityLoaderSync } from "../launch-manager";
 import { readSimPasteboard } from "../sim-pasteboard";
 import {
   armClipboardForAllApps,
@@ -19,6 +19,7 @@ import {
   runningPid,
   terminatePasteboardApps,
   withSkipPbpaste,
+  writeTestPasteboard,
 } from "./pasteboard-sim";
 
 const udid = firstBootedIosSim();
@@ -57,26 +58,24 @@ for (const app of PASTEBOARD_TEST_APPS) {
 
     test("the dylib answers a request in the app container", async () => {
       const probe = `serve-sim-protocol-probe-${app.label.replace(/\s+/g, "-")}`;
-      execSync(pbcopyCommand(udid!, probe, pasteboardTool!));
+      writeTestPasteboard(udid!, probe);
       expect(await askAppPasteboard(udid!, app.bundleId)).toBe(probe);
     }, 15_000);
 
     test("readSimPasteboard returns writer text via pbpaste or inject", async () => {
       const probe = `serve-sim-product-read-${app.label.replace(/\s+/g, "-")}`;
-      execSync(pbcopyCommand(udid!, probe, pasteboardTool!));
+      writeTestPasteboard(udid!, probe);
       expect(await readSimPasteboard(udid!)).toBe(probe);
     }, 20_000);
 
     test("reads unicode through the dylib when pbpaste is skipped", async () => {
       const probe = `café 🎉 email+tag@x.com 日本語 ${app.label}`;
-      execSync(pbcopyCommand(udid!, probe, pasteboardTool!));
+      writeTestPasteboard(udid!, probe);
       expect(await withSkipPbpaste(() => readSimPasteboard(udid!))).toBe(probe);
     }, 20_000);
   });
 }
 
-// The point of a wildcard: an app the session never named still answers, so
-// Copy does not have to terminate and relaunch it out from under the user.
 const describeWildcard = udid && pasteboardTool && pasteboardDylib && pasteboardFixture
   ? describe
   : describe.skip;
@@ -84,6 +83,8 @@ const describeWildcard = udid && pasteboardTool && pasteboardDylib && pasteboard
 describeWildcard(`clipboard armed for every app (${udid ?? "<skipped>"})`, () => {
   afterAll(() => {
     terminatePasteboardApps(udid!);
+    clearLaunchState(udid!);
+    removeCapabilityLoaderSync(udid!);
   });
 
   test("an app launched after arming answers without being relaunched", async () => {
@@ -95,10 +96,9 @@ describeWildcard(`clipboard armed for every app (${udid ?? "<skipped>"})`, () =>
     expect(before).not.toBeNull();
 
     const probe = "serve-sim-wildcard-probe";
-    execSync(pbcopyCommand(udid!, probe, pasteboardTool!));
+    writeTestPasteboard(udid!, probe);
     expect(await withSkipPbpaste(() => readSimPasteboard(udid!))).toBe(probe);
 
-    // Same pid means the read went to the running process, not a fresh one.
     expect(runningPid(udid!, FIXTURE_BUNDLE)).toBe(before);
     session.unsubscribe();
   }, 60_000);

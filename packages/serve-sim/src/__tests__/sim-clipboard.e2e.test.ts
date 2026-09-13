@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { execFileSync, execSync } from "child_process";
-import { pbcopyCommand } from "../client/utils/sim-clipboard";
-import { firstBootedIosSim, isHeadlessPasteboard, pasteboardTool as tool } from "./pasteboard-sim";
+import { execFileSync } from "child_process";
+import {
+  firstBootedIosSim,
+  isHeadlessPasteboard,
+  pasteboardTool as tool,
+  writeTestPasteboard,
+} from "./pasteboard-sim";
 
 const udid = firstBootedIosSim();
 
@@ -17,7 +21,7 @@ const describeIfSim = udid && tool && !skipOnCi && !isHeadlessPasteboard() ? des
 describeIfSim(`simctl pasteboard round-trip (booted sim ${udid ?? "<skipped>"})`, () => {
   test("writer and pbpaste round-trip unicode", () => {
     const text = "café 🎉 email+tag@x.com — 日本語";
-    execSync(pbcopyCommand(udid!, text, tool!), { env: { ...process.env, LANG: "C", LC_ALL: "C" } });
+    writeTestPasteboard(udid!, text, { ...process.env, LANG: "C", LC_ALL: "C" });
     const got = execFileSync("xcrun", ["simctl", "pbpaste", udid!], {
       encoding: "utf-8",
       env: { ...process.env, LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" },

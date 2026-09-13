@@ -26,24 +26,6 @@ const distDir = resolve(root, "dist");
 rmSync(distDir, { recursive: true, force: true });
 mkdirSync(distDir, { recursive: true });
 
-function buildNative(
-  name: string,
-  source: string,
-  output: string,
-  artifacts: string[],
-): void {
-  const result = spawnSync(
-    "bash",
-    [resolve(root, source), resolve(distDir, output)],
-    { stdio: "inherit" },
-  );
-  if (result.status !== 0) {
-    console.error(`${name} build failed.`);
-    process.exit(result.status ?? 1);
-  }
-  for (const artifact of artifacts) console.log(`dist/${output}/${artifact}`);
-}
-
 function kb(n: number): string {
   return `${(n / 1024).toFixed(1)} KB`;
 }
@@ -246,56 +228,87 @@ console.log("dist/serve-sim      (compiled binary)");
 // Both ship in dist/simcam/ so they tarball alongside the JS bin. The CLI's
 // `camera` verb resolves them via locateCameraDylib / locateCameraHelper.
 
-buildNative(
-  "SimCameraInjector dylib",
-  "Sources/SimCameraInjector/build.sh",
-  "simcam",
-  ["libSimCameraInjector.dylib"],
+const camBuild = spawnSync(
+  "bash",
+  [
+    resolve(root, "Sources/SimCameraInjector/build.sh"),
+    resolve(distDir, "simcam"),
+  ],
+  { stdio: "inherit" },
 );
-buildNative(
-  "SimCameraHelper",
-  "Sources/SimCameraHelper/build.sh",
-  "simcam",
-  ["serve-sim-camera-helper"],
+if (camBuild.status !== 0) {
+  console.error("SimCameraInjector dylib build failed.");
+  process.exit(camBuild.status ?? 1);
+}
+console.log("dist/simcam/libSimCameraInjector.dylib");
+
+const helperBuild = spawnSync(
+  "bash",
+  [
+    resolve(root, "Sources/SimCameraHelper/build.sh"),
+    resolve(distDir, "simcam"),
+  ],
+  { stdio: "inherit" },
 );
+if (helperBuild.status !== 0) {
+  console.error("SimCameraHelper build failed.");
+  process.exit(helperBuild.status ?? 1);
+}
+console.log("dist/simcam/serve-sim-camera-helper");
 
 // ─── 7. sim-ax-settings in-sim CLI (simulator-wide UI settings) ──────────
 
-buildNative(
-  "SimAXSettings",
-  "Sources/SimAXSettings/build.sh",
-  "simax",
-  ["serve-sim-ax-settings"],
+const axSettingsBuild = spawnSync(
+  "bash",
+  [
+    resolve(root, "Sources/SimAXSettings/build.sh"),
+    resolve(distDir, "simax"),
+  ],
+  { stdio: "inherit" },
 );
+if (axSettingsBuild.status !== 0) {
+  console.error("SimAXSettings build failed.");
+  process.exit(axSettingsBuild.status ?? 1);
+}
+console.log("dist/simax/serve-sim-ax-settings");
 
-buildNative(
-  "SimPasteboard",
-  "Sources/SimPasteboard/build.sh",
-  "simpb",
-  ["serve-sim-pasteboard"],
-);
-buildNative(
-  "SimPasteboardReader",
-  "Sources/SimPasteboardReader/build.sh",
-  "simpb",
-  ["libSimPasteboardReader.dylib"],
-);
-buildNative(
-  "SimPasteboardFixture",
-  "Sources/SimPasteboardFixture/build.sh",
-  "simpb",
-  ["PasteboardFixture.app"],
-);
+// ─── 8. simulator pasteboard tools ────────────────────────────────────────
 
-// ─── 8. serve-sim-native.node — in-process N-API addon ───────────────────
+for (const [name, script] of [
+  ["SimPasteboard", "Sources/SimPasteboard/build.sh"],
+  ["SimPasteboardReader", "Sources/SimPasteboardReader/build.sh"],
+  ["SimPasteboardFixture", "Sources/SimPasteboardFixture/build.sh"],
+] as const) {
+  const result = spawnSync(
+    "bash",
+    [resolve(root, script), resolve(distDir, "simpb")],
+    { stdio: "inherit" },
+  );
+  if (result.status !== 0) {
+    console.error(`${name} build failed.`);
+    process.exit(result.status ?? 1);
+  }
+}
+console.log("dist/simpb/serve-sim-pasteboard");
+console.log("dist/simpb/libSimPasteboardReader.dylib");
+console.log("dist/simpb/PasteboardFixture.app");
+
+// ─── 9. serve-sim-native.node — in-process N-API addon ───────────────────
 // Replaces the spawned serve-sim-bin helper. Arm64 macOS binary; loaded by
 // path from both the node bundle (createRequire) and the bun-compiled executable.
 
-buildNative(
-  "SimNative addon",
-  "Sources/SimNative/build.sh",
-  "native",
-  ["serve-sim-native.node"],
+const nativeBuild = spawnSync(
+  "bash",
+  [
+    resolve(root, "Sources/SimNative/build.sh"),
+    resolve(distDir, "native"),
+  ],
+  { stdio: "inherit" },
 );
+if (nativeBuild.status !== 0) {
+  console.error("SimNative addon build failed.");
+  process.exit(nativeBuild.status ?? 1);
+}
+console.log("dist/native/serve-sim-native.node");
 
 console.log("Done.");

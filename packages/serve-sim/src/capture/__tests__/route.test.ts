@@ -275,8 +275,8 @@ describe("handleCaptureHarRequest", () => {
           close: async () => void closed.push("x"),
         }) as CaptureProxy,
       trustCa: async () => {},
-      inject: async () => {},
-      clearInjection: async () => {},
+      dylib: () => "/fake/libSimNetProxy.dylib",
+      configure: capabilityHarness(),
     });
 
     try {

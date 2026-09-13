@@ -324,15 +324,7 @@ async function runProcedureAsync(action: ProcedureAction, raw: unknown): Promise
     }
     case "capture.reboot": {
       const p = parseParams(action, raw);
-      const { captureRuntime, rebootWithCapture } = await import("./capture");
-      if (!captureRuntime.getServerEnabled()) {
-        return {
-          stdout: "",
-          stderr:
-            "Network capture is off for this server. Restart serve-sim with --network-capture to enable it.",
-          exitCode: 1,
-        };
-      }
+      const { rebootWithCapture } = await import("./capture");
       const { closeDeviceSession } = await import("./device-session");
       closeDeviceSession(p.udid);
       try {

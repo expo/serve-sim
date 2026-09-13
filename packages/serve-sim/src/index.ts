@@ -1774,7 +1774,7 @@ async function serve(
   const targetDevice = targetDevices[0];
 
   const capture = await import("./capture");
-  if (options.networkCapture) await startNetworkCapture(newlyBootedDevices, options.networkCaptureFields, quiet);
+  await startNetworkCapture(options.networkCapture ? newlyBootedDevices : [], options.networkCaptureFields, quiet);
 
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
@@ -2132,13 +2132,6 @@ Examples:
       console.error("--transport must be one of: http, webrtc.");
       process.exit(1);
     }
-    if (opts.networkCaptureField?.length && !opts.networkCapture) {
-      console.error(
-        "--network-capture-field only applies with --network-capture, which is off, so nothing would " +
-          "be captured. Add --network-capture, or drop the field flag.",
-      );
-      process.exit(1);
-    }
     const wasProvided = (name: string) => program.getOptionValueSource(name) === "cli";
     const webRtcOptionProvided = [
       "webrtcCodec",
@@ -2327,10 +2320,8 @@ Examples:
             if (sessionStopping) return;
           }
         }
-        if (opts.networkCapture) {
-          await startNetworkCapture(newlyBootedDevices, opts.networkCaptureField, !!opts.quiet);
-          if (sessionStopping) return;
-        }
+        await startNetworkCapture(opts.networkCapture ? newlyBootedDevices : [], opts.networkCaptureField, !!opts.quiet);
+        if (sessionStopping) return;
         for (const udid of launchesBeforeStreaming && !isStreamHelper ? targets : []) {
           if (sessionStopping) return;
           if (bundleId) {

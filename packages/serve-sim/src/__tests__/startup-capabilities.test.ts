@@ -1,6 +1,6 @@
 import { createCaptureRuntime } from "../capture/runtime";
 import { registerCapability, clearRegisteredCapabilities } from "../capabilities";
-import { setCapabilityEnabled } from "../launch-manager";
+import { applyDefaultCapabilities, CapabilityRollbackError, setCapabilityEnabled } from "../launch-manager";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -279,3 +279,40 @@ test("registry uncertain publication reports failure and remains available for c
   expect(runtime.metaFor(UDID).attachment).toBe("capturing");
   await runtime.disableAll();
 });
+
+
+for (const uncertain of [false, true]) {
+  test(`failure observers cannot skip ${uncertain ? "uncertainty reporting" : "resource rollback"}`, async () => {
+    const calls: string[] = [];
+    const observerError = new Error("failure observer threw");
+    for (const name of ["first", "second"]) {
+      registerCapability({
+        name, scope: "userApps", loadPhase: "startup", defaultEnabled: true,
+        async setEnabled() {
+          return {
+            dylib,
+            failed() {
+              calls.push(`failed:${name}`);
+              if (name === "first") throw observerError;
+            },
+            async rollback() { calls.push(`rollback:${name}`); },
+          };
+        },
+      });
+    }
+    writeFileSync(failurePath, uncertain ? "2" : "1");
+    try {
+      const error = await applyDefaultCapabilities(UDID, null).catch((error: unknown) => error);
+      expect(calls).toEqual(uncertain
+        ? ["failed:first", "failed:second"]
+        : ["failed:first", "failed:second", "rollback:second", "rollback:first"]);
+      expect(error).toBeInstanceOf(uncertain ? CapabilityRollbackError : AggregateError);
+      if (!(error instanceof AggregateError)) throw new Error("Expected aggregate failure");
+      expect(error.errors).toContain(observerError);
+      expect(error.errors[0]).not.toBe(observerError);
+    } finally {
+      clearRegisteredCapabilities();
+      removeCapabilityLoaderSync(UDID);
+    }
+  });
+}

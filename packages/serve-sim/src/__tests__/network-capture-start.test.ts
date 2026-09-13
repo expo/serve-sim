@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { captureRuntime } from "../capture/runtime";
 import { startCaptureForDevice } from "../capture/start";
 
 import {
@@ -34,6 +35,25 @@ describe("enableNetworkCaptureForStartedDevice", () => {
     expect(logs[0]).toContain("127.0.0.1:5555");
   });
 
+  test("preserves an explicit off choice when the startup default is on", async () => {
+    captureRuntime.setDeviceCaptureEnabled("EXPLICIT-OFF", false);
+    let called = false;
+    await enableNetworkCaptureForStartedDevice("EXPLICIT-OFF", true, {
+      enable: async () => { called = true; return { proxyAddress: null }; },
+    });
+    expect(called).toBe(false);
+  });
+
+  test("preserves an explicit on choice without the startup flag", async () => {
+    captureRuntime.setDeviceCaptureEnabled("EXPLICIT-ON", true);
+    let called = false;
+    await enableNetworkCaptureForStartedDevice("EXPLICIT-ON", false, {
+      enable: async () => { called = true; return { proxyAddress: null }; },
+      log: () => {},
+    });
+    expect(called).toBe(true);
+  });
+
   test("logs the attach error when enable fails", async () => {
     const errors: string[] = [];
     await enableNetworkCaptureForStartedDevice("UDID-2", true, {
@@ -49,19 +69,19 @@ describe("enableNetworkCaptureForStartedDevice", () => {
 });
 
 describe("disableNetworkCaptureForStoppedDevice", () => {
-  test("does nothing when network capture is off", async () => {
+  test("cleans up UI-enabled capture without a startup flag", async () => {
     let called = false;
-    await disableNetworkCaptureForStoppedDevice("UDID", false, {
+    await disableNetworkCaptureForStoppedDevice("UDID", {
       disable: async () => {
         called = true;
       },
     });
-    expect(called).toBe(false);
+    expect(called).toBe(true);
   });
 
   test("disables capture when a captured device is shut down from the grid", async () => {
     const disabled: string[] = [];
-    await disableNetworkCaptureForStoppedDevice("UDID-3", true, {
+    await disableNetworkCaptureForStoppedDevice("UDID-3", {
       disable: async (udid) => void disabled.push(udid),
     });
     expect(disabled).toEqual(["UDID-3"]);

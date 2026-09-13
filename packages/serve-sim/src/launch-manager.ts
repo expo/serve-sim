@@ -4,10 +4,14 @@ import {
   capabilitiesToApply,
   capabilityDefinition,
   type CapabilityContext,
-  type PreparedCapability,
   type CapabilityDefinition,
   type CapabilityOverrides,
 } from "./capabilities";
+import {
+  prepareCapability,
+  rollbackPreparations,
+  type CapabilityPreparation,
+} from "./capability-resources";
 import {
   capabilityConfigPath,
   managedStartupDylibs,
@@ -370,30 +374,6 @@ export async function openUrlInApp(udid: string, bundleId: string, openUrl: stri
   await simctl(["openurl", udid, openUrl]);
 }
 
-interface CapabilityPreparation {
-  capability: Capability;
-  resources: PreparedCapability;
-}
-
-async function prepare(
-  definition: CapabilityDefinition,
-  context: CapabilityContext,
-): Promise<CapabilityPreparation | null> {
-  const resources = await definition.setEnabled(context);
-  if (!resources) return null;
-  return {
-    capability: {
-      name: definition.name,
-      dylib: resources.dylib,
-      env: resources.env,
-      scope: definition.scope,
-      loadDelayMs: definition.loadDelayMs,
-      loadPhase: definition.loadPhase,
-    },
-    resources,
-  };
-}
-
 type ConfigureOptions = {
   bundleId?: string | null;
   options?: Record<string, string>;
@@ -408,22 +388,47 @@ export async function setCapabilityEnabled(
   await configureCapability(udid, capabilityDefinition(name), options);
 }
 
+function hasForeignCapabilityOwner(
+  udid: string,
+  definition: CapabilityDefinition,
+  ownerPid: number | null,
+): boolean {
+  if (!definition.exclusive) return false;
+  const existing = readLaunchState(udid)?.capabilities[definition.name];
+  return existing !== undefined && existing.ownerPid !== ownerPid;
+}
+
+function assertCapabilityOwner(udid: string, definition: CapabilityDefinition, ownerPid: number | null): void {
+  if (hasForeignCapabilityOwner(udid, definition, ownerPid)) {
+    throw new Error(
+      `Capability ${definition.name} on ${udid} belongs to another session. ` +
+      "Stop that session before enabling it here.",
+    );
+  }
+}
+
 export async function configureCapability(
   udid: string,
   definition: CapabilityDefinition,
-  { bundleId = null, options = {}, enabled, relaunch = true, ownerPid = process.pid }: ConfigureOptions,
+  {
+    bundleId = null,
+    options = {},
+    enabled,
+    relaunch = true,
+    ownerPid = process.pid,
+  }: ConfigureOptions,
 ): Promise<void> {
   const context: CapabilityContext = { udid, bundleId, options, enabled };
   await withLaunchStateLock(udid, async () => {
-    const previous = readLaunchState(udid)?.capabilities[definition.name];
-    const foreignOwner = definition.exclusive && previous && previous.ownerPid !== ownerPid;
     if (!enabled) {
-      if (!foreignOwner) await disableCapabilityUnlocked(udid, bundleId, definition.name, { relaunch: false });
+      if (!hasForeignCapabilityOwner(udid, definition, ownerPid)) {
+        await disableCapabilityUnlocked(udid, bundleId, definition.name, { relaunch: false });
+      }
       await definition.setEnabled(context);
       return;
     }
-    if (foreignOwner) throw new Error(`Capability ${definition.name} on ${udid} belongs to another session. Stop that session before enabling it here.`);
-    const preparation = await prepare(definition, context);
+    assertCapabilityOwner(udid, definition, ownerPid);
+    const preparation = await prepareCapability(definition, context);
     if (!preparation) {
       throw new Error(`Capability ${definition.name} declined to start on ${udid}. Check its configuration and retry.`);
     }
@@ -439,20 +444,15 @@ async function publishPreparations(
   udid: string,
   bundleId: string | null,
   preparations: CapabilityPreparation[],
-  ownerPid = process.pid as number | null,
+  ownerPid: number | null = process.pid,
 ): Promise<void> {
   try {
-    await enableCapabilitiesUnlocked(udid, bundleId, preparations.map(({ capability }) => capability), {
-      relaunch: false, ownerPid,
-    });
+    const capabilities = preparations.map(({ capability }) => capability);
+    await enableCapabilitiesUnlocked(udid, bundleId, capabilities, { relaunch: false, ownerPid });
   } catch (error) {
     for (const { resources } of preparations) resources.failed?.(error);
     if (error instanceof CapabilityRollbackError) throw error;
-    const failures: unknown[] = [error];
-    for (const { resources } of [...preparations].reverse()) {
-      try { await resources.rollback?.(error); } catch (cleanupError) { failures.push(cleanupError); }
-    }
-    if (failures.length > 1) throw new AggregateError(failures, `Capability preparation cleanup failed on ${udid}. Retry cleanup before enabling it again.`);
+    await rollbackPreparations(udid, preparations, error);
     throw error;
   }
   for (const { resources } of preparations) resources.committed?.();
@@ -467,11 +467,8 @@ export async function applyDefaultCapabilities(
     const preparations: CapabilityPreparation[] = [];
     for (const definition of capabilitiesToApply(overrides)) {
       try {
-        const existing = readLaunchState(udid)?.capabilities[definition.name];
-        if (definition.exclusive && existing && existing.ownerPid !== process.pid) {
-          throw new Error(`Capability ${definition.name} belongs to another session. Stop that session before enabling it here.`);
-        }
-        const prepared = await prepare(definition, { udid, bundleId, options: {}, enabled: true });
+        assertCapabilityOwner(udid, definition, process.pid);
+        const prepared = await prepareCapability(definition, { udid, bundleId, options: {}, enabled: true });
         if (prepared) preparations.push(prepared);
       } catch (error) {
         console.error(`Capability ${definition.name} could not be prepared: ${error instanceof Error ? error.message : String(error)}`);

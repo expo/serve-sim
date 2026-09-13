@@ -1,3 +1,4 @@
+import { capabilityHarness } from "./capability-harness";
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "events";
 import type { IncomingMessage, ServerResponse } from "http";
@@ -54,8 +55,8 @@ function stubRuntime() {
         close: async () => void closed.push("x"),
       }) as CaptureProxy,
     trustCa: async () => {},
-    inject: async () => {},
-    clearInjection: async () => {},
+    dylib: () => "/fake/libSimNetProxy.dylib",
+    configure: capabilityHarness(),
   });
   return { runtime, closed };
 }

@@ -7,6 +7,7 @@ import { createServer, type Server } from "http";
 import { join } from "path";
 
 import { captureRuntime } from "../capture";
+import { releaseSessionSync } from "../launch-manager";
 import { locateMitmdump } from "../capture/mitm-engine";
 import { e2eDevice, readInsert, requireE2E } from "./e2e-preconditions";
 import { freePortAsync, killHelpersForDevice, useTempStateDir } from "./helpers";
@@ -67,6 +68,7 @@ describeOrSkip("capture request round trip", () => {
   afterAll(async () => {
     try {
       await captureRuntime.disableForDevice(udid!);
+      releaseSessionSync(udid!, process.pid, () => {});
       // Swallowing this is how a device stays injected for every test that runs after it.
       expect(readInsert(udid!)).toBe("");
       try {

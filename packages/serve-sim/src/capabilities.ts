@@ -41,7 +41,6 @@ export function registerCapability(definition: CapabilityDefinition): void {
   registry.set(definition.name, definition);
 }
 
-
 export function clearRegisteredCapabilities(): void {
   registry.clear();
 }
@@ -96,10 +95,7 @@ export function capabilitiesToApply({
   disable = [],
 }: CapabilityOverrides): CapabilityDefinition[] {
   const known = registeredCapabilities();
-  const names = known.map((definition) => definition.name);
-  for (const name of [...enable, ...disable]) {
-    if (!registry.has(name)) throw new UnknownCapabilityError(name, names);
-  }
+  assertKnownCapabilities([...enable, ...disable]);
   return known.filter(
     (definition) =>
       !disable.includes(definition.name) &&

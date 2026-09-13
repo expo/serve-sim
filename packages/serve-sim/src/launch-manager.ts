@@ -176,7 +176,8 @@ async function readInsert(udid: string): Promise<string> {
 }
 
 function startupDylibs(capabilities: Record<string, Capability>): string[] {
-  return Object.values(capabilities).filter((capability) => capability.loadPhase === "startup")
+  return Object.values(capabilities)
+    .filter((capability) => capability.loadPhase === "startup")
     .map((capability) => capability.dylib);
 }
 
@@ -187,7 +188,8 @@ async function armInsert(
   previousStartup = managedStartupDylibs(udid),
 ): Promise<void> {
   const desired = startupDylibs(capabilities);
-  const next = [...new Set([...withoutOurs(await readInsert(udid), previousStartup), dylib, ...desired])].join(":");
+  const retained = withoutOurs(await readInsert(udid), previousStartup);
+  const next = [...new Set([...retained, dylib, ...desired])].join(":");
   writeManagedStartupDylibs(udid, [...previousStartup, ...desired]);
   await simctl(["spawn", udid, "launchctl", "setenv", CONFIG_VAR, capabilityConfigPath(udid)], 15_000);
   await simctl(["spawn", udid, "launchctl", "setenv", INSERT, next], 15_000);
@@ -195,35 +197,75 @@ async function armInsert(
   armedHere.add(udid);
 }
 
-async function publishLaunchState(udid: string, state: LaunchState): Promise<void> {
-  const config = renderCapabilityConfig(state);
-  const desired = startupDylibs(state.capabilities);
-  for (const path of desired) {
-    if (!existsSync(path)) throw new Error(`Startup capability not built: ${path}. Rebuild the native artifacts before enabling it.`);
-  }
-  let previousConfig: string | null = null;
-  try { previousConfig = readFileSync(capabilityConfigPath(udid), "utf8"); } catch (error) {
+interface CapabilityLaunchSnapshot {
+  config: string | null;
+  configPath: string;
+  insert: string;
+  startupDylibs: string[];
+}
+
+async function snapshotCapabilityLaunch(udid: string): Promise<CapabilityLaunchSnapshot> {
+  let config: string | null = null;
+  try {
+    config = readFileSync(capabilityConfigPath(udid), "utf8");
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  const previousStartup = managedStartupDylibs(udid);
-  const previousInsert = await readInsert(udid);
-  const previousConfigVar = (await simctl(["spawn", udid, "launchctl", "getenv", CONFIG_VAR], 15_000)).trim();
+  const startupDylibs = managedStartupDylibs(udid);
+  const insert = await readInsert(udid);
+  const configPath = (await simctl(["spawn", udid, "launchctl", "getenv", CONFIG_VAR], 15_000)).trim();
+  return { config, configPath, insert, startupDylibs };
+}
+
+async function restoreLaunchEnvironment(udid: string, name: string, value: string): Promise<void> {
+  const update = value ? ["setenv", name, value] : ["unsetenv", name];
+  await simctl(["spawn", udid, "launchctl", ...update], 15_000);
+}
+
+async function restoreCapabilityLaunch(
+  udid: string,
+  previous: CapabilityLaunchSnapshot,
+  attemptedStartupDylibs: string[],
+): Promise<void> {
+  writeManagedStartupDylibs(udid, [...previous.startupDylibs, ...attemptedStartupDylibs]);
+  if (previous.config === null) {
+    unlinkSync(capabilityConfigPath(udid));
+  } else {
+    commitCapabilityConfig(udid, previous.config);
+  }
+  await restoreLaunchEnvironment(udid, CONFIG_VAR, previous.configPath);
+  await restoreLaunchEnvironment(udid, INSERT, previous.insert);
+  writeManagedStartupDylibs(udid, previous.startupDylibs);
+}
+
+function validateStartupDylibs(paths: string[]): void {
+  for (const path of paths) {
+    if (!existsSync(path)) {
+      throw new Error(
+        `Startup capability not built: ${path}. Rebuild the native artifacts before enabling it.`,
+      );
+    }
+  }
+}
+
+async function publishLaunchState(udid: string, state: LaunchState): Promise<void> {
+  const config = renderCapabilityConfig(state);
+  const desiredStartupDylibs = startupDylibs(state.capabilities);
+  validateStartupDylibs(desiredStartupDylibs);
+  const previous = await snapshotCapabilityLaunch(udid);
+
   commitCapabilityConfig(udid, config);
   try {
-    await armInsert(udid, capabilityLoaderPath(), state.capabilities, previousStartup);
+    await armInsert(udid, capabilityLoaderPath(), state.capabilities, previous.startupDylibs);
     writeLaunchState(udid, state);
   } catch (error) {
     try {
-      writeManagedStartupDylibs(udid, [...previousStartup, ...desired]);
-      if (previousConfig === null) unlinkSync(capabilityConfigPath(udid));
-      else commitCapabilityConfig(udid, previousConfig);
-      for (const [name, value] of [[CONFIG_VAR, previousConfigVar], [INSERT, previousInsert]]) {
-        await simctl(value ? ["spawn", udid, "launchctl", "setenv", name!, value]
-          : ["spawn", udid, "launchctl", "unsetenv", name!], 15_000);
-      }
-      writeManagedStartupDylibs(udid, previousStartup);
+      await restoreCapabilityLaunch(udid, previous, desiredStartupDylibs);
     } catch (rollbackError) {
-      throw new AggregateError([error, rollbackError], `Could not restore capability launch state on ${udid}. Retry cleanup before launching apps.`);
+      throw new AggregateError(
+        [error, rollbackError],
+        `Could not restore capability launch state on ${udid}. Retry cleanup before launching apps.`,
+      );
     }
     throw error;
   }

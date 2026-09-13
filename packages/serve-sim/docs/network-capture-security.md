@@ -5,7 +5,10 @@ headers, query values, and bodies require explicit opt-in because they can conta
 
 ## How it works
 
-`--network-capture` starts a local mitmproxy, trusts its certificate authority in the simulator, and sets
+The UI reboot action turns capture on or off per device. `--network-capture` only defaults capture on
+for devices serve-sim boots; reconnecting never overrides an explicit choice.
+
+Enabling capture starts a local mitmproxy, trusts its certificate authority in the simulator, and sets
 `DYLD_INSERT_LIBRARIES` in the simulator's launchd. Supported `NSURLSession` configurations in
 subsequently launched third-party apps use that proxy. Apple system apps are excluded, and
 `URLSession.shared` bypasses capture.

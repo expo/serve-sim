@@ -232,7 +232,7 @@ Sources:
 Decrypts HTTPS from third-party apps on a simulator for the whole boot session (local mitmproxy + trusted CA). Apple system apps such as Safari are left unproxied. Certificate-pinned apps will fail while capture is on.
 
 ```sh
-# Headers only (default). Bodies are opt-in and never redacted.
+# Metadata only (default). Headers and bodies are opt-in.
 serve-sim --network-capture
 
 # Include request and/or response bodies
@@ -244,9 +244,11 @@ serve-sim capture har -o ./capture.har
 
 | Flag / command | What it does |
 | --- | --- |
-| `--network-capture` | Enable capture for devices this process starts or boots |
+| `--network-capture` | Default capture on for devices this process boots; explicit UI choices take precedence |
 | `--network-capture-field <field>` | Keep `header`, `query`, `request-body`, and/or `response-body` beyond metadata (repeatable or comma-separated). Default: none |
 | `serve-sim capture har -o <path>` | Follow the live stream into a HAR (and JSON next to it) |
+
+Use the tools panel’s reboot action to turn capture on or off for a device, with or without the flag. Connecting to an already booted device does not enable capture.
 
 While capturing, the tools panel lists requests. Session files live under `$TMPDIR/serve-sim/capture-<udid>/` and are removed when capture stops. Capture HTTP routes require the preview session Bearer token.
 

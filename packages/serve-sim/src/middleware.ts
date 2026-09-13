@@ -15,6 +15,7 @@ import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
 import { claimCameraFrameStream, closeCameraFrameStream, closeCameraFrameStreams, ownsCameraFrameStream, writeCameraFrame } from "./camera-frames";
+import { captureRuntime, startCaptureForDevice, type CaptureRuntime } from "./capture";
 import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./metrics-sampler";
 import { foregroundTracker, type ForegroundApp, type ForegroundTrackerCache } from "./foreground-tracker";
 import { corsAllowOriginHeaders, frameAncestorsPolicy } from "./middleware-utils";
@@ -25,7 +26,7 @@ import {
   sendCorsPreflight,
   type HidSocket,
 } from "./device-session";
-import { assertPreviewAccess, assertUpgradeAccess } from "./session-auth";
+import { assertCaptureAccess, assertPreviewAccess, assertUpgradeAccess } from "./session-auth";
 import {
   eventLogEventForAction,
   readEventLog,
@@ -46,6 +47,9 @@ import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
 import { type WebMiddleware } from "./runtime-utils";
 import { connectToFetch, type ConnectMiddleware } from "./connect-to-fetch";
+
+/** Captured traffic is decrypted credentials; `no-cache` would still let a cache keep a copy. */
+const NO_STORE = { "Cache-Control": "no-store, private", Pragma: "no-cache" } as const;
 
 type SimReq = IncomingMessage;
 type SimRes = ServerResponse;
@@ -124,8 +128,14 @@ export type ServeSimState = ServeSimDeviceState;
 const axStreamerCache = createAxStreamerCache();
 // One shared cpu/mem sampler per udid; every /metrics viewer subscribes. Stamp the device name
 // (from the last booted-device snapshot) into the sampler's meta frame when we know it.
+// Host network counters look idle under capture (loopback); proxy totals win via networkRateOverride.
 const metricsSamplerCache = createMetricsSamplerCache(
-  (udid) => new MetricsSampler({ udid, deviceName: bootedDeviceName(udid) }),
+  (udid) =>
+    new MetricsSampler({
+      udid,
+      deviceName: bootedDeviceName(udid),
+      networkRateOverride: () => captureRuntime.throughputFor(udid),
+    }),
 );
 
 // Hard cap on the SSE line-assembly buffer for child-process stdout.
@@ -869,9 +879,12 @@ export async function startDeviceInProcess(
   streamSettings?: StreamSettings,
   /** Session token, when the server runs gated. */
   sessionToken?: string,
+  onBoot?: () => Promise<void>,
 ): Promise<string | null> {
   // `simctl boot` errors when already booted — ignore and let bootstatus confirm.
-  await new Promise<void>((resolve) => execFile("xcrun", ["simctl", "boot", udid], () => resolve()));
+  const newlyBooted = await new Promise<boolean>((resolve) =>
+    execFile("xcrun", ["simctl", "boot", udid], (error) => resolve(!error)),
+  );
   const ready = await new Promise<boolean>((resolve) => {
     execFile("xcrun", ["simctl", "bootstatus", udid, "-b"], { timeout: 180_000 }, (err) => resolve(!err));
   });
@@ -891,8 +904,54 @@ export async function startDeviceInProcess(
     });
     if (!booted) return `Device ${udid} failed to reach booted state`;
   }
+  if (newlyBooted) await onBoot?.();
   writeServeSimState(gridDeviceState(udid, port, base, streamSettings, sessionToken));
   return null;
+}
+
+export async function enableNetworkCaptureForStartedDevice(
+  udid: string,
+  enabled: boolean,
+  deps: {
+    enable?: (udid: string) => Promise<{ proxyAddress: string | null }>;
+    log?: (message: string) => void;
+    error?: (message: string) => void;
+  } = {},
+): Promise<void> {
+  if (!captureRuntime.shouldCaptureDevice(udid, enabled)) return;
+  const enable =
+    deps.enable ??
+    (async (id) => captureRuntime.enableForDevice(id));
+  const log = deps.log ?? ((message) => console.log(message));
+  const error = deps.error ?? ((message) => console.error(message));
+  await startCaptureForDevice(udid, {
+    enable,
+    onStarted: (meta) =>
+      log(
+        `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from this device is ` +
+          "recorded for its whole boot session; HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
+      ),
+    onFailed: (reason) => error(`Network capture could not start for ${udid}. ${reason}`),
+  });
+}
+
+export async function disableNetworkCaptureForStoppedDevice(
+  udid: string,
+  deps: { disable?: (udid: string) => Promise<void> } = {},
+): Promise<void> {
+  const disable =
+    deps.disable ??
+    (async (id) => {
+      await captureRuntime.disableForDevice(id);
+    });
+  try {
+    await disable(udid);
+  } catch (err) {
+    console.warn(
+      `Network capture: disable for ${udid} failed:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 /**
@@ -972,6 +1031,20 @@ function attachHidInProcess(
   return true;
 }
 
+// Keep the exec bridge allowlist aligned with preview SSE endpoints.
+export function sseStreamPaths(base: string): string[] {
+  return [
+    `${base}/api/events`,
+    `${base}/api/event-log/events`,
+    `${base}/grid/api/status/events`,
+    `${base}/appstate`,
+    `${base}/logs`,
+    `${base}/metrics`,
+    `${base}/network-capture`,
+    `${base}/ax`,
+  ];
+}
+
 export function previewConfigForState(
   state: ServeSimState,
   base: string,
@@ -985,6 +1058,7 @@ export function previewConfigForState(
   eventLogEndpoint: string;
   eventLogEventsEndpoint: string;
   metricsEndpoint: string;
+  captureEndpoint: string;
   axEndpoint: string;
   cameraStatusEndpoint: string;
   devtoolsEndpoint: string;
@@ -1021,6 +1095,7 @@ export function previewConfigForState(
     eventLogEndpoint: endpoint(base, "/api/event-log", state.device),
     eventLogEventsEndpoint: endpoint(base, "/api/event-log/events", state.device),
     metricsEndpoint: endpoint(base, "/metrics", state.device),
+    captureEndpoint: endpoint(base, "/network-capture", state.device),
     axEndpoint: endpoint(base, "/ax", state.device),
     cameraStatusEndpoint: `${base === "/" ? "" : base}/helper/${encodeURIComponent(state.device)}/camera/status`,
     devtoolsEndpoint: endpoint(base, "/devtools", state.device),
@@ -1498,11 +1573,13 @@ export interface SimMiddlewareOptions {
   streamSettings?: StreamSettings;
   /**
    * Origins allowed to read the `/metrics` SSE stream cross-origin (e.g. a
-   * hosted dashboard). Read-only telemetry only; the control routes stay
-   * same-origin + token-gated regardless. Loopback is always allowed.
+   * hosted dashboard). Read-only telemetry only. Loopback is always allowed.
+   * Network-capture routes do not use this list; they require `execToken`.
    */
   metricsCorsOrigins?: string[];
   frameAncestors?: string[];
+  /** Enable capture for devices started through this middleware. */
+  networkCapture?: boolean;
   /** @deprecated Use `streamSettings: { transport: "http", codec }`. */
   codec?: string;
   /**
@@ -1551,7 +1628,7 @@ export function handleMetricsRequest(
   }
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
+    ...NO_STORE,
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
     ...corsAllowOriginHeaders(req.headers.origin, corsOrigins),
@@ -1575,6 +1652,66 @@ export function handleMetricsRequest(
   });
 }
 
+/** SSE of captured HTTPS traffic (read-only; does not start/stop capture). */
+export function handleNetworkCaptureRequest(
+  req: SimReq,
+  res: SimRes,
+  state: ServeSimState | null,
+  runtime: CaptureRuntime = captureRuntime,
+): void {
+  if (!state) {
+    res.writeHead(404);
+    res.end("No serve-sim device");
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    ...NO_STORE,
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write(":\n\n");
+
+  const { meta, unsubscribe } = runtime.subscribe(state.device, (event) => {
+    if (!res.writableEnded) res.write("data: " + JSON.stringify(event) + "\n\n");
+  });
+
+  res.write("event: meta\ndata: " + JSON.stringify(meta) + "\n\n");
+  for (const request of runtime.storeFor(state.device)?.list() ?? []) {
+    if (res.writableEnded) break;
+    // In-flight rows (null status) replay as started.
+    const type = request.status == null && request.failure == null ? "started" : "finished";
+    res.write("data: " + JSON.stringify({ type, request }) + "\n\n");
+  }
+
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded) res.write(":\n\n");
+  }, 15000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+}
+
+/** Headers/bodies for one captured request (on demand; kept off the live stream). */
+export function handleCaptureBodyRequest(
+  req: SimReq,
+  res: SimRes,
+  state: ServeSimState | null,
+  id: string,
+  runtime: CaptureRuntime = captureRuntime,
+): void {
+  const store = state ? runtime.storeFor(state.device) : null;
+  const body = store?.body(id) ?? null;
+  if (!body) {
+    res.writeHead(404, { "Content-Type": "application/json", ...NO_STORE });
+    res.end(JSON.stringify({ error: "No captured body for that request" }));
+    return;
+  }
+  res.writeHead(200, { "Content-Type": "application/json", ...NO_STORE });
+  res.end(JSON.stringify(body));
+}
+
 export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const streamSettings = options?.streamSettings ?? httpStreamSettingsFromLegacyCodec(options?.codec);
   const base = (options?.basePath ?? "/.sim").replace(/\/+$/, "");
@@ -1589,6 +1726,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const requirePreviewToken = options?.requirePreviewToken ?? false;
   const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
   const frameAncestors = options?.frameAncestors ?? [];
+  const networkCapture = options?.networkCapture ?? false;
 
   // Simulator-settings requests run in-process (just the underlying simctl /
   // ax-tool spawn) instead of round-tripping a full `node <cli>` exec per
@@ -1633,6 +1771,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   };
 /** Reachable without the session token: liveness probes cannot carry one. */
   const UNGATED_PATHS = ["/healthz", "/readyz"];
+  // Capture routes always require authentication, including future subroutes.
+  const ALWAYS_GATED_PREFIX = "/network-capture";
 
   const connectMiddleware = (async (req: SimReq, res: SimRes, next?: SimNext) => {
     const rawUrl: string = req.url ?? "";
@@ -1645,8 +1785,15 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // Gated as a whole rather than per route, so a new route is protected by default.
     if (
       !UNGATED_PATHS.some((path) => url === base + path)
-      && !assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })
+      && !assertPreviewAccess(req, res, execToken, {
+        required: requirePreviewToken || url.startsWith(base + ALWAYS_GATED_PREFIX),
+        basePath: base,
+      })
     ) {
+      return;
+    }
+
+    if (url.startsWith(base + ALWAYS_GATED_PREFIX) && !assertCaptureAccess(req, res)) {
       return;
     }
 
@@ -1922,7 +2069,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       req.on("data", (chunk: Buffer | string) => {
         body += typeof chunk === "string" ? chunk : chunk.toString();
       });
-      req.on("end", () => {
+      req.on("end", async () => {
         let udid = "";
         try { udid = (JSON.parse(body) as ShutdownRequestBody).udid ?? ""; } catch {}
         if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(udid)) {
@@ -1934,6 +2081,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         // isn't streamed here). This frees the native session immediately
         // rather than waiting for the next poll's reaper to notice.
         closeDeviceSession(udid);
+        await disableNetworkCaptureForStoppedDevice(udid);
         // Drop the snapshot so the next status sample re-queries simctl
         // and prunes any helper bound to this now-shutdown device.
         bootedSnapshot = { at: 0, booted: null, names: new Map(), deviceTypes: new Map() };
@@ -1975,6 +2123,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           base,
           streamSettings,
           requirePreviewToken ? execToken : undefined,
+          () => enableNetworkCaptureForStartedDevice(udid, networkCapture),
         ).then((error) => {
           if (res.writableEnded) return;
           if (error) {
@@ -2445,6 +2594,21 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       return;
     }
 
+    if (url === base + "/network-capture") {
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      handleNetworkCaptureRequest(req, res, state, captureRuntime);
+      return;
+    }
+
+    if (url.startsWith(base + "/network-capture/")) {
+      const id = url.slice((base + "/network-capture/").length);
+      const states = await readServeSimStates();
+      const state = selectServeSimState(states, selectedDevice);
+      handleCaptureBodyRequest(req, res, state, decodeURIComponent(id), captureRuntime);
+      return;
+    }
+
     // SSE: foreground-app change stream. Emits `{bundleId, pid}` events
     // parsed from SpringBoard's "Setting process visibility to: Foreground"
     // log line. Filtering is done here (not in the browser) so the SSE stream
@@ -2551,15 +2715,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const execWebSocketHandler = createExecWebSocketHandler({
     path: `${base}/exec-ws`,
     execToken,
-    ssePrefixes: [
-      `${base}/api/events`,
-      `${base}/api/event-log/events`,
-      `${base}/grid/api/status/events`,
-      `${base}/appstate`,
-      `${base}/logs`,
-      `${base}/metrics`,
-      `${base}/ax`,
-    ],
+    ssePrefixes: sseStreamPaths(base),
     onUiRequest: handleUiRequest,
     onCameraFrame: (udid, frame, owner) => {
       if (!isSimulatorUdid(udid) || !ownsCameraFrameStream(udid, owner)) return false;

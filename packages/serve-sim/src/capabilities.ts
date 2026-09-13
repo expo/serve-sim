@@ -2,6 +2,9 @@
 export interface PreparedCapability {
   dylib: string;
   env?: Record<string, string>;
+  committed?(): void;
+  failed?(error: unknown): void;
+  rollback?(error: unknown): Promise<void>;
 }
 
 /** `allApps` includes system apps such as Safari. */
@@ -21,6 +24,7 @@ export type CapabilityLoadPhase = "startup" | "deferred";
 export interface CapabilityDefinition {
   name: string;
   defaultEnabled: boolean;
+  exclusive?: boolean;
   /** Fixed by the capability, not the caller. */
   scope: CapabilityScope;
   /** Delay before loading on the app main queue; defaults to zero. */
@@ -35,7 +39,6 @@ const registry = new Map<string, CapabilityDefinition>();
 export function registerCapability(definition: CapabilityDefinition): void {
   registry.set(definition.name, definition);
 }
-
 
 export function clearRegisteredCapabilities(): void {
   registry.clear();
@@ -86,10 +89,7 @@ export function capabilitiesToApply({
   disable = [],
 }: CapabilityOverrides): CapabilityDefinition[] {
   const known = registeredCapabilities();
-  const names = known.map((definition) => definition.name);
-  for (const name of [...enable, ...disable]) {
-    if (!registry.has(name)) throw new UnknownCapabilityError(name, names);
-  }
+  assertKnownCapabilities([...enable, ...disable]);
   return known.filter(
     (definition) =>
       !disable.includes(definition.name) &&

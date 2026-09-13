@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { captureRuntime } from "./capture/runtime";
 import { Command, InvalidArgumentError } from "commander";
 import { execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
 import { existsSync, mkdirSync, openSync, closeSync, readFileSync, unlinkSync } from "fs";
@@ -1718,5 +1719,6 @@ program
   .action((args: string[]) => uiSettings(args));
 
 registerCapability(cameraCapability);
+registerCapability(captureRuntime.capability);
 
 await program.parseAsync(process.argv);

@@ -25,6 +25,37 @@ static NSURL *OriginURL(void) {
   return [NSURL URLWithString:override.length > 0 ? override : kDefaultOrigin];
 }
 
+static void SendRequest(NSURLRequest *request, void (^completion)(NSString *)) {
+  NSURLSession *session = [NSURLSession sessionWithConfiguration:
+      NSURLSessionConfiguration.ephemeralSessionConfiguration];
+  [[session dataTaskWithRequest:request
+              completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                  NSInteger status = [(NSHTTPURLResponse *)response statusCode];
+                  NSString *result = error == nil
+                      ? [NSString stringWithFormat:@"%@ %@ → %ld (%lu B)", request.HTTPMethod,
+                                                  request.URL.path, (long)status,
+                                                  (unsigned long)data.length]
+                      : [NSString stringWithFormat:@"%@ %@ → %@", request.HTTPMethod,
+                                                  request.URL.path, error.localizedDescription];
+                  [session finishTasksAndInvalidate];
+                  RecordResult(result);
+                  if (completion) completion(result);
+                });
+              }] resume];
+}
+
+static void SendStartupRequest(NSString *phase) {
+  NSString *path = [@"api/startup/" stringByAppendingString:phase];
+  SendRequest([NSURLRequest requestWithURL:[NSURL URLWithString:path relativeToURL:OriginURL()]], nil);
+}
+
+__attribute__((constructor)) static void BeforeMain(void) {
+  @autoreleasepool {
+    SendStartupRequest(@"pre-main");
+  }
+}
+
 @interface NetworkRequestViewController : UIViewController
 @property(nonatomic, strong) UIButton *profileButton;
 @property(nonatomic, strong) UIButton *uploadButton;
@@ -107,24 +138,10 @@ static NSURL *OriginURL(void) {
 - (void)sendRequest:(NSURLRequest *)request fromButton:(UIButton *)button {
   button.enabled = NO;
   self.status.text = [NSString stringWithFormat:@"Sending %@…", request.HTTPMethod];
-  NSURLSessionConfiguration *configuration = NSURLSessionConfiguration.ephemeralSessionConfiguration;
-  NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration];
-  [[session dataTaskWithRequest:request
-              completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                  NSInteger status = [(NSHTTPURLResponse *)response statusCode];
-                  NSString *result = error == nil
-                      ? [NSString stringWithFormat:@"%@ %@ → %ld (%lu B)", request.HTTPMethod,
-                                                  request.URL.path, (long)status,
-                                                  (unsigned long)data.length]
-                      : [NSString stringWithFormat:@"%@ %@ → %@", request.HTTPMethod,
-                                                  request.URL.path, error.localizedDescription];
-                  [session finishTasksAndInvalidate];
-                  RecordResult(result);
-                  self.status.text = result;
-                  button.enabled = YES;
-                });
-              }] resume];
+  SendRequest(request, ^(NSString *result) {
+    self.status.text = result;
+    button.enabled = YES;
+  });
 }
 
 @end
@@ -149,6 +166,11 @@ static NSURL *OriginURL(void) {
 @end
 
 @implementation FixtureAppDelegate
+
+- (BOOL)application:(UIApplication *)_application didFinishLaunchingWithOptions:(NSDictionary *)_options {
+  SendStartupRequest(@"app-delegate");
+  return YES;
+}
 
 - (UISceneConfiguration *)application:(UIApplication *)_application
     configurationForConnectingSceneSession:(UISceneSession *)session

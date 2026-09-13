@@ -98,6 +98,7 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   const configure = options.configure ?? configureCapability;
   const locateDylib = options.dylib ?? locateProxyDylib;
   const byUdid = new Map<string, CaptureSession>();
+  const deviceCapture = new Map<string, boolean>();
   const operations = new DeviceOperationQueue();
   const enables = new Map<string, EnableRequest>();
 
@@ -208,6 +209,14 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
 
   return {
     capability,
+
+    shouldCaptureDevice(udid: string, defaultEnabled: boolean): boolean {
+      return deviceCapture.get(udid) ?? defaultEnabled;
+    },
+
+    setDeviceCaptureEnabled(udid: string, enabled: boolean): void {
+      deviceCapture.set(udid, enabled);
+    },
     setFields(next: readonly CaptureField[]): void {
       policy = next;
     },

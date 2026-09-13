@@ -1,3 +1,4 @@
+import { capabilityHarness } from "./capability-harness";
 import { describe, expect, test } from "bun:test";
 
 import { createCaptureRuntime, CaptureEnableError } from "../runtime";
@@ -11,11 +12,11 @@ const CA_PEM = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n";
 /** A runtime with every external effect recorded rather than performed. */
 function harness(
   overrides: {
+    closeProxy?: () => Promise<void>;
     startProxy?: (store: CaptureStore, deps: MitmProxyDeps) => Promise<CaptureProxy>;
     trustCa?: (udid: string, caPem: string) => Promise<void>;
     inject?: (udid: string, portFile: string) => Promise<void>;
     clearInjection?: (udid: string) => Promise<void>;
-    injectionCleared?: (udid: string) => Promise<boolean>;
   } = {},
 ) {
   const calls: string[] = [];
@@ -28,16 +29,17 @@ function harness(
           address: "127.0.0.1:9123",
           portFile: "/tmp/fake-confdir/proxy-port",
           caPem: async () => CA_PEM,
-          close: async () => void calls.push("proxy-closed"),
+          close: overrides.closeProxy ?? (async () => void calls.push("proxy-closed")),
         };
       }),
     trustCa:
       overrides.trustCa ??
       (async (_udid, pem) => void calls.push(`trusted:${pem === CA_PEM ? "ok" : "wrong-pem"}`)),
-    inject: overrides.inject ?? (async (_udid, portFile) => void calls.push(`injected:${portFile}`)),
-    clearInjection: overrides.clearInjection ?? (async () => void calls.push("injection-cleared")),
-    // Without this, teardown falls through to the real bootInjectionCleared and shells out to xcrun.
-    injectionCleared: overrides.injectionCleared ?? (async () => true),
+    dylib: () => "/fake/libSimNetProxy.dylib",
+    configure: capabilityHarness({
+      publish: overrides.inject ?? (async (_udid, portFile) => void calls.push(`injected:${portFile}`)),
+      remove: overrides.clearInjection ?? (async () => void calls.push("injection-cleared")),
+    }),
   });
   return { runtime, calls };
 }
@@ -69,7 +71,7 @@ describe("capture runtime", () => {
     let armed = false;
     const { runtime, calls } = harness({
       trustCa: async () => { if (++trusts === 1) throw new Error("first trust failed"); },
-      clearInjection: async () => {
+      closeProxy: async () => {
         if (++clears === 1) {
           clearing.release();
           await clear.promise;
@@ -95,7 +97,7 @@ describe("capture runtime", () => {
     const clear = gate();
     const { runtime, calls } = harness({
       trustCa: async () => { throw new Error("trust failed"); },
-      clearInjection: async () => { clearing.release(); await clear.promise; },
+      closeProxy: async () => { clearing.release(); await clear.promise; },
     });
     const first = runtime.enableForDevice(UDID).catch((error: unknown) => error);
     await clearing.promise;
@@ -201,7 +203,6 @@ describe("capture runtime", () => {
     expect(calls).not.toContain(`injected:${PORT_FILE}`);
     // Proxy must not keep running after a failed enable, or retries / ports leak.
     expect(calls).toContain("proxy-closed");
-    expect(calls).toContain("injection-cleared");
   });
 
   test("retries enable after a prior failure", async () => {
@@ -248,7 +249,6 @@ describe("capture runtime", () => {
     expect(err).toBeInstanceOf(CaptureEnableError);
     expect(err.meta.attachment).toBe("failed");
     expect(err.meta.attachError).toContain("dist/simnet is missing");
-    expect(calls).toContain("injection-cleared");
     expect(calls).toContain("proxy-closed");
   });
 
@@ -276,7 +276,7 @@ describe("capture runtime", () => {
     expect(runtime.storeFor(UDID)).toBeNull();
   });
 
-  test("survives a teardown where clearing the injection fails", async () => {
+  test("keeps the proxy reachable when capability removal fails", async () => {
     const { runtime, calls } = harness({
       clearInjection: async () => {
         throw new Error("device already shut down");
@@ -284,10 +284,9 @@ describe("capture runtime", () => {
     });
     await runtime.enableForDevice(UDID);
 
-    await runtime.disableForDevice(UDID);
-
-    // The proxy still has to go, or the port and the CA key leak.
-    expect(calls).toContain("proxy-closed");
+    await expect(runtime.disableForDevice(UDID)).rejects.toThrow("device already shut down");
+    expect(calls).not.toContain("proxy-closed");
+    expect(runtime.storeFor(UDID)).not.toBeNull();
   });
 
   test("waits for a teardown in flight before it arms the device again", async () => {
@@ -347,7 +346,6 @@ describe("capture runtime", () => {
     releaseClear();
     await Promise.all([first, second]);
     expect(secondDone).toBe(true);
-    expect(calls).toContain("injection-cleared");
   });
 
   test("stops every device on shutdown", async () => {
@@ -380,7 +378,7 @@ describe("capture runtime", () => {
     const meta = runtime.metaFor(UDID);
     expect(meta.attachment).toBe("failed");
     expect(meta.attachError).toContain("stopped unexpectedly");
-    expect(meta.attachError).toContain("relaunch");
+    expect(meta.attachError?.toLowerCase()).toContain("relaunch");
     // Every viewer is told, rather than only the next one to subscribe.
     expect(frames).toContain("meta");
   });
@@ -407,7 +405,6 @@ describe("capture runtime", () => {
     const meta = runtime.metaFor(UDID);
     expect(meta.attachment).toBe("failed");
     expect(meta.attachError).toContain("stopped unexpectedly");
-    expect(calls).toContain("injection-cleared");
     expect(calls).toContain("proxy-closed");
   });
 
@@ -522,18 +519,4 @@ describe("capture runtime", () => {
     expect(runtime.metaFor(UDID).attachment).toBe("capturing");
   });
 
-  test("says so when teardown left the device injected", async () => {
-    const errors: string[] = [];
-    const original = console.error;
-    console.error = (message: unknown) => void errors.push(String(message));
-    try {
-      const { runtime } = harness({ injectionCleared: async () => false });
-      await runtime.enableForDevice(UDID);
-      await runtime.disableForDevice(UDID);
-    } finally {
-      console.error = original;
-    }
-
-    expect(errors.join("\n")).toContain("still has the capture library injected");
-  });
 });

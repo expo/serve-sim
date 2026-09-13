@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, unlinkSync } from "fs";
 import { basename, join } from "path";
 import {
   capabilitiesToApply,
@@ -9,6 +9,8 @@ import {
 } from "./capabilities";
 import {
   capabilityConfigPath,
+  managedStartupDylibs,
+  writeManagedStartupDylibs,
   commitCapabilityConfig,
   renderCapabilityConfig,
 } from "./capability-config";
@@ -81,8 +83,10 @@ export function releaseSessionSync(
   onRelease: (capability: RecordedCapability) => void,
 ): void {
   withLaunchStateLockSync(udid, () => {
+    const previousStartup = managedStartupDylibs(udid);
     const othersRemain = releaseLaunchStateUnlocked(udid, ownerPid, onRelease);
     if (!othersRemain) removeCapabilityLoaderSync(udid);
+    else removeReleasedStartupSync(udid, previousStartup);
     armedHere.delete(udid);
   });
 }
@@ -94,8 +98,10 @@ export async function releaseSession(
 ): Promise<void> {
   await waitForLaunchUpdates();
   await withLaunchStateLock(udid, async () => {
+    const previousStartup = managedStartupDylibs(udid);
     const othersRemain = releaseLaunchStateUnlocked(udid, ownerPid, onRelease);
     if (!othersRemain) removeCapabilityLoaderSync(udid);
+    else removeReleasedStartupSync(udid, previousStartup);
     armedHere.delete(udid);
   });
 }
@@ -139,22 +145,80 @@ function isCapabilityLoaderPath(path: string): boolean {
   return name === CAPABILITY_LOADER_NAME || name === "libServeSimTrampoline.dylib";
 }
 
-function withoutOurs(current: string): string[] {
+function withoutOurs(current: string, startupDylibs: string[] = []): string[] {
   return current
     .split(":")
     .map((entry) => entry.trim())
-    .filter((entry) => entry !== "" && !isCapabilityLoaderPath(entry));
+    .filter((entry) => entry !== "" && !isCapabilityLoaderPath(entry) && !startupDylibs.includes(entry));
 }
 
 async function readInsert(udid: string): Promise<string> {
-  return (await simctl(["spawn", udid, "launchctl", "getenv", INSERT], 15_000).catch(() => "")).trim();
+  return (await simctl(["spawn", udid, "launchctl", "getenv", INSERT], 15_000)).trim();
 }
 
-async function armInsert(udid: string, dylib: string): Promise<void> {
-  const next = [...withoutOurs(await readInsert(udid)), dylib].join(":");
-  await simctl(["spawn", udid, "launchctl", "setenv", INSERT, next], 15_000);
+function startupDylibs(capabilities: Record<string, Capability>): string[] {
+  return Object.values(capabilities).filter((capability) => capability.loadPhase === "startup")
+    .map((capability) => capability.dylib);
+}
+
+async function armInsert(
+  udid: string,
+  dylib: string,
+  capabilities: Record<string, Capability> = readLaunchState(udid)?.capabilities ?? {},
+  previousStartup = managedStartupDylibs(udid),
+): Promise<void> {
+  const desired = startupDylibs(capabilities);
+  const next = [...new Set([...withoutOurs(await readInsert(udid), previousStartup), dylib, ...desired])].join(":");
+  writeManagedStartupDylibs(udid, [...previousStartup, ...desired]);
   await simctl(["spawn", udid, "launchctl", "setenv", CONFIG_VAR, capabilityConfigPath(udid)], 15_000);
+  await simctl(["spawn", udid, "launchctl", "setenv", INSERT, next], 15_000);
+  writeManagedStartupDylibs(udid, desired);
   armedHere.add(udid);
+}
+
+async function publishLaunchState(udid: string, state: LaunchState): Promise<void> {
+  const config = renderCapabilityConfig(state);
+  const desired = startupDylibs(state.capabilities);
+  for (const path of desired) {
+    if (!existsSync(path)) throw new Error(`Startup capability not built: ${path}. Rebuild the native artifacts before enabling it.`);
+  }
+  let previousConfig: string | null = null;
+  try { previousConfig = readFileSync(capabilityConfigPath(udid), "utf8"); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const previousStartup = managedStartupDylibs(udid);
+  const previousInsert = await readInsert(udid);
+  const previousConfigVar = (await simctl(["spawn", udid, "launchctl", "getenv", CONFIG_VAR], 15_000)).trim();
+  commitCapabilityConfig(udid, config);
+  try {
+    await armInsert(udid, capabilityLoaderPath(), state.capabilities, previousStartup);
+    writeLaunchState(udid, state);
+  } catch (error) {
+    try {
+      writeManagedStartupDylibs(udid, [...previousStartup, ...desired]);
+      if (previousConfig === null) unlinkSync(capabilityConfigPath(udid));
+      else commitCapabilityConfig(udid, previousConfig);
+      for (const [name, value] of [[CONFIG_VAR, previousConfigVar], [INSERT, previousInsert]]) {
+        await simctl(value ? ["spawn", udid, "launchctl", "setenv", name!, value]
+          : ["spawn", udid, "launchctl", "unsetenv", name!], 15_000);
+      }
+      writeManagedStartupDylibs(udid, previousStartup);
+    } catch (rollbackError) {
+      throw new AggregateError([error, rollbackError], `Could not restore capability launch state on ${udid}. Retry cleanup before launching apps.`);
+    }
+    throw error;
+  }
+}
+
+function removeReleasedStartupSync(udid: string, previousStartup: string[]): void {
+  const desired = startupDylibs(readLaunchState(udid)?.capabilities ?? {});
+  const removed = previousStartup.filter((path) => !desired.includes(path));
+  if (removed.length === 0) return;
+  const current = simctlSync(["spawn", udid, "launchctl", "getenv", INSERT], 15_000).trim();
+  const next = current.split(":").filter((path) => !removed.includes(path)).join(":");
+  simctlSync(next ? ["spawn", udid, "launchctl", "setenv", INSERT, next]
+    : ["spawn", udid, "launchctl", "unsetenv", INSERT], 15_000);
+  writeManagedStartupDylibs(udid, desired);
 }
 
 export function capabilityLoaderPath(): string {
@@ -168,8 +232,7 @@ export async function armCapabilityLoader(udid: string): Promise<void> {
   try {
     await withLaunchStateLock(udid, async () => {
       const previous = readLaunchState(udid) ?? { launchArgs: [], capabilities: {} };
-      await armInsert(udid, dylib);
-      writeLaunchState(udid, {
+      await publishLaunchState(udid, {
         ...previous,
         sessionPids: [...new Set([...(previous.sessionPids ?? []), process.pid])],
       });
@@ -186,11 +249,13 @@ export function removeCapabilityLoaderSync(udid: string): void {
   try {
     simctlSync(["spawn", udid, "launchctl", "unsetenv", CONFIG_VAR], 15_000);
     const current = simctlSync(["spawn", udid, "launchctl", "getenv", INSERT], 15_000);
-    const rest = withoutOurs(current).join(":");
+    const rest = withoutOurs(current, managedStartupDylibs(udid)).join(":");
     const clear = rest === ""
       ? ["spawn", udid, "launchctl", "unsetenv", INSERT]
       : ["spawn", udid, "launchctl", "setenv", INSERT, rest];
     simctlSync(clear, 15_000);
+    writeManagedStartupDylibs(udid, []);
+    try { unlinkSync(capabilityConfigPath(udid)); } catch {}
   } catch (error) {
     console.error(
       `Could not disarm the capability loader on ${udid}; it is still inserted into every ` +
@@ -198,7 +263,6 @@ export function removeCapabilityLoaderSync(udid: string): void {
         `DYLD_INSERT_LIBRARIES (${error instanceof Error ? error.message : String(error)})`,
     );
   }
-  try { unlinkSync(capabilityConfigPath(udid)); } catch {}
   armedHere.delete(udid);
 }
 
@@ -223,11 +287,12 @@ export async function removeCapabilityLoader(udid: string): Promise<void> {
   await simctl(["spawn", udid, "launchctl", "unsetenv", CONFIG_VAR], 15_000).catch(
     () => undefined,
   );
-  const rest = withoutOurs(await readInsert(udid)).join(":");
+  const rest = withoutOurs(await readInsert(udid), managedStartupDylibs(udid)).join(":");
   const clear = rest === ""
     ? ["spawn", udid, "launchctl", "unsetenv", INSERT]
     : ["spawn", udid, "launchctl", "setenv", INSERT, rest];
-  await simctl(clear, 15_000).catch(() => undefined);
+  await simctl(clear, 15_000);
+  writeManagedStartupDylibs(udid, []);
   try { unlinkSync(capabilityConfigPath(udid)); } catch {}
   armedHere.delete(udid);
 }
@@ -243,11 +308,11 @@ export async function launchApp(
   await withLaunchStateLock(udid, async () => {
     const previous = readLaunchState(udid);
     const state: LaunchState = { ...previous, bundleId, launchArgs, capabilities: previous?.capabilities ?? {} };
-    const config = renderCapabilityConfig(state);
-    // Publish the config before launching the app.
-    if (Object.keys(state.capabilities).length > 0) await armInsert(udid, capabilityLoaderPath());
-    writeLaunchState(udid, state);
-    commitCapabilityConfig(udid, config);
+    if (Object.keys(state.capabilities).length > 0) await publishLaunchState(udid, state);
+    else {
+      writeLaunchState(udid, state);
+      commitCapabilityConfig(udid, renderCapabilityConfig(state));
+    }
     if (restart) {
       await terminateForRelaunch(udid, bundleId);
     }
@@ -278,6 +343,7 @@ async function prepare(
     env: prepared.env,
     scope: definition.scope,
     loadDelayMs: definition.loadDelayMs,
+    loadPhase: definition.loadPhase,
   };
 }
 
@@ -397,10 +463,7 @@ async function enableCapabilitiesUnlocked(
     ...(previous ?? { launchArgs: [], capabilities: {} }),
     capabilities: { ...(previous?.capabilities ?? {}), ...added },
   };
-  const config = renderCapabilityConfig(state);
-  await armInsert(udid, dylib);
-  writeLaunchState(udid, state);
-  commitCapabilityConfig(udid, config);
+  await publishLaunchState(udid, state);
   if (relaunch) await relaunchTarget(udid, bundleId, state);
 }
 
@@ -463,9 +526,7 @@ async function disableCapabilityUnlocked(
     Object.entries(previous.capabilities).filter(([key]) => key !== name),
   );
   const state: LaunchState = { ...previous, capabilities: rest };
-  const config = renderCapabilityConfig(state);
-  writeLaunchState(udid, state);
-  commitCapabilityConfig(udid, config);
+  await publishLaunchState(udid, state);
   if (relaunch) await relaunchTarget(udid, bundleId, state);
 }
 

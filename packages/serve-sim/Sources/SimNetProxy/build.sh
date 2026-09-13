@@ -14,13 +14,18 @@ xcrun --sdk iphonesimulator clang \
     -mios-simulator-version-min=15.0 \
     -isysroot "$SDK" \
     -dynamiclib \
-    -fobjc-arc \
-    -fmodules \
-    -framework Foundation \
-    -framework CFNetwork \
+    -O2 \
+    -Wall -Wextra -Werror -Wconversion -Wshadow \
+    -Wl,-U,_serve_sim_startup \
     -install_name "@rpath/libSimNetProxy.dylib" \
     -o "$DYLIB" \
-    "$HERE/SimNetProxy.m"
+    "$HERE/SimNetProxy.c"
 
 echo "Built: $DYLIB"
 file "$DYLIB"
+
+LINKED="$(otool -L "$DYLIB" | awk '/^\t/ {print $1}')"
+if echo "$LINKED" | grep -v -e '^@rpath/libSimNetProxy\.dylib$' -e '^/usr/lib/libSystem\.B\.dylib$'; then
+  echo "Startup capture must link only libSystem" >&2
+  exit 1
+fi

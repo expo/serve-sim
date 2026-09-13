@@ -1,5 +1,5 @@
-import { mkdirSync, renameSync, writeFileSync } from "fs";
-import { join } from "path";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { isAbsolute, join } from "path";
 import type { CapabilityScope } from "./capabilities";
 import type { LaunchState, RecordedCapability } from "./launch-state";
 import { stateDir } from "./state";
@@ -37,9 +37,16 @@ export function formatCapabilityConfig(
         return `${key}=${value}`;
       })
       .join(";");
-    return [SCOPE_TOKEN[capability.scope], capability.dylib, env, capability.loadDelayMs ?? 0].join(
-      "\t",
-    );
+    const phase = capability.loadPhase ?? "deferred";
+    if (phase !== "startup" && phase !== "deferred") {
+      throw new Error(`Unknown load phase for ${capability.name}: ${phase}. Use startup or deferred.`);
+    }
+    if (phase === "startup" && (!isAbsolute(capability.dylib) || capability.dylib.includes(":") || (capability.loadDelayMs ?? 0) !== 0)) {
+      throw new Error(`Startup capability ${capability.name} requires an absolute path without colons and no load delay.`);
+    }
+    const fields = [SCOPE_TOKEN[capability.scope], capability.dylib, env, capability.loadDelayMs ?? 0];
+    if (phase === "startup") fields.unshift("startup");
+    return fields.join("\t");
   });
   return lines.length > 0 ? `${lines.join("\n")}\n` : "";
 }
@@ -69,3 +76,30 @@ export function commitCapabilityConfig(udid: string, contents: string): void {
   renameSync(temp, target);
 }
 
+
+function startupInsertStatePath(udid: string): string {
+  return join(stateDir(), `capability-inserts-${udid}.json`);
+}
+
+export function managedStartupDylibs(udid: string): string[] {
+  let contents: string;
+  try {
+    contents = readFileSync(startupInsertStatePath(udid), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const paths: unknown = JSON.parse(contents);
+  if (!Array.isArray(paths) || !paths.every((path) => typeof path === "string" && isAbsolute(path) && !path.includes(":"))) {
+    throw new Error(`Invalid startup capability ownership for ${udid}. Reboot the simulator before repairing its state.`);
+  }
+  return paths;
+}
+
+export function writeManagedStartupDylibs(udid: string, paths: string[]): void {
+  mkdirSync(stateDir(), { recursive: true });
+  const target = startupInsertStatePath(udid);
+  const temp = `${target}.${process.pid}.tmp`;
+  writeFileSync(temp, JSON.stringify([...new Set(paths)]));
+  renameSync(temp, target);
+}

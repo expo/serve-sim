@@ -154,6 +154,38 @@ describeOrSkip("network request fixture", () => {
     }
   }, 180_000);
 
+  async function capturedEntries(): Promise<HarEntry[]> {
+    const state = JSON.parse(readFileSync(join(tempState.dir, `server-${udid!}.json`), "utf-8")) as { token: string };
+    const response = await fetch(`http://127.0.0.1:${serverPort}/network-capture.har?device=${udid!}`, {
+      headers: { Authorization: `Bearer ${state.token}`, Origin: `http://127.0.0.1:${serverPort}` },
+    });
+    expect(response.status).toBe(200);
+    return ((await response.json()) as { log: { entries: HarEntry[] } }).log.entries;
+  }
+
+  function appResults(): string {
+    const container = simctlSync(["get_app_container", udid!, APP, "data"]);
+    const path = join(container, "Documents/network-requests.tsv");
+    return existsSync(path) ? readFileSync(path, "utf-8") : "";
+  }
+
+  for (const phase of ["pre-main", "app-delegate"]) {
+    test(`captures a request initiated in ${phase}`, async () => {
+      const path = `/api/startup/${phase}`;
+      await waitForAsync(() => received.some((request) => request.url === path));
+      expect(received.filter((request) => request.url === path)).toEqual([
+        { method: "GET", url: path, bodyBytes: 0, bodyStart: "" },
+      ]);
+      let entries: HarEntry[] = [];
+      await waitForAsync(async () => {
+        entries = (await capturedEntries()).filter((entry) => entry.request.url.endsWith(path));
+        return entries.length === 1 && entries[0]?.response.status === 200;
+      });
+      expect(entries[0]).toMatchObject({ request: { method: "GET" }, response: { status: 200 } });
+      await waitForAsync(() => appResults().includes(`GET ${path} → 200`));
+    }, 90_000);
+  }
+
   test("the two buttons send a small GET and large POST that appear in capture", async () => {
     const tap = (y: string) => execFileSync("node", [CLI, "tap", "0.5", y, "-d", udid!], {
       env: { ...process.env },
@@ -162,10 +194,10 @@ describeOrSkip("network request fixture", () => {
     });
 
     tap("0.52");
-    await waitForAsync(() => received.length === 1);
+    await waitForAsync(() => received.some((request) => request.url === PROFILE_PATH));
     tap("0.61");
-    await waitForAsync(() => received.length === 2);
-    expect(received).toHaveLength(2);
+    await waitForAsync(() => received.some((request) => request.url === UPLOAD_PATH));
+    expect(received.filter((request) => [PROFILE_PATH, UPLOAD_PATH].includes(request.url))).toHaveLength(2);
     expect(received).toContainEqual({
       method: "GET",
       url: PROFILE_PATH,
@@ -188,12 +220,10 @@ describeOrSkip("network request fixture", () => {
     };
     let entries: HarEntry[] = [];
     await waitForAsync(async () => {
-      const response = await fetch(
-        `http://127.0.0.1:${serverPort}/network-capture.har?device=${udid!}`,
-        { headers },
+      entries = await capturedEntries();
+      return [PROFILE_PATH, UPLOAD_PATH].every((path) =>
+        entries.some((entry) => entry.request.url.endsWith(path) && entry.response.status === 200),
       );
-      entries = ((await response.json()) as { log: { entries: HarEntry[] } }).log.entries;
-      return entries.filter((entry) => entry.request.url.includes("/api/")).length === 2;
     });
 
     const profile = entries.find((entry) => entry.request.url.endsWith(PROFILE_PATH));
@@ -214,15 +244,9 @@ describeOrSkip("network request fixture", () => {
     expect(capturedBody.requestBody).toHaveLength(CAPTURED_BODY_BYTES);
     expect(capturedBody.requestTruncated).toBe(true);
 
-    const container = simctlSync(["get_app_container", udid!, APP, "data"]);
-    const resultsPath = join(container, "Documents/network-requests.tsv");
-    let appResults = "";
     await waitForAsync(() => {
-      if (!existsSync(resultsPath)) return false;
-      appResults = readFileSync(resultsPath, "utf-8");
-      return appResults.split("\n").filter(Boolean).length === 2;
+      const results = appResults();
+      return results.includes("GET /api/profile → 200") && results.includes("POST /api/upload → 200");
     });
-    expect(appResults).toContain("GET /api/profile → 200");
-    expect(appResults).toContain("POST /api/upload → 200");
   }, 180_000);
 });

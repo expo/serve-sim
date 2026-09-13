@@ -638,3 +638,29 @@ async function preapproveUrlSchemeAsync(
     );
   }
 }
+
+export async function isCapabilityArmed(
+  udid: string,
+  name: string,
+  expectedEnv: Record<string, string> = {},
+  read: (args: string[]) => Promise<string> = simctl,
+): Promise<boolean> {
+  const capability = readLaunchState(udid)?.capabilities[name];
+  if (!capability || Object.entries(expectedEnv).some(([key, value]) => capability.env?.[key] !== value)) {
+    return false;
+  }
+  const configPath = capabilityConfigPath(udid);
+  if ((await read(["spawn", udid, "launchctl", "getenv", CONFIG_VAR])).trim() !== configPath) return false;
+  let config: string;
+  try {
+    config = readFileSync(configPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  const line = renderCapabilityConfig({ launchArgs: [], capabilities: { [name]: capability } }).trimEnd();
+  if (!config.split("\n").includes(line)) return false;
+  const inserts = (await read(["spawn", udid, "launchctl", "getenv", INSERT])).trim().split(":");
+  return inserts.includes(capabilityLoaderPath()) &&
+    (capability.loadPhase !== "startup" || inserts.includes(capability.dylib));
+}

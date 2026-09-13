@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { isCapabilityArmed } from "../launch-manager";
 import { dirnameOf } from "../runtime";
 import { simctl } from "../simctl";
 
@@ -29,4 +30,12 @@ export function proxyDylibCandidates(): string[] {
 
 export function locateProxyDylib(): string | null {
   return proxyDylibCandidates().find((candidate) => existsSync(candidate)) ?? null;
+}
+
+export async function isDeviceInjected(
+  udid: string,
+  portFile: string,
+  deps: { read?: (args: string[]) => Promise<string> } = {},
+): Promise<boolean> {
+  return isCapabilityArmed(udid, "networkCapture", { SIMNET_PROXY_PORT_FILE: portFile }, deps.read);
 }

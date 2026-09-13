@@ -1,10 +1,4 @@
 export {
-  bootInjectionCleared,
-  clearBootInjection,
-  clearBootInjectionSync,
-  injectAtBoot,
-} from "./device";
-export {
   CAPTURE_FIELDS,
   DEFAULT_CAPTURE_FIELDS,
   parseCaptureFields,

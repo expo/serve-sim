@@ -1090,29 +1090,12 @@ function resolveTargetDevices(devices: string[]): string[] {
   return [fallback.udid];
 }
 
-// Kept so a synchronous exit can still reach the capture module; `import()` cannot be awaited there.
-let loadedCapture: typeof import("./capture") | null = null;
-
-function clearCaptureInjectionSync(udids: readonly string[]): void {
-  if (!loadedCapture) return;
-  for (const udid of udids) {
-    try {
-      loadedCapture.clearBootInjectionSync(udid);
-    } catch (error) {
-      console.error(
-        `Could not clear network capture on ${udid}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-}
-
 async function startNetworkCapture(
   udids: string[],
   fields: string[] | undefined,
   quiet: boolean,
 ): Promise<void> {
   const capture = await import("./capture");
-  loadedCapture = capture;
   if (sessionStopping) return;
   capture.captureRuntime.setServerEnabled(true);
   capture.captureRuntime.setFields(capture.resolveCaptureFields(fields));
@@ -1666,7 +1649,6 @@ Examples:
         // gets a capability pays a libSystem-only dylib and nothing else.
         {
           process.on("exit", () => {
-            if (captureStarted) clearCaptureInjectionSync(targets);
             disarmDevicesArmedHere();
           });
           for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {

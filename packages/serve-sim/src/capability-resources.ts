@@ -25,12 +25,28 @@ export async function prepareCapability(
   };
 }
 
+export function notifyPreparationFailure(
+  preparations: CapabilityPreparation[],
+  error: unknown,
+): unknown[] {
+  const errors: unknown[] = [];
+  for (const { resources } of preparations) {
+    try {
+      resources.failed?.(error);
+    } catch (observerError) {
+      errors.push(observerError);
+    }
+  }
+  return errors;
+}
+
 export async function rollbackPreparations(
   udid: string,
   preparations: CapabilityPreparation[],
   error: unknown,
+  observerErrors: unknown[] = [],
 ): Promise<void> {
-  const failures: unknown[] = [error];
+  const failures: unknown[] = [error, ...observerErrors];
   for (const { resources } of [...preparations].reverse()) {
     try {
       await resources.rollback?.(error);

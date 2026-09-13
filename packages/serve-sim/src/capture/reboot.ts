@@ -38,6 +38,8 @@ export async function rebootWithCapture(
   const rearm = deps.rearm ?? rearmCapabilities;
 
   const attempt = (async () => {
+    // Reconnecting the preview during reboot must not start capture early.
+    runtime.setDeviceCaptureEnabled(udid, false);
     await runtime.disableForDevice(udid);
     await shutdown(udid);
     await boot(udid);
@@ -48,6 +50,8 @@ export async function rebootWithCapture(
     } catch (error) {
       if (error instanceof CaptureEnableError) return error.meta;
       throw error;
+    } finally {
+      runtime.setDeviceCaptureEnabled(udid, enabled);
     }
   })();
   const entry: InFlight = { enabled, promise: attempt };

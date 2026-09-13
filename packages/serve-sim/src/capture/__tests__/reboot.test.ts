@@ -90,8 +90,19 @@ describe("rebootWithCapture", () => {
     expect(runtime.storeFor(UDID)).toBeNull();
   });
 
+  test("keeps the explicit device choice across reconnects regardless of the startup default", async () => {
+    const { runtime, deps } = harness();
+    expect(runtime.shouldCaptureDevice(UDID, true)).toBe(true);
+    expect(runtime.shouldCaptureDevice(UDID, false)).toBe(false);
+    await rebootWithCapture(UDID, true, deps);
+    expect(runtime.shouldCaptureDevice(UDID, false)).toBe(true);
+    await rebootWithCapture(UDID, false, deps);
+    expect(runtime.shouldCaptureDevice(UDID, true)).toBe(false);
+    expect(runtime.shouldCaptureDevice("OTHER", true)).toBe(true);
+  });
+
   test("joins a reboot already running instead of starting a competing one", async () => {
-    const { deps, calls } = harness();
+    const { runtime, deps, calls } = harness();
     let releaseBoot = () => {};
     const slowBoot = new Promise<void>((resolve) => {
       releaseBoot = resolve;
@@ -101,6 +112,7 @@ describe("rebootWithCapture", () => {
       ...deps,
       boot: async () => {
         calls.push("device-booted");
+        expect(runtime.shouldCaptureDevice(UDID, true)).toBe(false);
         await slowBoot;
       },
     });

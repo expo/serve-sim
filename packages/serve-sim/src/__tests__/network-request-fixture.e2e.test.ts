@@ -3,6 +3,7 @@ import { execFileSync, spawn, type ChildProcess } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { createServer, type Server } from "http";
 import { join } from "path";
+import WebSocket from "ws";
 
 import type { HarEntry } from "../capture/har";
 import { locateMitmdump } from "../capture/mitm-engine";
@@ -79,6 +80,8 @@ describeOrSkip("network request fixture", () => {
       });
     });
     await new Promise<void>((done) => origin!.listen(originPort, "127.0.0.1", done));
+    await startServer();
+    expect(await rebootCapture(true)).toBe("capturing");
     simctlSync([
       "spawn",
       udid!,
@@ -88,51 +91,12 @@ describeOrSkip("network request fixture", () => {
       `http://127.0.0.1:${originPort}/`,
     ]);
 
-    serverPort = await freePortAsync();
-    server = spawn(
-      "node",
-      [
-        CLI,
-        "--network-capture",
-        "--network-capture-field",
-        "header",
-        "--network-capture-field",
-        "query",
-        "--network-capture-field",
-        "request-body",
-        "--network-capture-field",
-        "response-body",
-        "--quiet",
-        "--port",
-        String(serverPort),
-        "--launch-app-identifier",
-        APP,
-        udid!,
-      ],
-      { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env } },
-    );
-    server.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-
-    await waitForAsync(() => existsSync(join(tempState.dir, `server-${udid!}.json`)));
+    simctlSync(["launch", udid!, APP]);
     await Bun.sleep(1_000);
   }, 180_000);
 
   afterAll(async () => {
-    if (server?.exitCode === null) {
-      server.kill("SIGTERM");
-      await new Promise<void>((done) => {
-        const timer = setTimeout(() => {
-          server?.kill("SIGKILL");
-          done();
-        }, 30_000);
-        server!.on("exit", () => {
-          clearTimeout(timer);
-          done();
-        });
-      });
-    }
+    await stopServer();
     try {
       try {
         simctlSync(["terminate", udid!, APP]);
@@ -153,6 +117,84 @@ describeOrSkip("network request fixture", () => {
       tempState.restore();
     }
   }, 180_000);
+
+  async function startServer(defaultCapture = false): Promise<void> {
+    serverPort = await freePortAsync();
+    server = spawn(
+      "node",
+      [
+        CLI,
+        ...(defaultCapture ? ["--network-capture"] : []),
+        "--network-capture-field",
+        "header",
+        "--network-capture-field",
+        "query",
+        "--network-capture-field",
+        "request-body",
+        "--network-capture-field",
+        "response-body",
+        "--quiet",
+        "--port",
+        String(serverPort),
+        udid!,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env } },
+    );
+    server.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    await waitForAsync(() => existsSync(join(tempState.dir, `server-${udid!}.json`)));
+  }
+
+  async function stopServer(): Promise<void> {
+    if (server?.exitCode === null) {
+      server.kill("SIGTERM");
+      await new Promise<void>((done) => {
+        const timer = setTimeout(() => {
+          server?.kill("SIGKILL");
+          done();
+        }, 30_000);
+        server!.on("exit", () => {
+          clearTimeout(timer);
+          done();
+        });
+      });
+    }
+  }
+
+  async function expectCaptureOffAfterReconnect(): Promise<void> {
+    const state = JSON.parse(readFileSync(join(tempState.dir, `server-${udid!}.json`), "utf-8")) as { token: string };
+    const response = await fetch(`http://127.0.0.1:${serverPort}/grid/api/start`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${state.token}`, Origin: `http://127.0.0.1:${serverPort}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ udid }),
+    });
+    expect(response.ok).toBe(true);
+    expect(readInsert(udid!)).not.toContain("libSimNetProxy");
+    expect(simctlSync(["spawn", udid!, "launchctl", "getenv", "SIMNET_PROXY_PORT_FILE"])).toBe("");
+  }
+
+  async function rebootCapture(enabled: boolean): Promise<string> {
+    const state = JSON.parse(readFileSync(join(tempState.dir, `server-${udid!}.json`), "utf-8")) as { token: string };
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${serverPort}/exec-ws`, {
+        origin: `http://127.0.0.1:${serverPort}`,
+      });
+      const timer = setTimeout(() => { ws.terminate(); reject(new Error("Capture reboot timed out")); }, 150_000);
+      ws.on("open", () => ws.send(JSON.stringify({ token: state.token })));
+      ws.on("message", (data) => {
+        const reply = JSON.parse(data.toString());
+        if (reply.ready) ws.send(JSON.stringify({ id: 1, action: "capture.reboot", params: { udid, enabled } }));
+        if (reply.id !== 1) return;
+        clearTimeout(timer);
+        ws.close();
+        if (reply.exitCode !== 0) reject(new Error(reply.stderr || reply.error));
+        else resolve(JSON.parse(reply.stdout).attachment);
+      });
+      ws.on("error", (error) => { clearTimeout(timer); ws.terminate(); reject(error); });
+    });
+  }
 
   async function capturedEntries(): Promise<HarEntry[]> {
     const state = JSON.parse(readFileSync(join(tempState.dir, `server-${udid!}.json`), "utf-8")) as { token: string };
@@ -249,4 +291,20 @@ describeOrSkip("network request fixture", () => {
       return results.includes("GET /api/profile → 200") && results.includes("POST /api/upload → 200");
     });
   }, 180_000);
+
+  test("turns capture off and keeps it off after the preview reconnects", async () => {
+    expect(await rebootCapture(false)).toBe("not-enabled");
+    await expectCaptureOffAfterReconnect();
+    expect(await rebootCapture(true)).toBe("capturing");
+    expect(readInsert(udid!)).toContain("libSimNetProxy");
+  }, 360_000);
+
+  test("the startup flag neither captures an already booted device nor overrides an explicit off choice", async () => {
+    await stopServer();
+    await startServer(true);
+    await expectCaptureOffAfterReconnect();
+    expect(await rebootCapture(true)).toBe("capturing");
+    expect(await rebootCapture(false)).toBe("not-enabled");
+    await expectCaptureOffAfterReconnect();
+  }, 360_000);
 });

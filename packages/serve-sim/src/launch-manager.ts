@@ -9,6 +9,7 @@ import {
 } from "./capabilities";
 import {
   prepareCapability,
+  notifyPreparationFailure,
   rollbackPreparations,
   type CapabilityPreparation,
 } from "./capability-resources";
@@ -476,9 +477,14 @@ async function publishPreparations(
     const capabilities = preparations.map(({ capability }) => capability);
     await enableCapabilitiesUnlocked(udid, bundleId, capabilities, { relaunch: false, ownerPid });
   } catch (error) {
-    for (const { resources } of preparations) resources.failed?.(error);
-    if (error instanceof CapabilityRollbackError) throw error;
-    await rollbackPreparations(udid, preparations, error);
+    const observerErrors = notifyPreparationFailure(preparations, error);
+    if (error instanceof CapabilityRollbackError) {
+      if (observerErrors.length > 0) {
+        throw new CapabilityRollbackError([error, ...observerErrors], error.message);
+      }
+      throw error;
+    }
+    await rollbackPreparations(udid, preparations, error, observerErrors);
     throw error;
   }
   for (const { resources } of preparations) resources.committed?.();

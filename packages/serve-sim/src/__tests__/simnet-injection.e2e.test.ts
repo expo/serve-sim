@@ -5,9 +5,11 @@ import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 
-import { e2eDevice, requireE2E } from "./e2e-preconditions";
+import { enableCapabilities, disableCapability, releaseSessionSync } from "../launch-manager";
+import { useTempStateDir } from "./helpers";
+import { e2eDevice, requireE2E, readInsert } from "./e2e-preconditions";
 
 const BUNDLE_ID = "dev.expo.serve-sim.simnet-probe";
 const PROBE_HOST = "simnet-probe.test";
@@ -55,24 +57,22 @@ async function proxyStandIn(): Promise<Probe> {
   };
 }
 
-function launchProbeApp(
+async function launchProbeApp(
   port: number,
-  { inject, portFile }: { inject: boolean; portFile?: string },
-): void {
+  { inject, portFile, phase = "delegate" }: { inject: boolean; portFile?: string; phase?: string },
+): Promise<void> {
+  if (inject) {
+    const file = portFile ?? join(appDir, "proxy-port");
+    if (!portFile) writeFileSync(file, String(port));
+    await enableCapabilities(udid!, null, [{
+      name: "networkCapture", scope: "userApps", loadPhase: "startup", dylib: DYLIB,
+      env: { SIMNET_PROXY_PORT_FILE: file },
+    }], { relaunch: false });
+  }
   execFileSync("xcrun", ["simctl", "launch", udid!, BUNDLE_ID], {
-    stdio: "pipe",
-    timeout: 30_000,
-    env: {
-      ...process.env,
-      SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: inject ? DYLIB : "",
-      // A device booted for capture is given the file; the bare port is the single-launch form.
-      ...(inject
-        ? portFile
-          ? { SIMCTL_CHILD_SIMNET_PROXY_PORT_FILE: portFile }
-          : { SIMCTL_CHILD_SIMNET_PROXY_PORT: String(port) }
-        : { SIMCTL_CHILD_SIMNET_PROXY_PORT: "", SIMCTL_CHILD_SIMNET_PROXY_PORT_FILE: "" }),
-      SIMCTL_CHILD_SIMNET_PROBE_URL: `https://${PROBE_HOST}/ping`,
-    },
+    stdio: "pipe", timeout: 30_000,
+    env: { ...process.env, SIMCTL_CHILD_SIMNET_PROBE_URL: `https://${PROBE_HOST}/ping`,
+      SIMCTL_CHILD_SIMNET_PROBE_PHASE: phase },
   });
 }
 
@@ -81,13 +81,12 @@ function terminateProbeApp(): void {
 }
 
 let appDir = "";
+let tempState: ReturnType<typeof useTempStateDir>;
 
 describeOrSkip("SimNetProxy injection (real simulator)", () => {
   beforeAll(() => {
-    // A device left injected by an earlier run would decide these results instead of the test.
-    for (const name of ["DYLD_INSERT_LIBRARIES", "SIMNET_PROXY_PORT", "SIMNET_PROXY_PORT_FILE"]) {
-      spawnSync("xcrun", ["simctl", "spawn", udid!, "launchctl", "unsetenv", name], { stdio: "ignore" });
-    }
+    expect(readInsert(udid!)).toBe("");
+    tempState = useTempStateDir();
     appDir = mkdtempSync(join(tmpdir(), "simnet-probe-"));
     execFileSync("xcrun", ["simctl", "install", udid!, PROBE_APP], {
       stdio: "pipe",
@@ -95,11 +94,21 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
     });
   }, 240_000);
 
+  afterEach(async () => {
+    terminateProbeApp();
+    await disableCapability(udid!, null, "networkCapture", { relaunch: false });
+  });
+
   afterAll(() => {
     // The fixture app is the only thing this test adds to the device, and it does not outlive the test.
     terminateProbeApp();
     spawnSync("xcrun", ["simctl", "uninstall", udid!, BUNDLE_ID], { stdio: "ignore" });
+    releaseSessionSync(udid!, process.pid, () => {});
     if (appDir) rmSync(appDir, { recursive: true, force: true });
+    try {
+      expect(readInsert(udid!)).toBe("");
+      expect(execFileSync("xcrun", ["simctl", "spawn", udid!, "launchctl", "getenv", "SIMNET_PROXY_PORT_FILE"], { encoding: "utf8" }).trim()).toBe("");
+    } finally { tempState.restore(); }
   });
 
   it(
@@ -108,7 +117,7 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
       const probe = await proxyStandIn();
       try {
         terminateProbeApp();
-        launchProbeApp(probe.port, { inject: true });
+        await launchProbeApp(probe.port, { inject: true });
 
         const line = await probe.firstLine(25_000);
         expect(line).not.toBeNull();
@@ -120,6 +129,25 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
     60_000,
   );
 
+  it("keeps a non-UIKit process running with startup images armed", async () => {
+    const probe = await proxyStandIn();
+    try {
+      await launchProbeApp(probe.port, { inject: true });
+      expect(spawnSync("xcrun", ["simctl", "spawn", udid!, "/usr/bin/true"], { env: { ...process.env } }).status).toBe(0);
+    } finally { probe.close(); }
+  }, 60_000);
+
+  for (const phase of ["load", "constructor", "configuration"]) {
+    it(`captures a session retained from ${phase}`, async () => {
+      const probe = await proxyStandIn();
+      try {
+        terminateProbeApp();
+        await launchProbeApp(probe.port, { inject: true, phase });
+        expect(await probe.firstLine(25_000)).toStartWith(`CONNECT ${PROBE_HOST}:443`);
+      } finally { probe.close(); }
+    }, 60_000);
+  }
+
   it(
     "reads the port from a file, which is how a device booted for capture is pointed at the proxy",
     async () => {
@@ -128,7 +156,7 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
       writeFileSync(portFile, String(probe.port));
       try {
         terminateProbeApp();
-        launchProbeApp(probe.port, { inject: true, portFile });
+        await launchProbeApp(probe.port, { inject: true, portFile });
 
         const line = await probe.firstLine(25_000);
         expect(line).toStartWith(`CONNECT ${PROBE_HOST}:443`);
@@ -148,7 +176,7 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
       rmSync(missing, { force: true });
       try {
         terminateProbeApp();
-        launchProbeApp(probe.port, { inject: true, portFile: missing });
+        await launchProbeApp(probe.port, { inject: true, portFile: missing });
 
         expect(await probe.firstLine(8_000)).toBeNull();
       } finally {
@@ -164,7 +192,7 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
       const probe = await proxyStandIn();
       try {
         terminateProbeApp();
-        launchProbeApp(probe.port, { inject: false });
+        await launchProbeApp(probe.port, { inject: false });
 
         expect(await probe.firstLine(8_000)).toBeNull();
       } finally {

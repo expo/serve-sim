@@ -16,6 +16,8 @@ export interface CapabilityContext {
   enabled: boolean;
 }
 
+export type CapabilityLoadPhase = "startup" | "deferred";
+
 export interface CapabilityDefinition {
   name: string;
   defaultEnabled: boolean;
@@ -23,6 +25,7 @@ export interface CapabilityDefinition {
   scope: CapabilityScope;
   /** Delay before loading on the app main queue; defaults to zero. */
   loadDelayMs?: number;
+  loadPhase?: CapabilityLoadPhase;
   /** Starts/stops host resources. Return null to decline enabling. */
   setEnabled(ctx: CapabilityContext): Promise<PreparedCapability | null>;
 }

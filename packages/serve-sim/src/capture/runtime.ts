@@ -1,9 +1,6 @@
-import {
-  bootInjectionCleared,
-  clearBootInjection,
-  injectAtBoot,
-  trustCaInSimulator,
-} from "./device";
+import { locateProxyDylib, trustCaInSimulator } from "./device";
+import { configureCapability } from "../launch-manager";
+import type { CapabilityDefinition, PreparedCapability } from "../capabilities";
 import {
   CAPTURE_SCHEMA_VERSION,
   CaptureStore,
@@ -62,9 +59,8 @@ export interface CaptureRuntimeOptions {
   fields?: readonly CaptureField[];
   startProxy?: (store: CaptureStore, deps: MitmProxyDeps) => Promise<CaptureProxy>;
   trustCa?: (udid: string, caPem: string) => Promise<void>;
-  inject?: (udid: string, portFile: string) => Promise<void>;
-  clearInjection?: (udid: string) => Promise<void>;
-  injectionCleared?: (udid: string) => Promise<boolean>;
+  configure?: typeof configureCapability;
+  dylib?: () => string | null;
 }
 
 function notEnabledMeta(udid: string): CaptureMeta {
@@ -99,52 +95,119 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   const startProxy =
     options.startProxy ?? ((store: CaptureStore, deps: MitmProxyDeps) => startMitmProxy(store, deps));
   const trustCa = options.trustCa ?? trustCaInSimulator;
-  const inject = options.inject ?? injectAtBoot;
-  const clearInjection = options.clearInjection ?? clearBootInjection;
-  const stillCleared = options.injectionCleared ?? bootInjectionCleared;
-
+  const configure = options.configure ?? configureCapability;
+  const locateDylib = options.dylib ?? locateProxyDylib;
   const byUdid = new Map<string, CaptureSession>();
   const operations = new DeviceOperationQueue();
   const enables = new Map<string, EnableRequest>();
 
-  const tearDownSession = async (udid: string, session: CaptureSession): Promise<void> => {
+  const closeSession = async (udid: string, session: CaptureSession): Promise<void> => {
     session.cleanup ??= (async () => {
-      try {
-        await clearInjection(udid);
-        if (!(await stillCleared(udid))) {
-          console.error(
-            `Network capture: ${udid} still has the capture library injected after teardown. Apps launched ` +
-              "on it will keep loading it until the device is rebooted.",
-          );
-        }
-      } catch (error) {
-        console.error(`Network capture: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      try {
-        await session.proxy?.close();
-      } catch (error) {
-        console.warn(
-          `Network capture: closing proxy for ${udid} failed:`,
-          error instanceof Error ? error.message : error,
-        );
-      }
-    })();
+      await session.proxy?.close();
+      session.proxy = null;
+      session.meta.proxyAddress = null;
+    })().catch((error: unknown) => {
+      session.cleanup = undefined;
+      throw error;
+    });
     await session.cleanup;
+    if (byUdid.get(udid) === session) byUdid.delete(udid);
   };
 
+  const prepareSession = async (udid: string, request?: EnableRequest): Promise<PreparedCapability> => {
+    if (request) assertRequested(udid, request);
+    const existing = byUdid.get(udid);
+    if (existing?.proxy) {
+      if (existing.meta.attachment === "failed") {
+        throw new Error("The previous capture session failed. Disable capture before retrying so its launch configuration can be removed safely.");
+      }
+      return { dylib: requireDylib(), env: { SIMNET_PROXY_PORT_FILE: existing.proxy.portFile } };
+    }
+    const dylib = requireDylib();
+    const store = new CaptureStore();
+    const meta: CaptureMeta = {
+      schemaVersion: CAPTURE_SCHEMA_VERSION, udid, proxyAddress: null,
+      attachment: "starting", attachError: null, droppedOversizedBodies: 0,
+    };
+    const session: CaptureSession = { store, meta, proxy: null };
+    byUdid.set(udid, session);
+    try {
+      const proxy = await startProxy(store, {
+        fields: policy,
+        onUnexpectedExit: (reason) => {
+          if (byUdid.get(udid) !== session) return;
+          meta.attachment = "failed";
+          meta.attachError = `${reason}\n\nRelaunch apps after restarting capture; their existing sessions may still point at the stopped proxy.`;
+          store.publishMeta(meta);
+        },
+        onOversizedControlBody: () => {
+          if (byUdid.get(udid) !== session) return;
+          meta.droppedOversizedBodies += 1;
+          store.publishMeta(meta);
+        },
+      });
+      session.proxy = proxy;
+      meta.proxyAddress = proxy.address;
+      if (request) assertRequested(udid, request);
+      await trustCa(udid, await proxy.caPem());
+      if (request) assertRequested(udid, request);
+      if (meta.attachment === "failed") throw new Error(meta.attachError ?? "The capture proxy stopped during startup.");
+      return {
+        dylib,
+        env: { SIMNET_PROXY_PORT_FILE: proxy.portFile },
+        committed() {
+          if (meta.attachment === "failed") throw new Error(meta.attachError ?? "The capture proxy stopped during startup.");
+          meta.attachment = "capturing";
+          store.publishMeta(meta);
+        },
+        failed(error) {
+          meta.attachment = "failed";
+          meta.attachError = error instanceof Error ? error.message : String(error);
+          store.publishMeta(meta);
+        },
+        async rollback() {
+          if (request) request.failed = true;
+          await closeSession(udid, session);
+          byUdid.set(udid, session);
+        },
+      };
+    } catch (error) {
+      if (request) request.failed = true;
+      meta.attachment = "failed";
+      meta.attachError = error instanceof Error ? error.message : String(error);
+      await closeSession(udid, session);
+      byUdid.set(udid, session);
+      store.publishMeta(meta);
+      throw error;
+    }
+  };
+
+  function requireDylib(): string {
+    const dylib = locateDylib();
+    if (!dylib) throw new Error("Network capture library is missing. Rebuild serve-sim's native artifacts before enabling capture.");
+    return dylib;
+  }
+
+  const capability: CapabilityDefinition = {
+    name: "networkCapture", exclusive: true, scope: "userApps", loadPhase: "startup", defaultEnabled: false,
+    async setEnabled({ udid, enabled }) {
+      if (enabled) return prepareSession(udid);
+      const session = byUdid.get(udid);
+      if (session) await closeSession(udid, session);
+      return null;
+    },
+  };
+
+  const disable = (udid: string) => configure(udid, capability, { enabled: false, relaunch: false });
   const disableDevice = (udid: string): Promise<void> => {
     const pending = enables.get(udid);
     if (pending) pending.cancelled = true;
     enables.delete(udid);
-    return operations.enqueue(udid, async () => {
-      const session = byUdid.get(udid);
-      if (!session) return;
-      byUdid.delete(udid);
-      await tearDownSession(udid, session);
-    });
+    return operations.enqueue(udid, () => disable(udid));
   };
 
   return {
+    capability,
     setFields(next: readonly CaptureField[]): void {
       policy = next;
     },
@@ -162,68 +225,33 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
       const promise = operations.enqueue(udid, async () => {
         assertRequested(udid, request);
         const existing = byUdid.get(udid);
-        if (existing) {
-          if (existing.meta.attachment !== "failed") return existing.meta;
-          await tearDownSession(udid, existing);
+        if (existing?.meta.attachment === "failed") {
+          await disable(udid);
           assertRequested(udid, request);
         }
-
-        const store = new CaptureStore();
-        const meta: CaptureMeta = {
-          schemaVersion: CAPTURE_SCHEMA_VERSION,
-          udid,
-          proxyAddress: null,
-          attachment: "starting",
-          attachError: null,
-          droppedOversizedBodies: 0,
-        };
-        const session: CaptureSession = { store, meta, proxy: null };
-        byUdid.set(udid, session);
-
-        const reportProxyDeath = (reason: string) => {
-          if (byUdid.get(udid) !== session) return;
-          meta.attachment = "failed";
-          meta.attachError =
-            `${reason}\n\nApps launched on this device are still pointed at the stopped proxy, so their ` +
-            "requests will fail until they are relaunched.";
-          store.publishMeta(meta);
-        };
-
         try {
-          const proxy = await startProxy(store, {
-            fields: policy,
-            onUnexpectedExit: reportProxyDeath,
-            onOversizedControlBody: () => {
-              if (byUdid.get(udid) !== session) return;
-              meta.droppedOversizedBodies += 1;
-              store.publishMeta(meta);
-            },
-          });
-          session.proxy = proxy;
-          meta.proxyAddress = proxy.address;
-          assertRequested(udid, request);
-
-          await trustCa(udid, await proxy.caPem());
-          assertRequested(udid, request);
-
-          await inject(udid, proxy.portFile);
-          assertRequested(udid, request);
-          if (meta.attachment === "failed") {
-            throw new Error(meta.attachError ?? "The capture proxy stopped while capture was starting.");
+          await configure(udid, {
+            ...capability,
+            setEnabled: ({ enabled }) => enabled
+              ? prepareSession(udid, request)
+              : capability.setEnabled({ udid, enabled: false, bundleId: null, options: {} }),
+          }, { enabled: true, relaunch: false });
+          if (request.cancelled) {
+            await disable(udid);
+            assertRequested(udid, request);
           }
-          meta.attachment = "capturing";
+          const session = byUdid.get(udid);
+          if (!session) throw new Error("The capture session disappeared during startup. Enable capture again.");
+          return session.meta;
         } catch (error) {
           request.failed = true;
+          const session = byUdid.get(udid);
+          const meta = session?.meta ?? cancelledMeta(udid);
           meta.attachment = "failed";
           meta.attachError = error instanceof Error ? error.message : String(error);
-          await tearDownSession(udid, session);
-          session.proxy = null;
-          meta.proxyAddress = null;
-          store.publishMeta(meta);
+          if (session) session.store.publishMeta(meta);
           throw new CaptureEnableError(meta);
         }
-        store.publishMeta(meta);
-        return meta;
       });
       request.promise = promise;
       enables.set(udid, request);

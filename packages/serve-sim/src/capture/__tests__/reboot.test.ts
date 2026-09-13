@@ -1,3 +1,4 @@
+import { capabilityHarness } from "./capability-harness";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -23,9 +24,11 @@ function harness() {
       } as CaptureProxy;
     },
     trustCa: async () => void calls.push("trusted"),
-    inject: async () => void calls.push("injected"),
-    clearInjection: async () => void calls.push("injection-cleared"),
-    injectionCleared: async () => true,
+    dylib: () => "/fake/libSimNetProxy.dylib",
+    configure: capabilityHarness({
+      publish: async () => void calls.push("injected"),
+      remove: async () => void calls.push("injection-cleared"),
+    }),
   });
   const deps = {
     runtime,
@@ -53,6 +56,7 @@ describe("rebootWithCapture", () => {
     expect(meta.attachment).toBe("capturing");
     // The injection has to be applied to the boot that will run the apps, so it comes after the reboot.
     expect(calls).toEqual([
+      "injection-cleared",
       "device-shutdown",
       "device-booted",
       "capabilities-rearmed",
@@ -147,8 +151,8 @@ describe("rebootWithCapture", () => {
         throw new Error("mitmproxy is not installed");
       },
       trustCa: async () => {},
-      inject: async () => {},
-      clearInjection: async () => {},
+      dylib: () => "/fake/libSimNetProxy.dylib",
+      configure: capabilityHarness(),
     });
 
     const meta = await rebootWithCapture(UDID, /* enabled */ true, {
@@ -169,7 +173,7 @@ describe("rebootWithCapture", () => {
 
     await rebootWithCapture(UDID, /* enabled */ false, deps);
 
-    expect(calls).toEqual(["device-shutdown", "device-booted", "capabilities-rearmed"]);
+    expect(calls).toEqual(["injection-cleared", "device-shutdown", "device-booted", "capabilities-rearmed"]);
   });
 
   test("leaves a device this process never armed alone", async () => {

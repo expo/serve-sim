@@ -362,7 +362,8 @@ async function findAvailablePort(start: number): Promise<number> {
   throw new Error(`No available port found in range ${start}-${start + 99}`);
 }
 
-async function ensureBooted(udid: string): Promise<void> {
+async function ensureBooted(udid: string): Promise<boolean> {
+  const wasBooted = isDeviceBooted(udid);
   bootDevice(udid);
   // `simctl bootstatus -b` blocks until the device's services are actually ready
   // (not just flipped to "Booted"). Much more reliable than polling `simctl list`.
@@ -383,6 +384,7 @@ async function ensureBooted(udid: string): Promise<void> {
   // launchApp and enableCapabilities: this runs in the stream helper too, and a
   // helper arming after its parent disarmed would leave the insert set.
   await disarmStaleCapabilityLoader(udid);
+  return !wasBooted;
 }
 
 /**
@@ -1712,7 +1714,6 @@ async function startNetworkCapture(
 ): Promise<void> {
   const capture = await import("./capture");
   if (sessionStopping) return;
-  capture.captureRuntime.setServerEnabled(true);
   capture.captureRuntime.setFields(capture.resolveCaptureFields(fields));
   for (const udid of udids) {
     if (capture.captureRuntime.metaFor(udid).attachment === "capturing") continue;
@@ -1758,19 +1759,22 @@ async function serve(
   // Boot the target simulators; the preview server streams them in-process
   // (no spawned helper). Sessions are created lazily on the first stream request.
   let targetDevices: string[];
+  const newlyBootedDevices: string[] = [];
   try {
     targetDevices = resolveTargetDevices(devices);
     if (!quiet && devices.length === 0 && readAllStates().length === 0) {
       console.log("Starting simulator stream...");
     }
-    for (const udid of targetDevices) await ensureBooted(udid);
+    for (const udid of targetDevices) {
+      if (await ensureBooted(udid)) newlyBootedDevices.push(udid);
+    }
   } catch (err) {
     return failStartup(err instanceof Error ? err.message : String(err));
   }
   const targetDevice = targetDevices[0];
 
-  const capture = options.networkCapture ? await import("./capture") : null;
-  if (capture) await startNetworkCapture(targetDevices, options.networkCaptureFields, quiet);
+  const capture = await import("./capture");
+  if (options.networkCapture) await startNetworkCapture(newlyBootedDevices, options.networkCaptureFields, quiet);
 
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
@@ -1885,7 +1889,7 @@ async function serve(
   const shutdown = async () => {
     sessionStopping = true;
     const teardown = (async () => {
-      if (capture) await capture.captureRuntime.disableAll().catch(() => {});
+      await capture.captureRuntime.disableAll().catch(() => {});
       await disarmDevicesArmedHereAsync();
     })();
     await Promise.race([teardown, new Promise((done) => setTimeout(done, SHUTDOWN_TIMEOUT_MS))]);
@@ -1971,7 +1975,7 @@ program
   )
   .option(
     "--network-capture",
-    "Record HTTP(S) traffic for devices this process starts or boots (CLI args and the device sidebar). " +
+    "Default network capture on for devices this process boots; the UI reboot toggle overrides it per device. " +
       "Covers third-party apps and their startup requests; Apple system apps (e.g. Safari) are left unproxied. " +
       "HTTPS is decrypted for the whole boot session and certificate-pinned apps will refuse to connect. " +
       "Requires mitmproxy. Relaunch apps after enabling so they pick up the proxy.",
@@ -2281,14 +2285,10 @@ Examples:
       }
     }
     let targets = devices;
-    // Retain exit-hook cleanup ownership even after asynchronous teardown.
-    let captureStarted = false;
     let captureStopping: Promise<void> | null = null;
     const stopNetworkCapture = (): Promise<void> => {
-      if (!captureStarted) return Promise.resolve();
       captureStopping ??= (async () => {
         const capture = await import("./capture");
-        capture.captureRuntime.setServerEnabled(false);
         await capture.captureRuntime.disableAll();
       })();
       return captureStopping;
@@ -2315,8 +2315,9 @@ Examples:
             });
           }
         }
+        const newlyBootedDevices: string[] = [];
         for (const udid of targets) {
-          await ensureBooted(udid);
+          if (await ensureBooted(udid)) newlyBootedDevices.push(udid);
           if (sessionStopping) return;
         }
         const isStreamHelper = process.env[STREAM_HELPER_ENV] === "1";
@@ -2327,9 +2328,7 @@ Examples:
           }
         }
         if (opts.networkCapture) {
-          // Register exit cleanup before arming the first device.
-          captureStarted = true;
-          await startNetworkCapture(targets, opts.networkCaptureField, !!opts.quiet);
+          await startNetworkCapture(newlyBootedDevices, opts.networkCaptureField, !!opts.quiet);
           if (sessionStopping) return;
         }
         for (const udid of launchesBeforeStreaming && !isStreamHelper ? targets : []) {

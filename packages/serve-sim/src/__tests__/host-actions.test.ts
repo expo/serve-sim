@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { randomUUID } from "crypto";
@@ -264,20 +264,19 @@ describe("runHostActionAsync validation", () => {
 });
 
 describe("capture actions", () => {
-  it("names --network-capture when capture is off for the server", async () => {
-    const { captureRuntime } = await import("../capture");
-    const previous = captureRuntime.getServerEnabled();
-    captureRuntime.setServerEnabled(false);
+  it("allows an explicit capture reboot without a startup flag", async () => {
+    const capture = await import("../capture");
+    const meta = capture.captureRuntime.metaFor(UDID);
+    const reboot = spyOn(capture, "rebootWithCapture").mockResolvedValue(meta);
     try {
       const result = await runHostActionAsync(
         { action: "capture.reboot", params: { udid: UDID, enabled: true } },
         BIN,
       );
-
-      expect(result.exitCode).toBe(1);
-      expect(result.stderr).toContain("--network-capture");
+      expect(result.exitCode).toBe(0);
+      expect(reboot).toHaveBeenCalledWith(UDID, true);
     } finally {
-      captureRuntime.setServerEnabled(previous);
+      reboot.mockRestore();
     }
   });
 

@@ -909,9 +909,12 @@ export async function startDeviceInProcess(
   streamSettings?: StreamSettings,
   /** Session token, when the server runs gated. */
   sessionToken?: string,
+  onBoot?: () => Promise<void>,
 ): Promise<string | null> {
   // `simctl boot` errors when already booted — ignore and let bootstatus confirm.
-  await new Promise<void>((resolve) => execFile("xcrun", ["simctl", "boot", udid], () => resolve()));
+  const newlyBooted = await new Promise<boolean>((resolve) =>
+    execFile("xcrun", ["simctl", "boot", udid], (error) => resolve(!error)),
+  );
   const ready = await new Promise<boolean>((resolve) => {
     execFile("xcrun", ["simctl", "bootstatus", udid, "-b"], { timeout: 180_000 }, (err) => resolve(!err));
   });
@@ -931,6 +934,7 @@ export async function startDeviceInProcess(
     });
     if (!booted) return `Device ${udid} failed to reach booted state`;
   }
+  if (newlyBooted) await onBoot?.();
   writeServeSimState(gridDeviceState(udid, port, base, streamSettings, sessionToken));
   return null;
 }
@@ -944,7 +948,7 @@ export async function enableNetworkCaptureForStartedDevice(
     error?: (message: string) => void;
   } = {},
 ): Promise<void> {
-  if (!enabled) return;
+  if (!captureRuntime.shouldCaptureDevice(udid, enabled)) return;
   const enable =
     deps.enable ??
     (async (id) => captureRuntime.enableForDevice(id));
@@ -963,10 +967,8 @@ export async function enableNetworkCaptureForStartedDevice(
 
 export async function disableNetworkCaptureForStoppedDevice(
   udid: string,
-  enabled: boolean,
   deps: { disable?: (udid: string) => Promise<void> } = {},
 ): Promise<void> {
-  if (!enabled) return;
   const disable =
     deps.disable ??
     (async (id) => {
@@ -1875,8 +1877,6 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     ? { "Content-Security-Policy": frameAncestorsPolicy(frameAncestors) }
     : {};
   const networkCapture = options?.networkCapture ?? false;
-  // An embedded mount enables capture without the CLI, and the capture actions read this too.
-  if (networkCapture) captureRuntime.setServerEnabled(true);
 
   crashRuntime.arm();
 
@@ -2253,7 +2253,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       req.on("data", (chunk: Buffer | string) => {
         body += typeof chunk === "string" ? chunk : chunk.toString();
       });
-      req.on("end", () => {
+      req.on("end", async () => {
         let udid = "";
         try { udid = (JSON.parse(body) as ShutdownRequestBody).udid ?? ""; } catch {}
         if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(udid)) {
@@ -2265,7 +2265,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         // isn't streamed here). This frees the native session immediately
         // rather than waiting for the next poll's reaper to notice.
         closeDeviceSession(udid);
-        void disableNetworkCaptureForStoppedDevice(udid, networkCapture);
+        await disableNetworkCaptureForStoppedDevice(udid);
         // Drop the snapshot so the next status sample re-queries simctl
         // and prunes any helper bound to this now-shutdown device.
         bootedSnapshot = { at: 0, booted: null, names: new Map(), deviceTypes: new Map() };
@@ -2307,10 +2307,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           base,
           streamSettings,
           requirePreviewToken ? execToken : undefined,
-        ).then(async (error) => {
-          if (!error) {
-            await enableNetworkCaptureForStartedDevice(udid, networkCapture);
-          }
+          () => enableNetworkCaptureForStartedDevice(udid, networkCapture),
+        ).then((error) => {
           if (res.writableEnded) return;
           if (error) {
             res.writeHead(500, { "Content-Type": "application/json" });

@@ -60,15 +60,21 @@ xcrun simctl privacy ${quoted} grant pasteboard dev.expo.serve-sim.pasteboard-fi
   if (code !== 0) throw new Error("failed to install the pasteboard fixture on the guest");
 }
 
-export async function runGuestTests(guest: TartGuest, files: string[]): Promise<number> {
+export async function runGuestTests(
+  guest: TartGuest,
+  files: string[],
+  udid: string,
+): Promise<number> {
   assertHostModules(guest.config);
   const shareModules = shellEscape(`${guestPkgPath(guest.config)}/node_modules`);
   const quoted = files.map(shellEscape).join(" ");
+  const quotedUdid = shellEscape(udid);
   return guest.sshInherit(`${GUEST_PATH}
 set -euo pipefail
 chmod -R 755 ${GUEST_SIMPB}
 xattr -cr ${GUEST_SIMPB} 2>/dev/null || true
 export SERVE_SIM_SIMPB_DIR=${GUEST_SIMPB}
+export SERVE_SIM_TEST_UDID=${quotedUdid}
 ln -sfn ${shareModules} ${GUEST_PKG}/node_modules
 cd ${GUEST_PKG}
 bash Sources/build-test-fixtures.sh
@@ -80,5 +86,5 @@ exec bun test --max-concurrency=1 ${quoted}
 export async function testOnce(guest: TartGuest, files: string[], udid: string): Promise<number> {
   await stageGuest(guest);
   await warmFixture(guest, udid);
-  return runGuestTests(guest, files);
+  return runGuestTests(guest, files, udid);
 }

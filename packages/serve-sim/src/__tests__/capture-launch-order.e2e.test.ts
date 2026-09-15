@@ -34,10 +34,18 @@ function simctl(args: string[]): string {
   });
 }
 
-async function waitFor(check: () => boolean, timeoutMs = 90_000): Promise<void> {
+async function waitFor(
+  check: () => boolean,
+  failure: () => string | undefined,
+  timeoutMs = 90_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  while (!check() && Date.now() < deadline) await Bun.sleep(250);
-  expect(check()).toBe(true);
+  while (!check() && Date.now() < deadline) {
+    const error = failure();
+    if (error) throw new Error(error);
+    await Bun.sleep(250);
+  }
+  expect(check(), failure() ?? "Capture startup did not complete within the test deadline").toBe(true);
 }
 
 const describeOrSkip = ready ? describe : describe.skip;
@@ -51,6 +59,11 @@ describeOrSkip("capture arms before launch", () => {
   let stderr = "";
   let port = 0;
   let served = 0;
+
+  function startupFailure(): string | undefined {
+    if (server?.exitCode == null && server?.signalCode == null) return undefined;
+    return `serve-sim exited during capture startup (exit=${server?.exitCode}, signal=${server?.signalCode}).\n${stderr.trim()}`;
+  }
 
   beforeAll(async () => {
     tempState = useTempStateDir();
@@ -130,10 +143,10 @@ describeOrSkip("capture arms before launch", () => {
   }, 180_000);
 
   test("records the request made by the app the CLI launched", async () => {
-    await waitFor(() => served > 0);
+    await waitFor(() => served > 0, startupFailure);
     // Written once the preview server is bound, which is after the launch this test is about.
     const statePath = join(tempState.dir, `server-${udid!}.json`);
-    await waitFor(() => existsSync(statePath));
+    await waitFor(() => existsSync(statePath), startupFailure);
 
     const state = JSON.parse(readFileSync(statePath, "utf-8")) as { token?: string };
     // `capture har` reads this file; without a token it cannot reach the gated capture routes.
@@ -150,7 +163,7 @@ describeOrSkip("capture arms before launch", () => {
 
   test("keeps stdout to the JSON payload --quiet promises", () => {
     // An empty stdout would make the loop below vacuous.
-    expect(stdout.trim().length).toBeGreaterThan(0);
+    expect(stdout.trim().length, startupFailure() ?? stderr).toBeGreaterThan(0);
     for (const line of stdout.split("\n").filter((line) => line.trim().length > 0)) {
       expect(() => JSON.parse(line)).not.toThrow();
     }

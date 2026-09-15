@@ -190,7 +190,12 @@ describeOrSkip("network request fixture", () => {
         clearTimeout(timer);
         ws.close();
         if (reply.exitCode !== 0) reject(new Error(reply.stderr || reply.error));
-        else resolve(JSON.parse(reply.stdout).attachment);
+        else {
+          const meta = JSON.parse(reply.stdout);
+          if (meta.attachment === "failed") {
+            reject(new Error(`Capture reboot failed: ${meta.attachError ?? "No attachment error was reported"}`));
+          } else resolve(meta.attachment);
+        }
       });
       ws.on("error", (error) => { clearTimeout(timer); ws.terminate(); reject(error); });
     });

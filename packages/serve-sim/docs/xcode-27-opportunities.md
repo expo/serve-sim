@@ -2,7 +2,9 @@
 
 Research checked September 15, 2026. This note describes upstream evidence,
 inspection and focused runtime experiments on Xcode 27 beta 6. Capture and
-accessibility work in the smoke test; legacy touch delivery remains broken. Final-release documentation may
+accessibility work in the smoke test. The legacy-window fixture missed taps,
+but a scene-based fixture receives them; actual text entry is still under
+investigation. Final-release documentation may
 describe fixes newer than the inspected beta.
 
 ## Compatibility first
@@ -155,8 +157,10 @@ tool schemas. Exact MCP touch schemas remain unverified without connecting to
 the running Xcode service.
 
 
-Runtime input investigation found no app-observed tap despite successful legacy
-HID send completions, longer presses, and foregrounding Device Hub. The Indigo
+The initial legacy-window input fixture found no app-observed tap despite
+successful HID send completions, longer presses, and foregrounding Device Hub.
+A subsequent scene-based fixture receives taps at the expected coordinates, so
+the earlier result does not establish a broken touch backend. The Indigo
 touch constructor and legacy initialization disassembly did not expose an ABI
 change that explains this. Device Hub symbols instead reference DeviceKit and
 CoreDevice HID service registration with UniversalHID digitizer reports. These

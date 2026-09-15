@@ -2,7 +2,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync, spawn, type ChildProcess } from "child_process";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { createServer, type Server } from "http";
 import { join } from "path";
 
@@ -38,6 +38,7 @@ async function waitFor(
   check: () => boolean,
   failure: () => string | undefined,
   timeoutMs = 90_000,
+  timeoutMessage = "Capture startup did not complete within the test deadline",
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!check() && Date.now() < deadline) {
@@ -45,7 +46,7 @@ async function waitFor(
     if (error) throw new Error(error);
     await Bun.sleep(250);
   }
-  expect(check(), failure() ?? "Capture startup did not complete within the test deadline").toBe(true);
+  expect(check(), failure() ?? timeoutMessage).toBe(true);
 }
 
 const describeOrSkip = ready ? describe : describe.skip;
@@ -72,6 +73,22 @@ describeOrSkip("capture arms before launch", () => {
       simctl(["uninstall", udid!, APP]);
     } catch {}
     simctl(["install", udid!, FIXTURE]);
+    // install can return before LaunchServices commits its queued operations.
+    // Shutting down in that window can leave the app record unavailable after boot.
+    // This is fixture setup only: never warm-launch the app whose first request we test.
+    const devices = JSON.parse(simctl(["list", "devices", "--json"])).devices as
+      Record<string, { udid: string; dataPath: string }[]>;
+    const device = Object.values(devices).flat().find((item) => item.udid === udid)!;
+    const operations = join(device.dataPath, "Library/MobileInstallation/LaunchServicesOperations");
+    expect(existsSync(operations), "The simulator installation queue layout changed; update this fixture barrier").toBe(true);
+    await waitFor(() => {
+      try {
+        return !readdirSync(operations, { recursive: true }).some((path) => String(path).endsWith(".plist"));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+      }
+    }, () => undefined, 30_000, "Fixture LaunchServices operations did not finish before shutdown");
 
     const originPort = await freePortAsync();
     origin = createServer((_req, res) => {

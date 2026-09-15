@@ -187,6 +187,8 @@ test("registry capture prepares, publishes, reuses, and removes the same runtime
     expect(runtime.metaFor(UDID).attachment).toBe("capturing");
     expect(env().SIMNET_PROXY_PORT_FILE).toBeUndefined();
     expect(env().DYLD_INSERT_LIBRARIES).toContain(dylib);
+    // Force a real repair; an unchanged launch environment needs no write.
+    writeFileSync(envPath, JSON.stringify({ ...env(), DYLD_INSERT_LIBRARIES: "/other.dylib" }));
     writeFileSync(failurePath, "");
     await expect(setCapabilityEnabled(UDID, "networkCapture", { enabled: true, relaunch: false })).rejects.toThrow();
     expect(starts).toBe(1);

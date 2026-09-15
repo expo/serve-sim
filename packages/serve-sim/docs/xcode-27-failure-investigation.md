@@ -1,105 +1,213 @@
 # Xcode 27 capture failure investigation
 
-Tested locally against capture PR #157 (`99ad9c4`) plus the selected-Xcode
-compatibility patch. Runtime: Xcode 27 beta 6, iOS 27, Tart (4 CPUs, 12 GB).
-These are four failed assertions, with two sharing one startup scenario.
+Local investigation against capture PR #157 (`99ad9c4`) plus selected-Xcode
+compatibility changes. The second runtime is Xcode 27 beta 6 with iOS 27 in
+Tart. Initial tests used 4 CPUs and 12 GB; later experiments used 8 CPUs.
+Both final full suites pass; the production app-registration polling experiment
+was removed in favor of a fixture installation barrier. Separate app-observed
+input validation is still under investigation.
 
-## 1. Non-UIKit process injection — implemented
+The original four failed assertions span three distinct issues: a test process
+with the wrong architecture, capture startup failures (also causing missing
+startup JSON), and capture readiness after a reboot. Evidence now separates
+production reliability defects, a test-fixture registration race, and slow VM
+management commands. These do not have one established root cause.
+
+## 1. Non-UIKit process injection: test fixture corrected
 
 The test used the host's `/usr/bin/true`. In this VM simctl selected x86_64;
 dyld aborted because the inserted capability loader is arm64. A simulator-built
 arm64 executable exited normally with the same injection armed.
 
-Build `serve-sim-process-probe` with the existing native fixtures and invoke it
-with `simctl spawn --arch=arm64`. Require the fixture in E2E preconditions and
-include subprocess stderr in a failed assertion. This retains the non-UIKit
-safety check without depending on the host executable's available slices.
+The test now uses `serve-sim-process-probe`, built with the native fixtures and
+invoked with `simctl spawn --arch=arm64`. E2E preconditions require it, and a
+failed assertion includes subprocess stderr. This preserves the non-UIKit
+safety check without relying on a host executable's architecture slices.
 
-Validation: the complete injection E2E file passes 9/9 on both Xcode 26.4 and
-27 beta 6 with this change.
+The complete injection E2E file passes 9/9 on both Xcode 26.4 and 27 beta 6.
 
-## 2–3. Capture at launch and missing startup JSON — unresolved runtime issue
+## 2–3. Capture at launch and missing startup JSON
 
-Both assertions fail when the CLI does not finish its startup sequence. Tracing
-recorded launchctl management commands reaching the existing 15-second timeout
-(SIGTERM / exit 143). A diagnostic experiment cleared injection variables only
-for launchctl subprocesses. Commands initially completed, but the app launch
-then failed with FBSOpenApplicationServiceErrorDomain code 4. The experiment did
-not make the scenario pass and is not a production change.
+Both assertions fail if the CLI does not finish startup. Stage tracing exposed
+two separate failures: slow simulator environment operations and an immediate
+application-service rejection. E2E diagnostics now report early child exit,
+stderr, and exit status while waiting for the first request or state file. The
+quiet JSON assertion retains those diagnostics. The original assertions remain.
 
-Implemented diagnostic improvement: detect an early child exit while waiting
-for the first request or state file, and include stderr/exit status. The quiet
-JSON assertion also includes startup diagnostics rather than only “Received: 0”.
-The two assertions remain intact; reporting the underlying failure is not a
-runtime fix.
+### Redundant environment publication: fixed
 
-Proposed recovery work:
+Each capability publication previously performed three sequential environment
+reads and two unconditional writes. Launching an app after enabling capture
+published the same environment again. A traced redundant write reached the
+existing 15-second timeout and triggered additional rollback operations.
 
-1. Record structured startup stages and subprocess duration, timeout, signal,
-   and exit code so boot readiness, capability arming, proxy readiness, and app
-   launch are distinguishable. Avoid logging credentials or capture bodies.
-2. Add a bounded post-boot control-plane readiness check before arming. Retry
-   only proven transient read failures within one deadline; do not treat a
-   failed read as an empty launchd environment.
-3. For timed-out environment writes, read back the value before retrying or
-   rolling back: the write may already have succeeded.
-4. Investigate the application-service rejection independently. Retry an app
-   launch only after confirming it did not start; preserve the one-launch,
-   arguments, deep-link, and pre-main-capture assertions.
+Publication now reuses its transaction snapshot: two live reads, followed only
+by writes whose values changed. It still reads the actual simulator environment
+on every transaction, so a reboot that clears the variables causes rearming.
+Locking and rollback remain in place, including recovery when a failed write
+has already taken effect. This reduces unnecessary simulator operations; it
+does not explain why the simulator sometimes takes so long to answer one.
 
-Do not merely increase the 90-second test wait or blindly retry launches.
+### Cleanup ordering and retry ownership: fixed
 
-## 4. Startup default / explicit-off reboot — readiness fix implemented
+Final graceful session release now uses asynchronous loader removal. Both
+removal paths remove our `DYLD_INSERT_LIBRARIES` entries before clearing the
+config variable. Previously cleanup spent its first management call clearing
+the config while leaving injection armed. Failed synchronous cleanup now keeps
+the device in `armedHere`, allowing the exit handler to retry.
 
-The full-suite failure was a failed launchctl read of
-`SERVE_SIM_CAPABILITIES_CONFIG` after a capture reboot. With the experimental
-launchctl isolation, setup instead returned attachment `failed`, so that
-experiment is insufficient here too.
+These changes improve interruption handling and keep the event loop responsive
+during final graceful removal. They do not guarantee completion within an
+external 30-second termination deadline: three individual management commands
+can each consume their existing 15-second timeout, after capture teardown.
+No test deadlines were increased.
 
-Implemented diagnostic improvement: retain `CaptureMeta.attachError` when a
-reboot returns `failed`. Previously the test threw away the reason and reported
-only an attachment-string mismatch.
+### App registration across reboot: reproduced outside serve-sim
 
-A focused rerun with attachment diagnostics exposed another failure: the proxy
-created its certificate, but the reporting addon never confirmed readiness.
-Inspection found that `/ready` was sent only once, with a two-second timeout,
-and failures were silently discarded. The host then waited for 30 seconds with
-no possibility of recovery.
+A plain simctl experiment reproduced the launch rejection with injection
+cleared: uninstall, install, shutdown, bootstatus, then launch. All three runs
+failed with `FBSOpenApplicationServiceErrorDomain` code 4 and appinfo reporting
+`NoAppRecord`. No serve-sim startup or capture was involved.
 
-Implemented bounded retries for this idempotent announcement: at most five
-attempts, separated by 250 ms, each retaining the existing two-second request
-timeout. Shutdown interrupts the retry wait. Captured flow records remain
-single-send. A real local control-server regression test fails before this
-change and passes after it; additional tests verify the attempt budget and that
-flow records are not duplicated. The timeout message now distinguishes missing
-readiness confirmation from an unproven claim that the addon never loaded.
+Adding an appinfo check before shutdown proved the app was registered before
+reboot but could disappear afterward: two runs failed and one passed. Using a
+new unique bundle identifier on each run survived reboot and launched in all
+three trials, without a warm-up launch.
 
-This repairs a demonstrated readiness failure mode. It does not establish that
-every observed launchctl timeout has the same cause. Further recovery work
-shares the bounded readiness/read-back work above. Preserve
-explicit off through failure and reconnect, keep reboots serialized, and return
-the failed stage in the capture status. Verify repeated on/off cycles, cleanup,
-and the startup-default rule on both Xcodes before shipping recovery changes.
+A UUID fixture candidate still failed in the exact cold capture E2E and was
+reverted. A subsequent plain simctl experiment established delayed registration:
+installation and appinfo succeeded before shutdown, then appinfo repeatedly
+reported a missing record after bootstatus completed while the app bundle still
+existed. Registration became available 34.58 seconds after boot, without
+reinstallation or an app launch, and the subsequent launch succeeded.
 
-## Scope and evidence
+A later traced Xcode 26 failure clarified why an appinfo exit code is insufficient:
+immediately before the failing launch it returned success with only
+`CFBundleIdentifier`, without an executable or bundle path. A production polling
+experiment did not reliably fix the failure and was removed.
 
-The only production behavior change is bounded addon-readiness retries and a
-more accurate timeout message. Launchctl isolation and app-launch retries have
-not been adopted. The process fixture and E2E diagnostics are also local changes. Logs and temporary
-experiments are under `/private/tmp/serve-sim-xcode27-validation` (`vm27/` for
-VM results). No PR was updated, pushed, or run remotely.
+### Pending installation operations: fixture fix under validation
 
+The simulator system log recorded installation finishing, then shutdown
+interrupting an `installd` request to save a LaunchServices operation through
+`com.apple.lsd.modifydb`. The operation UUID could not be tied unambiguously to
+the fixture in the partially decoded log, but the timing matches the immediate
+install/shutdown sequence. The pending-operation directory remained populated
+after simctl install returned.
 
-## Validation of the implemented changes
+The cold E2E now waits for the simulator's
+`Library/MobileInstallation/LaunchServicesOperations` queue to drain before
+shutting down. It obtains the data path from simctl and checks that the observed
+queue layout exists. This is a test-fixture barrier using an observed private
+implementation detail, not a documented Apple durability API. A changed layout
+fails explicitly. It adds no warm-up launch, launch retry, or production wait,
+and retains the original first-request/HAR/quiet-JSON assertions and startup
+deadline.
 
-- Native package and test fixtures build successfully.
-- Injection E2E: 9/9 on Xcode 26.4 and 9/9 on Xcode 27 beta 6.
-- Capture-launch diagnostic change: 3/3 on Xcode 26.4.
-- Capture subsystem suite: 188 passing tests, including the readiness regression.
-- Full real network fixture with readiness retries: 6/6 on Xcode 26.4.
-- Xcode 27 focused startup-default/reboot check with readiness retries: 1/1,
-  314.34 seconds including setup and teardown. This is one successful rerun,
-  not evidence that all Xcode 27 startup races are eliminated.
-- Typecheck, lint, and whitespace checks pass.
-- No full-suite rerun is claimed after these focused changes. The earlier full
-  results remain 1267/0 failures on 26 and 1263/4 failures on 27.
+Three plain Xcode 26 install/reboot/launch experiments passed with this barrier;
+the queue drained in 0.86–1.33 seconds. Three subsequent real cold capture runs
+passed 3/3 tests each without the production polling experiment. The same three real cold-capture repetitions now pass on Xcode 27 as well.
+
+### Shutdown signal registration race: fixed
+
+The full Xcode 26 run exposed a separate CLI exit hang. The global signal handler
+awaited asynchronous cleanup, during which a follow-mode handler could register.
+Checking the listener count afterward incorrectly assumed that new handler had
+received the original signal, so neither handler exited. The global handler now
+captures whether another listener exists before awaiting cleanup. The actual
+launch CLI regression passed 4/4 afterward and also passed in the next full run.
+
+### VM service latency remains a separate observation
+
+A trace showed the first launchctl read timing out before injection was armed,
+even after bootstatus succeeded. Direct `simctl getenv` was also slow. Warm
+launchctl runs with default architecture and explicit arm64 both completed
+quickly; architecture selection does not explain all management delays.
+
+An 8-CPU experiment booted in about 9 seconds versus about 37 seconds with
+4 CPUs; initial reads took about 1–2 seconds versus 4–9 seconds. This comparison
+suggests resource sensitivity but does not establish CPU allocation as the
+sole cause. The reused-fixture registration failure also occurred with 8 CPUs.
+
+## 4. Capture readiness after reboot: bounded recovery implemented
+
+One failure was a launchctl read after reboot. A focused rerun exposed a
+different failure: the proxy created its certificate, but the reporting addon
+never confirmed readiness. `/ready` was sent once with a two-second timeout;
+a lost announcement left the host waiting without recovery.
+
+The idempotent announcement now retries at most five times, with 250 ms between
+attempts and the existing two-second request timeout. Shutdown interrupts the
+retry wait. Flow records remain single-send. A local control-server regression
+reproduces the lost-announcement failure and verifies recovery, the retry budget,
+and that flow records are not duplicated. The timeout message distinguishes
+missing confirmation from an unsupported claim that the addon never loaded.
+
+Reboot diagnostics also retain `CaptureMeta.attachError` instead of reporting
+only an attachment mismatch. One focused Xcode 27 startup-default/reboot rerun
+passed in 314.34 seconds including setup and teardown. Neither that result nor
+the retry regression establishes that every failure in this scenario is fixed.
+
+### Readiness regression fixture: reverse-DNS delay removed
+
+The full VM suite exposed three timeouts in the new Python regression probe.
+Stage tracing measured 35.03 seconds inside HTTPServer construction; a direct
+`socket.getfqdn("127.0.0.1")` reproduced the same 35.04-second delay under the
+VM's Homebrew Python. The system Python completed the same probe promptly.
+This happened before addon initialization.
+
+The loopback-only fixture now binds its HTTPServer through TCPServer and assigns
+its known display name directly, avoiding the unrelated reverse-DNS lookup.
+The same Homebrew Python now passes all three regressions in 5.14 seconds total,
+with the original individual test deadlines and addon retry budget unchanged.
+No production DNS behavior changed.
+
+## Separate input compatibility limitation
+
+The complete suites pass, but the standalone input smoke is not fully passing
+on Xcode 27 beta 6. The network fixture's real button taps pass, including a
+focused rerun after keyboard experiments. A scene-based diagnostic initially
+received taps but no text; later variants also missed some taps.
+
+Checks ruled out several simple explanations: fresh helpers and both startup
+orders, ordinary UIWindow instead of its diagnostic subclass, active/key-window
+state, successful first-responder selection, a responsive main queue, correct
+402×874 window/root bounds, and correct button/text-field hit-test results.
+A separate sender reported successful completions but the focused app observed
+no text. Hardware-keyboard on/off did not resolve it.
+
+The physical Mac reports CoreGraphics/Indigo keyboard type 198, versus 0 in
+Tart. The constructor's disassembly is unchanged between Xcodes. An experimental
+message override to 198 and the generic HID constructor did not restore text;
+that difference alone is not an established cause. None of those experimental
+message changes is in production code.
+
+The existing typing E2E checks native send logs, not the app's field value. This
+is a real coverage gap. Complete input parity remains unverified; the next
+useful comparison is the same app-observed probe on an Xcode 26 Tart guest to
+separate VM-specific behavior from Xcode 27 behavior. No speculative native
+input rewrite is included with the startup/capture fixes.
+
+## Validation status
+
+- Native package and fixtures build successfully; lint and type checks pass.
+- Injection E2E: 9/9 on each Xcode.
+- Capture subsystem: 188 tests passed earlier, including readiness regressions.
+- Actual network fixture: all six scenarios passed on Xcode 27 in the completed
+  full run, including first requests, large POST/HAR, capture off/reconnect,
+  startup defaults, and reboot. The final full Xcode 26 run passes as well.
+- Three repeated cold capture runs pass on each Xcode with the fixture barrier
+  and no production registration polling: 3/3 tests per run.
+- Scene-based interaction smoke passes on Xcode 26: changing stream frames,
+  accessibility, taps, typing, single launch/arguments, deep link, and Home.
+- The intermediate Xcode 27 full run completed with 1,279 passed and 5 failed:
+  two cold-launch assertions and three probe timeouts. It predates the final
+  fixture barrier and DNS fix. No skipped tests; 1,284 tests across 162 files.
+- Final Xcode 26 full suite: 1,278 passed, zero failed or skipped, across 161
+  files in 489.17 seconds. Xcode 27 final full suite also passes all 1,278 tests
+  with zero failures/skips in 738.59 seconds. Its separate scene smoke has
+  inconsistent input delivery; input diagnosis continues.
+
+Logs and temporary experiments are under
+`/private/tmp/serve-sim-xcode27-validation`, with VM results in `vm27/`.
+Changes remain local; no PR was updated or pushed, and no remote run is claimed.

@@ -89,12 +89,12 @@ bun run packages/serve-sim/build.ts
 - Xcode 27 beta 6 (27A5252f), iOS 27 (24A5423a), macOS 26.6.2:
   the same Xcode 26-built binary opens Device Hub, starts successfully, captures
   live 1206×2622 frames, and returns a populated accessibility tree. The fixture
-  installs and launches. Tap delivery fails, so the full input/deep-link smoke
-  test does not pass. Longer presses and foregrounding Device Hub did not help.
-  An independent legacy HID sender reports successful completion for both touch
-  messages, but the app records no touch. Home can use the simctl SpringBoard
-  fallback; this does not establish working HID buttons.
-- The VM is `serve-sim-xcode27` (4 CPUs, 12 GB memory), cloned from
+  installs and launches. The original legacy-window fixture did not receive
+  touches; a later scene-based fixture does receive button and text-field taps
+  at the expected coordinates. Its text-entry smoke still needs diagnosis, so
+  complete input parity is not yet claimed. Home can use the simctl SpringBoard
+  fallback; that alone does not establish working HID buttons.
+- The VM is `serve-sim-xcode27` (initially 4 CPUs, now 8 CPUs, 12 GB memory), cloned from
   `ghcr.io/cirruslabs/macos-tahoe-xcode:27-beta-6`, pinned to digest
   `sha256:f441eb487a18b4588c096adcff5eb48fddca550909e01c472580872b48c166b0`.
   Gabe authorized stopping `tahoe-xcode` to free a VM slot;
@@ -105,20 +105,22 @@ bun run packages/serve-sim/build.ts
   2400×1800 PNG showing the expected layout. This is a tooling experiment;
   serve-sim display selection and input mapping for that display remain untested.
 
-## Next implementation slice: Xcode 27 input
+## Capture PR validation and remaining input check
 
-Support is partial. Keep the working Xcode 26 backend while investigating actual
-input delivery on 27. Symbol inspection shows Device Hub uses DeviceKit,
-CoreDevice HID services, and UniversalHID digitizer reports. The legacy Indigo
-constructor layout and send signatures do not reveal an obvious fix, and a
-successful send callback is insufficient. Do not guess Swift private-field
-layouts or treat symbol presence as a capability test.
+The capture PR #157 tip was validated with this compatibility work. The final
+runs pass all 1,278 tests on each Xcode with zero failures or skips. Three consecutive real cold
+capture launches also pass on each Xcode after fixing a fixture installation
+race. See
+[xcode-27-failure-investigation.md](xcode-27-failure-investigation.md) for root
+causes, minimal fixes, and final results.
 
-First obtain a callable input interface: inspect Xcode's running MCP service and
-its official touch schema, or establish the DeviceKit/CoreDevice contract with a
-minimal app-observed tap experiment. Then introduce a detected backend boundary
-and rerun the complete input fixture on both Xcodes. Follow with drag, text,
-rotation, camera injection, reconnect, and the watchOS host integration audit.
+The scene-based input check is still open: text is not received despite confirmed
+focus, and some standalone taps are inconsistent. Disassembly shows an unchanged
+Indigo keyboard-message constructor between Xcodes. Verify text-field focus,
+keyboard connection state, and app-observed key events before changing the
+input backend. Existing typing tests only observe native send logs, so their
+success is insufficient to prove actual text entry. Device Hub's watchOS menu
+integration and serving its separate Resizable display remain separate work.
 
 Validation artifacts and disposable fixture sources are currently under
 `/private/tmp/serve-sim-xcode27-validation`, with VM evidence in `vm27/`.

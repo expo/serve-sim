@@ -1653,10 +1653,12 @@ Examples:
           });
           for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
             process.on(signal, async () => {
+              // A handler registered during cleanup did not receive this signal.
+              const anotherHandlerReceivedSignal = process.listenerCount(signal) > 1;
               sessionStopping = true;
               await stopNetworkCapture();
               await disarmDevicesArmedHereAsync();
-              if (process.listenerCount(signal) > 1) return;
+              if (anotherHandlerReceivedSignal) return;
               process.exit(0);
             });
           }

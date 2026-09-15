@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import TCPServer
 
 mode = sys.argv[2] if len(sys.argv) > 2 else "ready"
 attempts = []
@@ -23,7 +24,15 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-server = HTTPServer(('127.0.0.1', 0), Handler)
+class LoopbackHTTPServer(HTTPServer):
+    def server_bind(self):
+        # HTTPServer resolves its display name with reverse DNS. This loopback
+        # fixture needs no DNS, which can stall for 35 seconds in a Tart guest.
+        TCPServer.server_bind(self)
+        self.server_name = "localhost"
+        self.server_port = self.server_address[1]
+
+server = LoopbackHTTPServer(('127.0.0.1', 0), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 os.environ['SERVE_SIM_CAPTURE_CONTROL_URL'] = f'http://127.0.0.1:{server.server_port}'
 os.environ['SERVE_SIM_CAPTURE_CONTROL_TOKEN'] = 'ready-probe'

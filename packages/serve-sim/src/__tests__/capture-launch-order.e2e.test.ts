@@ -2,7 +2,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync, spawn, type ChildProcess } from "child_process";
-import { existsSync, readFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { createServer, type Server } from "http";
 import { join } from "path";
 
@@ -73,22 +73,26 @@ describeOrSkip("capture arms before launch", () => {
       simctl(["uninstall", udid!, APP]);
     } catch {}
     simctl(["install", udid!, FIXTURE]);
-    // install can return before LaunchServices commits its queued operations.
-    // Shutting down in that window can leave the app record unavailable after boot.
-    // This is fixture setup only: never warm-launch the app whose first request we test.
-    const devices = JSON.parse(simctl(["list", "devices", "--json"])).devices as
-      Record<string, { udid: string; dataPath: string }[]>;
-    const device = Object.values(devices).flat().find((item) => item.udid === udid)!;
-    const operations = join(device.dataPath, "Library/MobileInstallation/LaunchServicesOperations");
-    expect(existsSync(operations), "The simulator installation queue layout changed; update this fixture barrier").toBe(true);
+    // install can return before LaunchServices commits the complete app record.
+    // An empty private operations directory is not a commit barrier on newer
+    // CoreSimulator versions. Wait on the public record instead, without warm
+    // launching the app whose first request this test needs to observe.
     await waitFor(() => {
       try {
-        return !readdirSync(operations, { recursive: true }).some((path) => String(path).endsWith(".plist"));
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-        throw error;
+        const app = simctl(["appinfo", udid!, APP]);
+        return app.includes("CFBundleExecutable = ServeSimLaunchFixture;")
+          && app.includes("Path = ");
+      } catch {
+        return false;
       }
-    }, () => undefined, 30_000, "Fixture LaunchServices operations did not finish before shutdown");
+    }, () => undefined, 30_000, "Fixture app record did not finish committing before shutdown");
+    // appinfo reads the live registration before CoreSimulator has necessarily
+    // persisted it. Give the now-idle install a short quiescent window, then
+    // verify the same complete record immediately before shutdown.
+    await Bun.sleep(3_000);
+    const committedApp = simctl(["appinfo", udid!, APP]);
+    expect(committedApp).toContain("CFBundleExecutable = ServeSimLaunchFixture;");
+    expect(committedApp).toContain("Path = ");
 
     const originPort = await freePortAsync();
     origin = createServer((_req, res) => {
@@ -169,13 +173,20 @@ describeOrSkip("capture arms before launch", () => {
     // `capture har` reads this file; without a token it cannot reach the gated capture routes.
     expect(typeof state.token).toBe("string");
 
-    const har = await fetch(`http://127.0.0.1:${port}/network-capture.har?device=${udid!}`, {
-      headers: { Authorization: `Bearer ${state.token}`, Origin: `http://127.0.0.1:${port}` },
-    });
-    expect(har.status).toBe(200);
-    const entries = ((await har.json()) as { log: { entries: { request: { url: string } }[] } }).log
-      .entries;
-    expect(entries.some((entry) => entry.request.url.includes(PATH_MARKER))).toBe(true);
+    const deadline = Date.now() + 30_000;
+    let captured = false;
+    while (!captured && Date.now() < deadline) {
+      const har = await fetch(`http://127.0.0.1:${port}/network-capture.har?device=${udid!}`, {
+        headers: { Authorization: `Bearer ${state.token}`, Origin: `http://127.0.0.1:${port}` },
+      });
+      if (har.status === 200) {
+        const entries = ((await har.json()) as { log: { entries: { request: { url: string } }[] } }).log
+          .entries;
+        captured = entries.some((entry) => entry.request.url.includes(PATH_MARKER));
+      }
+      if (!captured) await Bun.sleep(250);
+    }
+    expect(captured, "The app request reached its origin but did not reach the capture HAR").toBe(true);
   }, 180_000);
 
   test("keeps stdout to the JSON payload --quiet promises", () => {

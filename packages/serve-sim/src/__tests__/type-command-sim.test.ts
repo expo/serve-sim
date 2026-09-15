@@ -1,7 +1,7 @@
 import { e2eDevice } from "./e2e-preconditions";
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { execSync, spawnSync } from "child_process";
-import { readFileSync } from "fs";
+import { readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { stateDir } from "../state";
 import { parseDetachState } from "./detach-state";
@@ -12,9 +12,10 @@ import { freePortAsync } from "./helpers";
  *
  * Boots through the full stack: textToKeyEvents → WS 0x06 frames →
  * SimStreamHelper.ClientManager → HIDInjector.sendKey → CoreSimulator's HID
- * legacy client. The helper logs `[hid] Key <down|up> usage=0x<hex>` for every
- * accepted key event, which is what we assert against — proving the event
- * round-tripped all the way to the sim, not just to the helper's WS reader.
+ * selected input transport. The helper logs each accepted key event, and the
+ * fixture records its UITextField value. The second assertion is essential:
+ * Xcode 27's suppressed legacy transport accepts sends while dropping them
+ * before UIKit.
  *
  * Those per-event HID logs are gated behind `SERVE_SIM_DEBUG_HID` (they otherwise
  * flood stdout), so the server is started with that env set to make them visible.
@@ -25,15 +26,39 @@ import { freePortAsync } from "./helpers";
  */
 
 const CLI_PATH = join(import.meta.dir, "../../src/index.ts");
+const FIXTURE = join(import.meta.dir, "../../dist/capability-loader/ServeSimLaunchFixture.app");
+const FIXTURE_BUNDLE = "dev.expo.serve-sim.launch-fixture";
 
 const bootedUdid = e2eDevice();
 const describeWithSim = bootedUdid ? describe : describe.skip;
 
 describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, () => {
   let logFile: string;
+  let fixtureLog: string;
 
   beforeAll(async () => {
     try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe" }); } catch {}
+
+    spawnSync("xcrun", ["simctl", "uninstall", bootedUdid!, FIXTURE_BUNDLE], { stdio: "ignore" });
+    const install = spawnSync("xcrun", ["simctl", "install", bootedUdid!, FIXTURE], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 60_000,
+    });
+    if (install.status !== 0) throw new Error(`fixture install failed: ${install.stderr}`);
+    const container = spawnSync("xcrun", ["simctl", "get_app_container", bootedUdid!, FIXTURE_BUNDLE, "data"], {
+      encoding: "utf-8",
+      timeout: 30_000,
+    }).stdout.trim();
+    fixtureLog = join(container, "Documents/launches.tsv");
+    rmSync(fixtureLog, { force: true });
+    const launch = spawnSync(
+      "xcrun",
+      ["simctl", "launch", bootedUdid!, FIXTURE_BUNDLE, "--args", "-ServeSimFixtureInput"],
+      { encoding: "utf-8", timeout: 30_000 },
+    );
+    if (launch.status !== 0) throw new Error(`fixture launch failed: ${launch.stderr}`);
+    await waitForFixtureLine(fixtureLog, /^focus\t\d+\tyes$/m, 10_000);
 
     const startPort = await freePortAsync();
     const detach = spawnSync("bun", ["run", CLI_PATH, "--detach", "-p", String(startPort), bootedUdid!], {
@@ -55,6 +80,7 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
 
   afterAll(() => {
     try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe" }); } catch {}
+    spawnSync("xcrun", ["simctl", "terminate", bootedUdid!, FIXTURE_BUNDLE], { stdio: "ignore" });
   });
 
   test("`serve-sim type` injects HID key events into the booted simulator", async () => {
@@ -90,13 +116,27 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
     }
 
     // And we should see balanced down/up events for the new slice.
-    expect(countMatches(newLines, /\[hid\] Key down /g)).toBe(5);
-    expect(countMatches(newLines, /\[hid\] Key up /g)).toBe(5);
+    expect(countMatches(newLines, /\[hid\] (?:Key|DTUHID key) down /g)).toBe(5);
+    expect(countMatches(newLines, /\[hid\] (?:Key|DTUHID key) up /g)).toBe(5);
+
+    const fixtureOutput = await waitForFixtureLine(fixtureLog, /^text\t\d+\tHi!$/m, 5_000);
+    expect(fixtureOutput).toMatch(/^text\t\d+\tHi!$/m);
   }, 30_000);
 });
 
 function countKeyLines(s: string): number {
-  return countMatches(s, /\[hid\] Key (down|up) /g);
+  return countMatches(s, /\[hid\] (?:Key|DTUHID key) (down|up) /g);
+}
+
+async function waitForFixtureLine(file: string, pattern: RegExp, timeoutMs: number): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let contents = "";
+  while (Date.now() < deadline) {
+    try { contents = readFileSync(file, "utf-8"); } catch {}
+    if (pattern.test(contents)) return contents;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return contents;
 }
 
 async function waitForKeyLines(logFile: string, expectedCount: number, timeoutMs: number): Promise<string> {

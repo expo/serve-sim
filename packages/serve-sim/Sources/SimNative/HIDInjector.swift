@@ -34,6 +34,7 @@ actor HIDInjector {
     private var hidClient: NSObject?
     private var sendSel: Selector?
     private var simDevice: NSObject?
+    private var dtuTransport: DTUHIDTransport?
 
     // IndigoHIDMessageForMouseNSEvent(CGPoint*, CGPoint*, IndigoHIDTarget, NSEventType, NSSize, IndigoHIDEdge)
     // arm64 ABI: pointer/int params → x0-x4, float params → d0-d1 (independent numbering).
@@ -76,6 +77,7 @@ actor HIDInjector {
                           userInfo: [NSLocalizedDescriptionKey: "Device \(deviceUDID) not found"])
         }
         self.simDevice = device
+        self.dtuTransport = DTUHIDTransport.connect(device: device)
 
         guard let funcPtr = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "IndigoHIDMessageForMouseNSEvent") else {
             throw NSError(domain: "HIDInjector", code: 5,
@@ -178,16 +180,30 @@ actor HIDInjector {
     /// Synchronously build + send a single touch. For use inside gesture blocks
     /// already running on `inputQueue`.
     private func rawSendTouch(type: String, x: Double, y: Double, edge: UInt32 = 0) {
+        if let dtuTransport {
+            dtuTransport.sendTouch(type: type, x: x, y: y, edge: edge)
+            return
+        }
         if let msg = touchMessage(type: type, x: x, y: y, edge: edge) { rawSend(msg) }
     }
 
     func sendTouch(type: String, x: Double, y: Double, screenWidth: Int, screenHeight: Int, edge: UInt32 = 0) {
+        if let dtuTransport {
+            hidLog("[hid] DTUHID sending \(type) at (\(String(format:"%.3f",x)),\(String(format:"%.3f",y)))\(edge > 0 ? " edge=\(edge)" : "")")
+            dtuTransport.sendTouch(type: type, x: x, y: y, edge: edge)
+            return
+        }
         guard let msg = touchMessage(type: type, x: x, y: y, edge: edge) else { return }
         hidLog("[hid] Sending \(type) at (\(String(format:"%.3f",x)),\(String(format:"%.3f",y)))\(edge > 0 ? " edge=\(edge)" : "")")
         rawSend(msg)
     }
 
     func sendMultiTouch(type: String, x1: Double, y1: Double, x2: Double, y2: Double, screenWidth: Int, screenHeight: Int) {
+        if let dtuTransport {
+            hidLog("[hid] DTUHID multi-touch \(type) f1=(\(String(format:"%.3f",x1)),\(String(format:"%.3f",y1))) f2=(\(String(format:"%.3f",x2)),\(String(format:"%.3f",y2)))")
+            dtuTransport.sendMultiTouch(type: type, x1: x1, y1: y1, x2: x2, y2: y2)
+            return
+        }
         guard let mouseFunc = mouseFunc else { return }
 
         let eventType: Int32
@@ -248,6 +264,11 @@ actor HIDInjector {
     ///   - type: "down" or "up"
     ///   - usage: HID usage code (e.g. 0x04 = 'A', 0x28 = Enter, 0xE1 = LeftShift)
     func sendKey(type: String, usage: UInt32) {
+        if let dtuTransport {
+            hidLog("[hid] DTUHID key \(type) usage=0x\(String(usage, radix: 16))")
+            dtuTransport.sendKeyboard(type: type, usage: usage)
+            return
+        }
         guard let keyboardFunc = keyboardFunc else {
             print("[hid] Keyboard injection unavailable")
             return
@@ -393,6 +414,11 @@ actor HIDInjector {
     /// - phase: "down" / "up" hold the button for natural long-presses (power
     ///   off slider, side-button menus); "press" sends a momentary down+up.
     func sendButtonHID(page: UInt32, usage: UInt32, phase: String) async {
+        if let dtuTransport {
+            hidLog("[hid] DTUHID button page=\(page) usage=\(usage) phase=\(phase)")
+            dtuTransport.sendButton(page: page, usage: usage, phase: phase)
+            return
+        }
         guard let arb = hidArbitraryFunc else {
             print("[hid] Arbitrary HID injection unavailable (page=\(page) usage=\(usage))")
             return

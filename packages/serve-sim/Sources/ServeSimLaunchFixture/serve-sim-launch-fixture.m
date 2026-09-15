@@ -87,6 +87,7 @@ static void RequestIfAsked(void) {
 @property(nonatomic, strong) AVCaptureVideoDataOutput *queuedOutput;
 @property(nonatomic, strong) QueuedFrameRecorder *queuedRecorder;
 @property(nonatomic, strong) dispatch_queue_t queuedFrames;
+@property(nonatomic, strong) UITextField *input;
 @end
 
 @implementation FixtureSceneDelegate
@@ -99,6 +100,19 @@ static void RequestIfAsked(void) {
   self.window.rootViewController.view.backgroundColor = UIColor.systemGreenColor;
   [self.window makeKeyAndVisible];
   UIView *root = self.window.rootViewController.view;
+  if ([NSProcessInfo.processInfo.arguments containsObject:@"-ServeSimFixtureInput"]) {
+    self.input = [[UITextField alloc] initWithFrame:CGRectMake(40, 100, 300, 60)];
+    self.input.accessibilityIdentifier = @"serve-sim-input";
+    self.input.borderStyle = UITextBorderStyleRoundedRect;
+    [self.input addTarget:self
+                   action:@selector(inputChanged:)
+         forControlEvents:UIControlEventEditingChanged];
+    [root addSubview:self.input];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      BOOL focused = [self.input becomeFirstResponder];
+      Record(@"focus", focused ? @"yes" : @"no");
+    });
+  }
   Record(@"permission", [NSString stringWithFormat:@"%ld", (long)[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo]]);
   [self showCameraIn:root];
   [NSNotificationCenter.defaultCenter addObserverForName:AVCaptureDeviceWasConnectedNotification
@@ -139,6 +153,10 @@ static void RequestIfAsked(void) {
                    dispatch_get_main_queue(), ^{ [self showCameraIn:root]; });
   }
   RecordURLContexts(connectionOptions.URLContexts);
+}
+
+- (void)inputChanged:(UITextField *)input {
+  Record(@"text", input.text ?: @"");
 }
 
 // Records what it saw either way, so a test can assert the feed without

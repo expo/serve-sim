@@ -1,15 +1,16 @@
-import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { expect, test } from "bun:test";
 
 function runProbe(mode = "ready") {
-  const result = spawnSync("python3", [
+  const result = Bun.spawnSync([
+    "python3",
     resolve(import.meta.dir, "fixtures/ready-retry-probe.py"),
     resolve(import.meta.dir, "../mitm-addon/servesim_capture.py"),
     mode,
-  ], { encoding: "utf8", timeout: 10_000 });
-  expect(result.status, result.stderr).toBe(0);
-  return JSON.parse(result.stdout);
+  ]);
+  const stderr = result.stderr.toString();
+  expect(result.exitCode, stderr).toBe(0);
+  return JSON.parse(result.stdout.toString());
 }
 
 test("addon readiness recovers when the control server rejects its first announcement", () => {

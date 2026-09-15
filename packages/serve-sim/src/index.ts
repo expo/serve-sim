@@ -573,7 +573,10 @@ async function follow(
       if (pid) stopProcess(pid);
       clearState(udid);
     }
-    await disarmDevicesArmedHereAsync();
+    await Promise.race([
+      disarmDevicesArmedHereAsync(),
+      new Promise((done) => setTimeout(done, SHUTDOWN_TIMEOUT_MS)),
+    ]);
     children.clear();
     process.exit(exitCode);
   };

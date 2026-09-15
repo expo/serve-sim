@@ -4,8 +4,9 @@ Local investigation against capture PR #157 (`99ad9c4`) plus selected-Xcode
 compatibility changes. The second runtime is Xcode 27 beta 6 with iOS 27 in
 Tart. Initial tests used 4 CPUs and 12 GB; later experiments used 8 CPUs.
 Both final full suites pass; the production app-registration polling experiment
-was removed in favor of a fixture installation barrier. Separate app-observed
-input validation is still under investigation.
+was removed in favor of a fixture installation barrier. A subsequent
+app-observed input comparison identified and fixed Xcode 27's HID transport
+handoff.
 
 The original four failed assertions span three distinct issues: a test process
 with the wrong architecture, capture startup failures (also causing missing
@@ -57,10 +58,10 @@ the config while leaving injection armed. Failed synchronous cleanup now keeps
 the device in `armedHere`, allowing the exit handler to retry.
 
 These changes improve interruption handling and keep the event loop responsive
-during final graceful removal. They do not guarantee completion within an
-external 30-second termination deadline: three individual management commands
-can each consume their existing 15-second timeout, after capture teardown.
-No test deadlines were increased.
+during final graceful removal. Follow mode now shares preview mode's bounded
+20-second shutdown budget, so a slow simulator management call cannot keep the
+CLI alive past the launch E2E's 30-second deadline. No test deadline was
+increased.
 
 ### App registration across reboot: reproduced outside serve-sim
 
@@ -86,7 +87,7 @@ immediately before the failing launch it returned success with only
 `CFBundleIdentifier`, without an executable or bundle path. A production polling
 experiment did not reliably fix the failure and was removed.
 
-### Pending installation operations: fixture fix under validation
+### Installation persistence: fixture fixed
 
 The simulator system log recorded installation finishing, then shutdown
 interrupting an `installd` request to save a LaunchServices operation through
@@ -95,18 +96,17 @@ the fixture in the partially decoded log, but the timing matches the immediate
 install/shutdown sequence. The pending-operation directory remained populated
 after simctl install returned.
 
-The cold E2E now waits for the simulator's
-`Library/MobileInstallation/LaunchServicesOperations` queue to drain before
-shutting down. It obtains the data path from simctl and checks that the observed
-queue layout exists. This is a test-fixture barrier using an observed private
-implementation detail, not a documented Apple durability API. A changed layout
-fails explicitly. It adds no warm-up launch, launch retry, or production wait,
-and retains the original first-request/HAR/quiet-JSON assertions and startup
-deadline.
+An empty `Library/MobileInstallation/LaunchServicesOperations` directory proved
+insufficient on Xcode 27. The cold E2E now waits for public `simctl appinfo` to
+return both the executable and bundle path, gives the idle install a three-second
+quiescent window, and verifies the same complete record immediately before
+shutdown. It adds no warm-up launch, launch retry, or production wait. The HAR
+assertion also waits for the specific request to be flushed instead of racing
+the writer immediately after the origin receives it.
 
-Three plain Xcode 26 install/reboot/launch experiments passed with this barrier;
-the queue drained in 0.86–1.33 seconds. Three subsequent real cold capture runs
-passed 3/3 tests each without the production polling experiment. The same three real cold-capture repetitions now pass on Xcode 27 as well.
+Three consecutive real cold-capture repetitions pass on Xcode 27 with this
+barrier, followed by the passing full suite. Xcode 26 passes the same test in its
+full suite. The production polling experiment remains removed.
 
 ### Shutdown signal registration race: fixed
 
@@ -156,18 +156,19 @@ Stage tracing measured 35.03 seconds inside HTTPServer construction; a direct
 VM's Homebrew Python. The system Python completed the same probe promptly.
 This happened before addon initialization.
 
-The loopback-only fixture now binds its HTTPServer through TCPServer and assigns
-its known display name directly, avoiding the unrelated reverse-DNS lookup.
-The same Homebrew Python now passes all three regressions in 5.14 seconds total,
-with the original individual test deadlines and addon retry budget unchanged.
-No production DNS behavior changed.
+The loopback-only fixture binds its HTTPServer through TCPServer and assigns its
+known display name directly, avoiding the unrelated reverse-DNS lookup. Bun's
+Node-compatible `spawnSync` still hung around the threaded Python loopback server
+inside Tart, while direct Python and `Bun.spawnSync` completed in under a second.
+The regression now uses Bun's native subprocess API. All three tests pass within
+their original deadlines; no production DNS or process behavior changed.
 
-## Separate input compatibility limitation
+## Xcode 27 input transport: fixed
 
-The complete suites pass, but the standalone input smoke is not fully passing
-on Xcode 27 beta 6. The network fixture's real button taps pass, including a
-focused rerun after keyboard experiments. A scene-based diagnostic initially
-received taps but no text; later variants also missed some taps.
+The original suite only asserted native send logs. A separate scene-based app
+showed the gap: legacy Indigo reported successful keyboard sends under Xcode 27
+beta 6, but its focused UITextField never changed. Some standalone tap attempts
+were inconsistent as well.
 
 Checks ruled out several simple explanations: fresh helpers and both startup
 orders, ordinary UIWindow instead of its diagnostic subclass, active/key-window
@@ -176,17 +177,24 @@ state, successful first-responder selection, a responsive main queue, correct
 A separate sender reported successful completions but the focused app observed
 no text. Hardware-keyboard on/off did not resolve it.
 
-The physical Mac reports CoreGraphics/Indigo keyboard type 198, versus 0 in
-Tart. The constructor's disassembly is unchanged between Xcodes. An experimental
-message override to 198 and the generic HID constructor did not restore text;
-that difference alone is not an established cause. None of those experimental
-message changes is in production code.
+The same probe in a Tart guest with Xcode 26.4 delivered its tap and every typed
+character (`a` through `f`). This ruled out the VM and fixture. Current idb's
+transport selection documents the matching cause: CoreSimulator 1155.4+ hands
+input to the CoreDevice `dtuhidd` service. The legacy client can deliver the
+right bytes and still have the guest drop them.
 
-The existing typing E2E checks native send logs, not the app's field value. This
-is a real coverage gap. Complete input parity remains unverified; the next
-useful comparison is the same app-observed probe on an Xcode 26 Tart guest to
-separate VM-specific behavior from Xcode 27 behavior. No speculative native
-input rewrite is included with the startup/capture fixes.
+A minimal Xcode 27 probe looked up
+`com.apple.coredevice.feature.remote.hid.digitizer`, enabled the simulator-to-host
+XPC connection, sent an `IndigoKeyboardButtonEvent`, and received the service's
+barrier reply. The app recorded `a`. Serve-sim now selects this transport when
+the service is available and retains Indigo when it is not. Keyboard, touch,
+multi-touch, scroll touch events, and arbitrary HID buttons use the selected
+transport. The typing E2E now asserts the fixture's final UITextField value, so
+a successful native send that is dropped before UIKit fails the suite.
+
+The physical Mac reports CoreGraphics/Indigo keyboard type 198, versus 0 in
+Tart. Earlier message-field overrides did not restore text and are not included;
+the proved fix changes transport rather than opaque Indigo bytes.
 
 ## Validation status
 
@@ -196,17 +204,18 @@ input rewrite is included with the startup/capture fixes.
 - Actual network fixture: all six scenarios passed on Xcode 27 in the completed
   full run, including first requests, large POST/HAR, capture off/reconnect,
   startup defaults, and reboot. The final full Xcode 26 run passes as well.
-- Three repeated cold capture runs pass on each Xcode with the fixture barrier
-  and no production registration polling: 3/3 tests per run.
+- Three repeated cold capture runs pass on Xcode 27 with the fixture barrier and
+  no production registration polling: 3/3 tests per run. The same case passes
+  on Xcode 26 as part of its full suite.
 - Scene-based interaction smoke passes on Xcode 26: changing stream frames,
   accessibility, taps, typing, single launch/arguments, deep link, and Home.
-- The intermediate Xcode 27 full run completed with 1,279 passed and 5 failed:
-  two cold-launch assertions and three probe timeouts. It predates the final
-  fixture barrier and DNS fix. No skipped tests; 1,284 tests across 162 files.
-- Final Xcode 26 full suite: 1,278 passed, zero failed or skipped, across 161
-  files in 489.17 seconds. Xcode 27 final full suite also passes all 1,278 tests
-  with zero failures/skips in 738.59 seconds. Its separate scene smoke has
-  inconsistent input delivery; input diagnosis continues.
+- The identical Tart input probe passes through legacy Indigo on Xcode 26.4.
+  Xcode 27's runtime-selected DTUHID path passes app-observed tap and exact text
+  checks; its real network fixture also receives both button taps.
+- The final post-DTUHID matrix passes 1,278 tests with zero failures across 161
+  files on each Xcode: 399.33 seconds on Xcode 26.4 and 590.01 seconds on Xcode
+  27 beta 6. This includes the app-observed input assertion, cold first-request
+  capture, large POST/HAR capture, reconnects, and launch cleanup.
 
 Logs and temporary experiments are under
 `/private/tmp/serve-sim-xcode27-validation`, with VM results in `vm27/`.

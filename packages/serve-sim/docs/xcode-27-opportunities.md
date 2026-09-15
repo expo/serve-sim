@@ -1,11 +1,10 @@
 # Xcode 27 and Device Hub opportunities
 
 Research checked September 15, 2026. This note describes upstream evidence,
-inspection and focused runtime experiments on Xcode 27 beta 6. Capture and
-accessibility work in the smoke test. The legacy-window fixture missed taps,
-but a scene-based fixture receives them; actual text entry is still under
-investigation. Final-release documentation may
-describe fixes newer than the inspected beta.
+inspection and focused runtime experiments on Xcode 27 beta 6. Capture,
+accessibility, taps, and text entry work after selecting the CoreDevice DTUHID
+transport at runtime. Final-release documentation may describe fixes newer than
+the inspected beta.
 
 ## Compatibility first
 
@@ -104,7 +103,8 @@ was performed for this note; a simulator-only Tart VM cannot establish it.
 ## Private API boundary
 
 The existing native backend uses SimulatorKit/CoreSimulator selectors, Indigo
-HID messages, IOSurface callbacks, and an accessibility translation bridge.
+HID messages, the CoreDevice `dtuhidd` service, IOSurface callbacks, and an
+accessibility translation bridge.
 These are private contracts. New Device Hub frameworks, exported symbols, or
 protocol names are research leads, not evidence that an unsigned third-party
 helper has the required entitlement or that an ABI is stable. Keep any new
@@ -157,11 +157,11 @@ tool schemas. Exact MCP touch schemas remain unverified without connecting to
 the running Xcode service.
 
 
-The initial legacy-window input fixture found no app-observed tap despite
-successful HID send completions, longer presses, and foregrounding Device Hub.
-A subsequent scene-based fixture receives taps at the expected coordinates, so
-the earlier result does not establish a broken touch backend. The Indigo
-touch constructor and legacy initialization disassembly did not expose an ABI
-change that explains this. Device Hub symbols instead reference DeviceKit and
-CoreDevice HID service registration with UniversalHID digitizer reports. These
-are leads for the next input experiment, not a verified replacement API.
+An identical scene-based probe in Tart proved the transport boundary: legacy
+Indigo delivered taps and text under Xcode 26.4 but silently dropped keyboard
+input under Xcode 27 beta 6 despite successful send completions. Current idb
+documents the same CoreSimulator 1155.4 handoff to `dtuhidd`. A direct local
+probe connected to the CoreDevice digitizer service, received its barrier reply,
+and delivered text to UIKit. Serve-sim now selects that service by capability
+and keeps Indigo as the fallback for older Xcodes; app-observed tap and typing
+checks pass on both versions.

@@ -30,9 +30,9 @@
 5. Validate the same build with Xcode 27 in a Tart VM, using explicit
    `DEVELOPER_DIR` values. Do not call support complete until this matrix passes.
 
-Steps 1–4 are complete on this branch. Validation results are recorded below.
+Steps 1–5 are complete on this branch. Validation results are recorded below.
 
-## Remaining runtime validation
+## Runtime validation matrix
 
 For each Xcode installation, run the rebuilt local CLI with that installation's
 `DEVELOPER_DIR`. Start from a stopped host app, select a simulator, and verify:
@@ -45,15 +45,15 @@ For each Xcode installation, run the rebuilt local CLI with that installation's
 - Switching Xcode works after restarting serve-sim (native frameworks stay loaded
   for the life of the process).
 
-Audit these remaining Simulator-specific integrations on a real Xcode 27 host:
+The local Xcode 26.4 host and Xcode 27 beta 6 Tart VM passed this matrix. Audit
+these remaining Device Hub-specific integrations on a real interactive Xcode 27
+host:
 
 - `host-actions.ts` uses Simulator's watchOS window and Device > Home menu.
   Device Hub's accessibility/menu structure must be inspected before adapting it.
 - `middleware.ts` uses Simulator's `CurrentDeviceUDID` preference as an optional
   sorting hint. Device Hub's equivalent is unverified; this does not select the
   streamed device.
-- Private HID, frame-capture, and accessibility selectors need actual Xcode 27
-  binary/runtime checks. Existing framework-path probes do not prove API parity.
 
 ## Focused test commands
 
@@ -89,11 +89,12 @@ bun run packages/serve-sim/build.ts
 - Xcode 27 beta 6 (27A5252f), iOS 27 (24A5423a), macOS 26.6.2:
   the same Xcode 26-built binary opens Device Hub, starts successfully, captures
   live 1206×2622 frames, and returns a populated accessibility tree. The fixture
-  installs and launches. The original legacy-window fixture did not receive
-  touches; a later scene-based fixture does receive button and text-field taps
-  at the expected coordinates. Its text-entry smoke still needs diagnosis, so
-  complete input parity is not yet claimed. Home can use the simctl SpringBoard
-  fallback; that alone does not establish working HID buttons.
+  installs and launches. CoreSimulator 1155.4+ suppresses legacy Indigo keyboard
+  delivery even though the old client reports successful sends. Serve-sim now
+  discovers the `dtuhidd` CoreDevice service at runtime and uses it for keyboard,
+  touch, multi-touch, scroll, and arbitrary HID buttons when available. The same
+  app-observed fixture records exact typed text and button taps on both Xcode
+  versions. Home continues to use the existing simctl SpringBoard fallback.
 - The VM is `serve-sim-xcode27` (initially 4 CPUs, now 8 CPUs, 12 GB memory), cloned from
   `ghcr.io/cirruslabs/macos-tahoe-xcode:27-beta-6`, pinned to digest
   `sha256:f441eb487a18b4588c096adcff5eb48fddca550909e01c472580872b48c166b0`.
@@ -105,22 +106,24 @@ bun run packages/serve-sim/build.ts
   2400×1800 PNG showing the expected layout. This is a tooling experiment;
   serve-sim display selection and input mapping for that display remain untested.
 
-## Capture PR validation and remaining input check
+## Capture PR and input validation
 
 The capture PR #157 tip was validated with this compatibility work. The final
-runs pass all 1,278 tests on each Xcode with zero failures or skips. Three consecutive real cold
-capture launches also pass on each Xcode after fixing a fixture installation
-race. See
+runs pass all 1,278 tests on each Xcode with zero failures or skips: 399.33
+seconds on Xcode 26.4 and 590.01 seconds on Xcode 27 beta 6. Three consecutive
+real cold capture launches also pass on Xcode 27 after fixing a fixture
+installation race. See
 [xcode-27-failure-investigation.md](xcode-27-failure-investigation.md) for root
 causes, minimal fixes, and final results.
 
-The scene-based input check is still open: text is not received despite confirmed
-focus, and some standalone taps are inconsistent. Disassembly shows an unchanged
-Indigo keyboard-message constructor between Xcodes. Verify text-field focus,
-keyboard connection state, and app-observed key events before changing the
-input backend. Existing typing tests only observe native send logs, so their
-success is insufficient to prove actual text entry. Device Hub's watchOS menu
-integration and serving its separate Resizable display remain separate work.
+An identical app-observed input probe in Tart separated the transport change
+from virtualization: Xcode 26.4 delivered `a` through legacy Indigo, while Xcode
+27 beta 6 accepted the same message but dropped it. Sending `a` through the
+CoreDevice `dtuhidd` service produced its barrier reply and updated the field.
+The production runtime-selected transport then passed the same typing and tap
+checks. The typing E2E now asserts the fixture's UITextField value in addition
+to native send logs. Device Hub's watchOS menu integration and serving its
+separate Resizable display remain separate work.
 
 Validation artifacts and disposable fixture sources are currently under
 `/private/tmp/serve-sim-xcode27-validation`, with VM evidence in `vm27/`.

@@ -1588,6 +1588,11 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const requirePreviewToken = options?.requirePreviewToken ?? false;
   const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
   const frameAncestors = options?.frameAncestors ?? [];
+  // Every gated HTML response carries this, not just the preview page: the DevTools
+  // frontend is an authenticated, interactive surface behind the same cookie.
+  const framePolicyHeaders: Record<string, string> = requirePreviewToken
+    ? { "Content-Security-Policy": frameAncestorsPolicy(frameAncestors) }
+    : {};
 
   // Simulator-settings requests run in-process (just the underlying simctl /
   // ax-tool spawn) instead of round-tripping a full `node <cli>` exec per
@@ -1684,6 +1689,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         );
         const headers: Record<string, string> = {
           "Cache-Control": "public, max-age=604800",
+          ...framePolicyHeaders,
         };
         const contentType = upstream.headers.get("content-type");
         if (contentType) headers["Content-Type"] = contentType;
@@ -1723,9 +1729,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
-        ...(requirePreviewToken
-          ? { "Content-Security-Policy": frameAncestorsPolicy(frameAncestors) }
-          : {}),
+        ...framePolicyHeaders,
       });
       res.end(html);
       return;

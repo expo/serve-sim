@@ -25,7 +25,8 @@ import {
   sendCorsPreflight,
   type HidSocket,
 } from "./device-session";
-import { assertPreviewAccess, assertUpgradeAccess } from "./session-auth";
+import { assertPreviewAccess, assertUpgradeAccess, matchesBearerToken } from "./session-auth";
+import { readRequestBodyAsync, RequestBodyTooLargeError } from "./runtime-utils";
 import {
   eventLogEventForAction,
   readEventLog,
@@ -46,6 +47,7 @@ import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
 import { type WebMiddleware } from "./runtime-utils";
 import { connectToFetch, type ConnectMiddleware } from "./connect-to-fetch";
+import { readSimPasteboardResult, writeSimPasteboard } from "./sim-pasteboard";
 
 type SimReq = IncomingMessage;
 type SimRes = ServerResponse;
@@ -180,8 +182,11 @@ function isSimulatorUdid(value: string): boolean {
   return /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(value);
 }
 
-const SCREENSHOT_RESPONSE_HEADERS = {
+const API_CORS_RESPONSE_HEADERS = {
   "Access-Control-Allow-Origin": "*",
+  "Cache-Control": "no-store",
+};
+const PASTEBOARD_RESPONSE_HEADERS = {
   "Cache-Control": "no-store",
 };
 
@@ -1716,7 +1721,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
       if (state) {
         const remoteState = rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers);
-        const config = JSON.stringify(previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers));
+        const config = JSON.stringify(
+          previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers),
+        );
         const configScript = `<script>window.__SIM_PREVIEW__=${config}</script>`;
         html = html.replace("<!--__SIM_PREVIEW_CONFIG__-->", configScript);
       }
@@ -2154,7 +2161,11 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         "Cache-Control": "no-store",
       });
       const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
-      res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers) : null));
+      res.end(JSON.stringify(
+        remoteState
+          ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers)
+          : null,
+      ));
       return;
     }
 
@@ -2165,7 +2176,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     if (url === base + "/api/screenshot") {
       if (req.method !== "POST") {
         res.writeHead(405, {
-          ...SCREENSHOT_RESPONSE_HEADERS,
+          ...API_CORS_RESPONSE_HEADERS,
           "Content-Type": "text/plain; charset=utf-8",
         });
         res.end("method not allowed");
@@ -2174,7 +2185,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       let udid = selectedDevice;
       if (udid && !isSimulatorUdid(udid)) {
         res.writeHead(400, {
-          ...SCREENSHOT_RESPONSE_HEADERS,
+          ...API_CORS_RESPONSE_HEADERS,
           "Content-Type": "application/json",
         });
         res.end(JSON.stringify({ ok: false, error: "Invalid simulator device ID" }));
@@ -2186,7 +2197,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       }
       if (!udid) {
         res.writeHead(400, {
-          ...SCREENSHOT_RESPONSE_HEADERS,
+          ...API_CORS_RESPONSE_HEADERS,
           "Content-Type": "application/json",
         });
         res.end(JSON.stringify({ ok: false, error: "No booted simulator to screenshot" }));
@@ -2209,7 +2220,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         });
         const png = await readFile(file);
         res.writeHead(200, {
-          ...SCREENSHOT_RESPONSE_HEADERS,
+          ...API_CORS_RESPONSE_HEADERS,
           "Content-Type": "image/png",
         });
         res.end(png);
@@ -2219,13 +2230,112 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           (typeof stderr === "string" && stderr.trim()) ||
           (err instanceof Error ? err.message : String(err));
         res.writeHead(500, {
-          ...SCREENSHOT_RESPONSE_HEADERS,
+          ...API_CORS_RESPONSE_HEADERS,
           "Content-Type": "application/json",
         });
         res.end(JSON.stringify({ ok: false, error: message }));
       } finally {
         // Best-effort cleanup; the PNG is already in memory by now.
         await unlink(file).catch(() => {});
+      }
+      return;
+    }
+
+    if (url === base + "/api/pasteboard") {
+      if (req.method !== "POST" && req.method !== "PUT") {
+        res.writeHead(405, {
+          ...PASTEBOARD_RESPONSE_HEADERS,
+          "Content-Type": "text/plain; charset=utf-8",
+        });
+        res.end("method not allowed");
+        return;
+      }
+      if (!matchesBearerToken(req.headers.authorization, execToken)) {
+        res.writeHead(401, {
+          ...PASTEBOARD_RESPONSE_HEADERS,
+          "Content-Type": "application/json",
+        });
+        res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
+        return;
+      }
+      let udid = selectedDevice;
+      if (udid && !isSimulatorUdid(udid)) {
+        res.writeHead(400, {
+          ...PASTEBOARD_RESPONSE_HEADERS,
+          "Content-Type": "application/json",
+        });
+        res.end(JSON.stringify({ ok: false, error: "Invalid simulator device ID" }));
+        return;
+      }
+      if (!udid) {
+        const booted = await getBootedUdids();
+        udid = (booted && [...booted][0]) ?? null;
+      }
+      if (!udid) {
+        res.writeHead(400, {
+          ...PASTEBOARD_RESPONSE_HEADERS,
+          "Content-Type": "application/json",
+        });
+        res.end(JSON.stringify({ ok: false, error: "No booted simulator available" }));
+        return;
+      }
+      try {
+        if (req.method === "PUT") {
+          let body: Buffer | undefined;
+          try {
+            body = await readRequestBodyAsync(req, 4 * 1024 * 1024);
+          } catch (error) {
+            if (!(error instanceof RequestBodyTooLargeError)) throw error;
+            res.writeHead(413, {
+              ...PASTEBOARD_RESPONSE_HEADERS,
+              "Content-Type": "application/json",
+            });
+            res.end(JSON.stringify({ ok: false, error: "Clipboard text is too large" }));
+            return;
+          }
+          let parsed: { text?: unknown };
+          try {
+            parsed = JSON.parse(body?.toString("utf-8") ?? "") as { text?: unknown };
+          } catch {
+            res.writeHead(400, {
+              ...PASTEBOARD_RESPONSE_HEADERS,
+              "Content-Type": "application/json",
+            });
+            res.end(JSON.stringify({ ok: false, error: "Invalid JSON" }));
+            return;
+          }
+          if (typeof parsed.text !== "string") {
+            res.writeHead(400, {
+              ...PASTEBOARD_RESPONSE_HEADERS,
+              "Content-Type": "application/json",
+            });
+            res.end(JSON.stringify({ ok: false, error: "Clipboard text must be a string" }));
+            return;
+          }
+          await writeSimPasteboard(udid, parsed.text);
+          res.writeHead(200, {
+            ...PASTEBOARD_RESPONSE_HEADERS,
+            "Content-Type": "application/json",
+          });
+          res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+
+        const result = await readSimPasteboardResult(udid);
+        res.writeHead(200, {
+          ...PASTEBOARD_RESPONSE_HEADERS,
+          "Content-Type": "application/json",
+        });
+        res.end(JSON.stringify({ ok: true, ...result }));
+      } catch (error) {
+        res.writeHead(500, {
+          ...PASTEBOARD_RESPONSE_HEADERS,
+          "Content-Type": "application/json",
+        });
+        res.end(JSON.stringify({
+          ok: false,
+          error: error instanceof Error ? error.message : "Could not access the simulator pasteboard",
+        }));
       }
       return;
     }
@@ -2290,7 +2400,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         const state = selectServeSimState(states, selectedDevice);
         const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
         return JSON.stringify(
-          remoteState ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers) : null,
+          remoteState
+            ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers)
+            : null,
         );
       };
 

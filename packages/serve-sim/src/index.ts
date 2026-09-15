@@ -42,6 +42,7 @@ import { findBootedDevice, resolveDevice } from "./device";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
 import { camera } from "./camera-command";
 import { cameraCapability, stopExistingHelper } from "./camera-runtime";
+import { clipboardCapability } from "./sim-pasteboard";
 import { permissions } from "./permissions";
 import { uiSettings } from "./ui-settings";
 import { debugCli, debugHelper, debugState } from "./debug";
@@ -1579,25 +1580,27 @@ Examples:
             await armCapabilityLoader(udid);
             if (sessionStopping) return;
           }
-        }
-        for (const udid of launchesBeforeStreaming ? targets : []) {
-          if (sessionStopping) return;
-          if (bundleId) {
-            await launchAppAsync(udid, { bundleId, launchArgs, openUrl, capabilities });
-          } else {
-            const applied = await applyDefaultCapabilities(udid, null, capabilities);
-            const missing = capabilities.enable.filter((name) => !applied.includes(name));
-            if (missing.length > 0) {
-              console.error(
-                `Requested ${missing.join(", ")} but ${missing.length === 1 ? "it" : "they"} ` +
-                  `did not apply on ${udid}. See the message above for why.`,
-              );
-              process.exit(1);
+          for (const udid of launchesBeforeStreaming ? targets : []) {
+            if (sessionStopping) return;
+            if (bundleId) {
+              await launchAppAsync(udid, { bundleId, launchArgs, openUrl, capabilities });
+            } else {
+              const applied = await applyDefaultCapabilities(udid, null, capabilities);
+              const missing = capabilities.enable.filter((name) => !applied.includes(name));
+              if (missing.length > 0) {
+                console.error(
+                  `Requested ${missing.join(", ")} but ${missing.length === 1 ? "it" : "they"} ` +
+                    `did not apply on ${udid}. See the message above for why.`,
+                );
+                process.exit(1);
+              }
             }
           }
         }
       } catch (error) {
         console.error(error instanceof Error ? error.message : error);
+        sessionStopping = true;
+        await disarmDevicesArmedHereAsync();
         process.exit(1);
       }
     }
@@ -1718,5 +1721,6 @@ program
   .action((args: string[]) => uiSettings(args));
 
 registerCapability(cameraCapability);
+registerCapability(clipboardCapability);
 
 await program.parseAsync(process.argv);

@@ -73,6 +73,14 @@ import { openHostEventStream, runHostAction } from "./utils/exec";
 import { hidUsageForCode } from "./utils/hid";
 import { keydownForward } from "./utils/mobile-keyboard";
 import {
+  copyTextToSim,
+  simCopyHidEvents,
+  simPasteHidEvents,
+  type HidKeyEvent,
+} from "./utils/sim-clipboard";
+import { useClipboardToast } from "./hooks/use-clipboard-toast";
+import { ActionMenu } from "./components/action-menu";
+import {
   DEVICE_SIDEBAR_WIDTH,
   DEVTOOLS_PANEL_WIDTH,
   PANEL_WIDTH,
@@ -112,6 +120,13 @@ import {
 // ─── App ───
 
 type PreviewConfig = NonNullable<Window["__SIM_PREVIEW__"]>;
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  return target.isContentEditable;
+}
 
 function previewConfigKey(config: PreviewConfig | null): string {
   return config
@@ -1005,6 +1020,51 @@ function AppWithConfig({
     sendKey("up", R);
   }, [sendKey]);
 
+  const shortcutChainRef = useRef<Promise<void>>(Promise.resolve());
+  const sendShortcut = useCallback(
+    (build: (pressed: Set<number>) => HidKeyEvent[]) => {
+      const run = shortcutChainRef.current.catch(() => {}).then(async () => {
+        const pressed = pressedKeysRef.current;
+        const gap = () => new Promise<void>((r) => setTimeout(r, 30));
+        for (const ev of build(pressed)) {
+          if (ev.type === "up") await gap();
+          sendKey(ev.type, ev.usage);
+          if (ev.type === "up") pressed.delete(ev.usage);
+          else pressed.add(ev.usage);
+        }
+      });
+      shortcutChainRef.current = run;
+      return run;
+    },
+    [sendKey],
+  );
+
+  const pasteChainRef = useRef<Promise<void>>(Promise.resolve());
+  const sendSimPaste = useCallback(() => sendShortcut(simPasteHidEvents), [sendShortcut]);
+
+  const sendSimCopy = useCallback(async () => {
+    await sendShortcut(simCopyHidEvents);
+    await new Promise<void>((r) => setTimeout(r, 150));
+  }, [sendShortcut]);
+
+  const sendTextToSim = useCallback(
+    (text: string): Promise<boolean> => {
+      const run = pasteChainRef.current.catch(() => {}).then(async () => {
+        if (!(await copyTextToSim(config.device, text))) return false;
+        await sendSimPaste();
+        return true;
+      });
+      pasteChainRef.current = run.then(
+        () => {},
+        () => {},
+      );
+      return run;
+    },
+    [config.device, sendSimPaste],
+  );
+
+  const clipboard = useClipboardToast(config.device, sendSimCopy, sendTextToSim);
+
   const simContainerRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const flipRef = useRef<HTMLDivElement | null>(null);
@@ -1122,6 +1182,7 @@ function AppWithConfig({
     const onKey = (e: KeyboardEvent, type: "down" | "up") => {
       const simFocused = simFocusedRef.current;
       const keyboardOpen = keyboardOpenRef.current;
+      if (isTypingTarget(e.target) && !keyboardOpen) return;
       if (simFocused && !keyboardOpen) {
         if (e.code === "KeyH" && e.metaKey && e.shiftKey) {
           e.preventDefault();
@@ -1150,6 +1211,21 @@ function AppWithConfig({
           if (type === "down" && !e.repeat) sendWs(0x0c, {});
           return;
         }
+      }
+      if (
+        simFocused &&
+        !keyboardOpen &&
+        e.code === "KeyV" &&
+        (e.metaKey || e.ctrlKey) &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        const held = hidUsageForCode(e.code);
+        if (type === "up" && held != null && pressedKeysRef.current.has(held)) {
+          pressedKeysRef.current.delete(held);
+          sendWs(0x06, { type, usage: held });
+        }
+        return;
       }
       if (type === "up") {
         // Always release a key we are holding, even if the gate changed since the
@@ -1180,6 +1256,19 @@ function AppWithConfig({
       window.removeEventListener("keyup", up);
     };
   }, [sendWs, config.device, rotateBy]);
+
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (!simFocusedRef.current) return;
+      if (isTypingTarget(e.target)) return;
+      const text = e.clipboardData?.getData("text/plain");
+      if (!text) return;
+      e.preventDefault();
+      void clipboard.pasteText(text);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [clipboard]);
 
   const uploads = useUploadToasts();
   const screenshot = useScreenshotToast(config.device);
@@ -1538,6 +1627,22 @@ function AppWithConfig({
                 title="Screenshot"
                 onClick={(e) => { e.preventDefault(); void screenshot.capture(); }}
               />
+              <ActionMenu
+                items={[
+                  {
+                    label: "Copy from Simulator",
+                    description: "Simulator clipboard to this device",
+                    onSelect: () => void clipboard.copyFromSim(),
+                  },
+                  {
+                    label: "Paste from Device",
+                    description: "This device's clipboard to the simulator",
+                    onSelect: () => void clipboard.pasteFromDevice(),
+                  },
+                ]}
+              >
+                {(trigger) => <SimulatorToolbar.CopyButton title="Clipboard" {...trigger} />}
+              </ActionMenu>
               <SimulatorToolbar.RotateButton title="Rotate device" />
             </SimulatorToolbar.Actions>
           </SimulatorToolbar>

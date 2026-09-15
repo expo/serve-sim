@@ -41,9 +41,17 @@ export interface CaptureCounts {
   pollLateSumMs: number | null;
 }
 
+/// Which encoder the publisher selected. `hardware: false` means the stream is being
+/// encoded on the CPU, which otherwise looks identical to a healthy one.
+export interface EncoderIdentity {
+  id: string | null;
+  hardware: boolean | null;
+}
+
 export interface SenderStats {
   capture?: CaptureCounts | null;
   sessions: SenderStreamStats[];
+  encoder?: EncoderIdentity | null;
 }
 
 export function senderSessionForViewer(
@@ -119,11 +127,20 @@ function readSenderSession(raw: Record<string, unknown>): SenderStreamStats {
   };
 }
 
+function readEncoderIdentity(raw: unknown): EncoderIdentity | null {
+  if (!isRecord(raw)) return null;
+  return {
+    id: maybeString(raw.id),
+    hardware: typeof raw.hardware === "boolean" ? raw.hardware : null,
+  };
+}
+
 export function readSenderStats(raw: unknown): SenderStats {
   if (!isRecord(raw) || !Array.isArray(raw.sessions)) return { sessions: [] };
   return {
     sessions: raw.sessions.filter(isRecord).map(readSenderSession),
     capture: readCaptureCounts(raw.capture),
+    encoder: readEncoderIdentity(raw.encoder),
   };
 }
 

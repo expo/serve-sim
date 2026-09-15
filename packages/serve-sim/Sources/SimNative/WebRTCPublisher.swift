@@ -84,9 +84,17 @@ struct WebRTCCaptureCounts: Codable {
     let pollLateSumMs: Double
 }
 
+/// Which encoder the publisher actually selected. Surfaced so a silent downgrade to a
+/// software encoder is visible instead of looking like an ordinary slow stream.
+struct WebRTCEncoderIdentity: Codable {
+    let id: String?
+    let hardware: Bool?
+}
+
 struct WebRTCSenderStatsReport: Codable {
     let sessions: [WebRTCSenderStatsPayload]
     let capture: WebRTCCaptureCounts?
+    let encoder: WebRTCEncoderIdentity?
 }
 
 private final class WebRTCSignalingCompletion: @unchecked Sendable {
@@ -438,6 +446,13 @@ final class WebRTCPublisher: @unchecked Sendable {
     private static func statsDurations(_ statistics: LKRTCStatistics?, _ key: String) -> [String: Double]? {
         guard let durations = statistics?.values[key] as? [String: NSNumber] else { return nil }
         return durations.mapValues(\.doubleValue)
+    }
+
+    func encoderIdentity() -> WebRTCEncoderIdentity {
+        WebRTCEncoderIdentity(
+            id: h264WebRTCSupport.encoderID,
+            hardware: h264WebRTCSupport.usesHardware
+        )
     }
 
     func frameFlowCounts() -> (offered: UInt64, forwarded: UInt64, pumpRestarts: UInt64) {

@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Download } from "lucide-react";
 
 import { triggerBrowserDownload } from "../utils/screenshot-capture";
-import type { CaptureCounts, SenderStreamStats } from "../../webrtc-sender-stats";
+import type { CaptureCounts, EncoderIdentity, SenderStreamStats } from "../../webrtc-sender-stats";
 import type { StreamStats } from "../utils/webrtc-stats";
 import { Sparkline } from "./sparkline";
 
@@ -12,6 +12,7 @@ export function StreamStatsBody({
   faults,
   sender,
   capture,
+  encoder,
   requestedFps,
   stale,
   action,
@@ -21,6 +22,7 @@ export function StreamStatsBody({
   faults: string[];
   sender?: SenderStreamStats | null;
   capture?: CaptureCounts | null;
+  encoder?: EncoderIdentity | null;
   requestedFps?: number;
   stale?: boolean;
   action?: ReactNode;
@@ -76,14 +78,26 @@ export function StreamStatsBody({
         )}
       </div>
 
-      {sender && <SenderRows sender={sender} />}
+      {sender && <SenderRows sender={sender} encoder={encoder} />}
       {capture && <CaptureRows capture={capture} />}
     </div>
   );
 }
 
 /** The encoder's own view. None of this is visible to a receive-only browser. */
-function SenderRows({ sender }: { sender: SenderStreamStats }) {
+/// Short, readable name for an encoder id. The paravirtualized prefix marks a guest that
+/// is reaching the host's hardware encoder; a bare software id means the CPU is doing it.
+function encoderLabel(encoder: EncoderIdentity): string {
+  const id = encoder.id ?? "";
+  const tail = id.split(".").pop() ?? id;
+  const kind = encoder.hardware === true ? "hardware" : encoder.hardware === false ? "CPU" : "?";
+  if (!id) return kind;
+  return `${id.startsWith("paravirtualized:") ? `paravirt ${tail}` : tail} (${kind})`;
+}
+
+function SenderRows(
+  { sender, encoder }: { sender: SenderStreamStats; encoder?: EncoderIdentity | null },
+) {
   return (
     <div className="flex flex-col gap-0.5 border-t border-white/10 pt-1.5">
       <div className="pb-0.5 text-[10px] uppercase tracking-[0.08em] text-white/30">Encoder</div>
@@ -94,6 +108,7 @@ function SenderRows({ sender }: { sender: SenderStreamStats }) {
         <Cell label="Encode" value={ms(sender.encodeMsPerFrame, 1)} hint="/frame" />
         <Cell label="Frames sent" value={compact(sender.framesSent)} />
         <Cell label="Loss" value={percent(sender.lossRatio)} hint="total" />
+        {encoder && <Cell label="Using" value={encoderLabel(encoder)} />}
       </div>
     </div>
   );
@@ -247,6 +262,7 @@ export function StreamStatsSection({
   faults,
   sender,
   capture,
+  encoder,
   requestedFps,
   stale,
   action,
@@ -256,6 +272,7 @@ export function StreamStatsSection({
   faults: string[];
   sender?: SenderStreamStats | null;
   capture?: CaptureCounts | null;
+  encoder?: EncoderIdentity | null;
   requestedFps?: number;
   stale?: boolean;
   action?: ReactNode;
@@ -268,6 +285,7 @@ export function StreamStatsSection({
       faults={faults}
       sender={sender}
       capture={capture}
+      encoder={encoder}
       requestedFps={requestedFps}
       stale={stale}
       action={action}

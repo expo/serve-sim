@@ -18,6 +18,23 @@ const ICE_GATHERING_TIMEOUT_MS = 3_000;
 // fresh browser deadline; time spent retrying 409s cannot consume it.
 const SIGNALING_REQUEST_TIMEOUT_MS = 20_000;
 const FIRST_FRAME_TIMEOUT_MS = 4_000;
+/// Whether any inbound video frame has arrived yet.
+async function videoRtpArriving(pc: RTCPeerConnection | null): Promise<boolean> {
+  if (!pc) return false;
+  try {
+    let arriving = false;
+    (await pc.getStats()).forEach((entry) => {
+      if (entry.type !== "inbound-rtp") return;
+      const video = entry as RTCInboundRtpStreamStats & { framesReceived?: number };
+      if (video.kind !== "video") return;
+      if ((video.framesReceived ?? 0) > 0) arriving = true;
+    });
+    return arriving;
+  } catch {
+    return false;
+  }
+}
+
 const BUSY_RETRY_INTERVAL_MS = 500;
 // Native serializes offer setup. Retry beyond its 10s orphan deadline so one
 // stalled negotiation cannot prevent another viewer from joining.
@@ -217,16 +234,31 @@ export function useWebRtcStream({
           if (firstFrameTimeoutRef.current !== undefined) {
             window.clearTimeout(firstFrameTimeoutRef.current);
           }
-          firstFrameTimeoutRef.current = window.setTimeout(() => {
-            firstFrameTimeoutRef.current = undefined;
-            if (stopped || firstFrameDecodedRef.current) return;
-            const state = pc?.connectionState ?? "closed";
-            if (webRtcFailureDisposition("first-frame-timeout", state) === "codec") {
-              failCodec();
-            } else {
-              retryTransport("WebRTC did not establish a video path.");
-            }
-          }, FIRST_FRAME_TIMEOUT_MS);
+          // One extra window when RTP is arriving, so a slow first paint is not mistaken
+          // for a broken codec. Bounded: an undecodable stream still falls back.
+          let graceUsed = false;
+          const armFirstFrameWatchdog = () => {
+            firstFrameTimeoutRef.current = window.setTimeout(() => {
+              firstFrameTimeoutRef.current = undefined;
+              if (stopped || firstFrameDecodedRef.current) return;
+              const state = pc?.connectionState ?? "closed";
+              void videoRtpArriving(pc).then((mediaArriving) => {
+                if (stopped || firstFrameDecodedRef.current) return;
+                const disposition = webRtcFailureDisposition("first-frame-timeout", state, {
+                  mediaArriving,
+                });
+                if (disposition === "wait" && !graceUsed) {
+                  graceUsed = true;
+                  armFirstFrameWatchdog();
+                } else if (disposition === "transport") {
+                  retryTransport("WebRTC did not establish a video path.");
+                } else {
+                  failCodec();
+                }
+              });
+            }, FIRST_FRAME_TIMEOUT_MS);
+          };
+          armFirstFrameWatchdog();
         };
         pc.onconnectionstatechange = () => {
           if (stopped || !pc || pc.connectionState !== "failed") return;

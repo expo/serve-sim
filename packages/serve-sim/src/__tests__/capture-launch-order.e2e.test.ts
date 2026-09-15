@@ -41,12 +41,14 @@ async function waitFor(
   timeoutMessage = "Capture startup did not complete within the test deadline",
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  while (!check() && Date.now() < deadline) {
+  let passed = check();
+  while (!passed && Date.now() < deadline) {
     const error = failure();
     if (error) throw new Error(error);
     await Bun.sleep(250);
+    passed = check();
   }
-  expect(check(), failure() ?? timeoutMessage).toBe(true);
+  expect(passed, failure() ?? timeoutMessage).toBe(true);
 }
 
 const describeOrSkip = ready ? describe : describe.skip;

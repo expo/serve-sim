@@ -22,7 +22,6 @@ test("addon readiness recovers when the control server rejects its first announc
   ]);
 });
 
-
 test("addon readiness stops after its bounded attempt budget", () => {
   const probe = runProbe("unavailable");
   expect(probe.recovered).toBe(false);

@@ -58,7 +58,8 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
       { encoding: "utf-8", timeout: 30_000 },
     );
     if (launch.status !== 0) throw new Error(`fixture launch failed: ${launch.stderr}`);
-    await waitForFixtureLine(fixtureLog, /^focus\t\d+\tyes$/m, 10_000);
+    const focused = await waitForFixtureLine(fixtureLog, /^focus\t\d+\tyes$/m, 10_000);
+    expect(focused, "The fixture input did not become first responder").toMatch(/^focus\t\d+\tyes$/m);
 
     const startPort = await freePortAsync();
     const detach = spawnSync("bun", ["run", CLI_PATH, "--detach", "-p", String(startPort), bootedUdid!], {
@@ -81,6 +82,7 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
   afterAll(() => {
     try { execSync(`bun run ${CLI_PATH} --kill ${bootedUdid}`, { stdio: "pipe" }); } catch {}
     spawnSync("xcrun", ["simctl", "terminate", bootedUdid!, FIXTURE_BUNDLE], { stdio: "ignore" });
+    spawnSync("xcrun", ["simctl", "uninstall", bootedUdid!, FIXTURE_BUNDLE], { stdio: "ignore" });
   });
 
   test("`serve-sim type` injects HID key events into the booted simulator", async () => {

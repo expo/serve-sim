@@ -11,6 +11,34 @@ import XPC
 /// Construction is capability based: older CoreSimulator versions have no
 /// service, so callers retain the legacy path without checking an Xcode number.
 final class DTUHIDTransport: @unchecked Sendable {
+    private enum DigitizerEventType: UInt64 {
+        case start = 0
+        case position = 1
+        case end = 2
+    }
+
+    private enum ButtonState: UInt64 {
+        case down = 1
+        case up = 2
+    }
+
+    private struct ContactTracker {
+        private var active = false
+
+        mutating func eventType(for type: String) -> DigitizerEventType? {
+            switch type {
+            case "begin", "move":
+                defer { active = true }
+                return active ? .position : .start
+            case "end":
+                active = false
+                return .end
+            default:
+                return nil
+            }
+        }
+    }
+
     private static let serviceName = "com.apple.coredevice.feature.remote.hid.digitizer"
 
     private typealias EndpointFromMachPort = @convention(c) (
@@ -22,9 +50,9 @@ final class DTUHIDTransport: @unchecked Sendable {
     ) -> mach_port_t
 
     private let connection: xpc_connection_t
-    private var contactActive = false
-    private var secondContactActive = false
-    private var cold = true
+    private var contact = ContactTracker()
+    private var multiTouchContact = ContactTracker()
+    private var needsActivationDrain = true
 
     static func connect(device: NSObject) -> DTUHIDTransport? {
         guard
@@ -77,54 +105,40 @@ final class DTUHIDTransport: @unchecked Sendable {
         guard let state = buttonState(type) else { return }
         let payload = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_uint64(payload, "usageCode", UInt64(usage))
-        xpc_dictionary_set_uint64(payload, "state", state)
+        xpc_dictionary_set_uint64(payload, "state", state.rawValue)
         send(messageType: "IndigoKeyboardButtonEvent", payload: payload)
-        if type == "up" { drain() }
+        if type == "up" { activateConnectionIfNeeded() }
     }
 
     func sendButton(page: UInt32, usage: UInt32, phase: String) {
-        func emit(_ state: UInt64) {
+        func emit(_ state: ButtonState) {
             let payload = xpc_dictionary_create(nil, nil, 0)
             xpc_dictionary_set_uint64(payload, "usagePage", UInt64(page))
             xpc_dictionary_set_uint64(payload, "usageCode", UInt64(usage))
-            xpc_dictionary_set_uint64(payload, "state", state)
+            xpc_dictionary_set_uint64(payload, "state", state.rawValue)
             send(messageType: "IndigoButtonEvent", payload: payload)
         }
         switch phase {
-        case "down": emit(1)
-        case "up": emit(2); drain()
-        default: emit(1); emit(2); drain()
+        case "down": emit(.down)
+        case "up": emit(.up); activateConnectionIfNeeded()
+        default: emit(.down); emit(.up); activateConnectionIfNeeded()
         }
     }
 
     func sendTouch(type: String, x: Double, y: Double, edge: UInt32) {
-        guard let eventType = contactEventType(type: type, second: false) else { return }
+        guard let eventType = contact.eventType(for: type) else { return }
         sendDigitizer(eventType: eventType, x1: x, y1: y, x2: nil, y2: nil, edge: edge)
-        if type == "end" { drain() }
+        if type == "end" { activateConnectionIfNeeded() }
     }
 
     func sendMultiTouch(type: String, x1: Double, y1: Double, x2: Double, y2: Double) {
-        guard let eventType = contactEventType(type: type, second: true) else { return }
+        guard let eventType = multiTouchContact.eventType(for: type) else { return }
         sendDigitizer(eventType: eventType, x1: x1, y1: y1, x2: x2, y2: y2, edge: 0)
-        if type == "end" { drain() }
-    }
-
-    private func contactEventType(type: String, second: Bool) -> UInt64? {
-        let active = second ? secondContactActive : contactActive
-        let eventType: UInt64
-        switch type {
-        case "begin": eventType = active ? 1 : 0
-        case "move": eventType = active ? 1 : 0
-        case "end": eventType = 2
-        default: return nil
-        }
-        if second { secondContactActive = type != "end" }
-        else { contactActive = type != "end" }
-        return eventType
+        if type == "end" { activateConnectionIfNeeded() }
     }
 
     private func sendDigitizer(
-        eventType: UInt64,
+        eventType: DigitizerEventType,
         x1: Double,
         y1: Double,
         x2: Double?,
@@ -136,7 +150,7 @@ final class DTUHIDTransport: @unchecked Sendable {
         if let x2, let y2 {
             xpc_dictionary_set_value(payload, "pointTwo", point(x: x2, y: y2))
         }
-        xpc_dictionary_set_uint64(payload, "eventType", eventType)
+        xpc_dictionary_set_uint64(payload, "eventType", eventType.rawValue)
         xpc_dictionary_set_uint64(payload, "edge", UInt64(edge))
         xpc_dictionary_set_uint64(payload, "target", 0)
         send(messageType: "IndigoDigitizerEvent", payload: payload)
@@ -149,10 +163,10 @@ final class DTUHIDTransport: @unchecked Sendable {
         return value
     }
 
-    private func buttonState(_ type: String) -> UInt64? {
+    private func buttonState(_ type: String) -> ButtonState? {
         switch type {
-        case "down": return 1
-        case "up": return 2
+        case "down": return .down
+        case "up": return .up
         default: return nil
         }
     }
@@ -177,29 +191,26 @@ final class DTUHIDTransport: @unchecked Sendable {
         )
     }
 
-    /// Keep short-lived commands alive until the guest has consumed the final
-    /// phase. The first drain waits for dtuhidd's barrier reply; warm drains only
-    /// need the measured transport tail.
-    private func drain() {
-        if cold {
-            let payload = xpc_dictionary_create(nil, nil, 0)
-            xpc_dictionary_set_uint64(payload, "usageCode", 0)
-            xpc_dictionary_set_uint64(payload, "state", 2)
-            let barrier = envelope(
-                messageType: "IndigoKeyboardButtonEvent",
-                payload: payload,
-                barrier: true
-            )
-            let done = DispatchSemaphore(value: 0)
-            xpc_connection_send_message_with_reply(
-                connection, barrier, DispatchQueue.global(qos: .userInitiated)
-            ) { _ in done.signal() }
-            if done.wait(timeout: .now() + 2) == .success { usleep(200_000) }
-            else { usleep(1_000_000) }
-            cold = false
-        } else {
-            usleep(80_000)
-        }
+    /// The first completed input sequence waits for dtuhidd to acknowledge its
+    /// barrier and open the device. The helper retains the connection afterward,
+    /// so later sequences can be sent without a per-event delay.
+    private func activateConnectionIfNeeded() {
+        guard needsActivationDrain else { return }
+        let payload = xpc_dictionary_create(nil, nil, 0)
+        xpc_dictionary_set_uint64(payload, "usageCode", 0)
+        xpc_dictionary_set_uint64(payload, "state", ButtonState.up.rawValue)
+        let barrier = envelope(
+            messageType: "IndigoKeyboardButtonEvent",
+            payload: payload,
+            barrier: true
+        )
+        let done = DispatchSemaphore(value: 0)
+        xpc_connection_send_message_with_reply(
+            connection, barrier, DispatchQueue.global(qos: .userInitiated)
+        ) { _ in done.signal() }
+        if done.wait(timeout: .now() + 2) == .success { usleep(200_000) }
+        else { usleep(1_000_000) }
+        needsActivationDrain = false
     }
 }
 

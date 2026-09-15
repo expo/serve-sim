@@ -505,7 +505,6 @@ describe("startup capability loading", () => {
   });
 });
 
-
 describe("launch environment publication", () => {
   async function withLaunchEnvironment(run: (probe: {
     read(): Record<string, string>;

@@ -1169,6 +1169,11 @@ final class WebRTCPublisher: @unchecked Sendable {
         let minBitrate = NSNumber(value: bitratePolicy.minimumBitsPerSecond)
         let senderFramesPerSecond = frameRatePolicy.senderFramesPerSecond
         let sourceMaxDimension = max(lastOutputWidth, lastOutputHeight)
+        // Temporary: H.264 stalls at larger encode sizes for reasons not yet diagnosed.
+        let maxDimension = StreamEncodePolicy.h264EncodeMaxLongEdge(
+            configuredMaxDimension: maxDimension,
+            codecName: session.codecName
+        )
         let scaleResolutionDownBy = maxDimension > 0 && sourceMaxDimension > maxDimension
             ? Double(sourceMaxDimension) / Double(maxDimension)
             : 1.0

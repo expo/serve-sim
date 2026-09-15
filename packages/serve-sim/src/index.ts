@@ -20,6 +20,7 @@ import {
 } from "./state";
 import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from "./text-to-keys";
 import { logBufferCache } from "./log-buffer";
+import { crashRuntime } from "./crash/runtime";
 import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
 import { isLoopbackHost } from "./middleware-utils";
 import { killOwnListeners } from "./ports";
@@ -520,6 +521,7 @@ async function follow(
     shuttingDown = true;
     if (!quiet) console.log("\nShutting down...");
     logBufferCache.stopAll();
+    crashRuntime.stop();
     for (const [udid, child] of children) {
       const pid = child.pid;
       if (pid) stopProcess(pid);
@@ -549,6 +551,7 @@ async function follow(
   // Last-resort synchronous cleanup if something else exits the process
   process.on("exit", () => {
     logBufferCache.stopAll();
+    crashRuntime.stop();
     for (const [udid, child] of children) {
       try { if (child.pid) process.kill(child.pid, "SIGTERM"); } catch {}
       try { clearState(udid); } catch {}
@@ -1728,7 +1731,12 @@ async function serve(
       try { clearServeSimState(udid, process.pid); } catch {}
     }
   };
-  process.on("exit", clearAll);
+  process.on("exit", () => {
+    // This process owns the device tails and the crash watcher; `follow` never mounts them.
+    try { logBufferCache.stopAll(); } catch {}
+    try { crashRuntime.stop(); } catch {}
+    clearAll();
+  });
 
   if (options.debugStreamPath) {
     const logger = startStreamDebugLog({

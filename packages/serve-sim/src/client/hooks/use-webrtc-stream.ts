@@ -18,9 +18,7 @@ const ICE_GATHERING_TIMEOUT_MS = 3_000;
 // fresh browser deadline; time spent retrying 409s cannot consume it.
 const SIGNALING_REQUEST_TIMEOUT_MS = 20_000;
 const FIRST_FRAME_TIMEOUT_MS = 4_000;
-/// Whether inbound video RTP has actually arrived. Painting is the watchdog's signal, but
-/// it depends on the video element being attached, which happens later than the deadline;
-/// received RTP proves the codec is producing something the transport accepted.
+/// Whether any inbound video frame has arrived yet.
 async function videoRtpArriving(pc: RTCPeerConnection | null): Promise<boolean> {
   if (!pc) return false;
   try {
@@ -236,10 +234,8 @@ export function useWebRtcStream({
           if (firstFrameTimeoutRef.current !== undefined) {
             window.clearTimeout(firstFrameTimeoutRef.current);
           }
-          // The watchdog is cleared by painting, but the video element is attached later
-          // than the deadline, so the first codec tried is condemned before it can paint.
-          // Give it one extra window when RTP is demonstrably arriving; bounded, so a
-          // genuinely undecodable stream still falls back.
+          // One extra window when RTP is arriving, so a slow first paint is not mistaken
+          // for a broken codec. Bounded: an undecodable stream still falls back.
           let graceUsed = false;
           const armFirstFrameWatchdog = () => {
             firstFrameTimeoutRef.current = window.setTimeout(() => {

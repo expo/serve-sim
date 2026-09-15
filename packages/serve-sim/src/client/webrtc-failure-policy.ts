@@ -3,22 +3,19 @@ export type WebRtcFailureEvent =
   | "connection-failed"
   | "signaling-failed";
 
-/// "wait" means the watchdog fired early: media is arriving, so re-arm rather than act.
+/// "wait" means the deadline passed but media is arriving, so the caller should re-arm.
 export type WebRtcFailureDisposition = "codec" | "transport" | "wait";
 
 export interface WebRtcMediaProgress {
-  /// True when inbound RTP is advancing (framesReceived or bytesReceived growing).
   mediaArriving: boolean;
 }
 
 /// A first-frame timeout only indicts the codec when nothing is arriving at all.
 ///
-/// The watchdog is cleared by `requestVideoFrameCallback`, i.e. by the browser *painting*.
-/// A large first keyframe can arrive well inside the connection yet paint after the
-/// deadline: measured on a Tart guest at 1206x2622, hardware H.264 was streaming correctly
-/// and still got declared a codec failure, which permanently downgraded the session to
-/// software VP8 (~63% of a vCPU versus ~27% for the hardware path). If RTP is flowing the
-/// codec is demonstrably fine, so keep waiting instead of walking the fallback ladder.
+/// The watchdog is cleared by the browser *painting*, which also waits on the video element
+/// being attached. Received RTP is the narrower question — it proves the codec produced
+/// something the transport accepted — so when media is flowing, keep waiting rather than
+/// walking the fallback ladder and downgrading a working stream.
 export function webRtcFailureDisposition(
   event: WebRtcFailureEvent,
   connectionState: RTCPeerConnectionState,

@@ -7,10 +7,8 @@ describe("WebRTC failure policy", () => {
   });
 
   test("keeps waiting when media is arriving but has not rendered yet", () => {
-    // A large first keyframe can take longer than the watchdog to arrive and render.
-    // Measured on a Tart guest at 1206x2622: hardware H.264 streamed correctly but the
-    // browser had not painted within 4s, so a healthy stream was declared a codec failure
-    // and permanently downgraded to software VP8. If RTP is flowing it is not the codec.
+    // A large first keyframe can arrive inside the connection and still paint after the
+    // deadline; downgrading the codec there throws away a working stream.
     expect(webRtcFailureDisposition("first-frame-timeout", "connected", { mediaArriving: true }))
       .toBe("wait");
   });

@@ -39,6 +39,7 @@ export function ToolsPanel({
   avccSupported,
   streamSettingsPending,
   streamTransportLocked = false,
+  streamConfiguredMaxDimension = 0,
   width,
   chromeEnabled,
   onChromeEnabledChange,
@@ -63,6 +64,7 @@ export function ToolsPanel({
   avccSupported: boolean;
   streamSettingsPending: boolean;
   streamTransportLocked?: boolean;
+  streamConfiguredMaxDimension?: number;
   width: number;
   chromeEnabled?: boolean;
   onChromeEnabledChange?: (enabled: boolean) => void;
@@ -103,6 +105,7 @@ export function ToolsPanel({
             avccSupported={avccSupported}
             encoderSettingsDisabled={streamSettingsPending}
             transportLocked={streamTransportLocked}
+            configuredMaxDimension={streamConfiguredMaxDimension}
             peerConnection={peerConnection}
             webrtcStatsUrl={webrtcStatsUrl}
             webrtcSessionId={webrtcSessionId}

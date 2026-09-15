@@ -6,6 +6,7 @@ import { useSenderStats } from "../hooks/use-sender-stats";
 import { useStreamStats } from "../hooks/use-stream-stats";
 import { StreamStatsDownload, StreamStatsSection, describeFaults, summariseStream } from "./stream-stats-tool";
 import { SettingRow, SettingSelect } from "./simulator-settings-tool";
+import { maxDimensionOptions } from "../utils/stream-max-dimension-options";
 import { streamFpsOptions } from "../utils/stream-fps-options";
 import type {
   HttpStreamCodec,
@@ -31,14 +32,6 @@ const WEBRTC_CODEC_OPTIONS = [
   { value: "h264", label: "H.264" },
   { value: "vp9", label: "VP9" },
   { value: "vp8", label: "VP8" },
-];
-const MAX_DIMENSION_OPTIONS = [
-  { value: "0", label: "Full" },
-  { value: "1920", label: "1920" },
-  { value: "1600", label: "1600" },
-  { value: "1280", label: "1280" },
-  { value: "960", label: "960" },
-  { value: "720", label: "720" },
 ];
 const QUALITY_OPTIONS = [
   { value: "0.45", label: "45%" },
@@ -79,6 +72,7 @@ export function StreamSettingsTool({
   webrtcSessionId,
   encoderSettingsDisabled = false,
   transportLocked = false,
+  configuredMaxDimension = 0,
 }: {
   settings: StreamControlSettings;
   onPlaybackSettingsChange: (patch: Partial<StreamPlaybackSettings>) => void;
@@ -87,6 +81,7 @@ export function StreamSettingsTool({
   avccSupported: boolean;
   encoderSettingsDisabled?: boolean;
   transportLocked?: boolean;
+  configuredMaxDimension?: number;
   peerConnection: RTCPeerConnection | null;
   webrtcStatsUrl?: string;
   webrtcSessionId?: string | null;
@@ -193,11 +188,7 @@ export function StreamSettingsTool({
           <SettingSelect
             label="Max size"
             value={String(settings.maxDimension)}
-            options={optionsWithCurrentValue(
-              settings.maxDimension,
-              MAX_DIMENSION_OPTIONS,
-              String,
-            )}
+            options={maxDimensionOptions(settings, configuredMaxDimension)}
             disabled={encoderSettingsDisabled}
             onChange={(v) => onEncoderSettingsChange({ maxDimension: Number(v) })}
           />

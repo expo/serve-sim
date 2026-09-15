@@ -193,6 +193,7 @@ export function useStreamSettings({
     updateEncoder,
     pending,
     transportLocked,
+    configuredMaxDimension: initialSettings?.maxDimension ?? 0,
     encoderSettingsAvailable: !!endpoint,
   };
 }

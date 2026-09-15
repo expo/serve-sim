@@ -639,6 +639,7 @@ function AppWithConfig({
   const streamSettings = streamSettingsState.settings;
   const updateStreamPlayback = streamSettingsState.updatePlayback;
   const streamTransportLocked = streamSettingsState.transportLocked;
+  const streamConfiguredMaxDimension = streamSettingsState.configuredMaxDimension;
 
   const wantsWebRtcVideo = streamSettings.transport === "webrtc";
   const handledWebRtcFailureRef = useRef<string | null>(null);
@@ -1639,6 +1640,7 @@ function AppWithConfig({
           streamSettingsState.pending || !streamSettingsState.encoderSettingsAvailable
         }
         streamTransportLocked={streamTransportLocked}
+        streamConfiguredMaxDimension={streamConfiguredMaxDimension}
         width={toolsPanelWidth}
         chromeEnabled={chromeEnabled}
         onChromeEnabledChange={setChromeEnabled}

@@ -49,7 +49,7 @@ Proposed recovery work:
 
 Do not merely increase the 90-second test wait or blindly retry launches.
 
-## 4. Startup default / explicit-off reboot — unresolved runtime issue
+## 4. Startup default / explicit-off reboot — readiness fix implemented
 
 The full-suite failure was a failed launchctl read of
 `SERVE_SIM_CAPABILITIES_CONFIG` after a capture reboot. With the experimental
@@ -60,14 +60,46 @@ Implemented diagnostic improvement: retain `CaptureMeta.attachError` when a
 reboot returns `failed`. Previously the test threw away the reason and reported
 only an attachment-string mismatch.
 
-Proposed recovery shares the bounded readiness/read-back work above. Preserve
+A focused rerun with attachment diagnostics exposed another failure: the proxy
+created its certificate, but the reporting addon never confirmed readiness.
+Inspection found that `/ready` was sent only once, with a two-second timeout,
+and failures were silently discarded. The host then waited for 30 seconds with
+no possibility of recovery.
+
+Implemented bounded retries for this idempotent announcement: at most five
+attempts, separated by 250 ms, each retaining the existing two-second request
+timeout. Shutdown interrupts the retry wait. Captured flow records remain
+single-send. A real local control-server regression test fails before this
+change and passes after it; additional tests verify the attempt budget and that
+flow records are not duplicated. The timeout message now distinguishes missing
+readiness confirmation from an unproven claim that the addon never loaded.
+
+This repairs a demonstrated readiness failure mode. It does not establish that
+every observed launchctl timeout has the same cause. Further recovery work
+shares the bounded readiness/read-back work above. Preserve
 explicit off through failure and reconnect, keep reboots serialized, and return
 the failed stage in the capture status. Verify repeated on/off cycles, cleanup,
 and the startup-default rule on both Xcodes before shipping recovery changes.
 
 ## Scope and evidence
 
-The production capture/launch behavior has not been changed by this investigation.
-The process fixture and E2E diagnostics are local changes. Logs and temporary
+The only production behavior change is bounded addon-readiness retries and a
+more accurate timeout message. Launchctl isolation and app-launch retries have
+not been adopted. The process fixture and E2E diagnostics are also local changes. Logs and temporary
 experiments are under `/private/tmp/serve-sim-xcode27-validation` (`vm27/` for
 VM results). No PR was updated, pushed, or run remotely.
+
+
+## Validation of the implemented changes
+
+- Native package and test fixtures build successfully.
+- Injection E2E: 9/9 on Xcode 26.4 and 9/9 on Xcode 27 beta 6.
+- Capture-launch diagnostic change: 3/3 on Xcode 26.4.
+- Capture subsystem suite: 188 passing tests, including the readiness regression.
+- Full real network fixture with readiness retries: 6/6 on Xcode 26.4.
+- Xcode 27 focused startup-default/reboot check with readiness retries: 1/1,
+  314.34 seconds including setup and teardown. This is one successful rerun,
+  not evidence that all Xcode 27 startup races are eliminated.
+- Typecheck, lint, and whitespace checks pass.
+- No full-suite rerun is claimed after these focused changes. The earlier full
+  results remain 1267/0 failures on 26 and 1263/4 failures on 27.

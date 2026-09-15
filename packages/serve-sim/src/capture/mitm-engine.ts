@@ -393,7 +393,7 @@ async function startMitmProxyAttempt(
   }
 
   const stalled = existsSync(caFile)
-    ? "It started but its reporting addon never loaded, so nothing would have been captured."
+    ? "Its certificate was created, but the reporting addon did not confirm readiness. Retry capture; if this persists, check the proxy output below."
     : `Check that no other process holds 127.0.0.1:${proxyPort}.`;
   await close();
   throw new Error(

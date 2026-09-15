@@ -18,6 +18,12 @@ import {
   enableCapabilities,
   applyDefaultCapabilities,
   renderCapabilityConfig,
+  capabilityConfigPath,
+  capabilityLoaderPath,
+  launchApp,
+  armCapabilityLoader,
+  devicesArmedHere,
+  removeCapabilityLoaderSync,
 } from "../launch-manager";
 import { registerCapability, clearRegisteredCapabilities } from "../capabilities";
 import { launchAppAsync } from "../launch-app";
@@ -496,5 +502,141 @@ describe("startup capability loading", () => {
     } finally {
       clearRegisteredCapabilities();
     }
+  });
+});
+
+describe("launch environment publication", () => {
+  async function withLaunchEnvironment(run: (probe: {
+    read(): Record<string, string>;
+    replace(env: Record<string, string>): void;
+    calls(): string[][];
+    resetCalls(): void;
+    failInsert(): void;
+  }) => Promise<void>) {
+    const envPath = join(stateDir(), "publication-env.json");
+    const logPath = join(stateDir(), "publication-calls.jsonl");
+    const failurePath = join(stateDir(), "publication-failure");
+    writeFileSync(envPath, JSON.stringify({ DYLD_INSERT_LIBRARIES: "/other.dylib" }));
+    writeFileSync(logPath, "");
+    await withShimsAsync({ xcrun: `#!/usr/bin/env node
+const fs = require("fs");
+const envPath = ${JSON.stringify(envPath)};
+const failurePath = ${JSON.stringify(failurePath)};
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
+if (args[3] !== "launchctl") process.exit(0);
+const [command, name, value] = args.slice(4);
+const env = JSON.parse(fs.readFileSync(envPath, "utf8"));
+if (command === "getenv") process.stdout.write(env[name] || "");
+if (command === "setenv") env[name] = value;
+if (command === "unsetenv") delete env[name];
+fs.writeFileSync(envPath, JSON.stringify(env));
+if (command === "setenv" && name === "DYLD_INSERT_LIBRARIES" && fs.existsSync(failurePath)) {
+  fs.unlinkSync(failurePath);
+  process.exit(1);
+}
+` }, async () => run({
+      read: () => JSON.parse(readFileSync(envPath, "utf8")),
+      replace: (env) => writeFileSync(envPath, JSON.stringify(env)),
+      calls: () => readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)),
+      resetCalls: () => writeFileSync(logPath, ""),
+      failInsert: () => writeFileSync(failurePath, ""),
+    }));
+  }
+
+  const enableCamera = () => enableCapabilities(UDID, null, [{
+    name: "camera", scope: "allApps", dylib: "/camera.dylib",
+  }], { relaunch: false });
+
+  test("launch reads actual environment once and skips unchanged writes", async () => {
+    await withLaunchEnvironment(async (probe) => {
+      await enableCamera();
+      const armed = probe.read();
+      expect(armed).toEqual({
+        DYLD_INSERT_LIBRARIES: `/other.dylib:${capabilityLoaderPath()}`,
+        SERVE_SIM_CAPABILITIES_CONFIG: capabilityConfigPath(UDID),
+      });
+      probe.resetCalls();
+      await launchApp(UDID, { bundleId: "explicit.app", launchArgs: ["argument"] });
+      expect(probe.calls()).toEqual([
+        ["simctl", "spawn", UDID, "launchctl", "getenv", "DYLD_INSERT_LIBRARIES"],
+        ["simctl", "spawn", UDID, "launchctl", "getenv", "SERVE_SIM_CAPABILITIES_CONFIG"],
+        ["simctl", "launch", UDID, "explicit.app", "argument"],
+      ]);
+      expect(probe.read()).toEqual(armed);
+      expect(readLaunchState(UDID)?.bundleId).toBe("explicit.app");
+      expect(readLaunchState(UDID)?.launchArgs).toEqual(["argument"]);
+    });
+  });
+
+  test("launch rearms after a reboot clears the actual environment", async () => {
+    await withLaunchEnvironment(async (probe) => {
+      await enableCamera();
+      probe.replace({});
+      probe.resetCalls();
+      await launchApp(UDID, { bundleId: "explicit.app" });
+      expect(probe.read()).toEqual({
+        DYLD_INSERT_LIBRARIES: capabilityLoaderPath(),
+        SERVE_SIM_CAPABILITIES_CONFIG: capabilityConfigPath(UDID),
+      });
+      expect(probe.calls().filter((args) => args[4] === "setenv").map((args) => args[5])).toEqual([
+        "SERVE_SIM_CAPABILITIES_CONFIG", "DYLD_INSERT_LIBRARIES",
+      ]);
+    });
+  });
+
+  test("failed synchronous disarm keeps the session armed for an exit retry", async () => {
+    await withLaunchEnvironment(async (probe) => {
+      await armCapabilityLoader(UDID);
+      probe.resetCalls();
+      probe.failInsert();
+      releaseSessionSync(UDID, process.pid, () => {});
+      expect(devicesArmedHere()).toContain(UDID);
+      expect(probe.read().SERVE_SIM_CAPABILITIES_CONFIG).toBe(capabilityConfigPath(UDID));
+      expect(probe.calls().some((args) => args[4] === "unsetenv")).toBe(false);
+      expect(removeCapabilityLoaderSync(UDID)).toBe(true);
+      expect(devicesArmedHere()).not.toContain(UDID);
+      expect(probe.read()).toEqual({ DYLD_INSERT_LIBRARIES: "/other.dylib" });
+    });
+  });
+
+  test("graceful final release removes insertion before clearing its config", async () => {
+    await withLaunchEnvironment(async (probe) => {
+      await armCapabilityLoader(UDID);
+      probe.resetCalls();
+      await releaseSession(UDID, process.pid, () => {});
+      expect(probe.calls().map((args) => args.slice(4, 6))).toEqual([
+        ["getenv", "DYLD_INSERT_LIBRARIES"],
+        ["setenv", "DYLD_INSERT_LIBRARIES"],
+        ["unsetenv", "SERVE_SIM_CAPABILITIES_CONFIG"],
+      ]);
+      expect(probe.read()).toEqual({ DYLD_INSERT_LIBRARIES: "/other.dylib" });
+      expect(devicesArmedHere()).not.toContain(UDID);
+    });
+  });
+
+  test("changed startup insertion rolls back even if its failed write took effect", async () => {
+    await withLaunchEnvironment(async (probe) => {
+      await enableCamera();
+      const previousEnv = probe.read();
+      const previousState = readLaunchState(UDID);
+      const previousConfig = readFileSync(capabilityConfigPath(UDID), "utf8");
+      const dylib = join(stateDir(), "publication-startup.dylib");
+      writeFileSync(dylib, "");
+      probe.resetCalls();
+      probe.failInsert();
+      await expect(enableCapabilities(UDID, null, [{
+        name: "capture", scope: "userApps", loadPhase: "startup", dylib,
+      }], { relaunch: false })).rejects.toThrow();
+      expect(probe.read()).toEqual(previousEnv);
+      expect(readLaunchState(UDID)).toEqual(previousState);
+      expect(readFileSync(capabilityConfigPath(UDID), "utf8")).toBe(previousConfig);
+      const writes = probe.calls().filter((args) => args[4] === "setenv");
+      expect(writes[0]?.slice(5)).toEqual(["DYLD_INSERT_LIBRARIES", `${previousEnv.DYLD_INSERT_LIBRARIES}:${dylib}`]);
+      await enableCapabilities(UDID, null, [{
+        name: "capture", scope: "userApps", loadPhase: "startup", dylib,
+      }], { relaunch: false });
+      expect(probe.read().DYLD_INSERT_LIBRARIES).toBe(`${previousEnv.DYLD_INSERT_LIBRARIES}:${dylib}`);
+    });
   });
 });

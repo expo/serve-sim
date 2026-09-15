@@ -91,8 +91,9 @@ export function releaseSessionSync(
   withLaunchStateLockSync(udid, () => {
     const previousStartup = managedStartupDylibs(udid);
     const othersRemain = releaseLaunchStateUnlocked(udid, ownerPid, onRelease);
-    if (!othersRemain) removeCapabilityLoaderSync(udid);
-    else removeReleasedStartupSync(udid, previousStartup);
+    if (!othersRemain) {
+      if (!removeCapabilityLoaderSync(udid)) return;
+    } else removeReleasedStartupSync(udid, previousStartup);
     armedHere.delete(udid);
   });
 }
@@ -106,7 +107,7 @@ export async function releaseSession(
   await withLaunchStateLock(udid, async () => {
     const previousStartup = managedStartupDylibs(udid);
     const othersRemain = releaseLaunchStateUnlocked(udid, ownerPid, onRelease);
-    if (!othersRemain) removeCapabilityLoaderSync(udid);
+    if (!othersRemain) await removeCapabilityLoader(udid);
     else removeReleasedStartupSync(udid, previousStartup);
     armedHere.delete(udid);
   });
@@ -171,15 +172,21 @@ function startupDylibs(capabilities: Record<string, Capability>): string[] {
 async function armInsert(
   udid: string,
   dylib: string,
-  capabilities: Record<string, Capability> = readLaunchState(udid)?.capabilities ?? {},
-  previousStartup = managedStartupDylibs(udid),
+  capabilities: Record<string, Capability>,
+  previous: CapabilityLaunchSnapshot,
 ): Promise<void> {
   const desired = startupDylibs(capabilities);
-  const retained = withoutOurs(await readInsert(udid), previousStartup);
+  const retained = withoutOurs(previous.insert, previous.startupDylibs);
   const next = [...new Set([...retained, dylib, ...desired])].join(":");
-  writeManagedStartupDylibs(udid, [...previousStartup, ...desired]);
-  await simctl(["spawn", udid, "launchctl", "setenv", CONFIG_VAR, capabilityConfigPath(udid)], 15_000);
-  await simctl(["spawn", udid, "launchctl", "setenv", INSERT, next], 15_000);
+  writeManagedStartupDylibs(udid, [...previous.startupDylibs, ...desired]);
+  const configPath = capabilityConfigPath(udid);
+  // Compare with this transaction's readback, so a reboot still rearms the device.
+  if (previous.configPath !== configPath) {
+    await simctl(["spawn", udid, "launchctl", "setenv", CONFIG_VAR, configPath], 15_000);
+  }
+  if (previous.insert !== next) {
+    await simctl(["spawn", udid, "launchctl", "setenv", INSERT, next], 15_000);
+  }
   writeManagedStartupDylibs(udid, desired);
   armedHere.add(udid);
 }
@@ -245,7 +252,7 @@ async function publishLaunchState(udid: string, state: LaunchState): Promise<voi
 
   commitCapabilityConfig(udid, config);
   try {
-    await armInsert(udid, capabilityLoaderPath(), state.capabilities, previous.startupDylibs);
+    await armInsert(udid, capabilityLoaderPath(), state.capabilities, previous);
     writeLaunchState(udid, state);
   } catch (error) {
     try {
@@ -295,25 +302,27 @@ export async function armCapabilityLoader(udid: string): Promise<void> {
   }
 }
 
-export function removeCapabilityLoaderSync(udid: string): void {
+export function removeCapabilityLoaderSync(udid: string): boolean {
   try {
-    simctlSync(["spawn", udid, "launchctl", "unsetenv", CONFIG_VAR], 15_000);
     const current = simctlSync(["spawn", udid, "launchctl", "getenv", INSERT], 15_000);
     const rest = withoutOurs(current, managedStartupDylibs(udid)).join(":");
     const clear = rest === ""
       ? ["spawn", udid, "launchctl", "unsetenv", INSERT]
       : ["spawn", udid, "launchctl", "setenv", INSERT, rest];
     simctlSync(clear, 15_000);
+    simctlSync(["spawn", udid, "launchctl", "unsetenv", CONFIG_VAR], 15_000);
     writeManagedStartupDylibs(udid, []);
     try { unlinkSync(capabilityConfigPath(udid)); } catch {}
   } catch (error) {
     console.error(
-      `Could not disarm the capability loader on ${udid}; it is still inserted into every ` +
-        `app that simulator starts. Clear it with: xcrun simctl spawn ${udid} launchctl unsetenv ` +
+      `Could not finish disarming the capability loader on ${udid}. Check the simulator launch ` +
+        `environment before starting another app. Clear the insert with: xcrun simctl spawn ${udid} launchctl unsetenv ` +
         `DYLD_INSERT_LIBRARIES (${error instanceof Error ? error.message : String(error)})`,
     );
+    return false;
   }
   armedHere.delete(udid);
+  return true;
 }
 
 export async function disarmStaleCapabilityLoader(udid: string): Promise<void> {
@@ -334,14 +343,12 @@ export async function disarmStaleCapabilityLoader(udid: string): Promise<void> {
 }
 
 export async function removeCapabilityLoader(udid: string): Promise<void> {
-  await simctl(["spawn", udid, "launchctl", "unsetenv", CONFIG_VAR], 15_000).catch(
-    () => undefined,
-  );
   const rest = withoutOurs(await readInsert(udid), managedStartupDylibs(udid)).join(":");
   const clear = rest === ""
     ? ["spawn", udid, "launchctl", "unsetenv", INSERT]
     : ["spawn", udid, "launchctl", "setenv", INSERT, rest];
   await simctl(clear, 15_000);
+  await simctl(["spawn", udid, "launchctl", "unsetenv", CONFIG_VAR], 15_000);
   writeManagedStartupDylibs(udid, []);
   try { unlinkSync(capabilityConfigPath(udid)); } catch {}
   armedHere.delete(udid);

@@ -41,6 +41,7 @@ import {
 import { parseCaptureFields } from "./capture/fields";
 import { killOwnListeners } from "./ports";
 import { findBootedDevice, resolveDevice } from "./device";
+import { openSimulatorHost } from "./simulator-host";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
 import { camera } from "./camera-command";
 import { cameraCapability, stopExistingHelper } from "./camera-runtime";
@@ -314,19 +315,17 @@ function bootDevice(udid: string): void {
       }
     }
   }
-  // Ensure Simulator.app is running so the display/framebuffer pipeline is
+  // Ensure the selected Xcode's simulator host is running so the display/framebuffer pipeline is
   // wired up. `-g` = don't bring to foreground; safe to call even if already
   // running. A short timeout keeps us from hanging on headless macOS hosts
   // (e.g. GitHub Actions runners) where `open` can block indefinitely waiting
   // for a window server that never arrives — in that environment the test
   // harness is expected to have already driven the sim via simctl.
   try {
-    execSync("open -ga Simulator", {
-      encoding: "utf-8",
-      stdio: "pipe",
-      timeout: 3_000,
-    });
-  } catch {}
+    openSimulatorHost(udid);
+  } catch (error) {
+    debugCli("Could not open simulator host: %s", error);
+  }
 }
 
 function getLocalNetworkIP(): string | null {
@@ -574,7 +573,10 @@ async function follow(
       if (pid) stopProcess(pid);
       clearState(udid);
     }
-    await disarmDevicesArmedHereAsync();
+    await Promise.race([
+      disarmDevicesArmedHereAsync(),
+      new Promise((done) => setTimeout(done, SHUTDOWN_TIMEOUT_MS)),
+    ]);
     children.clear();
     process.exit(exitCode);
   };
@@ -1654,10 +1656,12 @@ Examples:
           });
           for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
             process.on(signal, async () => {
+              // A handler registered during cleanup did not receive this signal.
+              const anotherHandlerReceivedSignal = process.listenerCount(signal) > 1;
               sessionStopping = true;
               await stopNetworkCapture();
               await disarmDevicesArmedHereAsync();
-              if (process.listenerCount(signal) > 1) return;
+              if (anotherHandlerReceivedSignal) return;
               process.exit(0);
             });
           }

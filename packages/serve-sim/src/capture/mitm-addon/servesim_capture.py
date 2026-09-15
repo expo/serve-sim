@@ -25,6 +25,8 @@ REDACTED = "[REDACTED]"
 
 MAX_BODY_BYTES = 512 * 1024
 TIMEOUT_SECONDS = 2
+READY_ATTEMPTS = 5
+READY_RETRY_SECONDS = 0.25
 QUEUE_BYTE_LIMIT = 32 * 1024 * 1024
 # Bound metadata independently of the body cap.
 MAX_URL_CHARS = 4096
@@ -39,6 +41,7 @@ QUEUE_ITEM_LIMIT = 10_000
 _outbox: "queue.Queue[tuple[str, bytes, int] | None]" = queue.Queue()
 _queued_bytes = 0
 _queued_lock = threading.Lock()
+_stopping = threading.Event()
 
 # Bypass http_proxy/HTTP_PROXY so records hit the loopback control port.
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -53,8 +56,9 @@ def _send(path, body):
     )
     try:
         _opener.open(request, timeout=TIMEOUT_SECONDS).close()
+        return True
     except Exception:
-        pass
+        return False
 
 
 def _drain():
@@ -66,7 +70,15 @@ def _drain():
         path, body, size = item
         with _queued_lock:
             _queued_bytes -= size
-        _send(path, body)
+        # /ready is idempotent. A single lost announcement otherwise leaves a
+        # healthy proxy waiting until the host's startup deadline expires.
+        # Flow records are not retried: their delivery may already have succeeded.
+        attempts = READY_ATTEMPTS if path == "/ready" else 1
+        for attempt in range(attempts):
+            if _send(path, body):
+                break
+            if attempt + 1 < attempts and _stopping.wait(READY_RETRY_SECONDS):
+                break
 
 
 _reporter = threading.Thread(target=_drain, name="servesim-capture-reporter", daemon=True)
@@ -108,6 +120,7 @@ def running():
 def done():
     if not CONTROL:
         return
+    _stopping.set()
     _outbox.put_nowait(None)
     _reporter.join(timeout=2)
 

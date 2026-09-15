@@ -15,9 +15,10 @@ const BUNDLE_ID = "dev.expo.serve-sim.simnet-probe";
 const PROBE_HOST = "simnet-probe.test";
 const DYLIB = resolve(import.meta.dir, "../../dist/simnet/libSimNetProxy.dylib");
 const PROBE_APP = resolve(import.meta.dir, "../../dist/capability-loader/SimNetProbe.app");
+const PROCESS_PROBE = resolve(import.meta.dir, "../../dist/capability-loader/serve-sim-process-probe");
 
 const udid = e2eDevice();
-const canRun = !!udid && existsSync(DYLIB) && existsSync(PROBE_APP);
+const canRun = !!udid && existsSync(DYLIB) && existsSync(PROBE_APP) && existsSync(PROCESS_PROBE);
 const describeOrSkip = canRun ? describe : describe.skip;
 requireE2E("simnet injection", canRun);
 
@@ -133,7 +134,10 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
     const probe = await proxyStandIn();
     try {
       await launchProbeApp(probe.port, { inject: true });
-      expect(spawnSync("xcrun", ["simctl", "spawn", udid!, "/usr/bin/true"], { env: { ...process.env } }).status).toBe(0);
+      const result = spawnSync("xcrun", ["simctl", "spawn", "--arch=arm64", udid!, PROCESS_PROBE], {
+        env: { ...process.env }, encoding: "utf8", timeout: 30_000,
+      });
+      expect(result.status, result.stderr || result.error?.message).toBe(0);
     } finally { probe.close(); }
   }, 60_000);
 

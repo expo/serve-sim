@@ -19,7 +19,20 @@ enum Xcode {
             return fallback
         }
         process.waitUntilExit()
-        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? fallback
+        guard process.terminationStatus == 0,
+              let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8),
+              !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return fallback
+        }
+        return normalizeDeveloperDir(output)
+    }
+
+    /// Like xcrun, accept DEVELOPER_DIR pointing to either Xcode.app or its Developer directory.
+    static func normalizeDeveloperDir(_ path: String) -> String {
+        let url = URL(fileURLWithPath: path.trimmingCharacters(in: .whitespacesAndNewlines))
+            .standardizedFileURL
+        return url.pathExtension == "app"
+            ? url.appendingPathComponent("Contents/Developer").path
+            : url.path
     }
 }

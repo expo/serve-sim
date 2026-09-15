@@ -1,4 +1,5 @@
 #import "SimCamFakes.h"
+#import "SimCamFrameSource.h"
 #import "SimCamLog.h"
 
 #import <CoreImage/CoreImage.h>
@@ -195,7 +196,7 @@ static char kFakePositionKey;
     AVCaptureDeviceFormat *f = SimCamSharedFakeFormat();
     return f ? @[f] : @[];
 }
-- (BOOL)isConnected { return YES; }
+- (BOOL)isConnected { return SimCamDeviceIsConnected(); }
 - (BOOL)isSuspended { return NO; }
 - (BOOL)lockForConfiguration:(NSError **)e { return YES; }
 - (void)unlockForConfiguration { }

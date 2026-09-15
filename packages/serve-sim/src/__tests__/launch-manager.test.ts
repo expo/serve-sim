@@ -6,7 +6,6 @@ import { join } from "path";
 import {
   type RecordedCapability,
   MAX_CONFIG_BYTES,
-  childLaunchEnv,
   clearLaunchState,
   formatCapabilityConfig,
   isCapabilityEnabled,
@@ -497,21 +496,5 @@ describe("startup capability loading", () => {
     } finally {
       clearRegisteredCapabilities();
     }
-  });
-});
-
-describe("childLaunchEnv", () => {
-  test("inserts the capability dylib and the capability loader into the launched app", () => {
-    const env = childLaunchEnv("/opt/injector.dylib", { SIMCAM_SHM_NAME: "/shm" });
-    const inserted = env.SIMCTL_CHILD_DYLD_INSERT_LIBRARIES!.split(":");
-
-    expect(inserted).toContain("/opt/injector.dylib");
-    expect(inserted.some((path) => path.endsWith("libServeSimCapabilityLoader.dylib"))).toBe(true);
-  });
-
-  test("prefixes the capability environment so simctl passes it to the app", () => {
-    expect(childLaunchEnv("/opt/injector.dylib", { SIMCAM_SHM_NAME: "/shm" })).toMatchObject({
-      SIMCTL_CHILD_SIMCAM_SHM_NAME: "/shm",
-    });
   });
 });

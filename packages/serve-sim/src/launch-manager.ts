@@ -125,25 +125,6 @@ export function capabilityLoaderDir(): string {
   return join(dirnameOf(import.meta.url), "..", "dist", "capability-loader");
 }
 
-/**
- * `SIMCTL_CHILD_*` variables reach the app simctl launches. The insert has to
- * carry the capability dylib itself, so a swizzle is in place before the app's
- * own code runs, and the capability loader, because simctl's value replaces the
- * device-wide one for this process and would otherwise drop every other
- * capability.
- */
-export function childLaunchEnv(
-  dylib: string,
-  capabilityEnv: Record<string, string>,
-): Record<string, string> {
-  return {
-    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: [dylib, capabilityLoaderPath()].join(":"),
-    ...Object.fromEntries(
-      Object.entries(capabilityEnv).map(([key, value]) => [`SIMCTL_CHILD_${key}`, value]),
-    ),
-  };
-}
-
 const armedHere = new Set<string>();
 
 export function devicesArmedHere(): string[] {

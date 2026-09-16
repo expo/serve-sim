@@ -2141,6 +2141,23 @@ Examples:
       );
       process.exit(1);
     }
+    if (opts.detach) {
+      const unsupported = [
+        ...(bundleId ? ["--launch-app-identifier"] : []),
+        ...(launchArgs.length > 0 ? ["--launch-arg"] : []),
+        ...(openUrl ? ["--open-url"] : []),
+        ...(capabilities.enable.length > 0 ? ["--enable"] : []),
+        ...(capabilities.disable.length > 0 ? ["--disable"] : []),
+      ];
+      if (unsupported.length > 0) {
+        console.error(
+          `${unsupported.join(", ")} ${unsupported.length === 1 ? "needs" : "need"} the foreground ` +
+            "session, so drop --detach. A detached helper only streams: it does not arm the " +
+            "capability loader or launch an app.",
+        );
+        process.exit(1);
+      }
+    }
     let targets = devices;
     if (!opts.detach) {
       try {
@@ -2165,13 +2182,14 @@ Examples:
           await ensureBooted(udid);
           if (sessionStopping) return;
         }
-        if (process.env[STREAM_HELPER_ENV] !== "1") {
+        const isStreamHelper = process.env[STREAM_HELPER_ENV] === "1";
+        if (!isStreamHelper) {
           for (const udid of targets) {
             await armCapabilityLoader(udid);
             if (sessionStopping) return;
           }
         }
-        for (const udid of launchesBeforeStreaming ? targets : []) {
+        for (const udid of launchesBeforeStreaming && !isStreamHelper ? targets : []) {
           if (sessionStopping) return;
           if (bundleId) {
             await launchAppAsync(udid, { bundleId, launchArgs, openUrl, capabilities });

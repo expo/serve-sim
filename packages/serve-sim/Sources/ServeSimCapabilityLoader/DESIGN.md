@@ -133,7 +133,9 @@ something that reliably removes it:
 - The process that arms it registers the teardown first, on `exit` and on
   `SIGINT`/`SIGTERM`/`SIGHUP`. The signal handlers disarm directly, because
   spawning `simctl` from an exit handler does not always finish.
-- `--detach` keeps what it arms, since its session outlives the command.
+- `--detach` never arms. The command exits once the helper is streaming, so no process
+  is left to disarm it. `--launch-app-identifier`, `--launch-arg`,
+  `--open-url`, `--enable` and `--disable` are rejected with `--detach`.
 - On startup, a capability loader left behind by an earlier session whose dylib no
   longer exists is cleaned up.
 - Live session PIDs are recorded independently of capabilities, so an idle

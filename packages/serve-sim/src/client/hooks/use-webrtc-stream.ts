@@ -130,6 +130,14 @@ export function useWebRtcStream({
   const firstFrameDecodedRef = useRef(false);
   const transportRetryAttemptRef = useRef(0);
 
+  /// Re-establish after a failure the hook cannot resolve on its own, such as a codec
+  /// ladder that ran out while HTTP fallback is locked off.
+  const retry = useCallback(() => {
+    setFailure(null);
+    setError(null);
+    setRetryGeneration((generation) => generation + 1);
+  }, []);
+
   const markFrameDecoded = useCallback(() => {
     firstFrameDecodedRef.current = true;
     transportRetryAttemptRef.current = 0;
@@ -445,5 +453,5 @@ export function useWebRtcStream({
     };
   }, [enabled, offerUrl, closeUrl, codec, iceServers, statsUrl, retryGeneration]);
 
-  return { stream, failure, error, markFrameDecoded, peerConnection, sessionId };
+  return { stream, failure, error, markFrameDecoded, peerConnection, sessionId, retry };
 }

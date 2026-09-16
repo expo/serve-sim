@@ -105,6 +105,7 @@ import {
   type QueuedWsMessage,
 } from "./utils/ws-send-queue";
 import {
+  ladderRestartDelayMs,
   webRtcFallbackDecision,
   type WebRtcCodec,
 } from "./webrtc-codec-fallback";
@@ -643,6 +644,7 @@ function AppWithConfig({
 
   const wantsWebRtcVideo = streamSettings.transport === "webrtc";
   const handledWebRtcFailureRef = useRef<string | null>(null);
+  const ladderRestartAttemptRef = useRef(0);
   const useWebRtcVideo = wantsWebRtcVideo;
   const [webRtcCodecOverride, setWebRtcCodecOverride] = useState<WebRtcCodec | null>(null);
   const configuredWebRtcCodec = streamSettings.webRtcCodec;
@@ -655,6 +657,7 @@ function AppWithConfig({
     iceServers: streamSettings.iceServers,
     statsUrl: webrtcStatsUrlFrom(config),
   });
+  const { retry: retryWebRtcStream } = webrtc;
   const [avccFallback, dispatchAvccFallback] = useReducer(
     avccFallbackReducer,
     initialAvccFallback,
@@ -697,9 +700,19 @@ function AppWithConfig({
     );
     if (!decision) return;
     if (decision.type === "switch-to-http") {
-      if (streamTransportLocked) return;
-      updateStreamPlayback({ transport: "http" });
-      return;
+      if (!streamTransportLocked) {
+        updateStreamPlayback({ transport: "http" });
+        return;
+      }
+      // Locked sessions have nowhere to fall back to, so the ladder running out used to
+      // leave the stream dead for good. Start it again instead: every codec failing at once
+      // is usually one cause, and causes pass.
+      const attempt = ladderRestartAttemptRef.current++;
+      const timer = window.setTimeout(() => {
+        setWebRtcCodecOverride(null);
+        retryWebRtcStream();
+      }, ladderRestartDelayMs(attempt));
+      return () => window.clearTimeout(timer);
     }
     setWebRtcCodecOverride(decision.codec);
   }, [
@@ -709,7 +722,11 @@ function AppWithConfig({
     updateStreamPlayback,
     wantsWebRtcVideo,
     webrtc.failure,
+    retryWebRtcStream,
   ]);
+  useEffect(() => {
+    if (webrtc.stream) ladderRestartAttemptRef.current = 0;
+  }, [webrtc.stream]);
   const lockedWebRtcError =
     streamTransportLocked && webrtc.failure && !webrtc.error
       ? "WebRTC streaming failed. HTTP fallback is disabled for this session."

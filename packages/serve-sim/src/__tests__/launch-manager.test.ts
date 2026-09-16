@@ -18,6 +18,7 @@ import {
   stopLaunchSession,
   enableCapabilities,
   applyDefaultCapabilities,
+  capabilityConfigPath,
   renderCapabilityConfig,
 } from "../launch-manager";
 import { registerCapability, clearRegisteredCapabilities } from "../capabilities";
@@ -44,6 +45,7 @@ function writeRawState(contents: string): void {
 
 afterEach(() => {
   clearLaunchState(UDID);
+  try { unlinkSync(capabilityConfigPath(UDID)); } catch {}
 });
 
 describe("formatCapabilityConfig", () => {
@@ -493,6 +495,36 @@ describe("startup capability loading", () => {
         await launchAppAsync(UDID, { bundleId: "explicit.app", launchArgs: [], capabilities: { enable: ["camera"] } });
         expect(calls().filter((line) => line.startsWith("simctl launch "))).toEqual([`simctl launch ${UDID} explicit.app`]);
         expect(calls().filter((line) => line.startsWith("simctl terminate "))).toEqual([`simctl terminate ${UDID} explicit.app`]);
+      });
+    } finally {
+      clearRegisteredCapabilities();
+    }
+  });
+
+  test("publishes a capability before launching so the app cannot start without it", async () => {
+    const log = join(stateDir(), "simctl-order-calls");
+    const quotedLog = "'" + log.replaceAll("'", "'\\''") + "'";
+    const quotedConfig = "'" + capabilityConfigPath(UDID).replaceAll("'", "'\\''") + "'";
+    clearRegisteredCapabilities();
+    registerCapability({ name: "camera", defaultEnabled: false, scope: "allApps", async setEnabled() {
+      return { dylib: "/camera.dylib" };
+    } });
+    try {
+      await withShimsAsync({ xcrun: `#!/bin/sh
+printf '%s\\n' "$*" >> ${quotedLog}
+if [ "$1" = "simctl" ] && [ "$2" = "launch" ]; then
+  printf 'config-at-launch:%s\\n' "$(tr '\\t\\n' '  ' < ${quotedConfig} 2>/dev/null)" >> ${quotedLog}
+fi
+exit 0
+` }, async () => {
+        writeRawState(JSON.stringify({ launchArgs: [], capabilities: {} }));
+        await launchAppAsync(UDID, {
+          bundleId: "explicit.app",
+          launchArgs: [],
+          capabilities: { enable: ["camera"] },
+        });
+        const calls = readFileSync(log, "utf-8").split("\n");
+        expect(calls.find((line) => line.startsWith("config-at-launch:"))).toContain("/camera.dylib");
       });
     } finally {
       clearRegisteredCapabilities();

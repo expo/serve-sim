@@ -187,16 +187,21 @@ export async function armCapabilityLoader(udid: string): Promise<void> {
   try {
     await withLaunchStateLock(udid, async () => {
       const previous = readLaunchState(udid) ?? { launchArgs: [], capabilities: {} };
-      await armInsert(udid, dylib);
-      writeLaunchState(udid, {
+      const state: LaunchState = {
         ...previous,
         sessionPids: [...new Set([...(previous.sessionPids ?? []), process.pid])],
-      });
+      };
+      const config = renderCapabilityConfig(state);
+      commitCapabilityConfig(udid, config);
+      writeLaunchState(udid, state);
+      await armInsert(udid, dylib);
     });
   } catch (error) {
     console.error(
-      `Could not arm the capability loader on ${udid}, so capabilities will not load this ` +
-        `session: ${error instanceof Error ? error.message : String(error)}`,
+      `Could not arm the capability loader on ${udid}: ` +
+        `${error instanceof Error ? error.message : String(error)}. Another serve-sim may hold ` +
+        `the device lock, or the state directory may not be writable. Enabling a capability arms ` +
+        `it again, so retry after stopping other serve-sim processes on this device.`,
     );
   }
 }

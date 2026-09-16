@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { WebRtcCodec, WebRtcStreamFailure } from "../webrtc-codec-fallback";
-import { webRtcFailureDisposition } from "../webrtc-failure-policy";
+import { shouldCheckPlaybackStall, webRtcFailureDisposition } from "../webrtc-failure-policy";
 import { WEBRTC_ICE_TRANSPORT_POLICY, type IceServer } from "../webrtc-ice";
+import { raiseH264OfferLevel } from "../webrtc-sdp-level";
 import {
   closeWebRtcSession,
   postWebRtcOffer,
@@ -18,6 +19,7 @@ const ICE_GATHERING_TIMEOUT_MS = 3_000;
 // fresh browser deadline; time spent retrying 409s cannot consume it.
 const SIGNALING_REQUEST_TIMEOUT_MS = 20_000;
 const FIRST_FRAME_TIMEOUT_MS = 4_000;
+const PLAYBACK_STALL_CHECK_MS = 2_000;
 /// Whether any inbound video frame has arrived yet.
 async function videoRtpArriving(pc: RTCPeerConnection | null): Promise<boolean> {
   if (!pc) return false;
@@ -72,10 +74,12 @@ export function useWebRtcStream({
   const [sessionId, setSessionId] = useState<string | null>(null);
   const firstFrameTimeoutRef = useRef<number | undefined>(undefined);
   const firstFrameDecodedRef = useRef(false);
+  const lastPaintAtRef = useRef(0);
   const transportRetryAttemptRef = useRef(0);
 
   const markFrameDecoded = useCallback(() => {
     firstFrameDecodedRef.current = true;
+    lastPaintAtRef.current = Date.now();
     transportRetryAttemptRef.current = 0;
     if (firstFrameTimeoutRef.current !== undefined) {
       window.clearTimeout(firstFrameTimeoutRef.current);
@@ -113,6 +117,7 @@ export function useWebRtcStream({
     setFailure(null);
     setError(null);
     firstFrameDecodedRef.current = false;
+    lastPaintAtRef.current = Date.now();
     if (firstFrameTimeoutRef.current !== undefined) {
       window.clearTimeout(firstFrameTimeoutRef.current);
       firstFrameTimeoutRef.current = undefined;
@@ -130,6 +135,33 @@ export function useWebRtcStream({
     const releaseOnPageHide = () => void closeRemoteSession(true);
     window.addEventListener("pagehide", releaseOnPageHide);
     window.addEventListener("beforeunload", releaseOnPageHide);
+
+    // requestVideoFrameCallback stops while the tab is hidden, so treat becoming visible
+    // as a fresh paint rather than reading the gap as a stall.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") lastPaintAtRef.current = Date.now();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    // The first-frame watchdog stops at the first paint. Past that a stream can still stop
+    // decoding — a frame the decoder cannot handle after the resolution moves up leaves it
+    // connected, receiving, and painting nothing, with no way back on its own.
+    const stallTimer = window.setInterval(() => {
+      if (stopped || failing || !pc) return;
+      const check = shouldCheckPlaybackStall({
+        painted: firstFrameDecodedRef.current,
+        msSincePaint: Date.now() - lastPaintAtRef.current,
+        documentHidden: document.visibilityState !== "visible",
+      });
+      if (!check) return;
+      const connection = pc.connectionState;
+      void videoRtpArriving(pc).then((mediaArriving) => {
+        if (stopped || failing) return;
+        const disposition = webRtcFailureDisposition("playback-stall", connection, { mediaArriving });
+        if (disposition === "codec") failCodec();
+        else if (disposition === "transport") retryTransport("WebRTC playback stalled.");
+      });
+    }, PLAYBACK_STALL_CHECK_MS);
 
     const closePeer = () => {
       setStream(null);
@@ -272,6 +304,9 @@ export function useWebRtcStream({
         await waitForIce(pc);
         const local = pc.localDescription;
         if (!local) throw new Error("WebRTC offer was not created");
+        // Only what the encoder reads is rewritten; our own description stays as the
+        // browser built it. See raiseH264OfferLevel.
+        const offerSdp = codec === "h264" ? raiseH264OfferLevel(local.sdp) : local.sdp;
         const response = await postWebRtcOffer({
           url: offerUrl,
           signal: lifecycleController.signal,
@@ -280,7 +315,7 @@ export function useWebRtcStream({
           busyRetryCount: BUSY_RETRY_COUNT,
           body: JSON.stringify({
             type: local.type,
-            sdp: local.sdp,
+            sdp: offerSdp,
             sessionId,
             codec,
             iceServers: servers,
@@ -318,6 +353,8 @@ export function useWebRtcStream({
 
     return () => {
       stopped = true;
+      window.clearInterval(stallTimer);
+      document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("pagehide", releaseOnPageHide);
       window.removeEventListener("beforeunload", releaseOnPageHide);
       lifecycleController.abort();

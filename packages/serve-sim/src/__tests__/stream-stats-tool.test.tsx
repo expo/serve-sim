@@ -98,9 +98,11 @@ describe("describeFaults", () => {
       .toEqual(["Encoder cannot keep up (CPU)"]);
   });
 
-  test("blames the network, not the encoder, when bandwidth is the limit", () => {
+  /// Measured on an EAS worker: bitrate-limited at 1.1 of 9.5 Mbps with zero packet loss,
+  /// so the bitrate budget was the constraint and the network was not.
+  test("names the bitrate, not the network, when bandwidth is the limit", () => {
     expect(describeFaults(stats(), { ...sender, qualityLimitationReason: "bandwidth" }))
-      .toEqual(["Bitrate reduced by the network"]);
+      .toEqual(["Quality reduced to fit the bitrate"]);
   });
 
   test("keeps an unfamiliar reason code out of the UI", () => {

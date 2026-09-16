@@ -15,7 +15,7 @@ export async function launchAppAsync(
     capabilities?: CapabilityOverrides;
   },
 ): Promise<void> {
-  await launchApp(udid, { bundleId, launchArgs, restart: true });
   await applyDefaultCapabilities(udid, bundleId, capabilities);
+  await launchApp(udid, { bundleId, launchArgs, restart: true });
   if (openUrl) await openUrlInApp(udid, bundleId, openUrl);
 }

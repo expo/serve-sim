@@ -9,6 +9,12 @@ export type WebRtcFailureDisposition = "codec" | "transport" | "wait";
 
 export interface WebRtcMediaProgress {
   mediaArriving: boolean;
+  /// Whether the sender reports encoding frames, or null when it could not be asked.
+  ///
+  /// A dead media path and a dead encoder look identical from here: connected, nothing
+  /// arriving. Only the sender can tell them apart, and blaming the codec for a transport
+  /// fault costs a rung of the ladder that a codec change cannot repair.
+  senderEncoding?: boolean | null;
 }
 
 /// Before the first frame, arriving media means be patient. After it, whole frames that
@@ -23,7 +29,13 @@ export function webRtcFailureDisposition(
   progress: WebRtcMediaProgress = { mediaArriving: false },
 ): WebRtcFailureDisposition {
   if (connectionState !== "connected") return "transport";
-  if (event === "first-frame-timeout") return progress.mediaArriving ? "wait" : "codec";
+  if (event === "first-frame-timeout") {
+    if (progress.mediaArriving) return "wait";
+    // Unknown stays "codec": that is the long-standing behaviour, and the ladder is what
+    // catches an encoder producing nothing. Only a sender we positively know is encoding
+    // redirects the blame.
+    return progress.senderEncoding === true ? "transport" : "codec";
+  }
   if (event === "playback-stall") return progress.mediaArriving ? "codec" : "transport";
   return "transport";
 }

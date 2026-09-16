@@ -653,6 +653,7 @@ function AppWithConfig({
     enabled: useWebRtcVideo,
     codec: effectiveWebRtcCodec,
     iceServers: streamSettings.iceServers,
+    statsUrl: webrtcStatsUrlFrom(config),
   });
   const [avccFallback, dispatchAvccFallback] = useReducer(
     avccFallbackReducer,

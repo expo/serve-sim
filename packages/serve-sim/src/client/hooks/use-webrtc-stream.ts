@@ -8,6 +8,7 @@ import {
 } from "../webrtc-failure-policy";
 import { WEBRTC_ICE_TRANSPORT_POLICY, type IceServer } from "../webrtc-ice";
 import { raiseH264OfferLevel } from "../webrtc-sdp-level";
+import { webrtcSessionStatsUrl } from "../utils/sim-endpoint";
 import {
   closeWebRtcSession,
   postWebRtcOffer,
@@ -64,6 +65,30 @@ async function readInboundVideo(
   }
 }
 
+/// Whether the sender says it is producing frames, or null when it could not be asked.
+///
+/// Asked only when nothing arrived, to tell a dead media path from a dead encoder. The
+/// answer is deliberately null on any doubt: unknown keeps the codec ladder, which is the
+/// long-standing behaviour and the thing that catches an encoder producing nothing.
+async function senderIsEncoding(
+  statsUrl: string | undefined,
+  sessionId: string,
+): Promise<boolean | null> {
+  if (!statsUrl) return null;
+  try {
+    const response = await fetch(webrtcSessionStatsUrl(statsUrl, sessionId), {
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (!response.ok) return null;
+    const body = (await response.json()) as { sessions?: { framesEncoded?: number }[] };
+    const sessions = Array.isArray(body.sessions) ? body.sessions : [];
+    if (sessions.length === 0) return null;
+    return sessions.some((session) => (session.framesEncoded ?? 0) > 0);
+  } catch {
+    return null;
+  }
+}
+
 const BUSY_RETRY_INTERVAL_MS = 500;
 // Native serializes offer setup. Retry beyond its 10s orphan deadline so one
 // stalled negotiation cannot prevent another viewer from joining.
@@ -86,12 +111,14 @@ export function useWebRtcStream({
   enabled,
   codec = "h264",
   iceServers,
+  statsUrl,
 }: {
   offerUrl: string;
   closeUrl: string;
   enabled: boolean;
   codec?: WebRtcCodec;
   iceServers?: IceServer[];
+  statsUrl?: string;
 }) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [failure, setFailure] = useState<WebRtcStreamFailure | null>(null);
@@ -314,11 +341,18 @@ export function useWebRtcStream({
               firstFrameTimeoutRef.current = undefined;
               if (stopped || firstFrameDecodedRef.current) return;
               const state = pc?.connectionState ?? "closed";
-              void readInboundVideo(pc, null).then((inbound) => {
+              void (async () => {
+                const inbound = await readInboundVideo(pc, null);
                 if (stopped || firstFrameDecodedRef.current) return;
                 const mediaArriving = (inbound?.framesReceived ?? 0) > 0;
+                // Only worth asking when nothing arrived; otherwise the answer changes nothing.
+                const senderEncoding = mediaArriving
+                  ? null
+                  : await senderIsEncoding(statsUrl, sessionId);
+                if (stopped || firstFrameDecodedRef.current) return;
                 const disposition = webRtcFailureDisposition("first-frame-timeout", state, {
                   mediaArriving,
+                  senderEncoding,
                 });
                 if (disposition === "wait" && !graceUsed) {
                   graceUsed = true;
@@ -328,7 +362,7 @@ export function useWebRtcStream({
                 } else {
                   failCodec();
                 }
-              });
+              })();
             }, FIRST_FRAME_TIMEOUT_MS);
           };
           armFirstFrameWatchdog();
@@ -409,7 +443,7 @@ export function useWebRtcStream({
       setSessionId(null);
       pc?.close();
     };
-  }, [enabled, offerUrl, closeUrl, codec, iceServers, retryGeneration]);
+  }, [enabled, offerUrl, closeUrl, codec, iceServers, statsUrl, retryGeneration]);
 
   return { stream, failure, error, markFrameDecoded, peerConnection, sessionId };
 }

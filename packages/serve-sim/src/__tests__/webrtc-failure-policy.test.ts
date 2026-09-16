@@ -70,6 +70,45 @@ describe("playback stall, after the stream has already painted", () => {
   });
 });
 
+describe("who to blame when nothing arrives before the first frame", () => {
+  const timeout = (senderEncoding: boolean | null | undefined) =>
+    webRtcFailureDisposition("first-frame-timeout", "connected", {
+      mediaArriving: false,
+      senderEncoding,
+    });
+
+  /// The reported symptom: a media path that never delivers looks exactly like a broken
+  /// codec, so every rung of the ladder fails the same way and the session ends dead.
+  test("blames the transport when the sender is encoding and we receive nothing", () => {
+    expect(timeout(true)).toBe("transport");
+  });
+
+  test("blames the codec when the sender encoded nothing at all", () => {
+    expect(timeout(false)).toBe("codec");
+  });
+
+  /// Unknown keeps the old behaviour, so the ladder still catches an encoder that produces
+  /// nothing when the sender cannot be asked.
+  test("blames the codec when the sender could not be asked", () => {
+    expect(timeout(null)).toBe("codec");
+    expect(timeout(undefined)).toBe("codec");
+  });
+
+  test("arriving media still outranks the sender's opinion", () => {
+    expect(webRtcFailureDisposition("first-frame-timeout", "connected", {
+      mediaArriving: true,
+      senderEncoding: false,
+    })).toBe("wait");
+  });
+
+  test("a connection that is not up is the transport's problem regardless", () => {
+    expect(webRtcFailureDisposition("first-frame-timeout", "failed", {
+      mediaArriving: false,
+      senderEncoding: false,
+    })).toBe("transport");
+  });
+});
+
 describe("tracking whether decoding has stopped", () => {
   const run = (samples: PlaybackProgress[]) => {
     let state: PlaybackStallState = initialPlaybackStallState;

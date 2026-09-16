@@ -9,9 +9,8 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { ArrowDownToLine, Copy, Pause, Play, Trash2, X } from "lucide-react";
+import { Check, Copy, Download, ListFilter, Pause, Play, Trash2, TriangleAlert, X } from "lucide-react";
 import { useCopy } from "../hooks/use-copy";
-import { LevelGlyph } from "./level-glyph";
 import {
   DEVICE_LOG_LEVELS,
   deviceLogMatches,
@@ -23,12 +22,19 @@ import { logWindow } from "../utils/logs-window";
 import { useDeviceLogs } from "../hooks/use-device-logs";
 import type { DisplayLine } from "../utils/log-rows";
 import { simEndpoint } from "../utils/sim-endpoint";
+import { triggerBrowserDownload } from "../utils/screenshot-capture";
 import { PanelTitle } from "../Panel";
 import { PANEL_BACKGROUND } from "./panel-colors";
+import { Dropdown, DropdownOption } from "./select";
+import { ResizeEdge } from "./resize-handle";
+import { Tooltip } from "./tooltip";
 
 const NEAR_BOTTOM_PX = 48;
 
 type LevelEnabled = Record<DeviceLogLevel, boolean>;
+
+// log-buffer.ts streams at --level info, so debug records never reach us.
+const LOG_LEVELS = DEVICE_LOG_LEVELS.filter((level) => level !== "debug");
 
 const DEFAULT_LEVELS: LevelEnabled = {
   debug: false,
@@ -62,7 +68,6 @@ export function LogsDrawer({
   const [filter, setFilter] = useState("");
   const [scope, setScope] = useState<"all" | "app">("all");
   const [levels, setLevels] = useState<LevelEnabled>(DEFAULT_LEVELS);
-  const [following, setFollowing] = useState(true);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [copied, copy] = useCopy();
   const path = useMemo(
@@ -78,8 +83,8 @@ export function LogsDrawer({
     if (!open) return;
     setExpandedId(null);
     stickRef.current = true;
-    setFollowing(true);
   }, [open, path]);
+
 
   useEffect(() => {
     if (!open) return;
@@ -100,7 +105,7 @@ export function LogsDrawer({
   const visible = useMemo(() => {
     const needle = filter.trim();
     const appPid = scope === "app" ? currentAppPid : undefined;
-    if (!needle && scope !== "app" && DEVICE_LOG_LEVELS.every((level) => levels[level])) {
+    if (!needle && scope !== "app" && LOG_LEVELS.every((level) => levels[level])) {
       return lines;
     }
     return lines.filter((line) => {
@@ -110,22 +115,26 @@ export function LogsDrawer({
     });
   }, [lines, filter, levels, scope, currentAppPid]);
 
+  useEffect(() => {
+    if (visible.length === 0) stickRef.current = true;
+  }, [visible.length]);
+
   const live = open && !paused && !errored;
   const appScopeAvailable = currentAppPid != null;
+  const levelsFiltered = LOG_LEVELS.some((level) => levels[level] !== DEFAULT_LEVELS[level]);
 
-  const jumpToLatest = (): void => {
-    stickRef.current = true;
-    setFollowing(true);
-    const el = listRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+  const visibleText = (): string => visible.map(formatLogLine).join("\n");
+
+  const copyVisible = (): void => copy(visibleText());
+
+  const downloadVisible = (): void => {
+    const url = URL.createObjectURL(new Blob([visibleText()], { type: "text/plain" }));
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 23);
+    triggerBrowserDownload(url, `serve-sim-logs-${stamp}.log`);
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
-  const copyVisible = (): void => copy(visible.map(formatLogLine).join("\n"));
-
-  const filteredOut =
-    Boolean(filter.trim()) ||
-    scope === "app" ||
-    DEVICE_LOG_LEVELS.some((level) => !levels[level]);
+  const filteredOut = Boolean(filter.trim()) || scope === "app" || levelsFiltered;
   const emptyLabel = errored
     ? "Disconnected"
     : scope === "app" && !appScopeAvailable
@@ -151,47 +160,79 @@ export function LogsDrawer({
         pointerEvents: open ? "auto" : "none",
       }}
     >
-      <div
-        role="separator"
-        aria-orientation="horizontal"
-        aria-label="Resize logs drawer"
-        onPointerDown={onResizePointerDown}
-        className="absolute inset-x-0 top-0 z-10 flex h-3 cursor-row-resize touch-none items-start justify-center pt-1"
-      >
-        <span className="h-1 w-8 rounded-full bg-white/20" />
-      </div>
+      <ResizeEdge onPointerDown={onResizePointerDown} />
       <div className="flex shrink-0 items-center gap-2 border-b border-white/8 px-3 py-1.5">
         <PanelTitle>Logs</PanelTitle>
-        <span
-          className={`size-1.5 shrink-0 rounded-full ${live ? "bg-emerald-400" : "bg-transparent"}`}
-          aria-label={live ? "Live" : undefined}
+        {errored ? (
+          <Tooltip label="The log stream disconnected">
+            <span role="status" className="flex shrink-0 items-center">
+              <TriangleAlert aria-hidden="true" className="size-3.5 text-amber-400" />
+              <span className="sr-only">The log stream disconnected</span>
+            </span>
+          </Tooltip>
+        ) : (
+          <span
+            className={`size-1.5 shrink-0 rounded-full ${live ? "bg-emerald-400" : "bg-transparent"}`}
+            aria-label={live ? "Live" : undefined}
+          />
+        )}
+        <ScopeButton
+          pressed={scope === "all"}
+          onClick={() => setScope("all")}
+          label="All processes"
+        >
+          All
+        </ScopeButton>
+        <ScopeButton
+          pressed={scope === "app"}
+          onClick={() => setScope("app")}
+          label="Current app"
+          disabled={!appScopeAvailable}
+        >
+          App
+        </ScopeButton>
+        <input
+          type="text"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          aria-label="Filter logs"
+          placeholder="Filter"
+          className="ml-auto box-border h-6 w-36 min-w-6 appearance-none rounded border border-white/10 bg-white/[0.03] px-2 font-mono text-[11px] leading-none text-white/80 placeholder:text-white/30 outline-none focus:border-white/25"
         />
-        <span className="flex h-8 min-w-8 shrink-0 items-center justify-center rounded-md border border-white/8 bg-white/[0.04] px-2 font-mono text-[10px] leading-none text-white/60">
-          {visible.length}
-        </span>
-        <div className="flex h-8 shrink-0 divide-x divide-white/8 overflow-hidden rounded-md border border-white/8">
-          <ScopeButton
-            pressed={scope === "all"}
-            onClick={() => setScope("all")}
-            label="All processes"
-          >
-            All
-          </ScopeButton>
-          <ScopeButton
-            pressed={scope === "app"}
-            onClick={() => setScope("app")}
-            label="Current app"
-            disabled={!appScopeAvailable}
-          >
-            App
-          </ScopeButton>
-        </div>
-        <div className="ml-auto flex h-8 shrink-0 items-center">
-          <IconButton label="Jump to latest" onClick={jumpToLatest} hidden={following}>
-            <ArrowDownToLine size={16} strokeWidth={2} />
+        <div className="flex h-6 shrink-0 items-center gap-0.5">
+          <Tooltip label="Log levels">
+            <Dropdown
+              label="Log levels"
+              multiple
+              disabled={!open}
+              trigger={<ListFilter size={15} strokeWidth={1.75} />}
+              className={`flex h-6 w-6 items-center justify-center rounded hover:bg-white/8 hover:text-white ${
+                levelsFiltered ? "text-accent" : "text-[#8e8e93]"
+              }`}
+            >
+              {LOG_LEVELS.map((level) => (
+                <DropdownOption
+                  key={level}
+                  selected={levels[level]}
+                  onClick={() => setLevels((prev) => ({ ...prev, [level]: !prev[level] }))}
+                >
+                  <span className="flex items-center gap-2">
+                    <Check size={12} strokeWidth={2.5} className={levels[level] ? "" : "invisible"} />
+                    {level.charAt(0).toUpperCase() + level.slice(1)}
+                  </span>
+                </DropdownOption>
+              ))}
+            </Dropdown>
+          </Tooltip>
+          <IconButton label="Download logs" onClick={downloadVisible} disabled={visible.length === 0}>
+            <Download size={15} strokeWidth={1.75} />
           </IconButton>
-          <IconButton label={copied ? "Copied" : "Copy visible"} onClick={copyVisible}>
-            <Copy size={16} strokeWidth={2} />
+          <IconButton
+            label={copied ? "Copied" : "Copy logs"}
+            onClick={copyVisible}
+            disabled={visible.length === 0}
+          >
+            <Copy size={15} strokeWidth={1.75} />
           </IconButton>
           <IconButton
             label="Clear"
@@ -200,50 +241,16 @@ export function LogsDrawer({
               setExpandedId(null);
             }}
           >
-            <Trash2 size={16} strokeWidth={2} />
+            <Trash2 size={15} strokeWidth={1.75} />
           </IconButton>
-          <IconButton
-            label={paused ? "Resume" : "Pause"}
-            onClick={togglePause}
-          >
-            {paused ? <Play size={16} strokeWidth={2} /> : <Pause size={16} strokeWidth={2} />}
+          <IconButton label={paused ? "Resume" : "Pause"} onClick={togglePause}>
+            {paused ? <Play size={15} strokeWidth={1.75} /> : <Pause size={15} strokeWidth={1.75} />}
           </IconButton>
-          <IconButton label="Close logs" onClick={onClose}>
-            <X size={16} strokeWidth={2} />
+          <IconButton label="Close logs" onClick={onClose} align="right">
+            <X size={15} strokeWidth={1.75} />
           </IconButton>
         </div>
       </div>
-      <div className="relative z-20 flex shrink-0 items-center gap-2 overflow-visible border-b border-white/8 px-3 py-1.5">
-        <input
-          type="text"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          aria-label="Filter logs"
-          placeholder="Filter"
-          className="box-border h-8 min-h-8 min-w-0 flex-1 appearance-none rounded-md border border-white/8 bg-white/[0.04] px-2.5 text-[11px] leading-none text-white/90 placeholder:text-white/35 outline-none focus:border-white/20"
-        />
-        <div
-          className="flex h-8 shrink-0 overflow-visible rounded-md border border-white/8"
-          role="group"
-          aria-label="Log levels"
-        >
-          {DEVICE_LOG_LEVELS.map((level, index) => (
-            <LevelButton
-              key={level}
-              level={level}
-              pressed={levels[level]}
-              first={index === 0}
-              last={index === DEVICE_LOG_LEVELS.length - 1}
-              onClick={() => setLevels((prev) => ({ ...prev, [level]: !prev[level] }))}
-            />
-          ))}
-        </div>
-      </div>
-      {errored && lines.length > 0 ? (
-        <p role="status" className="shrink-0 px-3 py-1.5 text-[11px] leading-none text-amber-300/80">
-          Disconnected. Reconnecting…
-        </p>
-      ) : null}
       {visible.length === 0 ? (
         <div
           role="status"
@@ -259,7 +266,6 @@ export function LogsDrawer({
           lines={visible}
           expandedId={expandedId}
           onToggle={(id) => setExpandedId((current) => (current === id ? null : id))}
-          onFollowingChange={setFollowing}
         />
       )}
     </aside>
@@ -272,14 +278,12 @@ function LogList({
   lines,
   expandedId,
   onToggle,
-  onFollowingChange,
 }: {
   listRef: RefObject<HTMLDivElement | null>;
   stickRef: RefObject<boolean>;
   lines: DisplayLine[];
   expandedId: number | null;
   onToggle: (id: number) => void;
-  onFollowingChange: (next: boolean) => void;
 }) {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(120);
@@ -323,11 +327,7 @@ function LogList({
         const el = listRef.current;
         if (!el) return;
         scrollTopRef.current = el.scrollTop;
-        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
-        if (atBottom !== stickRef.current) {
-          stickRef.current = atBottom;
-          onFollowingChange(atBottom);
-        }
+        stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
         if (scrollRaf.current === null) {
           scrollRaf.current = requestAnimationFrame(() => {
             scrollRaf.current = null;
@@ -373,9 +373,9 @@ function ScopeButton({
       aria-label={label}
       disabled={disabled}
       onClick={onClick}
-      className={`flex h-8 items-center border-0 px-2.5 text-[10px] leading-none ${
-        pressed ? "bg-white/12 text-white/90" : "bg-transparent text-white/45 hover:text-white/70"
-      } disabled:opacity-30 disabled:hover:text-white/45`}
+      className={`flex h-6 shrink-0 items-center border-0 bg-transparent px-0 text-[11px] leading-none ${
+        pressed ? "text-white/85" : "text-white/40 hover:text-white/70"
+      } disabled:opacity-30 disabled:hover:text-white/40`}
     >
       {children}
     </button>
@@ -386,68 +386,29 @@ function IconButton({
   label,
   onClick,
   children,
-  hidden,
+  disabled,
+  align,
 }: {
   label: string;
   onClick: () => void;
   children: ReactNode;
-  hidden?: boolean;
+  disabled?: boolean;
+  align?: "center" | "right";
 }) {
   return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      tabIndex={hidden ? -1 : undefined}
-      aria-hidden={hidden || undefined}
-      className={`flex h-8 w-8 items-center justify-center rounded-md border-0 bg-transparent p-0 text-[#8e8e93] hover:bg-white/8 hover:text-white ${
-        hidden ? "invisible pointer-events-none" : ""
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
-function LevelButton({
-  level,
-  pressed,
-  first,
-  last,
-  onClick,
-}: {
-  level: DeviceLogLevel;
-  pressed: boolean;
-  first: boolean;
-  last: boolean;
-  onClick: () => void;
-}) {
-  const label = level[0]!.toUpperCase() + level.slice(1);
-  return (
-    <button
-      type="button"
-      aria-pressed={pressed}
-      aria-label={pressed ? `${label}, on` : `${label}, off`}
-      onClick={onClick}
-      className={`group relative flex h-8 w-8 shrink-0 items-center justify-center border-0 p-0 ${
-        first ? "rounded-l-[5px]" : "border-l border-solid border-white/8"
-      } ${last ? "rounded-r-[5px]" : ""} ${
-        pressed ? "bg-white/14" : "bg-transparent hover:bg-white/[0.06]"
-      }`}
-    >
-      <LevelGlyph level={level} active={pressed} className="size-5" />
-      <span
-        role="tooltip"
-        className="pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded-md border border-white/12 bg-[#181818] px-1.5 py-1 text-[11px] font-medium leading-none text-white/90 opacity-0 shadow-[0_4px_14px_rgba(0,0,0,0.32)] transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+    <Tooltip label={label} align={align}>
+      <button
+        type="button"
+        aria-label={label}
+        onClick={onClick}
+        disabled={disabled}
+        className="flex h-6 w-6 items-center justify-center rounded border-0 bg-transparent p-0 text-[#8e8e93] hover:bg-white/8 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-[#8e8e93]"
       >
-        {pressed ? `${label} on` : `${label} off`}
-      </span>
-    </button>
+        {children}
+      </button>
+    </Tooltip>
   );
 }
-
-
 
 const LogRow = memo(function LogRow({
   line,
@@ -461,11 +422,7 @@ const LogRow = memo(function LogRow({
   const time = formatLogClock(line.timestamp);
   const meta = [line.subsystem, line.category].filter(Boolean).join(":");
   const tone =
-    line.level === "fault" || line.level === "error"
-      ? "text-red-300"
-      : line.level === "debug"
-        ? "text-white/40"
-        : "text-white/80";
+    line.level === "fault" || line.level === "error" ? "text-white/90" : "text-white/70";
   return (
     <button
       type="button"
@@ -480,13 +437,10 @@ const LogRow = memo(function LogRow({
       <span className="w-[5.5rem] shrink-0 font-mono text-[11px] leading-5 tabular-nums text-white/35">
         {time || "\u00a0"}
       </span>
-      <span className="flex h-5 w-6 shrink-0 items-center justify-center">
-        <LevelGlyph level={line.level} className="size-4" />
-      </span>
-      <span className="w-[7.5rem] shrink-0 truncate text-[11px] leading-5 text-white/40">
+      <span className="w-[8.5rem] shrink-0 truncate font-mono text-[11px] leading-5 text-white/40">
         {line.process || "unknown"}
       </span>
-      <span className="min-w-0 flex-1 text-[11px] leading-5">
+      <span className="min-w-0 flex-1 font-mono text-[11px] leading-5">
         <span className={`block ${expanded ? "whitespace-pre-wrap break-all" : "truncate"} ${tone}`}>
           {line.message}
         </span>

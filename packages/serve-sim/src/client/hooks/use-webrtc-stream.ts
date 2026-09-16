@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { WebRtcCodec, WebRtcStreamFailure } from "../webrtc-codec-fallback";
-import { webRtcFailureDisposition } from "../webrtc-failure-policy";
+import {
+  initialPlaybackStallState,
+  nextPlaybackStallState,
+  PLAYBACK_STALL_POLL_MS,
+  webRtcFailureDisposition,
+} from "../webrtc-failure-policy";
 import { WEBRTC_ICE_TRANSPORT_POLICY, type IceServer } from "../webrtc-ice";
+import { raiseH264OfferLevel } from "../webrtc-sdp-level";
 import {
   closeWebRtcSession,
   postWebRtcOffer,
@@ -18,20 +24,43 @@ const ICE_GATHERING_TIMEOUT_MS = 3_000;
 // fresh browser deadline; time spent retrying 409s cannot consume it.
 const SIGNALING_REQUEST_TIMEOUT_MS = 20_000;
 const FIRST_FRAME_TIMEOUT_MS = 4_000;
-/// Whether any inbound video frame has arrived yet.
-async function videoRtpArriving(pc: RTCPeerConnection | null): Promise<boolean> {
-  if (!pc) return false;
+interface InboundVideo {
+  id: string;
+  framesReceived: number;
+  framesDecoded: number | null;
+}
+
+/// The inbound report for the stream being played.
+///
+/// A connection can carry several video reports — simulcast, or a retained one for an SSRC
+/// that has gone away — so taking whichever the iterator yields last can judge a stream
+/// nobody is watching. Prefer the one already being followed, else the liveliest.
+async function readInboundVideo(
+  pc: RTCPeerConnection | null,
+  preferredId: string | null,
+): Promise<InboundVideo | null> {
+  if (!pc) return null;
   try {
-    let arriving = false;
+    const reports: InboundVideo[] = [];
     (await pc.getStats()).forEach((entry) => {
       if (entry.type !== "inbound-rtp") return;
-      const video = entry as RTCInboundRtpStreamStats & { framesReceived?: number };
+      const video = entry as RTCInboundRtpStreamStats & {
+        framesReceived?: number;
+        framesDecoded?: number;
+      };
       if (video.kind !== "video") return;
-      if ((video.framesReceived ?? 0) > 0) arriving = true;
+      reports.push({
+        id: video.id,
+        framesReceived: video.framesReceived ?? 0,
+        // Kept nullable: not every browser reports it, and absent is not zero.
+        framesDecoded: typeof video.framesDecoded === "number" ? video.framesDecoded : null,
+      });
     });
-    return arriving;
+    if (reports.length === 0) return null;
+    return reports.find((r) => r.id === preferredId)
+      ?? reports.reduce((a, b) => (b.framesReceived > a.framesReceived ? b : a));
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -130,6 +159,49 @@ export function useWebRtcStream({
     const releaseOnPageHide = () => void closeRemoteSession(true);
     window.addEventListener("pagehide", releaseOnPageHide);
     window.addEventListener("beforeunload", releaseOnPageHide);
+
+    // The first-frame watchdog stops once the stream paints. Past that a decoder can still
+    // give up — typically on a frame larger than it handles, once the resolution moves up —
+    // leaving the session connected, receiving, and decoding nothing.
+    let stallState = initialPlaybackStallState;
+    let inboundId: string | null = null;
+    let statsInFlight = false;
+    const playable = () =>
+      !stopped && !failing && pc?.connectionState === "connected"
+      && firstFrameDecodedRef.current && document.visibilityState === "visible";
+    const stallTimer = window.setInterval(() => {
+      // Browsers may stop decoding a hidden tab, which is indistinguishable from a dead one.
+      if (!playable()) {
+        stallState = initialPlaybackStallState;
+        return;
+      }
+      // One read at a time: several slow reads resolving together would otherwise count one
+      // measurement as several consecutive stalled polls.
+      if (statsInFlight) return;
+      statsInFlight = true;
+      void readInboundVideo(pc, inboundId).finally(() => {
+        statsInFlight = false;
+      }).then((inbound) => {
+        // Re-checked after the read, not before it: the tab can hide or the connection drop
+        // while it is in flight, and a result from before that must not be acted on.
+        if (!playable() || !inbound || !pc) return;
+        if (inbound.id !== inboundId) {
+          inboundId = inbound.id;
+          stallState = initialPlaybackStallState;
+        }
+        const next = nextPlaybackStallState(stallState, {
+          decoded: inbound.framesDecoded,
+          received: inbound.framesReceived,
+        });
+        stallState = next.stalled ? initialPlaybackStallState : next.state;
+        if (!next.stalled) return;
+        const disposition = webRtcFailureDisposition("playback-stall", pc.connectionState, {
+          mediaArriving: next.mediaArriving,
+        });
+        if (disposition === "codec") failCodec();
+        else if (disposition === "transport") retryTransport("WebRTC playback stalled.");
+      });
+    }, PLAYBACK_STALL_POLL_MS);
 
     const closePeer = () => {
       setStream(null);
@@ -242,8 +314,9 @@ export function useWebRtcStream({
               firstFrameTimeoutRef.current = undefined;
               if (stopped || firstFrameDecodedRef.current) return;
               const state = pc?.connectionState ?? "closed";
-              void videoRtpArriving(pc).then((mediaArriving) => {
+              void readInboundVideo(pc, null).then((inbound) => {
                 if (stopped || firstFrameDecodedRef.current) return;
+                const mediaArriving = (inbound?.framesReceived ?? 0) > 0;
                 const disposition = webRtcFailureDisposition("first-frame-timeout", state, {
                   mediaArriving,
                 });
@@ -272,6 +345,9 @@ export function useWebRtcStream({
         await waitForIce(pc);
         const local = pc.localDescription;
         if (!local) throw new Error("WebRTC offer was not created");
+        // Only what the encoder reads is rewritten; our own description stays as the
+        // browser built it. See raiseH264OfferLevel.
+        const offerSdp = codec === "h264" ? raiseH264OfferLevel(local.sdp) : local.sdp;
         const response = await postWebRtcOffer({
           url: offerUrl,
           signal: lifecycleController.signal,
@@ -280,7 +356,7 @@ export function useWebRtcStream({
           busyRetryCount: BUSY_RETRY_COUNT,
           body: JSON.stringify({
             type: local.type,
-            sdp: local.sdp,
+            sdp: offerSdp,
             sessionId,
             codec,
             iceServers: servers,
@@ -318,6 +394,7 @@ export function useWebRtcStream({
 
     return () => {
       stopped = true;
+      window.clearInterval(stallTimer);
       window.removeEventListener("pagehide", releaseOnPageHide);
       window.removeEventListener("beforeunload", releaseOnPageHide);
       lifecycleController.abort();

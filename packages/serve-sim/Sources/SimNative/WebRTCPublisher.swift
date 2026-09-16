@@ -87,8 +87,11 @@ struct WebRTCCaptureCounts: Codable {
 /// Which encoder the publisher actually selected. Surfaced so a silent downgrade to a
 /// software encoder is visible instead of looking like an ordinary slow stream.
 struct WebRTCEncoderIdentity: Codable {
+    /// Nil when the live session is not H.264, because the probe describes an H.264 encoder.
     let id: String?
     let hardware: Bool?
+    /// One answer for the whole report, even when sessions disagree.
+    let codec: String?
 }
 
 struct WebRTCSenderStatsReport: Codable {
@@ -262,7 +265,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                     )
                 }
                 for session in self.sessions.values {
-                    self.applyBitrateSettings(to: session)
+                    self.applySenderParameters(to: session)
                 }
                 streamLog(
                     "[webrtc] Settings updated fps=\(frameRatePolicy.outputFramesPerSecond) " +
@@ -365,6 +368,18 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
     }
 
+    /// The codec the outbound stream actually carries. `session.codecName` is only what we
+    /// asked for; `setCodecPreferences` orders the list but does not decide the answer.
+    private static func negotiatedCodec(
+        _ byId: [String: LKRTCStatistics],
+        outbound: LKRTCStatistics?
+    ) -> String? {
+        guard let codecId = statsString(outbound, "codecId"),
+              let mimeType = statsString(byId[codecId], "mimeType")
+        else { return nil }
+        return StreamCodecPolicy.codecName(fromMimeType: mimeType)
+    }
+
     private static func reduceSenderStatistics(
         _ report: LKRTCStatisticsReport,
         session: WebRTCSessionSnapshot
@@ -378,7 +393,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         let remoteCandidate = statsString(candidatePair, "remoteCandidateId").flatMap { byId[$0] }
         return WebRTCSenderStatsPayload(
             sessionId: session.id,
-            codec: session.codecName,
+            codec: negotiatedCodec(byId, outbound: outbound) ?? session.codecName,
             connected: session.isConnected,
             qualityLimitationReason: statsString(outbound, "qualityLimitationReason"),
             qualityLimitationDurations: statsDurations(outbound, "qualityLimitationDurations"),
@@ -448,10 +463,16 @@ final class WebRTCPublisher: @unchecked Sendable {
         return durations.mapValues(\.doubleValue)
     }
 
-    func encoderIdentity() -> WebRTCEncoderIdentity {
-        WebRTCEncoderIdentity(
+    func encoderIdentity(liveCodecs: [String]) -> WebRTCEncoderIdentity {
+        let codec = StreamCodecPolicy.dominant(liveCodecs)
+        // The probe describes an H.264 encoder; libwebrtc encodes VP8 and VP9 in software.
+        if let codec, !StreamCodecPolicy.isH264(codec) {
+            return WebRTCEncoderIdentity(id: nil, hardware: false, codec: codec)
+        }
+        return WebRTCEncoderIdentity(
             id: h264WebRTCSupport.encoderID,
-            hardware: h264WebRTCSupport.usesHardware
+            hardware: h264WebRTCSupport.usesHardware,
+            codec: codec
         )
     }
 
@@ -535,7 +556,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                 fps: Int32(frameRatePolicy.sourceAdapterFramesPerSecond)
             )
             for session in sessions.values {
-                applyBitrateSettings(to: session)
+                applySenderParameters(to: session)
             }
             streamLog(
                 "[webrtc] Video source output format: \(width)x\(height) " +
@@ -568,7 +589,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             sessions.values.lazy.filter(\.isConnected).map(\.codecName)
         )
         let codecSummary = activeCodecNames.sorted().joined(separator: ",")
-        if activeCodecNames.contains("H264") {
+        if activeCodecNames.contains(where: StreamCodecPolicy.isH264) {
             switch h264FrameMode() {
             case .bgra:
                 usedNativeFrame = useNativePixelBufferFrames ?? false
@@ -768,6 +789,8 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
 
         let session = WebRTCSession(id: request.sessionId, peerConnection: peerConnection, delegate: delegate)
+        // Held onto so the encode size can stay inside what the peer negotiated.
+        session.h264LevelIdc = H264LevelPolicy.minAdvertisedLevel(sdp: request.sdp)
         delegate.peerConnection = peerConnection
         pendingOffer = PendingWebRTCOffer(session: session, completion: completion)
 
@@ -892,7 +915,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             guard !session.isConnected else { return }
             session.isConnected = true
             self.refreshFrameAcceptance()
-            self.applyBitrateSettings(to: session)
+            self.applySenderParameters(to: session)
             streamLog("[webrtc] Peer connected; activePeers=\(self.sessions.values.filter(\.isConnected).count)")
         }
     }
@@ -933,7 +956,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
         session.codecName = applyVideoCodecPreference(codec, to: transceiver)
         session.videoSender = transceiver.sender
-        applyBitrateSettings(to: session)
+        applySenderParameters(to: session)
     }
 
     private func createFallbackVideoTransceiver(on peerConnection: LKRTCPeerConnection) -> LKRTCRtpTransceiver? {
@@ -1158,7 +1181,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         return preferredName
     }
 
-    private func applyBitrateSettings(to session: WebRTCSession) {
+    private func applySenderParameters(to session: WebRTCSession) {
         guard let sender = session.videoSender else { return }
         let parameters = sender.parameters
         let encodings = parameters.encodings.isEmpty
@@ -1169,13 +1192,24 @@ final class WebRTCPublisher: @unchecked Sendable {
         let minBitrate = NSNumber(value: bitratePolicy.minimumBitsPerSecond)
         let senderFramesPerSecond = frameRatePolicy.senderFramesPerSecond
         let sourceMaxDimension = max(lastOutputWidth, lastOutputHeight)
-        // Temporary: H.264 stalls at larger encode sizes for reasons not yet diagnosed.
-        let maxDimension = StreamEncodePolicy.h264EncodeMaxLongEdge(
+        let levelIdc = session.h264LevelIdc ?? H264LevelPolicy.defaultLevelIdc
+        // `codecs.first` is empty until the answer is set, so the first apply uses the
+        // requested name and the re-apply after connection settles on the negotiated one.
+        let encodeMaxLongEdge = StreamEncodePolicy.encodeMaxLongEdge(
             configuredMaxDimension: maxDimension,
-            codecName: session.codecName
+            codecName: parameters.codecs.first?.name ?? session.codecName,
+            sourceWidth: lastOutputWidth,
+            sourceHeight: lastOutputHeight,
+            levelIdc: levelIdc
         )
-        let scaleResolutionDownBy = maxDimension > 0 && sourceMaxDimension > maxDimension
-            ? Double(sourceMaxDimension) / Double(maxDimension)
+        if maxDimension > 0, encodeMaxLongEdge < maxDimension {
+            streamLog(
+                "[webrtc] max-dimension \(maxDimension) exceeds what H.264 level "
+                    + "\(levelIdc) allows; encoding at \(encodeMaxLongEdge)"
+            )
+        }
+        let scaleResolutionDownBy = encodeMaxLongEdge > 0 && sourceMaxDimension > encodeMaxLongEdge
+            ? Double(sourceMaxDimension) / Double(encodeMaxLongEdge)
             : 1.0
         for encoding in encodings {
             encoding.isActive = true
@@ -1185,8 +1219,10 @@ final class WebRTCPublisher: @unchecked Sendable {
             encoding.scaleResolutionDownBy = NSNumber(value: scaleResolutionDownBy)
         }
         parameters.encodings = encodings
+        // maintainFramerate shrank a 1206-wide surface to 300x654 to hold 60 fps, which is
+        // unreadable for UI text. Spend some of the shortfall on framerate instead.
         parameters.degradationPreference =
-            NSNumber(value: LKRTCDegradationPreference.maintainFramerate.rawValue)
+            NSNumber(value: LKRTCDegradationPreference.balanced.rawValue)
         sender.parameters = parameters
         // Read back: assigning `scaleResolutionDownBy` is not proof libwebrtc kept it.
         let appliedScale = sender.parameters.encodings.first?.scaleResolutionDownBy?.doubleValue
@@ -1200,6 +1236,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             "senderFpsCap=none " +
             "minBitrate=\(minBitrate) " +
             "maxBitrate=\(maxBitrate) maxDimension=\(maxDimension) " +
+            "encodeMaxLongEdge=\(encodeMaxLongEdge) level=\(levelIdc) " +
             "scaleDown=\(String(format: "%.3f", scaleResolutionDownBy)) " +
             "applied=\(appliedScale.map { String(format: "%.3f", $0) } ?? "nil") " +
             "encodings=\(encodings.count) " +
@@ -1732,6 +1769,8 @@ private final class WebRTCSession {
     var videoSender: LKRTCRtpSender?
     var codecName = "H264"
     var isConnected = false
+    /// `level_idc` the peer advertised for H.264.
+    var h264LevelIdc: Int?
     private let iceGatheringTimeout: DispatchTimeInterval = .milliseconds(3_000)
 
     init(id: String, peerConnection: LKRTCPeerConnection, delegate: WebRTCSessionDelegate) {

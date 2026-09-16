@@ -44,8 +44,10 @@ export interface CaptureCounts {
 /// Which encoder the publisher selected. `hardware: false` means the stream is being
 /// encoded on the CPU, which otherwise looks identical to a healthy one.
 export interface EncoderIdentity {
+  /// The H.264 encoder this host would use. Null when the live session is not H.264.
   id: string | null;
   hardware: boolean | null;
+  codec: string | null;
 }
 
 export interface SenderStats {
@@ -132,6 +134,7 @@ function readEncoderIdentity(raw: unknown): EncoderIdentity | null {
   return {
     id: maybeString(raw.id),
     hardware: typeof raw.hardware === "boolean" ? raw.hardware : null,
+    codec: maybeString(raw.codec),
   };
 }
 

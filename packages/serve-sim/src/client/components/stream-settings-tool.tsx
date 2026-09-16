@@ -142,6 +142,7 @@ export function StreamSettingsTool({
           sender={sender}
           capture={senderView.stale ? null : senderView.capture}
           requestedFps={settings.h264Fps}
+          selectedMaxDimension={settings.maxDimension}
           stale={stale}
           action={
             <StreamStatsDownload

@@ -147,7 +147,16 @@ a frame while no peer is active exits before conversion or encoding.
 ### Signaling lifecycle
 
 1. The browser creates a receive-only video transceiver and gathers ICE.
-2. It POSTs an SDP offer, session ID, codec preference, and ICE configuration.
+2. It POSTs an SDP offer, session ID, codec preference, and ICE configuration. For
+   H.264 the posted offer has its `profile-level-id` level byte raised to 5.2; the
+   browser's own local description is left as built. Browsers advertise Level 3.1
+   whatever they can decode, and libwebrtc builds its encoder from the level in this
+   offer, producing no frames at all past that level's frame size. This is SDP
+   munging, not negotiation: `level-asymmetry-allowed=1` lets the two directions
+   differ, it does not license sending above what the peer said it decodes. It rests on
+   measurement — Chrome and Safari both decode a 1206x2622 stream while advertising 3.1 —
+   not on the fallback ladder: a decoder that limps rather than stops never trips it, and
+   intermittent decoding resets the watchdog indefinitely.
 3. Native creates a peer connection for that session, applies codec preferences,
    gathers ICE, and returns a complete SDP answer.
 4. The session joins the active peer registry. The publisher starts accepting
@@ -213,7 +222,12 @@ the simulator's single synthetic touch surface.
   with the number of connected peers.
 - There is no configured WebRTC peer limit or cross-viewer control arbitration.
 - No automatic fallback from unreachable WebRTC media to HTTP video.
-- Codec configuration describes a preference, not the negotiated sender codec.
+- `/webrtc/stats` reports the negotiated sender codec, but the panel's exported JSON
+  still records the requested one.
+- H.264 encode size is bounded by the negotiated level's frame size. A peer that
+  advertises Level 3.1 and does not raise it is scaled to fit, and an explicit
+  `--max-dimension` is clamped the same way, because exceeding the level yields no
+  picture rather than a bigger one.
 - Signaling URLs are derived from the MJPEG URL rather than advertised directly.
 - Encoder resolution, frame rate, and target bitrate are shared across viewers;
   one viewer changing them affects every peer attached to that simulator.
@@ -321,7 +335,7 @@ to HTTP when the network cannot establish WebRTC media.
 
 - Extract browser transport state from the main preview component.
 - Extract a TypeScript `WebRtcSessionManager` from `DeviceSession`.
-- Report actual negotiated codec and structured connection state.
+- Report structured connection state.
 - Add a proactive simulator shutdown signal that closes every media transport.
 - Add a real macOS WebRTC integration test for VP8, two live viewers, and
   independent peer cleanup.

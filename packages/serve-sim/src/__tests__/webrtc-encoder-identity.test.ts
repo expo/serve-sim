@@ -28,3 +28,16 @@ describe("encoder identity in sender stats", () => {
     expect(readSenderStats({ sessions: [] }).encoder).toBeNull();
   });
 });
+
+test("carries the live session codec alongside the encoder id", () => {
+  const stats = readSenderStats({
+    sessions: [],
+    encoder: { id: null, hardware: false, codec: "VP8" },
+  });
+  expect(stats.encoder).toEqual({ id: null, hardware: false, codec: "VP8" });
+});
+
+test("tolerates an encoder with no codec field", () => {
+  const stats = readSenderStats({ sessions: [], encoder: { id: "x", hardware: true } });
+  expect(stats.encoder).toEqual({ id: "x", hardware: true, codec: null });
+});

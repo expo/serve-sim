@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { TriangleAlert } from "lucide-react";
 import { useCrashDetail } from "../hooks/use-crash-detail";
 import {
   applyCrashFrame,
@@ -10,12 +11,13 @@ import { watchCrashes } from "../utils/watch-crashes";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
 import { CrashDetailModal } from "./crash-detail-modal";
+import { Tooltip } from "./tooltip";
 
 export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndpoint?: string }) {
   const [open, setOpen] = useState(false);
   const [list, setList] = useState<CrashListState>(EMPTY_CRASH_LIST);
   const [now, setNow] = useState(() => Date.now());
-  const [streamError, setStreamError] = useState<string | null>(null);
+  const [streamErrored, setStreamErrored] = useState(false);
 
   const path = useMemo(
     () => crashesEndpoint ?? `${simEndpoint("crashes")}?device=${encodeURIComponent(udid)}`,
@@ -34,10 +36,10 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
     return watchCrashes(
       streamPath,
       (frame) => {
-        setStreamError(null);
+        setStreamErrored(false);
         setList((prev) => applyCrashFrame(prev, frame));
       },
-      () => setStreamError("Lost contact with serve-sim. Showing the last crash list read."),
+      () => setStreamErrored(true),
     );
   }, [streamPath]);
 
@@ -50,11 +52,15 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
     step: stepOccurrence,
     close: closeDetail,
   } = useCrashDetail(path, list.crashes);
-  const loadError = detailError ?? streamError;
-
   const crashes = list.crashes;
   const evicted = list.ready && detail !== null && !crashes.some((crash) => crash.id === detail.record.id);
   const unavailable = list.meta?.status === "unavailable";
+  const streamWarning = unavailable
+    ? (list.meta?.statusError ?? "Crash reports are unavailable")
+    : streamErrored
+      ? "The crash stream disconnected"
+      : null;
+  const warning = streamWarning ?? (detail ? null : detailError);
 
   return (
     <CollapsibleSection
@@ -67,28 +73,29 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
           <span className="text-[11px] font-semibold text-white/50 uppercase tracking-[0.08em] leading-none">
             Crashes
           </span>
-          <span
-            className={`justify-self-end rounded-md border px-1.5 py-[3px] text-[10px] font-mono ${
-              crashes.length > 0
-                ? "border-red-400/30 bg-red-400/10 text-red-300"
-                : "border-white/8 bg-white/[0.04] text-white/60"
-            }`}
-          >
-            {crashes.length}
+          <span className="justify-self-end inline-flex items-center gap-1.5">
+            {warning && (
+              <Tooltip label={warning} align="right">
+                <span role="status" className="inline-flex items-center">
+                  <TriangleAlert aria-hidden="true" className="size-3.5 text-amber-400" />
+                  <span className="sr-only">{warning}</span>
+                </span>
+              </Tooltip>
+            )}
+            <span
+              className={`font-mono text-[10px] ${
+                crashes.length > 0 ? "text-red-300" : "text-white/45"
+              }`}
+            >
+              {crashes.length}
+            </span>
           </span>
         </>
       }
     >
-      {loadError && !detail && (
-        <p role="status" className="text-[11px] text-amber-300/80">
-          {loadError}
-        </p>
-      )}
-      {unavailable ? (
-        <p className="text-[11px] leading-relaxed text-amber-300/80">{list.meta?.statusError}</p>
-      ) : crashes.length === 0 ? (
-        <p className="text-[11px] text-white/40">
-          No crashes. A report shows up a few seconds after a crash.
+      {crashes.length === 0 ? (
+        <p role="status" aria-live="polite" className="text-[11px] text-white/40">
+          {unavailable ? "Crash reports unavailable" : "No crashes yet"}
         </p>
       ) : (
         <ul className="flex flex-col gap-1.5">
@@ -100,18 +107,16 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
                   if (detail) return;
                   void loadDetail(crash.id);
                 }}
-                className="w-full rounded-md bg-white/[0.03] px-2 py-1.5 text-left hover:bg-white/[0.06]"
+                className="w-full px-1 py-1 text-left hover:bg-white/[0.04]"
               >
                 <span className="flex items-center gap-2">
                   <span className="font-mono text-[11px] text-red-300">
                     {crash.signal ?? crash.exceptionType ?? "crash"}
                   </span>
                   {crash.count > 1 && (
-                    <span className="rounded border border-red-400/30 px-1 text-[10px] font-mono text-red-300">
-                      ×{crash.count}
-                    </span>
+                    <span className="font-mono text-[10px] text-white/45">×{crash.count}</span>
                   )}
-                  <span className="truncate text-[11px] text-white/50">{crash.appName}</span>
+                  <span className="truncate font-mono text-[11px] text-white/45">{crash.appName}</span>
                   <span
                     title={
                       crash.capturedAtMs === null
@@ -124,7 +129,7 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
                   </span>
                 </span>
                 <span className="mt-0.5 block truncate font-mono text-[10px] text-white/40">
-                  {crash.culpritFrame ?? crash.terminationIndicator ?? "no stack frame"}
+                  {crash.culpritFrame ?? crash.terminationIndicator ?? "No stack frames"}
                 </span>
               </button>
             </li>
@@ -141,8 +146,8 @@ export function CrashTool({ udid, crashesEndpoint }: { udid: string; crashesEndp
           pendingIndex={pendingIndex ?? detail.occurrence.index}
           loadError={
             evicted
-              ? "This crash aged out of the device's list. What is shown is the last copy read."
-              : loadError
+              ? "This crash aged out of the device list. Showing the last copy read."
+              : (detailError ?? streamWarning)
           }
           onSelectOccurrence={selectOccurrence}
           onStepOccurrence={stepOccurrence}

@@ -1,13 +1,13 @@
 import type { SelectedOccurrence } from "../../crash/protocol";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { X } from "lucide-react";
 import type { CrashFrame } from "../../crash/report";
 import type { CrashOccurrence, CrashSummary } from "../../crash/store";
 import { collapseSystemFrames, formatCrashAgo, formatOccurrenceClock } from "../utils/crash-format";
 import { useCopy } from "../hooks/use-copy";
 import { formatLogClock, parseDeviceLogJson } from "../utils/device-log-format";
 import { useResizableCenteredWidth } from "../hooks/use-resizable-width";
-import { LevelGlyph } from "./level-glyph";
 
 const CRASH_DETAIL_DEFAULT_WIDTH = 720;
 const CRASH_DETAIL_MIN_WIDTH = 360;
@@ -58,7 +58,7 @@ function StackTrace({ frames }: { frames: CrashFrame[] }) {
   };
 
   if (frames.length === 0) {
-    return <p className="text-[11px] text-white/35">No stack frames in this report.</p>;
+    return <p className="text-[11px] text-white/35">No stack frames</p>;
   }
 
   return (
@@ -249,10 +249,10 @@ export function CrashDetailModal({
             <button
               type="button"
               onClick={onClose}
-              aria-label="Close"
-              className="rounded-md px-2 py-1 text-[13px] text-white/50 hover:bg-white/8"
+              aria-label="Close crash report"
+              className="flex items-center rounded-md px-2 py-1 text-white/50 hover:bg-white/8 hover:text-white"
             >
-              ✕
+              <X size={14} strokeWidth={1.75} />
             </button>
           </div>
         </header>
@@ -383,20 +383,22 @@ export function CrashDetailModal({
                 const last = index === occurrence.logTail.length - 1;
                 const fields = parseDeviceLogJson(raw);
                 const time = fields ? formatLogClock(fields.timestamp) : "";
+                const bad = fields?.level === "error" || fields?.level === "fault";
                 return (
                   <li
                     key={index}
-                    className={`grid grid-cols-[34px_5.5rem_20px_1fr] items-start gap-2 rounded px-1 ${
-                      last ? "bg-red-400/10 text-white/80" : "text-white/55"
+                    className={`grid grid-cols-[34px_5.5rem_1fr] items-start gap-2 px-1 ${
+                      last
+                        ? "rounded bg-red-400/10 text-white/80"
+                        : bad
+                          ? "text-red-300/80"
+                          : "text-white/55"
                     }`}
                   >
                     <span className="select-none text-right text-white/25 tabular-nums">
                       {index + 1}
                     </span>
                     <span className="tabular-nums text-white/30">{time || "\u00a0"}</span>
-                    <span className="flex justify-center pt-[1px]">
-                      {fields ? <LevelGlyph level={fields.level} className="size-3" /> : null}
-                    </span>
                     <span className="whitespace-pre-wrap break-all">
                       {fields?.message ?? raw}
                     </span>

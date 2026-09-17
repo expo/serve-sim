@@ -13,6 +13,7 @@ import { MetricsTool } from "./metrics-tool";
 import { PANEL_BACKGROUND } from "./panel-colors";
 import { SimulatorSettingsTool } from "./simulator-settings-tool";
 import { StreamSettingsTool } from "./stream-settings-tool";
+import type { StatsSubscriber } from "../hooks/use-stream-stats";
 import type {
   StreamControlSettings,
   StreamEncoderSettings,
@@ -36,6 +37,8 @@ export function ToolsPanel({
   onStreamPlaybackSettingsChange,
   onStreamEncoderSettingsChange,
   activeCodec,
+  subscribeStats,
+  onResetCodec,
   avccSupported,
   streamSettingsPending,
   streamTransportLocked = false,
@@ -61,6 +64,8 @@ export function ToolsPanel({
   onStreamPlaybackSettingsChange: (patch: Partial<StreamPlaybackSettings>) => void;
   onStreamEncoderSettingsChange: (patch: Partial<StreamEncoderSettings>) => void;
   activeCodec: string;
+  subscribeStats: StatsSubscriber;
+  onResetCodec?: () => void;
   avccSupported: boolean;
   streamSettingsPending: boolean;
   streamTransportLocked?: boolean;
@@ -102,6 +107,8 @@ export function ToolsPanel({
             onPlaybackSettingsChange={onStreamPlaybackSettingsChange}
             onEncoderSettingsChange={onStreamEncoderSettingsChange}
             activeCodec={activeCodec}
+            subscribeStats={subscribeStats}
+            onResetCodec={onResetCodec}
             avccSupported={avccSupported}
             encoderSettingsDisabled={streamSettingsPending}
             transportLocked={streamTransportLocked}

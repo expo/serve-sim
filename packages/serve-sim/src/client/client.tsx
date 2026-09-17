@@ -106,6 +106,7 @@ import {
   type QueuedWsMessage,
 } from "./utils/ws-send-queue";
 import {
+  createLadderBackoff,
   webRtcFallbackDecision,
   type WebRtcCodec,
 } from "./webrtc-codec-fallback";
@@ -644,6 +645,9 @@ function AppWithConfig({
 
   const wantsWebRtcVideo = streamSettings.transport === "webrtc";
   const handledWebRtcFailureRef = useRef<string | null>(null);
+  const ladderBackoffRef = useRef(createLadderBackoff());
+  const ladderRestartTimerRef = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(ladderRestartTimerRef.current), []);
   const useWebRtcVideo = wantsWebRtcVideo;
   const [webRtcCodecOverride, setWebRtcCodecOverride] = useState<WebRtcCodec | null>(null);
   const configuredWebRtcCodec = streamSettings.webRtcCodec;
@@ -654,7 +658,9 @@ function AppWithConfig({
     enabled: useWebRtcVideo,
     codec: effectiveWebRtcCodec,
     iceServers: streamSettings.iceServers,
+    statsUrl: webrtcStatsUrlFrom(config),
   });
+  const { retry: retryWebRtcStream, markFrameDecoded: markWebRtcFrameDecoded } = webrtc;
   const [avccFallback, dispatchAvccFallback] = useReducer(
     avccFallbackReducer,
     initialAvccFallback,
@@ -679,6 +685,8 @@ function AppWithConfig({
     setStreaming(false);
     dispatchAvccFallback("reset");
     setWebRtcCodecOverride(null);
+    // The session a pending restart was scheduled for is being replaced.
+    window.clearTimeout(ladderRestartTimerRef.current);
   }, [
     config.streamUrl,
     setStreaming,
@@ -687,9 +695,17 @@ function AppWithConfig({
     streamSettings.webRtcCodec,
   ]);
   useEffect(() => {
-    if (!wantsWebRtcVideo || !webrtc.failure) return;
+    if (!wantsWebRtcVideo || !webrtc.failure) {
+      // Recovered, or WebRTC is no longer wanted. A restart still armed for the old failure
+      // would tear down the stream the retry just brought back.
+      window.clearTimeout(ladderRestartTimerRef.current);
+      return;
+    }
     if (handledWebRtcFailureRef.current === webrtc.failure.sessionId) return;
     handledWebRtcFailureRef.current = webrtc.failure.sessionId;
+    // Every failure: the gap between them says whether this is one burst or a new one.
+    ladderBackoffRef.current.noteFailure(performance.now());
+    window.clearTimeout(ladderRestartTimerRef.current);
     const decision = webRtcFallbackDecision(
       configuredWebRtcCodec,
       effectiveWebRtcCodec,
@@ -697,8 +713,19 @@ function AppWithConfig({
     );
     if (!decision) return;
     if (decision.type === "switch-to-http") {
-      if (streamTransportLocked) return;
-      updateStreamPlayback({ transport: "http" });
+      if (!streamTransportLocked) {
+        updateStreamPlayback({ transport: "http" });
+        return;
+      }
+      // A locked session has nowhere to fall back to, so start over rather than stay dead.
+      // Only codec exhaustion qualifies; a permanent fault never resolves.
+      if (webrtc.failure.kind !== "codec") return;
+      // In a ref: an unrelated dep change would otherwise clear a pending restart and then
+      // bail on the dedupe guard without rescheduling it.
+      ladderRestartTimerRef.current = window.setTimeout(() => {
+        setWebRtcCodecOverride(null);
+        retryWebRtcStream();
+      }, ladderBackoffRef.current.takeRestartDelayMs());
       return;
     }
     setWebRtcCodecOverride(decision.codec);
@@ -709,6 +736,7 @@ function AppWithConfig({
     updateStreamPlayback,
     wantsWebRtcVideo,
     webrtc.failure,
+    retryWebRtcStream,
   ]);
   const lockedWebRtcError =
     streamTransportLocked && webrtc.failure && !webrtc.error
@@ -1424,7 +1452,7 @@ function AppWithConfig({
                 onStreamScroll={onStreamScroll}
                 streamMode={useWebRtcVideo ? "webrtc" : useAvccVideo ? "avcc" : "mjpeg"}
                 webRtcStream={webrtc.stream}
-                onWebRtcFrame={webrtc.markFrameDecoded}
+                onWebRtcFrame={markWebRtcFrameDecoded}
                 streamError={useWebRtcVideo ? webrtc.error ?? lockedWebRtcError : null}
                 onAvccError={() => dispatchAvccFallback("error")}
                 onAvccDecodedFrame={() => dispatchAvccFallback("decoded-frame")}
@@ -1634,6 +1662,11 @@ function AppWithConfig({
         onStreamPlaybackSettingsChange={streamSettingsState.updatePlayback}
         onStreamEncoderSettingsChange={streamSettingsState.updateEncoder}
         activeCodec={useWebRtcVideo ? `webrtc/${effectiveWebRtcCodec}` : useAvccVideo ? "h264" : "mjpeg"}
+        subscribeStats={webrtc.subscribeStats}
+        onResetCodec={() => {
+          setWebRtcCodecOverride(null);
+          retryWebRtcStream();
+        }}
         peerConnection={webrtc.peerConnection}
         webrtcSessionId={webrtc.sessionId}
         webrtcStatsUrl={webrtcStatsUrlFrom(config)}

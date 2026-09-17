@@ -22,6 +22,7 @@ describe("StreamSettingsTool", () => {
         onEncoderSettingsChange={() => {}}
         activeCodec="h264"
         peerConnection={null}
+        subscribeStats={() => () => {}}
         avccSupported
       />,
     );
@@ -40,6 +41,7 @@ describe("StreamSettingsTool", () => {
         onEncoderSettingsChange={() => {}}
         activeCodec="mjpeg"
         peerConnection={null}
+        subscribeStats={() => () => {}}
         avccSupported={false}
       />,
     );
@@ -57,6 +59,7 @@ describe("StreamSettingsTool", () => {
         onEncoderSettingsChange={() => {}}
         activeCodec="webrtc/vp8"
         peerConnection={null}
+        subscribeStats={() => () => {}}
         avccSupported={false}
       />,
     );
@@ -75,6 +78,7 @@ describe("StreamSettingsTool", () => {
         onEncoderSettingsChange={() => {}}
         activeCodec="webrtc/vp9"
         peerConnection={null}
+        subscribeStats={() => () => {}}
         avccSupported
         transportLocked
       />,

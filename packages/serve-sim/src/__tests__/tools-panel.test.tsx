@@ -10,6 +10,7 @@ describe("ToolsPanel", () => {
       <ToolsPanel
         open={false}
         peerConnection={null}
+        subscribeStats={() => () => {}}
         onClose={noop}
         udid="one"
         deviceRuntime="iOS-27-0"

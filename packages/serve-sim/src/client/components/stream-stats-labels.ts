@@ -25,6 +25,13 @@ type DownscaleStats = Pick<
   "width" | "height" | "qualityLimitationReason" | "sourceLongEdge" | "levelMaxLongEdge"
 >;
 
+/// Whether the stream has fallen off the codec that was picked. The select still shows the
+/// request, so re-picking it is a no-op and the session has no way back on its own.
+export function codecDrifted(selected: string, negotiated: string | null | undefined): boolean {
+  if (!negotiated) return false;
+  return negotiated.toLowerCase() !== selected.toLowerCase();
+}
+
 /** Why the picture is smaller than the size that was picked. */
 /// The target is what the source can actually supply, so a screen smaller than the pick is
 /// not a downscale. "Full" is the same rule with the source as the pick.

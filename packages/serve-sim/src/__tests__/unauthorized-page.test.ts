@@ -6,19 +6,26 @@ describe("unauthorizedPreviewPage", () => {
   test("asks for a token and offers a labelled field to paste one", () => {
     const html = unauthorizedPreviewPage();
 
-    expect(html).toMatch(/<title>[^<]*Access token required<\/title>/);
+    expect(html).toContain("<title>Simulator Preview</title>");
+    expect(html).toContain("This session is protected");
     expect(html).toContain("only opens with a token");
+    expect(html).toContain(">Security token</label>");
+    expect(html.match(/Security token/g)).toEqual(["Security token"]);
     expect(html).toContain('name="token"');
     expect(html).toContain('for="token"');
     expect(html).toContain('<meta name="robots" content="noindex">');
+    expect(html).not.toContain("isn't valid");
     expect(html).not.toContain('role="alert"');
   });
 
   test("reports a rejected token and keeps the field", () => {
     const html = unauthorizedPreviewPage({ rejectedToken: true });
 
-    expect(html).toMatch(/<title>[^<]*isn't valid<\/title>/);
+    expect(html).toContain("<title>Simulator Preview</title>");
     expect(html).toContain("doesn't match the session");
+    expect(html).toContain("This token isn't valid.");
+    expect(html).toContain(">Security token</label>");
+    expect(html.match(/Security token/g)).toEqual(["Security token"]);
     expect(html).toContain('aria-invalid="true"');
     expect(html).toContain('role="alert"');
     expect(html).toContain('name="token"');

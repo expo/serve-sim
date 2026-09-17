@@ -1,4 +1,5 @@
 type ShareLocation = Pick<Location, "origin" | "pathname" | "search">;
+type FragmentLocation = Pick<Location, "pathname" | "search" | "hash">;
 
 export type ShareConfig = Pick<
   NonNullable<Window["__SIM_PREVIEW__"]>,
@@ -14,7 +15,7 @@ export function shareLinkCarriesToken(config: ShareConfig | null | undefined): b
   return sessionToken(config) !== undefined;
 }
 
-/** The server trades the `?token=` this adds for a cookie on the first load. */
+/** The token goes in the fragment, so the link itself never carries it to a server. */
 export function previewShareUrl(
   location: ShareLocation,
   config: ShareConfig | null | undefined,
@@ -24,8 +25,28 @@ export function previewShareUrl(
     ? new URL(config.shareUrl)
     : new URL(location.pathname + location.search, location.origin);
   url.searchParams.delete("token");
-  if (token) url.searchParams.set("token", token);
+  if (token) {
+    // Set rather than replace: --share-url may point at a page that uses the fragment itself.
+    const fragment = new URLSearchParams(url.hash.slice(1));
+    fragment.set("token", token);
+    url.hash = fragment.toString();
+  }
   return url.toString();
+}
+
+/**
+ * The 401 page converts a fragment token into the query, which the gate then strips. A visit that
+ * already holds the cookie never reaches that page, so the token would sit in the address bar.
+ */
+export function stripTokenFromFragment(
+  location: FragmentLocation,
+  history: Pick<History, "replaceState">,
+): void {
+  const fragment = new URLSearchParams(location.hash.slice(1));
+  if (!fragment.has("token")) return;
+  fragment.delete("token");
+  const rest = fragment.toString();
+  history.replaceState(null, "", `${location.pathname}${location.search}${rest ? `#${rest}` : ""}`);
 }
 
 /**

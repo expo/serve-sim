@@ -52,6 +52,35 @@ describe("previewShareUrl", () => {
       "http://192.168.1.20:3399/?token=a+b%26c",
     );
   });
+
+  test("uses --share-url instead of the preview origin, and still adds the token", () => {
+    expect(
+      previewShareUrl(at("/preview", "?device=ABC"), {
+        requireToken: true,
+        execToken: "tok-1",
+        shareUrl: "https://expo.dev/simulator-preview/abc",
+      }),
+    ).toBe("https://expo.dev/simulator-preview/abc?token=tok-1");
+  });
+
+  test("does not add a token to --share-url when the preview is not gated", () => {
+    expect(
+      previewShareUrl(at("/"), {
+        execToken: "tok-1",
+        shareUrl: "https://expo.dev/simulator-preview/abc",
+      }),
+    ).toBe("https://expo.dev/simulator-preview/abc");
+  });
+
+  test("replaces a token already on --share-url", () => {
+    expect(
+      previewShareUrl(at("/"), {
+        requireToken: true,
+        execToken: "tok-1",
+        shareUrl: "https://expo.dev/simulator-preview/abc?token=stale",
+      }),
+    ).toBe("https://expo.dev/simulator-preview/abc?token=tok-1");
+  });
 });
 
 describe("shareLinkCarriesToken", () => {

@@ -56,7 +56,7 @@ describe("ShareSessionButton click", () => {
     });
   }
 
-  async function click(config: { requireToken?: boolean; execToken?: string } | null) {
+  async function click(config: { requireToken?: boolean; execToken?: string; shareUrl?: string } | null) {
     const element = ShareSessionButton({ config }) as ReactElement<{ onClick: () => void }>;
     element.props.onClick();
     const deadline = Date.now() + 1000;
@@ -75,6 +75,20 @@ describe("ShareSessionButton click", () => {
     expect(customCalls).toHaveLength(1);
     expect(customCalls[0]!.options.id).toBe("share-session-link");
     expect(renderToStaticMarkup(customCalls[0]!.render())).toContain("Share link copied");
+  });
+
+  test("copies --share-url instead of the preview address", async () => {
+    const written: string[] = [];
+    setClipboard({ clipboard: { writeText: async (text: string) => void written.push(text) } });
+
+    await click({
+      requireToken: true,
+      execToken: "tok-1",
+      shareUrl: "https://expo.dev/simulator-preview/abc",
+    });
+
+    expect(written).toEqual(["https://expo.dev/simulator-preview/abc?token=tok-1"]);
+    expect(renderToStaticMarkup(customCalls[0]!.render())).toContain("access token");
   });
 
   test("shows the link to copy by hand when the copy fails, and leaves it up longer", async () => {

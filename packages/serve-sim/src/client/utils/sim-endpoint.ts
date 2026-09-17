@@ -40,6 +40,8 @@ declare global {
        * button may put it in a link. Absent otherwise, and the token stays out of URLs.
        */
       requireToken?: boolean;
+      /** Public page Share copies when `--share-url` is set. */
+      shareUrl?: string;
       streamSettings?: StreamSettings;
       /**
        * Set when the server routes helper stream/control + DevTools sockets

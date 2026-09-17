@@ -2,7 +2,7 @@ type ShareLocation = Pick<Location, "origin" | "pathname" | "search">;
 
 export type ShareConfig = Pick<
   NonNullable<Window["__SIM_PREVIEW__"]>,
-  "requireToken" | "execToken"
+  "requireToken" | "execToken" | "shareUrl"
 >;
 
 function sessionToken(config: ShareConfig | null | undefined): string | undefined {
@@ -20,7 +20,9 @@ export function previewShareUrl(
   config: ShareConfig | null | undefined,
 ): string {
   const token = sessionToken(config);
-  const url = new URL(location.pathname + location.search, location.origin);
+  const url = config?.shareUrl
+    ? new URL(config.shareUrl)
+    : new URL(location.pathname + location.search, location.origin);
   url.searchParams.delete("token");
   if (token) url.searchParams.set("token", token);
   return url.toString();

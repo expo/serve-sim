@@ -77,6 +77,21 @@ describe("previewConfigForState", () => {
     expect("requireToken" in previewConfigForState(states[0]!, "/preview", "token-xyz")).toBe(false);
   });
 
+  test("sets shareUrl only when one was passed", () => {
+    expect(
+      previewConfigForState(
+        states[0]!,
+        "/preview",
+        "token-xyz",
+        undefined,
+        false,
+        false,
+        "https://expo.dev/simulator-preview/abc",
+      ).shareUrl,
+    ).toBe("https://expo.dev/simulator-preview/abc");
+    expect("shareUrl" in previewConfigForState(states[0]!, "/preview", "token-xyz")).toBe(false);
+  });
+
   test("omits stream settings when none are pinned", () => {
     expect(
       "streamSettings" in previewConfigForState(states[0]!, "/preview", "token-xyz"),

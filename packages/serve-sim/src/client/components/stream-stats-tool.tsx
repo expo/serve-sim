@@ -6,6 +6,7 @@ import type { CaptureCounts, EncoderIdentity, SenderStreamStats } from "../../we
 import type { CaptureWindow } from "../utils/capture-window";
 import type { StreamStats } from "../utils/webrtc-stats";
 import { Sparkline } from "./sparkline";
+import { describeDownscale, encoderLabel, qualityLimitation } from "./stream-stats-labels";
 
 export function StreamStatsBody({
   stats,
@@ -15,6 +16,7 @@ export function StreamStatsBody({
   capture,
   encoder,
   requestedFps,
+  selectedMaxDimension,
   stale,
   action,
 }: {
@@ -25,6 +27,7 @@ export function StreamStatsBody({
   capture?: CaptureWindow | null;
   encoder?: EncoderIdentity | null;
   requestedFps?: number;
+  selectedMaxDimension?: number;
   stale?: boolean;
   action?: ReactNode;
 }) {
@@ -62,6 +65,7 @@ export function StreamStatsBody({
         sender={sender}
         capture={capture}
         encoder={encoder}
+        selectedMaxDimension={selectedMaxDimension}
         faults={faults}
         stale={stale}
       />
@@ -75,6 +79,7 @@ function Diagnostics({
   sender,
   capture,
   encoder,
+  selectedMaxDimension,
   faults,
   stale,
 }: {
@@ -82,9 +87,11 @@ function Diagnostics({
   sender?: SenderStreamStats | null;
   capture?: CaptureWindow | null;
   encoder?: EncoderIdentity | null;
+  selectedMaxDimension?: number;
   faults: string[];
   stale?: boolean;
 }) {
+  const downscale = sender ? describeDownscale(selectedMaxDimension ?? 0, sender) : null;
   return (
     <details className="border-t border-white/10 pt-1.5">
       <summary className="-my-1 flex cursor-pointer list-none items-center gap-1 py-1 text-[10px] uppercase tracking-[0.08em] text-white/30 hover:text-white/60">
@@ -126,7 +133,9 @@ function Diagnostics({
           <Cell label="Encode" value={ms(sender.encodeMsPerFrame, 1)} />
           <Cell label="Frames sent" value={compact(sender.framesSent)} />
           <Cell label="Loss" value={percent(sender.lossRatio)} />
-          {encoder && <Cell label="Using" value={encoderLabel(encoder)} />}
+          {sender.codec && <Cell label="Codec" value={sender.codec.toLowerCase()} />}
+          {encoder && <Cell label="Encoder" value={encoderLabel(encoder)} />}
+          {downscale && <Cell label="Scaled" value={downscale} />}
         </Group>
       )}
 
@@ -179,6 +188,9 @@ const HELP: Record<string, { meaning: string; scope: Scope }> = {
   Encode: { meaning: "Time the encoder spends on one frame.", scope: PER_FRAME },
   "Frames sent": { meaning: "Frames the encoder put on the wire, repeats included.", scope: SESSION },
   Loss: { meaning: "Packets lost on the way to the browser.", scope: SESSION },
+  Codec: { meaning: "Codec negotiated for this live sender.", scope: NOW },
+  Encoder: { meaning: "Encoder implementation and whether it is using hardware or the CPU.", scope: NOW },
+  Scaled: { meaning: "Encoded long edge compared with the selected size, plus the limiting cause when known.", scope: NOW },
 
   "Screen frames": { meaning: "New images the simulator produced.", scope: WINDOW },
   "Idle frames": { meaning: "Frames sent by the 5 per second idle refresh, because nothing had changed for 200 ms.", scope: WINDOW },
@@ -240,16 +252,6 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
       <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">{children}</div>
     </div>
   );
-}
-
-/// Short, readable name for an encoder id. The paravirtualized prefix marks a guest that
-/// is reaching the host's hardware encoder; a bare software id means the CPU is doing it.
-function encoderLabel(encoder: EncoderIdentity): string {
-  const id = encoder.id ?? "";
-  const tail = id.split(".").pop() ?? id;
-  const kind = encoder.hardware === true ? "hardware" : encoder.hardware === false ? "CPU" : "?";
-  if (!id) return kind;
-  return `${id.startsWith("paravirtualized:") ? `paravirt ${tail}` : tail} (${kind})`;
 }
 
 /** Stall totals reach seconds, where a millisecond figure stops being readable. */
@@ -326,20 +328,8 @@ export function describeFaults(
   return faults;
 }
 
-/** libwebrtc's reason codes read as jargon, and "limited by bandwidth" blames the wrong side. */
 function limitation(reason: string | null | undefined): string | null {
-  switch (reason) {
-    case "cpu":
-      return "Encoder cannot keep up (CPU)";
-    case "bandwidth":
-      return "Bitrate reduced by the network";
-    case undefined:
-    case null:
-    case "none":
-      return null;
-    default:
-      return "Encoder holding back (reason unknown)";
-  }
+  return qualityLimitation(reason)?.long ?? null;
 }
 
 /** One decimal under 10, so a stream limping at 0.4 fps does not read as 0. */
@@ -409,6 +399,7 @@ export function StreamStatsSection({
   capture,
   encoder,
   requestedFps,
+  selectedMaxDimension,
   stale,
   action,
 }: {
@@ -419,6 +410,7 @@ export function StreamStatsSection({
   capture?: CaptureWindow | null;
   encoder?: EncoderIdentity | null;
   requestedFps?: number;
+  selectedMaxDimension?: number;
   stale?: boolean;
   action?: ReactNode;
 }) {
@@ -432,6 +424,7 @@ export function StreamStatsSection({
       capture={capture}
       encoder={encoder}
       requestedFps={requestedFps}
+      selectedMaxDimension={selectedMaxDimension}
       stale={stale}
       action={action}
     />
@@ -464,6 +457,7 @@ export interface StatsContext {
   codec?: string | null;
   sender?: SenderStreamStats | null;
   capture?: CaptureCounts | null;
+  encoder?: EncoderIdentity | null;
 }
 
 /** Serialize the recorded window so a session can be handed to someone else to read. */

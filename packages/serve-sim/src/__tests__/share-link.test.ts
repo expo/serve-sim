@@ -4,6 +4,7 @@ import {
   copyTextToClipboard,
   previewShareUrl,
   shareLinkCarriesToken,
+  stripTokenFromFragment,
 } from "../client/utils/share-link";
 
 const at = (pathname: string, search = "") => ({
@@ -15,7 +16,7 @@ const at = (pathname: string, search = "") => ({
 describe("previewShareUrl", () => {
   test("adds the token when the preview is gated", () => {
     expect(previewShareUrl(at("/"), { requireToken: true, execToken: "tok-1" })).toBe(
-      "http://192.168.1.20:3399/?token=tok-1",
+      "http://192.168.1.20:3399/#token=tok-1",
     );
   });
 
@@ -37,19 +38,19 @@ describe("previewShareUrl", () => {
   test("keeps the device selection and the mount path", () => {
     expect(
       previewShareUrl(at("/preview", "?device=ABC"), { requireToken: true, execToken: "tok-1" }),
-    ).toBe("http://192.168.1.20:3399/preview?device=ABC&token=tok-1");
+    ).toBe("http://192.168.1.20:3399/preview?device=ABC#token=tok-1");
   });
 
   test("replaces a token already in the address", () => {
     expect(previewShareUrl(at("/", "?token=stale"), { requireToken: true, execToken: "tok-1" })).toBe(
-      "http://192.168.1.20:3399/?token=tok-1",
+      "http://192.168.1.20:3399/#token=tok-1",
     );
     expect(previewShareUrl(at("/", "?token=stale"), null)).toBe("http://192.168.1.20:3399/");
   });
 
   test("escapes a token that is not url-safe", () => {
     expect(previewShareUrl(at("/"), { requireToken: true, execToken: "a b&c" })).toBe(
-      "http://192.168.1.20:3399/?token=a+b%26c",
+      "http://192.168.1.20:3399/#token=a+b%26c",
     );
   });
 
@@ -60,7 +61,7 @@ describe("previewShareUrl", () => {
         execToken: "tok-1",
         shareUrl: "https://expo.dev/simulator-preview/abc",
       }),
-    ).toBe("https://expo.dev/simulator-preview/abc?token=tok-1");
+    ).toBe("https://expo.dev/simulator-preview/abc#token=tok-1");
   });
 
   test("does not add a token to --share-url when the preview is not gated", () => {
@@ -79,7 +80,20 @@ describe("previewShareUrl", () => {
         execToken: "tok-1",
         shareUrl: "https://expo.dev/simulator-preview/abc?token=stale",
       }),
-    ).toBe("https://expo.dev/simulator-preview/abc?token=tok-1");
+    ).toBe("https://expo.dev/simulator-preview/abc#token=tok-1");
+  });
+
+  test("keeps a fragment --share-url already had", () => {
+    expect(
+      previewShareUrl(at("/"), { shareUrl: "https://expo.dev/simulator-preview/abc#view=logs" }),
+    ).toBe("https://expo.dev/simulator-preview/abc#view=logs");
+    expect(
+      previewShareUrl(at("/"), {
+        requireToken: true,
+        execToken: "tok-1",
+        shareUrl: "https://expo.dev/simulator-preview/abc#view=logs",
+      }),
+    ).toBe("https://expo.dev/simulator-preview/abc#view=logs&token=tok-1");
   });
 });
 
@@ -186,5 +200,29 @@ describe("copyTextToClipboard", () => {
     install({}, undefined);
 
     expect(await copyTextToClipboard("link")).toBe(false);
+  });
+});
+
+describe("stripTokenFromFragment", () => {
+  function strip(pathname: string, search: string, hash: string) {
+    const replaced: Array<string | URL | null | undefined> = [];
+    stripTokenFromFragment(
+      { pathname, search, hash },
+      { replaceState: (_d, _t, url) => void replaced.push(url) },
+    );
+    return replaced;
+  }
+
+  test("takes the token out of the address bar", () => {
+    expect(strip("/", "?device=ABC", "#token=tok-1")).toEqual(["/?device=ABC"]);
+  });
+
+  test("keeps the rest of the fragment", () => {
+    expect(strip("/", "", "#view=logs&token=tok-1")).toEqual(["/#view=logs"]);
+  });
+
+  test("leaves an address that carries no fragment token alone", () => {
+    expect(strip("/", "?device=ABC", "")).toEqual([]);
+    expect(strip("/", "", "#view=logs")).toEqual([]);
   });
 });

@@ -71,7 +71,7 @@ describe("ShareSessionButton click", () => {
 
     await click({ requireToken: true, execToken: "tok-1" });
 
-    expect(written).toEqual(["http://10.0.1.5:3477/?device=ABC&token=tok-1"]);
+    expect(written).toEqual(["http://10.0.1.5:3477/?device=ABC#token=tok-1"]);
     expect(customCalls).toHaveLength(1);
     expect(customCalls[0]!.options.id).toBe("share-session-link");
     expect(renderToStaticMarkup(customCalls[0]!.render())).toContain("Share link copied");
@@ -87,7 +87,7 @@ describe("ShareSessionButton click", () => {
       shareUrl: "https://expo.dev/simulator-preview/abc",
     });
 
-    expect(written).toEqual(["https://expo.dev/simulator-preview/abc?token=tok-1"]);
+    expect(written).toEqual(["https://expo.dev/simulator-preview/abc#token=tok-1"]);
     expect(renderToStaticMarkup(customCalls[0]!.render())).toContain("access token");
   });
 

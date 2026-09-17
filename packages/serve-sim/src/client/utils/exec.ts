@@ -59,7 +59,9 @@ function openExecSocket(): Promise<WebSocket> {
     let settled = false;
     let ws: WebSocket;
     try {
-      ws = new WebSocket(execSocketUrl());
+      ws = new WebSocket(execSocketUrl(), [
+        `serve-sim.token.${window.__SIM_PREVIEW__?.execToken ?? ""}`,
+      ]);
     } catch (e) {
       socketPromise = null;
       reject(e);
@@ -75,9 +77,6 @@ function openExecSocket(): Promise<WebSocket> {
         ws.close();
       }
     }, CONNECT_TIMEOUT_MS);
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ token: window.__SIM_PREVIEW__?.execToken ?? "" }));
-    };
     ws.onmessage = (event) => {
       let msg: SocketReply;
       try {

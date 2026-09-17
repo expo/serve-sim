@@ -87,7 +87,6 @@ describe("CORS policy", () => {
 
     expect(response).toBeUndefined();
   });
-
   test("reads the deprecated option alongside the current one", async () => {
     const middleware = simMiddleware({
       basePath: "/.sim",

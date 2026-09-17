@@ -46,6 +46,7 @@ import { IconButton } from "./components/icon-button";
 import { ResizeHandle } from "./components/resize-handle";
 import { SimulatorResizeCornerHandle } from "./components/simulator-resize-corner-handle";
 import { ServeSimToaster } from "./components/app-toasts";
+import { ShareSessionButton } from "./components/share-session-button";
 import { SimulatorResizeSizeBadge } from "./components/simulator-resize-size-badge";
 import { StreamStatusPill } from "./components/stream-status-pill";
 import { ToolsPanel } from "./components/tools-panel";
@@ -1586,6 +1587,7 @@ function AppWithConfig({
             onClick={toggleKeyboard}
           />
         )}
+        <ShareSessionButton config={config} />
         <IconButton
           onClick={onEnterPresentation}
           aria-label="Full screen"

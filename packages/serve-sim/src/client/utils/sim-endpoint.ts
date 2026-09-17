@@ -35,6 +35,13 @@ declare global {
       // `serve-sim` binary being on the user's PATH.
       /** Bearer token required by the /exec shell-exec route. */
       execToken?: string;
+      /**
+       * Set under --require-token. `execToken` is then also the session token, so the Share
+       * button may put it in a link. Absent otherwise, and the token stays out of URLs.
+       */
+      requireToken?: boolean;
+      /** Public page Share copies when `--share-url` is set. */
+      shareUrl?: string;
       streamSettings?: StreamSettings;
       /**
        * Set when the server routes helper stream/control + DevTools sockets

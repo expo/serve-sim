@@ -977,6 +977,8 @@ export function previewConfigForState(
   execToken: string,
   streamSettingsOrCodec?: StreamSettings | string,
   proxyHelpers = false,
+  requirePreviewToken = false,
+  shareUrl?: string,
 ): ServeSimState & {
   basePath: string;
   logsEndpoint: string;
@@ -1003,6 +1005,8 @@ export function previewConfigForState(
   codec?: string;
   streamSettings?: StreamSettings;
   proxyHelpers?: boolean;
+  requireToken?: boolean;
+  shareUrl?: string;
 } {
   const gridApiBase = (base === "" ? "" : base) + "/grid/api";
   const legacyCodec = typeof streamSettingsOrCodec === "string" ? streamSettingsOrCodec : undefined;
@@ -1037,6 +1041,8 @@ export function previewConfigForState(
     ...(legacyCodec ? { codec: legacyCodec } : {}),
     ...(streamSettings ? { streamSettings } : {}),
     ...(proxyHelpers ? { proxyHelpers: true } : {}),
+    ...(requirePreviewToken ? { requireToken: true } : {}),
+    ...(shareUrl ? { shareUrl } : {}),
   };
 }
 
@@ -1502,6 +1508,8 @@ export interface SimMiddlewareOptions {
    */
   metricsCorsOrigins?: string[];
   frameAncestors?: string[];
+  /** Public page the Share button copies instead of this preview's address. */
+  shareUrl?: string;
   /** @deprecated Use `streamSettings: { transport: "http", codec }`. */
   codec?: string;
   /**
@@ -1588,6 +1596,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const requirePreviewToken = options?.requirePreviewToken ?? false;
   const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
   const frameAncestors = options?.frameAncestors ?? [];
+  const shareUrl = options?.shareUrl;
 
   // Simulator-settings requests run in-process (just the underlying simctl /
   // ax-tool spawn) instead of round-tripping a full `node <cli>` exec per
@@ -1706,7 +1715,11 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         // Empty-state UI still polls /exec (boot/list helpers), so the page
         // needs the bearer token even before a helper attaches. Inject a
         // minimal config with just the basePath + token.
-        const minimal = JSON.stringify({ basePath: base, execToken });
+        const minimal = JSON.stringify({
+          basePath: base,
+          execToken,
+          ...(shareUrl ? { shareUrl } : {}),
+        });
         html = html.replace(
           "<!--__SIM_PREVIEW_CONFIG__-->",
           `<script>window.__SIM_PREVIEW__=${minimal}</script>`,
@@ -1715,7 +1728,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
       if (state) {
         const remoteState = rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers);
-        const config = JSON.stringify(previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers));
+        const config = JSON.stringify(
+          previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers, requirePreviewToken, shareUrl),
+        );
         const configScript = `<script>window.__SIM_PREVIEW__=${config}</script>`;
         html = html.replace("<!--__SIM_PREVIEW_CONFIG__-->", configScript);
       }
@@ -2153,7 +2168,13 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         "Cache-Control": "no-store",
       });
       const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
-      res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers) : null));
+      res.end(
+        JSON.stringify(
+          remoteState
+            ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers, requirePreviewToken, shareUrl)
+            : null,
+        ),
+      );
       return;
     }
 
@@ -2289,7 +2310,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         const state = selectServeSimState(states, selectedDevice);
         const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
         return JSON.stringify(
-          remoteState ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers) : null,
+          remoteState
+            ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers, requirePreviewToken, shareUrl)
+            : null,
         );
       };
 

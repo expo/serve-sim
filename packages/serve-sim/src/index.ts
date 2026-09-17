@@ -1642,6 +1642,7 @@ async function serve(
     stream?: StreamRuntimeOptions;
     metricsCorsOrigins?: string[];
     frameAncestors?: string[];
+    shareUrl?: string;
     debugStreamPath?: string;
     requireToken?: boolean;
     quiet?: boolean;
@@ -1681,6 +1682,7 @@ async function serve(
     proxyHelpers: true,
     metricsCorsOrigins: options.metricsCorsOrigins ?? [],
     frameAncestors: options.frameAncestors ?? [],
+    shareUrl: options.shareUrl,
     execToken: previewToken,
     requirePreviewToken,
   });
@@ -1796,6 +1798,14 @@ function parseNumberInRange(
   return parsed;
 }
 
+function parseShareUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.protocol === "http:" || url.protocol === "https:") return url.href;
+  } catch {}
+  throw new InvalidArgumentError("--share-url must be an http(s) URL.");
+}
+
 const program = new Command();
 
 program
@@ -1899,6 +1909,11 @@ program
       "--require-token; an ungated preview sends no frame policy.",
     (value: string, prev: string[]) => [...prev, value],
     [] as string[],
+  )
+  .option(
+    "--share-url <url>",
+    "URL the Share button copies, instead of this preview's address.",
+    parseShareUrl,
   )
   .option(
     "--metrics-cors-origin <origin>",
@@ -2034,6 +2049,7 @@ Examples:
         stream,
         metricsCorsOrigins: opts.metricsCorsOrigin,
         frameAncestors: opts.frameAncestor,
+        shareUrl: opts.shareUrl,
         debugStreamPath,
         requireToken: !!opts.requireToken,
         quiet: !!opts.quiet,

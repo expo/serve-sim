@@ -127,9 +127,32 @@ describeIfSim("serve-sim --require-token (built CLI)", () => {
     const response = await fetch(`${baseUrl}/api`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const config = (await response.json()) as { execToken?: string };
+    const config = (await response.json()) as { execToken?: string; requireToken?: boolean };
     expect(config.execToken).toBe(token);
+    // The Share button adds the token to the link only when this flag is set.
+    expect(config.requireToken).toBe(true);
   });
+
+  // The page replaces its whole config from this stream, so a share link built after a device
+  // switch is only tokened if the pushed config says the preview is gated.
+  test("keeps the gated flag on the config it pushes over the event stream", async () => {
+    const response = await fetch(`${baseUrl}/api/events`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let received = "";
+    const deadline = Date.now() + 10_000;
+    while (!/data: .*\n\n/.test(received) && Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      received += decoder.decode(value, { stream: true });
+    }
+    await reader.cancel();
+
+    const config = JSON.parse(/data: (.*)\n\n/.exec(received)![1]!) as { requireToken?: boolean };
+    expect(config.requireToken).toBe(true);
+  }, 20_000);
 
   test("trades the link's query token for a cookie and then serves the page", async () => {
     const redirect = await fetch(`${baseUrl}/?token=${token}`, {

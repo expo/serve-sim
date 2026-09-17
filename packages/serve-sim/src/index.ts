@@ -1640,7 +1640,7 @@ async function serve(
   host: string,
   options: {
     stream?: StreamRuntimeOptions;
-    metricsCorsOrigins?: string[];
+    corsOrigins?: string[];
     frameAncestors?: string[];
     shareUrl?: string;
     debugStreamPath?: string;
@@ -1680,7 +1680,7 @@ async function serve(
     device: targetDevice,
     streamSettings: options.stream,
     proxyHelpers: true,
-    metricsCorsOrigins: options.metricsCorsOrigins ?? [],
+    corsOrigins: options.corsOrigins ?? [],
     frameAncestors: options.frameAncestors ?? [],
     shareUrl: options.shareUrl,
     execToken: previewToken,
@@ -1916,9 +1916,15 @@ program
     parseShareUrl,
   )
   .option(
-    "--metrics-cors-origin <origin>",
-    "Allow this origin to read the /metrics stream cross-origin (repeatable). " +
+    "--cors-origin <origin>",
+    "Allow this origin to read the preview cross-origin (repeatable). " +
       "Loopback origins are always allowed.",
+    (value: string, prev: string[]) => [...prev, value],
+    [] as string[],
+  )
+  .option(
+    "--metrics-cors-origin <origin>",
+    "Deprecated alias for --cors-origin.",
     (value: string, prev: string[]) => [...prev, value],
     [] as string[],
   )
@@ -2047,7 +2053,7 @@ Examples:
     } else {
       await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, {
         stream,
-        metricsCorsOrigins: opts.metricsCorsOrigin,
+        corsOrigins: [...opts.corsOrigin, ...opts.metricsCorsOrigin],
         frameAncestors: opts.frameAncestor,
         shareUrl: opts.shareUrl,
         debugStreamPath,

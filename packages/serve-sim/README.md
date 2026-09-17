@@ -259,7 +259,7 @@ server.onUpgrade((request, socket) => {
 });
 ```
 
-The middleware reads the helper's state from `$TMPDIR/serve-sim/` and points the browser at the helper's stream, interaction WebSocket, and WebKit DevTools endpoints. By default those URLs target the helper's own port directly (CORS is wide-open on the helper), so a plain `app.use(...)` mount works without touching your server's WebSocket handling.
+The middleware reads the helper's state from `$TMPDIR/serve-sim/` and points the browser at the helper's stream, interaction WebSocket, and WebKit DevTools endpoints. By default those URLs target the helper's own port directly (the helper answers loopback origins), so a plain `app.use(...)` mount works without touching your server's WebSocket handling.
 
 ### Single-port / remote proxying
 

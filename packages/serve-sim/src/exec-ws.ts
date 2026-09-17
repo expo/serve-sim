@@ -5,7 +5,12 @@ import {
 } from "./exec-ws-utils";
 import { type UpgradeHandlerWebSocket } from "./middleware-utils";
 import { InvalidHostActionError, runHostActionAsync } from "./host-actions";
-import { safeEqualString } from "./session-auth";
+import {
+  TOKEN_SUBPROTOCOL_PREFIX,
+  acceptedTokenSubprotocol,
+  safeEqualString,
+  upgradeAuthHeaders,
+} from "./session-auth";
 
 // WebSocket control channel for the preview page. Browsers cap HTTP/1.1 at
 // six connections per origin, and every preview tab used to hold several
@@ -32,9 +37,9 @@ import { safeEqualString } from "./session-auth";
 //   server → {sub, end:true}          upstream closed
 //   client → {unsub: sub}             cancel a subscription
 
-const AUTH_TIMEOUT_MS = 10_000;
 // A shareable link must not spawn unbounded work: a subscription holds a stream or watcher and an
 // action spawns a process, so both are capped per socket.
+const AUTH_TIMEOUT_MS = 10_000;
 const MAX_SUBSCRIPTIONS_PER_SOCKET = 16;
 const MAX_ACTIONS_IN_FLIGHT_PER_SOCKET = 8;
 
@@ -75,7 +80,6 @@ function wireExecSocket(
   request: Request,
   opts: ExecChannelOptions,
 ): void {
-  let authed = false;
   const subscriptions = new Map<number, { destroy: () => void }>();
   let actionsInFlight = 0;
   // A ui request spawns simctl or ax just as an action does, so both draw on the same ceiling.
@@ -93,10 +97,23 @@ function wireExecSocket(
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(value));
   };
 
+  // The first-frame token stays for clients built before the handshake carried it.
+  const offered = request.headers.get("sec-websocket-protocol") ?? undefined;
+  let authed = acceptedTokenSubprotocol(upgradeAuthHeaders(request), opts.execToken) !== null;
+  // Offering a token that does not match is a refusal, not an invitation to try the first frame.
+  if (!authed && offered?.includes(TOKEN_SUBPROTOCOL_PREFIX)) {
+    ws.close();
+    return;
+  }
+
   const authTimer = setTimeout(() => {
     if (!authed) ws.close();
   }, AUTH_TIMEOUT_MS);
   authTimer.unref?.();
+  if (authed) {
+    clearTimeout(authTimer);
+    send({ ready: true });
+  }
 
   const subscribe = (sub: number, path: string) => {
     // Every other refusal answers; a silent one leaves the client's subscription pending forever.
@@ -108,7 +125,7 @@ function wireExecSocket(
       send({ sub, end: true, error: "too many subscriptions on this connection" });
       return;
     }
-    // Only this middleware's own SSE routes, and only for an authed socket.
+    // Only this middleware's own SSE routes.
     const pathOnly = path.split("?")[0]!;
     if (!path.startsWith("/") || !ssePrefixes.some((p) => pathOnly === p)) {
       send({ sub, end: true, error: "path not allowed" });

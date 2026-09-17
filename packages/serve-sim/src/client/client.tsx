@@ -659,6 +659,7 @@ function AppWithConfig({
     codec: effectiveWebRtcCodec,
     iceServers: streamSettings.iceServers,
     statsUrl: webrtcStatsUrlFrom(config),
+    transportLocked: streamTransportLocked,
   });
   const { retry: retryWebRtcStream, markFrameDecoded: markWebRtcFrameDecoded } = webrtc;
   const [avccFallback, dispatchAvccFallback] = useReducer(

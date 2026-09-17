@@ -657,7 +657,7 @@ function AppWithConfig({
     iceServers: streamSettings.iceServers,
     statsUrl: webrtcStatsUrlFrom(config),
   });
-  const { retry: retryWebRtcStream } = webrtc;
+  const { retry: retryWebRtcStream, markFrameDecoded: markWebRtcFrameDecoded } = webrtc;
   const [avccFallback, dispatchAvccFallback] = useReducer(
     avccFallbackReducer,
     initialAvccFallback,
@@ -724,9 +724,13 @@ function AppWithConfig({
     webrtc.failure,
     retryWebRtcStream,
   ]);
-  useEffect(() => {
-    if (webrtc.stream) ladderRestartAttemptRef.current = 0;
-  }, [webrtc.stream]);
+  /// Reset on a painted frame, not on `ontrack`: a track is delivered before anything
+  /// decodes, so a failure that negotiates every time and never plays would hold the
+  /// backoff at its floor and re-walk the ladder every two seconds.
+  const markWebRtcFramePainted = useCallback(() => {
+    ladderRestartAttemptRef.current = 0;
+    markWebRtcFrameDecoded();
+  }, [markWebRtcFrameDecoded]);
   const lockedWebRtcError =
     streamTransportLocked && webrtc.failure && !webrtc.error
       ? "WebRTC streaming failed. HTTP fallback is disabled for this session."
@@ -1441,7 +1445,7 @@ function AppWithConfig({
                 onStreamScroll={onStreamScroll}
                 streamMode={useWebRtcVideo ? "webrtc" : useAvccVideo ? "avcc" : "mjpeg"}
                 webRtcStream={webrtc.stream}
-                onWebRtcFrame={webrtc.markFrameDecoded}
+                onWebRtcFrame={markWebRtcFramePainted}
                 streamError={useWebRtcVideo ? webrtc.error ?? lockedWebRtcError : null}
                 onAvccError={() => dispatchAvccFallback("error")}
                 onAvccDecodedFrame={() => dispatchAvccFallback("decoded-frame")}

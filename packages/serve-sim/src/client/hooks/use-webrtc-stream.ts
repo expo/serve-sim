@@ -4,6 +4,8 @@ import {
   initialPlaybackStallState,
   nextPlaybackStallState,
   PLAYBACK_STALL_POLL_MS,
+  PLAYBACK_STALL_POLLS,
+  selectInboundReport,
   webRtcFailureDisposition,
 } from "../webrtc-failure-policy";
 import { WEBRTC_ICE_TRANSPORT_POLICY, type IceServer } from "../webrtc-ice";
@@ -25,22 +27,16 @@ const ICE_GATHERING_TIMEOUT_MS = 3_000;
 // fresh browser deadline; time spent retrying 409s cannot consume it.
 const SIGNALING_REQUEST_TIMEOUT_MS = 20_000;
 const FIRST_FRAME_TIMEOUT_MS = 4_000;
+const FIRST_FRAME_STATS_TIMEOUT_MS = 4_000;
 interface InboundVideo {
   id: string;
   framesReceived: number;
   framesDecoded: number | null;
 }
 
-/// The inbound report for the stream being played.
-///
-/// A connection can carry several video reports — simulcast, or a retained one for an SSRC
-/// that has gone away — so taking whichever the iterator yields last can judge a stream
-/// nobody is watching. Prefer the one already being followed, else the liveliest.
-async function readInboundVideo(
-  pc: RTCPeerConnection | null,
-  preferredId: string | null,
-): Promise<InboundVideo | null> {
-  if (!pc) return null;
+/// Every inbound video report. Which one to judge is `selectInboundReport`'s decision.
+async function readInboundVideo(pc: RTCPeerConnection | null): Promise<InboundVideo[]> {
+  if (!pc) return [];
   try {
     const reports: InboundVideo[] = [];
     (await pc.getStats()).forEach((entry) => {
@@ -57,11 +53,24 @@ async function readInboundVideo(
         framesDecoded: typeof video.framesDecoded === "number" ? video.framesDecoded : null,
       });
     });
-    if (reports.length === 0) return null;
-    return reports.find((r) => r.id === preferredId)
-      ?? reports.reduce((a, b) => (b.framesReceived > a.framesReceived ? b : a));
+    return reports;
   } catch {
-    return null;
+    return [];
+  }
+}
+
+/// A stuck browser stats read must not retire the one-shot first-frame watchdog.
+async function readInboundVideoBeforeDeadline(pc: RTCPeerConnection | null): Promise<InboundVideo[]> {
+  let timeout: number | undefined;
+  try {
+    return await Promise.race([
+      readInboundVideo(pc),
+      new Promise<InboundVideo[]>((resolve) => {
+        timeout = window.setTimeout(() => resolve([]), FIRST_FRAME_STATS_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) window.clearTimeout(timeout);
   }
 }
 
@@ -199,31 +208,66 @@ export function useWebRtcStream({
     // give up — typically on a frame larger than it handles, once the resolution moves up —
     // leaving the session connected, receiving, and decoding nothing.
     let stallState = initialPlaybackStallState;
-    let inboundId: string | null = null;
-    let statsInFlight = false;
+    let pinned: { id: string; framesReceived: number } | null = null;
+    let previousReports: InboundVideo[] = [];
+    let readStartedAt: number | null = null;
+    let armFirstFrameWatchdog: (() => void) | null = null;
+    // Bumped whenever the run is no longer comparable, so a read still in flight cannot
+    // apply its result to a run that has since been invalidated.
+    let generation = 0;
+    const invalidate = () => {
+      generation += 1;
+      stallState = initialPlaybackStallState;
+      previousReports = [];
+      readStartedAt = null;
+    };
+    // A hide/resume can complete entirely between two ticks, leaving pre-hide observations
+    // to be combined with a resumed one. The transition itself has to end the run.
+    const onVisibilityChange = () => {
+      invalidate();
+      if (firstFrameTimeoutRef.current !== undefined) {
+        window.clearTimeout(firstFrameTimeoutRef.current);
+        firstFrameTimeoutRef.current = undefined;
+      }
+      if (document.visibilityState === "visible" && !firstFrameDecodedRef.current && !failing) {
+        armFirstFrameWatchdog?.();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     const playable = () =>
       !stopped && !failing && pc?.connectionState === "connected"
       && firstFrameDecodedRef.current && document.visibilityState === "visible";
     const stallTimer = window.setInterval(() => {
       // Browsers may stop decoding a hidden tab, which is indistinguishable from a dead one.
       if (!playable()) {
-        stallState = initialPlaybackStallState;
+        invalidate();
         return;
       }
-      // One read at a time: several slow reads resolving together would otherwise count one
-      // measurement as several consecutive stalled polls.
-      if (statsInFlight) return;
-      statsInFlight = true;
-      void readInboundVideo(pc, inboundId).finally(() => {
-        statsInFlight = false;
-      }).then((inbound) => {
+      // One read at a time, or several slow reads resolving together count one measurement
+      // as several consecutive stalled polls. Abandoned if it never settles, so a hung
+      // getStats cannot silently retire the watchdog.
+      const startedAt = readStartedAt;
+      if (startedAt !== null && performance.now() - startedAt < PLAYBACK_STALL_POLL_MS * PLAYBACK_STALL_POLLS) {
+        return;
+      }
+      if (startedAt !== null) invalidate();
+      readStartedAt = performance.now();
+      const reading = generation;
+      void readInboundVideo(pc).then((reports) => {
+        if (reading !== generation) return;
+        readStartedAt = null;
         // Re-checked after the read, not before it: the tab can hide or the connection drop
         // while it is in flight, and a result from before that must not be acted on.
-        if (!playable() || !inbound || !pc) return;
-        if (inbound.id !== inboundId) {
-          inboundId = inbound.id;
+        if (!playable() || !pc) return;
+        const inbound = selectInboundReport(reports, pinned, previousReports);
+        previousReports = reports;
+        if (!inbound) {
+          // No report means this poll cannot establish continuous lack of decoding.
           stallState = initialPlaybackStallState;
+          return;
         }
+        if (inbound.id !== pinned?.id) stallState = initialPlaybackStallState;
+        pinned = { id: inbound.id, framesReceived: inbound.framesReceived };
         const next = nextPlaybackStallState(stallState, {
           decoded: inbound.framesDecoded,
           received: inbound.framesReceived,
@@ -343,28 +387,30 @@ export function useWebRtcStream({
           }
           // One extra window when RTP is arriving, so a slow first paint is not mistaken
           // for a broken codec. Bounded: an undecodable stream still falls back.
+          invalidate();
           let graceUsed = false;
-          const armFirstFrameWatchdog = () => {
+          armFirstFrameWatchdog = () => {
             firstFrameTimeoutRef.current = window.setTimeout(() => {
               firstFrameTimeoutRef.current = undefined;
-              if (stopped || firstFrameDecodedRef.current) return;
-              const state = pc?.connectionState ?? "closed";
+              if (stopped || firstFrameDecodedRef.current || document.visibilityState !== "visible") return;
+              const reading = generation;
               void (async () => {
-                const inbound = await readInboundVideo(pc, null);
-                if (stopped || firstFrameDecodedRef.current) return;
-                const mediaArriving = (inbound?.framesReceived ?? 0) > 0;
+                const reports = await readInboundVideoBeforeDeadline(pc);
+                if (stopped || firstFrameDecodedRef.current || reading !== generation) return;
+                const mediaArriving = reports.some((report) => report.framesReceived > 0);
                 // Only worth asking when nothing arrived; otherwise the answer changes nothing.
                 const senderEncoding = mediaArriving
                   ? null
                   : await senderIsEncoding(statsUrl, sessionId);
-                if (stopped || firstFrameDecodedRef.current) return;
-                const disposition = webRtcFailureDisposition("first-frame-timeout", state, {
+                if (stopped || firstFrameDecodedRef.current || reading !== generation
+                  || document.visibilityState !== "visible") return;
+                const disposition = webRtcFailureDisposition("first-frame-timeout", pc?.connectionState ?? "closed", {
                   mediaArriving,
                   senderEncoding,
                 });
                 if (disposition === "wait" && !graceUsed) {
                   graceUsed = true;
-                  armFirstFrameWatchdog();
+                  armFirstFrameWatchdog?.();
                 } else if (disposition === "transport") {
                   retryTransport("WebRTC did not establish a video path.");
                 } else {
@@ -373,7 +419,7 @@ export function useWebRtcStream({
               })();
             }, FIRST_FRAME_TIMEOUT_MS);
           };
-          armFirstFrameWatchdog();
+          if (document.visibilityState === "visible") armFirstFrameWatchdog();
         };
         pc.onconnectionstatechange = () => {
           if (stopped || !pc || pc.connectionState !== "failed") return;
@@ -437,6 +483,7 @@ export function useWebRtcStream({
     return () => {
       stopped = true;
       window.clearInterval(stallTimer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("pagehide", releaseOnPageHide);
       window.removeEventListener("beforeunload", releaseOnPageHide);
       lifecycleController.abort();

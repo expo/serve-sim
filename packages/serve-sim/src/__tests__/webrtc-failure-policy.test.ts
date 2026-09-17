@@ -3,6 +3,7 @@ import {
   initialPlaybackStallState,
   nextPlaybackStallState,
   PLAYBACK_STALL_POLLS,
+  selectInboundReport,
   webRtcFailureDisposition,
   type PlaybackProgress,
   type PlaybackStallState,
@@ -191,3 +192,41 @@ describe("tracking whether decoding has stopped", () => {
   });
 });
 
+describe("choosing which inbound report to judge", () => {
+  const r = (id: string, framesReceived: number) => ({ id, framesReceived });
+
+  test("follows the only report there is", () => {
+    expect(selectInboundReport([r("a", 10)], null)?.id).toBe("a");
+  });
+
+  /// The retained-old-SSRC case: pinning by id alone tore the connection down while a
+  /// sibling was decoding.
+  test("leaves a pinned report once it stops advancing and a sibling is ahead", () => {
+    const reports = [r("old", 1_000), r("new", 2_030)];
+    expect(selectInboundReport(reports, { id: "old", framesReceived: 1_000 })?.id).toBe("new");
+  });
+
+  test("follows a newly advancing stream even when its lifetime count is lower", () => {
+    const previousReports = [r("old", 1_000), r("new", 12)];
+    const reports = [r("old", 1_000), r("new", 13)];
+    expect(selectInboundReport(reports, previousReports[0]!, previousReports)?.id).toBe("new");
+  });
+
+  test("keeps the pinned report while it is still advancing", () => {
+    const reports = [r("old", 1_010), r("new", 2_030)];
+    expect(selectInboundReport(reports, { id: "old", framesReceived: 1_000 })?.id).toBe("old");
+  });
+
+  test("does not flap to a stalled sibling that happens to be behind", () => {
+    const reports = [r("a", 500), r("b", 100)];
+    expect(selectInboundReport(reports, { id: "a", framesReceived: 500 })?.id).toBe("a");
+  });
+
+  test("re-selects when the pinned report disappears", () => {
+    expect(selectInboundReport([r("b", 7)], { id: "gone", framesReceived: 99 })?.id).toBe("b");
+  });
+
+  test("says nothing when there is nothing to judge", () => {
+    expect(selectInboundReport([], { id: "a", framesReceived: 1 })).toBeNull();
+  });
+});

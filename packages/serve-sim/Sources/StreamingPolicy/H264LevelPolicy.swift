@@ -49,7 +49,8 @@ public enum H264LevelPolicy {
         var rest = sdp[sdp.startIndex...]
         while let marker = rest.range(of: "a=rtpmap:") {
             let line = rest[marker.upperBound...].prefix { !$0.isNewline }
-            if line.contains("H264/") { count += 1 }
+            // Encoding names are case-insensitive (RFC 8866 section 5.14).
+            if line.range(of: "H264/", options: .caseInsensitive) != nil { count += 1 }
             rest = rest[marker.upperBound...]
         }
         return count

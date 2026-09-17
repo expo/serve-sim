@@ -136,6 +136,20 @@ final class H264LevelPolicyTests: XCTestCase {
         )
     }
 
+    /// Encoding names are case-insensitive, so a lowercase rtpmap must not bypass the
+    /// absent-parameter inference and fall through to the default.
+    func testLowercaseRtpmapStillInfersLevel1() {
+        let sdp = """
+        m=video 9 UDP/TLS/RTP/SAVPF 96
+        a=rtpmap:96 h264/90000
+        """
+        XCTAssertEqual(H264LevelPolicy.minAdvertisedLevel(sdp: sdp), 10)
+        XCTAssertEqual(
+            H264LevelPolicy.minAdvertisedLevel(sdp: sdp.replacingOccurrences(of: "h264/", with: "H264/")),
+            10
+        )
+    }
+
     func testEveryH264PayloadSpecifiedMeansNoInference() {
         let sdp = """
         a=rtpmap:96 H264/90000

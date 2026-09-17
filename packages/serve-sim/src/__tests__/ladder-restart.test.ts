@@ -30,4 +30,23 @@ describe("restarting the codec ladder", () => {
     expect(webRtcFallbackDecision("h264", "h264", { kind: "codec", codec: "h264" }))
       .toEqual({ type: "retry-codec", codec: "vp8" });
   });
+
+  /// A delivered track is not playback. Reproduced by the reviewer: five attempts that each
+  /// negotiated and never decoded produced 2000, 2000, 2000, 2000, 2000 instead of escalating.
+  test("only demonstrated playback resets the backoff", () => {
+    // Model the two reset signals over five failing attempts.
+    const walk = (resetsOn: "track" | "paint") => {
+      let attempt = 0;
+      const delays: number[] = [];
+      for (let i = 0; i < 5; i++) {
+        // Every attempt delivers a track; none ever paints a frame.
+        if (resetsOn === "track") attempt = 0;
+        delays.push(ladderRestartDelayMs(attempt));
+        attempt += 1;
+      }
+      return delays;
+    };
+    expect(walk("track")).toEqual([2_000, 2_000, 2_000, 2_000, 2_000]);
+    expect(walk("paint")).toEqual([2_000, 4_000, 8_000, 16_000, 30_000]);
+  });
 });

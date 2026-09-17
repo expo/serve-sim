@@ -90,3 +90,39 @@ export function nextPlaybackStallState(
   };
 }
 
+export interface InboundReport {
+  id: string;
+  framesReceived: number;
+}
+
+/// Which inbound report to judge, when a connection carries more than one.
+///
+/// Following one by id alone pins a retained report for an SSRC that has gone away, and
+/// then tears the connection down while a sibling decodes happily. So the pinned report
+/// keeps its place only while it is still advancing; once it stops, a sibling that is
+/// advancing takes over even if its lifetime counter started later.
+export function selectInboundReport<T extends InboundReport>(
+  reports: T[],
+  previous: InboundReport | null,
+  previousReports: readonly InboundReport[] = [],
+): T | null {
+  if (reports.length === 0) return null;
+  const liveliest = reports.reduce((a, b) => (b.framesReceived > a.framesReceived ? b : a));
+  if (!previous) return liveliest;
+  const pinned = reports.find((r) => r.id === previous.id);
+  if (!pinned) return liveliest;
+  if (pinned.framesReceived > previous.framesReceived) return pinned;
+  let advancingSibling: T | null = null;
+  let largestIncrease = 0;
+  for (const report of reports) {
+    if (report.id === pinned.id) continue;
+    const earlier = previousReports.find((r) => r.id === report.id);
+    const increase = earlier ? report.framesReceived - earlier.framesReceived : 0;
+    if (increase > largestIncrease) {
+      advancingSibling = report;
+      largestIncrease = increase;
+    }
+  }
+  if (advancingSibling) return advancingSibling;
+  return liveliest.framesReceived > pinned.framesReceived ? liveliest : pinned;
+}

@@ -977,6 +977,7 @@ export function previewConfigForState(
   execToken: string,
   streamSettingsOrCodec?: StreamSettings | string,
   proxyHelpers = false,
+  requirePreviewToken = false,
 ): ServeSimState & {
   basePath: string;
   logsEndpoint: string;
@@ -1003,6 +1004,7 @@ export function previewConfigForState(
   codec?: string;
   streamSettings?: StreamSettings;
   proxyHelpers?: boolean;
+  requireToken?: boolean;
 } {
   const gridApiBase = (base === "" ? "" : base) + "/grid/api";
   const legacyCodec = typeof streamSettingsOrCodec === "string" ? streamSettingsOrCodec : undefined;
@@ -1037,6 +1039,7 @@ export function previewConfigForState(
     ...(legacyCodec ? { codec: legacyCodec } : {}),
     ...(streamSettings ? { streamSettings } : {}),
     ...(proxyHelpers ? { proxyHelpers: true } : {}),
+    ...(requirePreviewToken ? { requireToken: true } : {}),
   };
 }
 
@@ -1715,7 +1718,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
       if (state) {
         const remoteState = rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers);
-        const config = JSON.stringify(previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers));
+        const config = JSON.stringify(
+          previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers, requirePreviewToken),
+        );
         const configScript = `<script>window.__SIM_PREVIEW__=${config}</script>`;
         html = html.replace("<!--__SIM_PREVIEW_CONFIG__-->", configScript);
       }
@@ -2153,7 +2158,13 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         "Cache-Control": "no-store",
       });
       const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
-      res.end(JSON.stringify(remoteState ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers) : null));
+      res.end(
+        JSON.stringify(
+          remoteState
+            ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers, requirePreviewToken)
+            : null,
+        ),
+      );
       return;
     }
 
@@ -2289,7 +2300,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         const state = selectServeSimState(states, selectedDevice);
         const remoteState = state ? rewriteStateForRequestHost(state, hostForRequest(req), base, httpProtocolForRequest(req), proxyHelpers) : null;
         return JSON.stringify(
-          remoteState ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers) : null,
+          remoteState
+            ? previewConfigForState(remoteState, base, execToken, streamSettings, proxyHelpers, requirePreviewToken)
+            : null,
         );
       };
 

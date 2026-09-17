@@ -9,8 +9,8 @@ import type { UpgradeHandlerWebSocket } from "../middleware-utils";
 const TOKEN = "preview-token-xyz";
 const ORIGIN = "http://192.168.1.20:34567";
 
-function gated(requirePreviewToken: boolean) {
-  const handler = simMiddleware({ basePath: "/", execToken: TOKEN, requirePreviewToken });
+function gated(requirePreviewToken: boolean, frameAncestors: string[] = []) {
+  const handler = simMiddleware({ basePath: "/", execToken: TOKEN, requirePreviewToken, frameAncestors });
   return async (path: string, init?: RequestInit) => {
     const response = await handler(new Request(`${ORIGIN}${path}`, { redirect: "manual", ...init }));
     if (!response) throw new Error(`Unhandled request: ${path}`);
@@ -27,6 +27,21 @@ describe("preview access with --require-token", () => {
 
   test("refuses the preview page that carries the token in its config", async () => {
     expect((await gated(true)("/")).status).toBe(401);
+  });
+
+  test("serves the HTML 401 page to a browser page load", async () => {
+    const response = await gated(true, ["https://expo.dev"])("/", {
+      headers: { "sec-fetch-dest": "document" },
+    });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'self' https://expo.dev",
+    );
+    const body = await response.text();
+    expect(body).toContain("only opens with a token");
+    expect(body).not.toContain(TOKEN);
   });
 
   test("serves /api to a caller that already holds the token", async () => {
@@ -51,6 +66,15 @@ describe("preview access with --require-token", () => {
     });
 
     expect(response.status).toBe(200);
+  });
+
+  test("keeps the plain-text 401 and no frame policy for an api caller", async () => {
+    const response = await gated(true)("/api", { headers: { accept: "application/json" } });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("content-type")).toBe("text/plain");
+    expect(response.headers.get("content-security-policy")).toBeNull();
+    expect(await response.text()).toContain("Unauthorized.");
   });
 
   test("leaves everything open when the flag is off", async () => {

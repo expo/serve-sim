@@ -183,6 +183,19 @@ describeIfSim("serve-sim --require-token (built CLI)", () => {
     expect(await page.text()).toContain("<html");
   });
 
+  test("shows a browser the HTML 401 page with the frame policy", async () => {
+    const response = await fetch(`${baseUrl}/`, {
+      headers: { accept: "text/html", "sec-fetch-dest": "document", "sec-fetch-mode": "navigate" },
+    });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'self' https://expo.test",
+    );
+    expect(await response.text()).not.toContain(token);
+  });
+
   test("frames the preview from a cookie the embedding site can send, and says who may embed", async () => {
     const redirect = await fetch(`${baseUrl}/?token=${token}`, {
       headers: {

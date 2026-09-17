@@ -1597,6 +1597,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
   const frameAncestors = options?.frameAncestors ?? [];
   const shareUrl = options?.shareUrl;
+  const framePolicyHeaders: Record<string, string> = requirePreviewToken
+    ? { "Content-Security-Policy": frameAncestorsPolicy(frameAncestors) }
+    : {};
 
   // Simulator-settings requests run in-process (just the underlying simctl /
   // ax-tool spawn) instead of round-tripping a full `node <cli>` exec per
@@ -1653,7 +1656,11 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // Gated as a whole rather than per route, so a new route is protected by default.
     if (
       !UNGATED_PATHS.some((path) => url === base + path)
-      && !assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })
+      && !assertPreviewAccess(req, res, execToken, {
+        required: requirePreviewToken,
+        basePath: base,
+        htmlHeaders: framePolicyHeaders,
+      })
     ) {
       return;
     }
@@ -1738,9 +1745,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
-        ...(requirePreviewToken
-          ? { "Content-Security-Policy": frameAncestorsPolicy(frameAncestors) }
-          : {}),
+        ...framePolicyHeaders,
       });
       res.end(html);
       return;

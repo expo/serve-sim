@@ -89,7 +89,14 @@ Every route answers with the configured policy. Pass an origin with
 development needs no flag. A preflight is answered before the gate runs, since
 it carries neither cookie nor token.
 
-The policy names the calling origin rather than `*`, and sets `Vary: Origin`.
+The policy names the calling origin rather than `*`. `Vary: Origin` is set on
+every response under the mount path, including one whose origin is refused, so a
+cached copy is never replayed to an origin that would have been allowed.
+
+An origin takes the same shapes `--frame-ancestor` does, so the two flags accept
+the same values. That includes one leading wildcard label,
+`https://*.expo.dev`, which names deploy previews. The scheme and port still have
+to match, and a wildcard covers subdomains only, never the bare host.
 
 A gated request still answers 401 with the CORS headers attached, so the browser
 can read the status rather than reporting an opaque network error.
@@ -105,9 +112,10 @@ A value may be a plain origin, `https://expo.dev`, or carry one leading wildcard
 label, `https://*.expo.dev`, which is useful for naming deploy previews. A bare
 `https://*` is refused, as is a wildcard over a single-label host such as
 `https://*.com`, and anything that is not an origin. A registry suffix still
-passes: `https://*.github.io` would hand framing to every site hosted there, so
-a wildcard is only as narrow as the host you name. Who may frame is the caller's
-decision; the server only refuses shapes that widen the policy beyond that.
+passes: `https://*.github.io` and `https://*.co.uk` would hand framing to every
+site hosted there, so a wildcard is only as narrow as the host you name. Who may
+frame is the caller's decision; the server only refuses shapes that widen the
+policy beyond that.
 
 ## WebSockets
 

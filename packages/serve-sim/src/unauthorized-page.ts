@@ -59,9 +59,6 @@ export const TOKEN_FORM_SCRIPT = `
 
 export function unauthorizedPreviewPage(opts: { rejectedToken?: boolean } = {}): string {
   const rejected = !!opts.rejectedToken;
-  const lead = rejected
-    ? "This token doesn't match the session."
-    : "This preview only opens with a token.";
   const invalidAttrs = rejected ? ` aria-invalid="true" aria-describedby="token-error"` : "";
   const fieldError = rejected
     ? `<p class="field-error" id="token-error" role="alert">This token isn't valid.</p>`
@@ -79,13 +76,13 @@ export function unauthorizedPreviewPage(opts: { rejectedToken?: boolean } = {}):
   <div class="badge">${EXPO_MARK}</div>
   <div class="titles">
     <h1>This session is protected</h1>
-    <p class="lead">${lead}</p>
+    <p class="lead">This preview only opens with a token.</p>
   </div>
   <form method="get">
     <label for="token">Security token</label>
     <input id="token" name="token" type="password" autocomplete="off" spellcheck="false" required autofocus${invalidAttrs}>
     ${fieldError}
-    <button type="submit">Open</button>
+    <button type="submit">Submit</button>
   </form>
 </main>
 <script>${TOKEN_FORM_SCRIPT}</script>

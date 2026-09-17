@@ -285,14 +285,14 @@ describe("assertPreviewAccess", () => {
       basePath: "/",
     });
     expect(sent.status).toBe(401);
-    expect(sent.body).toContain("doesn't match");
-    expect(sent.body).not.toContain("only opens with a token");
+    expect(sent.body).toContain("only opens with a token");
+    expect(sent.body).toContain("This token isn't valid.");
     expect(sent.body).not.toContain(NOT_THE_TOKEN);
 
     const { sent: missing, res: r2 } = res();
     assertPreviewAccess(req({ "sec-fetch-dest": "document" }), r2, TOKEN, { required: true, basePath: "/" });
     expect(missing.body).toContain("only opens with a token");
-    expect(missing.body).not.toContain("doesn't match");
+    expect(missing.body).not.toContain("isn't valid");
   });
 
   test("adds the given headers to the HTML 401 only", () => {
@@ -321,7 +321,7 @@ describe("assertPreviewAccess", () => {
     });
     expect(sent.status).toBe(401);
     expect(sent.body).toContain("only opens with a token");
-    expect(sent.body).not.toContain("doesn't match");
+    expect(sent.body).not.toContain("isn't valid");
   });
 
   test("keeps the plain-text 401 for callers that are not rendering the response", () => {

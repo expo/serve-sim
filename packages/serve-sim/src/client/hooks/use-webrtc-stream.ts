@@ -6,7 +6,10 @@ import {
 } from "./playback-stall-watchdog";
 import type { StatsSubscriber } from "./use-stream-stats";
 import type { WebRtcCodec, WebRtcStreamFailure } from "../webrtc-codec-fallback";
-import { webRtcFailureDisposition } from "../webrtc-failure-policy";
+import {
+  offerFailureIsTransient,
+  webRtcFailureDisposition,
+} from "../webrtc-failure-policy";
 import { WEBRTC_ICE_TRANSPORT_POLICY, type IceServer } from "../webrtc-ice";
 import { raiseH264OfferLevel } from "../webrtc-sdp-level";
 import { webrtcSessionStatsUrl } from "../utils/sim-endpoint";
@@ -71,6 +74,7 @@ export function useWebRtcStream({
   codec = "h264",
   iceServers,
   statsUrl,
+  transportLocked = false,
 }: {
   offerUrl: string;
   closeUrl: string;
@@ -78,6 +82,8 @@ export function useWebRtcStream({
   codec?: WebRtcCodec;
   iceServers?: IceServer[];
   statsUrl?: string;
+  /// No HTTP to fall back to, so a rejected offer has to be waited out rather than handed on.
+  transportLocked?: boolean;
 }) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [failure, setFailure] = useState<WebRtcStreamFailure | null>(null);
@@ -365,7 +371,11 @@ export function useWebRtcStream({
         });
         if (!response.ok) {
           await response.body?.cancel();
-          failPermanently(`WebRTC offer failed: HTTP ${response.status}`);
+          const message = `WebRTC offer failed: HTTP ${response.status}.`;
+          // Where HTTP is available, handing the failure on gets a picture back immediately.
+          // Only a locked session, which has nowhere to go, waits the status out.
+          if (transportLocked && offerFailureIsTransient(response.status)) retryTransport(message);
+          else failPermanently(message);
           return;
         }
         const answer = await response.json() as RTCSessionDescriptionInit;
@@ -381,7 +391,10 @@ export function useWebRtcStream({
       } catch (caught) {
         if (stopped || lifecycleController.signal.aborted) return;
         if (caught instanceof WebRtcSignalingBusyError) {
-          failPermanently(caught.message);
+          // 409 is the server saying it is busy right now, which clears by itself. Its message
+          // asks for a reload, which is the one thing a locked session cannot do for itself.
+          if (transportLocked) retryTransport("WebRTC signaling stayed busy.");
+          else failPermanently(caught.message);
           return;
         }
         const message = caught instanceof WebRtcSignalingTimeoutError
@@ -411,7 +424,7 @@ export function useWebRtcStream({
       setSessionId(null);
       pc?.close();
     };
-  }, [enabled, offerUrl, closeUrl, codec, iceServers, statsUrl, retryGeneration]);
+  }, [enabled, offerUrl, closeUrl, codec, iceServers, statsUrl, retryGeneration, transportLocked]);
 
   return { stream, failure, error, markFrameDecoded, peerConnection, sessionId, retry, subscribeStats };
 }

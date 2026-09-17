@@ -10,11 +10,12 @@ const LEVEL_1B_PROFILE_IDCS = new Set([0x42, 0x4d, 0x58]);
 /// Exactly 6 hex digits; a longer run is malformed and must not be half-rewritten.
 const PROFILE_LEVEL_ID = /(profile-level-id=)([0-9a-fA-F]{6})(?![0-9a-fA-F])/g;
 
-/// Raise the level in every H.264 `profile-level-id` of an offer.
+/// Raise the level in every H.264 `profile-level-id`. Browsers advertise 3.1 whatever they
+/// can decode, and libwebrtc encodes nothing past the level in this offer.
 ///
-/// Browsers advertise Level 3.1 whatever they can decode, and libwebrtc builds its encoder
-/// from the level in this offer: past that level's frame size it encodes nothing at all.
-/// This is SDP munging, not negotiation — see `docs/webrtc-architecture.md`.
+/// SDP munging, not negotiation, and justified only by measurement on the browsers we ship
+/// to. The fallback ladder is not a safety net for it: a decoder that limps rather than
+/// stops never trips it. See docs/webrtc-architecture.md. Read back by `H264LevelPolicy.swift`.
 export function raiseH264OfferLevel(sdp: string, levelIdc: number = H264_SEND_LEVEL_IDC): string {
   if (!Number.isInteger(levelIdc) || levelIdc <= 0 || levelIdc > 0xff) return sdp;
   const raised = levelIdc.toString(16).padStart(2, "0");

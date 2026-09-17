@@ -8,8 +8,7 @@ const PRESETS: MaxDimensionOption[] = [1920, 1600, 1280, 960, 720].map((size) =>
   label: String(size),
 }));
 
-/// A session started with `--max-dimension` caps the list at that size. H.264 has no
-/// ceiling of its own any more: the encoder holds whatever level the peer negotiated.
+/// A session started with `--max-dimension` caps the list at that size.
 ///
 /// `configured` is the session's boot setting, not the current one, so choosing a smaller
 /// size stays reversible. The current value is always kept selectable, so the picker

@@ -11,9 +11,7 @@ describe("max size options", () => {
     expect(options(0)).toEqual(ALL);
   });
 
-  test("offers Full once the session can negotiate a level that fits", () => {
-    // H.264 was barred from Full because native killed the stream. That was the negotiated
-    // level, not the resolution, and the encoder now holds whatever the peer negotiated.
+  test("applies no codec ceiling of its own", () => {
     expect(options(1280)).toEqual(ALL);
   });
 

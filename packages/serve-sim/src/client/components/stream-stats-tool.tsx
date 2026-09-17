@@ -5,6 +5,9 @@ import { triggerBrowserDownload } from "../utils/screenshot-capture";
 import type { CaptureCounts, EncoderIdentity, SenderStreamStats } from "../../webrtc-sender-stats";
 import type { StreamStats } from "../utils/webrtc-stats";
 import { Sparkline } from "./sparkline";
+import { describeDownscale, encoderLabel } from "./stream-stats-labels";
+
+export { describeDownscale, encoderLabel } from "./stream-stats-labels";
 
 export function StreamStatsBody({
   stats,
@@ -90,54 +93,6 @@ export function StreamStatsBody({
       {capture && <CaptureRows capture={capture} />}
     </div>
   );
-}
-
-/**
- * The encoder's own view. None of this is visible to a receive-only browser.
- *
- * `paravirtualized:` marks a guest reaching the host's hardware encoder. A session with no
- * encoder id is not on H.264, so it falls back to naming its codec.
- */
-export function encoderLabel(encoder: EncoderIdentity): string {
-  const kind = encoder.hardware === true ? "hardware" : encoder.hardware === false ? "CPU" : "?";
-  const id = encoder.id ?? "";
-  if (!id) return encoder.codec ? `${encoder.codec.toLowerCase()} (${kind})` : kind;
-  const tail = id.split(".").pop() ?? id;
-  return `${id.startsWith("paravirtualized:") ? `paravirt ${tail}` : tail} (${kind})`;
-}
-
-/**
- * Why the picture is smaller than the size that was picked.
- *
- * WebRTC scales the encode down on its own, so the selected size is a ceiling rather than
- * a promise. Without this the panel shows a resolution nobody asked for and no reason.
- */
-export function describeDownscale(
-  selectedMaxDimension: number,
-  sender: Pick<SenderStreamStats, "width" | "height" | "qualityLimitationReason">,
-): string | null {
-  const longEdge = Math.max(sender.width ?? 0, sender.height ?? 0);
-  if (selectedMaxDimension <= 0 || longEdge <= 0 || longEdge >= selectedMaxDimension) return null;
-  const cause = downscaleCause(sender.qualityLimitationReason);
-  return `${longEdge} of ${selectedMaxDimension}${cause ? ` (${cause})` : ""}`;
-}
-
-/// `bandwidth` is the bitrate WebRTC is allowed, which is its own estimate capped by
-/// `--video-bitrate`. A stream can be bitrate-limited with no packet loss at all, so this
-/// deliberately does not blame the network.
-function downscaleCause(reason: string | null | undefined): string | null {
-  switch (reason) {
-    case "cpu":
-      return "encoder";
-    case "bandwidth":
-      return "bitrate";
-    case "none":
-    case null:
-    case undefined:
-      return null;
-    default:
-      return reason;
-  }
 }
 
 function SenderRows(

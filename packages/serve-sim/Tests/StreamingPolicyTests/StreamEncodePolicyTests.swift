@@ -6,7 +6,7 @@ private let nativeWidth = 1206
 private let nativeHeight = 2622
 private let level31LongEdge = 1392
 
-final class H264EncodeCapTests: XCTestCase {
+final class StreamEncodePolicyTests: XCTestCase {
     private func cap(
         configured: Int = 0,
         codec: String = "H264",
@@ -60,7 +60,7 @@ final class H264EncodeCapTests: XCTestCase {
         XCTAssertEqual(cap(configured: -1, codec: "VP8", level: 31), 0)
     }
 
-    /// Sender parameters are applied once before the first frame, when the source size is 0.
+    /// `applySenderParameters` runs once before the first frame, when the source size is 0.
     func testUnknownSourceSizeDoesNotScale() {
         XCTAssertEqual(cap(level: 31, width: 0, height: 0), 0)
         XCTAssertEqual(cap(configured: 1920, level: 31, width: 0, height: 0), 1920)

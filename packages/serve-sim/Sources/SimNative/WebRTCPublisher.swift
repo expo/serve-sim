@@ -265,7 +265,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                     )
                 }
                 for session in self.sessions.values {
-                    self.applyBitrateSettings(to: session)
+                    self.applySenderParameters(to: session)
                 }
                 streamLog(
                     "[webrtc] Settings updated fps=\(frameRatePolicy.outputFramesPerSecond) " +
@@ -556,7 +556,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                 fps: Int32(frameRatePolicy.sourceAdapterFramesPerSecond)
             )
             for session in sessions.values {
-                applyBitrateSettings(to: session)
+                applySenderParameters(to: session)
             }
             streamLog(
                 "[webrtc] Video source output format: \(width)x\(height) " +
@@ -915,7 +915,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             guard !session.isConnected else { return }
             session.isConnected = true
             self.refreshFrameAcceptance()
-            self.applyBitrateSettings(to: session)
+            self.applySenderParameters(to: session)
             streamLog("[webrtc] Peer connected; activePeers=\(self.sessions.values.filter(\.isConnected).count)")
         }
     }
@@ -956,7 +956,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
         session.codecName = applyVideoCodecPreference(codec, to: transceiver)
         session.videoSender = transceiver.sender
-        applyBitrateSettings(to: session)
+        applySenderParameters(to: session)
     }
 
     private func createFallbackVideoTransceiver(on peerConnection: LKRTCPeerConnection) -> LKRTCRtpTransceiver? {
@@ -1181,7 +1181,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         return preferredName
     }
 
-    private func applyBitrateSettings(to session: WebRTCSession) {
+    private func applySenderParameters(to session: WebRTCSession) {
         guard let sender = session.videoSender else { return }
         let parameters = sender.parameters
         let encodings = parameters.encodings.isEmpty
@@ -1202,18 +1202,6 @@ final class WebRTCPublisher: @unchecked Sendable {
             sourceHeight: lastOutputHeight,
             levelIdc: levelIdc
         )
-        if H264LevelPolicy.exceedsMacroblockRate(
-            levelIdc: levelIdc,
-            width: lastOutputWidth,
-            height: lastOutputHeight,
-            framesPerSecond: frameRatePolicy.outputFramesPerSecond
-        ) {
-            streamLog(
-                "[webrtc] \(lastOutputWidth)x\(lastOutputHeight) at "
-                    + "\(frameRatePolicy.outputFramesPerSecond)fps is past H.264 level \(levelIdc)'s "
-                    + "throughput allowance; encoding anyway"
-            )
-        }
         if maxDimension > 0, encodeMaxLongEdge < maxDimension {
             streamLog(
                 "[webrtc] max-dimension \(maxDimension) exceeds what H.264 level "

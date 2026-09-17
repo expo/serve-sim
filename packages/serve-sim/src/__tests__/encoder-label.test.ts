@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { encoderLabel } from "../client/components/stream-stats-tool";
+import { encoderLabel } from "../client/components/stream-stats-labels";
 
 describe("encoderLabel", () => {
   it("names the guest's paravirtualized hardware encoder", () => {

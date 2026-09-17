@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { describeDownscale } from "../client/components/stream-stats-tool";
+import { describeDownscale } from "../client/components/stream-stats-labels";
 
 const sender = (width: number, height: number, qualityLimitationReason: string | null) =>
   ({ width, height, qualityLimitationReason }) as Parameters<typeof describeDownscale>[1];

@@ -40,3 +40,18 @@ export function webRtcFallbackDecision(
     ? { type: "retry-codec", codec: nextCodec }
     : { type: "switch-to-http" };
 }
+
+const LADDER_RESTART_BASE_MS = 2_000;
+const LADDER_RESTART_MAX_MS = 30_000;
+
+/// How long to wait before starting the codec ladder again when there is nothing left to
+/// fall back to.
+///
+/// Exhausting the ladder means every codec failed, which is far more often one cause
+/// affecting all of them than three separate codec faults. Backing off and starting over
+/// beats leaving the session dead, but it has to back off: the cause usually outlives one
+/// attempt, and a locked session has no other transport to escape to.
+export function ladderRestartDelayMs(attempt: number): number {
+  const exponent = Math.min(Math.max(attempt, 0), 4);
+  return Math.min(LADDER_RESTART_BASE_MS * 2 ** exponent, LADDER_RESTART_MAX_MS);
+}

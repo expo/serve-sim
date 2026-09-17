@@ -27,4 +27,23 @@ describe("encoder identity in sender stats", () => {
   test("tolerates a build that does not report an encoder", () => {
     expect(readSenderStats({ sessions: [] }).encoder).toBeNull();
   });
+
+  test("carries the live session codec alongside the encoder id", () => {
+    const stats = readSenderStats({
+      sessions: [],
+      encoder: { id: null, hardware: false, codec: "VP8" },
+    });
+    expect(stats.encoder).toEqual({ id: null, hardware: false, codec: "VP8" });
+  });
+
+  test("tolerates an encoder with no codec field", () => {
+    const stats = readSenderStats({ sessions: [], encoder: { id: "x", hardware: true } });
+    expect(stats.encoder).toEqual({ id: "x", hardware: true, codec: null });
+  });
+
+  /// Nothing connected reports nothing, which arrives as `{}`. Treating that as an encoder
+  /// puts a bare "?" in the panel for the whole connection setup window.
+  test("reports no encoder at all when the session has not connected", () => {
+    expect(readSenderStats({ sessions: [], encoder: {} }).encoder).toBeNull();
+  });
 });

@@ -1540,7 +1540,7 @@ export interface SimMiddlewareOptions {
    * decides access. Loopback is always allowed.
    */
   corsOrigins?: string[];
-  /** @deprecated Use `corsOrigins`. */
+  /** @deprecated Use `corsOrigins`. Removed a release after the CLI flag. */
   metricsCorsOrigins?: string[];
   frameAncestors?: string[];
   /** Public page the Share button copies instead of this preview's address. */

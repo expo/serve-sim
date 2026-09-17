@@ -143,13 +143,11 @@ export function assertPreviewAccess(
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const fromQuery = url.searchParams.get("token");
   if (fromQuery && safeEqualString(fromQuery, sessionToken)) {
-    const embedded = isEmbeddedNavigation(req);
     // A page load trades the token for a cookie so it leaves the URL and the page's own requests
     // carry it. A cross-origin API/SSE caller can send neither header nor cookie, so it is served
     // the query token directly.
-    if (!isDocumentNavigation(req.headers) && !embedded) {
-      return true;
-    }
+    if (!prefersHtmlResponse(req)) return true;
+    const embedded = isEmbeddedNavigation(req);
     url.searchParams.delete("token");
     res.writeHead(302, {
       // A leading "//" would be read as an absolute cross-origin URL by the browser.

@@ -55,6 +55,35 @@ describe("WebRTC offer negotiation", () => {
     })).rejects.toBeInstanceOf(WebRtcSignalingTimeoutError);
   });
 
+  test("gives a close a deadline, so a reconnect behind it cannot wait forever", async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    await closeWebRtcSession({
+      url: "https://example.test/webrtc/close",
+      sessionId: "session-1",
+      fetchImpl: async (_url, init) => {
+        signals.push(init?.signal ?? undefined);
+        return new Response(null, { status: 204 });
+      },
+    });
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+  });
+
+  /// Nothing waits on an unload close, and a deadline could only cut it short.
+  test("leaves an unload close without one", async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    await closeWebRtcSession({
+      url: "https://example.test/webrtc/close",
+      sessionId: "session-1",
+      keepalive: true,
+      sendBeacon: () => false,
+      fetchImpl: async (_url, init) => {
+        signals.push(init?.signal ?? undefined);
+        return new Response(null, { status: 204 });
+      },
+    });
+    expect(signals[0]).toBeUndefined();
+  });
+
   test("uses a beacon to release an established session during pagehide", async () => {
     let fetched = false;
     const beaconBodies: Blob[] = [];

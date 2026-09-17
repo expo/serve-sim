@@ -61,6 +61,46 @@ describe("frameAncestorsPolicy", () => {
     );
   });
 
+  test("keeps one wildcard label, so a caller can name its deploy previews", () => {
+    expect(frameAncestorsPolicy(["https://*.expo.dev"])).toBe(
+      "frame-ancestors 'self' https://*.expo.dev",
+    );
+  });
+
+  test("drops a bare wildcard, which would hand framing to every https site", () => {
+    expect(frameAncestorsPolicy(["https://*"])).toBe("frame-ancestors 'self'");
+  });
+
+  test("drops a wildcard over a single-label host", () => {
+    expect(frameAncestorsPolicy(["https://*.com"])).toBe("frame-ancestors 'self'");
+  });
+
+  test("keeps a bracketed ipv6 origin", () => {
+    expect(frameAncestorsPolicy(["http://[::1]:19000"])).toBe(
+      "frame-ancestors 'self' http://[::1]:19000",
+    );
+  });
+
+  test("drops a wildcard that is not a whole leading label", () => {
+    expect(frameAncestorsPolicy(["https://**.expo.dev", "https://a.*.expo.dev"])).toBe(
+      "frame-ancestors 'self'",
+    );
+  });
+
+  test("drops a directive smuggled into the host", () => {
+    expect(frameAncestorsPolicy(["https://expo.dev;img-src"])).toBe("frame-ancestors 'self'");
+  });
+
+  test("drops an opaque origin, which serializes to null", () => {
+    expect(frameAncestorsPolicy(["data:text/html,x"])).toBe("frame-ancestors 'self'");
+  });
+
+  test("keeps a port, which a local website needs", () => {
+    expect(frameAncestorsPolicy(["http://localhost:3001"])).toBe(
+      "frame-ancestors 'self' http://localhost:3001",
+    );
+  });
+
   test("canonicalizes, so a configured path or default port still matches", () => {
     expect(frameAncestorsPolicy(["https://expo.dev:443/dashboard"])).toBe(
       "frame-ancestors 'self' https://expo.dev",

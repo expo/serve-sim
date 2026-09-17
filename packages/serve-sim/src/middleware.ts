@@ -21,7 +21,6 @@ import {
   closeDeviceSession,
   getDeviceSession,
   peekDeviceSession,
-  sendCorsPreflight,
   type HidSocket,
 } from "./device-session";
 import { assertPreviewAccess, assertUpgradeAccess } from "./session-auth";
@@ -178,11 +177,6 @@ const RN_MARKERS = [
 function isSimulatorUdid(value: string): boolean {
   return /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(value);
 }
-
-const SCREENSHOT_RESPONSE_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Cache-Control": "no-store",
-};
 
 /** What to do with a persisted device state when reaping during a grid poll. */
 type StaleStateAction = "keep" | "recycle-self" | "recycle-helper";
@@ -805,14 +799,6 @@ function serveHelperInProcess(
   const endpoint = upstreamPath.split("?")[0];
   if (endpoint === "/camera/status") {
     void handleCameraStatus(req, res, device);
-    return true;
-  }
-  if (
-    (endpoint === "/webrtc/offer" || endpoint === "/webrtc/close" || endpoint === "/webrtc/stats"
-      || endpoint === "/stream-settings")
-    && req.method === "OPTIONS"
-  ) {
-    sendCorsPreflight(res);
     return true;
   }
   // Polled once a second by the panel and the recorder, so creating a session here would start a
@@ -1502,10 +1488,12 @@ export interface SimMiddlewareOptions {
   /** Stream transport and codec settings for the preview. */
   streamSettings?: StreamSettings;
   /**
-   * Origins allowed to read the `/metrics` SSE stream cross-origin (e.g. a
-   * hosted dashboard). Read-only telemetry only; the control routes stay
-   * same-origin + token-gated regardless. Loopback is always allowed.
+   * Origins allowed to read this preview cross-origin (e.g. a hosted dashboard).
+   * Every route answers with the policy, so the token gate stays the thing that
+   * decides access. Loopback is always allowed.
    */
+  corsOrigins?: string[];
+  /** @deprecated Use `corsOrigins`. */
   metricsCorsOrigins?: string[];
   frameAncestors?: string[];
   /** Public page the Share button copies instead of this preview's address. */
@@ -1548,7 +1536,6 @@ export function handleMetricsRequest(
   res: SimRes,
   state: ServeSimState | null,
   samplerCache: MetricsSamplerCache = metricsSamplerCache,
-  corsOrigins: readonly string[] = [],
   tracker: ForegroundTrackerCache = foregroundTracker,
 ): void {
   if (!state) {
@@ -1561,7 +1548,6 @@ export function handleMetricsRequest(
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
-    ...corsAllowOriginHeaders(req.headers.origin, corsOrigins),
   });
   res.write(":\n\n");
   // Keep the foreground tail warm for this stream's lifetime so the sampler can scope to the
@@ -1594,9 +1580,13 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   // can't read this value (it's only injected into the preview page's config).
   const execToken = options?.execToken ?? randomBytes(32).toString("base64url");
   const requirePreviewToken = options?.requirePreviewToken ?? false;
-  const metricsCorsOrigins = options?.metricsCorsOrigins ?? [];
+  const corsOrigins = [...(options?.corsOrigins ?? []), ...(options?.metricsCorsOrigins ?? [])];
   const frameAncestors = options?.frameAncestors ?? [];
   const shareUrl = options?.shareUrl;
+  // The proxied DevTools frontend sits behind the same cookie, so its document needs the policy too.
+  const framePolicyHeaders: Record<string, string> = requirePreviewToken
+    ? { "Content-Security-Policy": frameAncestorsPolicy(frameAncestors) }
+    : {};
 
   // Simulator-settings requests run in-process (just the underlying simctl /
   // ax-tool spawn) instead of round-tripping a full `node <cli>` exec per
@@ -1646,6 +1636,22 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     const rawUrl: string = req.url ?? "";
     const qIndex = rawUrl.indexOf("?");
     const url = qIndex === -1 ? rawUrl : rawUrl.slice(0, qIndex);
+    const ownPath = url === base || url.startsWith(`${base}/`);
+    // Whole-middleware, so a new route is reachable cross-origin without opting in.
+    if (ownPath) {
+      const corsHeaders = corsAllowOriginHeaders(req.headers.origin, corsOrigins);
+      for (const [name, value] of Object.entries(corsHeaders)) res.setHeader(name, value);
+    }
+    // A preflight carries no cookie and no token, so it has to be answered before the gate.
+    if (ownPath && req.method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        "Access-Control-Max-Age": "600",
+      });
+      res.end();
+      return;
+    }
     const requestedDevice = queryDevice(rawUrl);
     const selectedDevice = requestedDevice ?? options?.device ?? null;
     const devtoolsFrontendBase = base === "/" ? "/devtools-frontend" : `${base}/devtools-frontend`;
@@ -1691,10 +1697,13 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         const upstream = await fetch(
           `https://chrome-devtools-frontend.appspot.com/serve_rev/@${DEVTOOLS_FRONTEND_REV}/${assetPath}${upstreamSuffix}`,
         );
-        const headers: Record<string, string> = {
-          "Cache-Control": "public, max-age=604800",
-        };
         const contentType = upstream.headers.get("content-type");
+        const isDocument = contentType?.startsWith("text/html") ?? false;
+        const headers: Record<string, string> = {
+          // A cached copy would otherwise outlive the policy it was fetched under.
+          "Cache-Control": isDocument ? "no-store" : "public, max-age=604800",
+          ...(isDocument ? framePolicyHeaders : {}),
+        };
         if (contentType) headers["Content-Type"] = contentType;
         res.writeHead(upstream.status, headers);
         res.end(Buffer.from(await upstream.arrayBuffer()));
@@ -1738,9 +1747,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
-        ...(requirePreviewToken
-          ? { "Content-Security-Policy": frameAncestorsPolicy(frameAncestors) }
-          : {}),
+        ...framePolicyHeaders,
       });
       res.end(html);
       return;
@@ -2185,7 +2192,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     if (url === base + "/api/screenshot") {
       if (req.method !== "POST") {
         res.writeHead(405, {
-          ...SCREENSHOT_RESPONSE_HEADERS,
+          "Cache-Control": "no-store",
           "Content-Type": "text/plain; charset=utf-8",
         });
         res.end("method not allowed");
@@ -2194,7 +2201,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       let udid = selectedDevice;
       if (udid && !isSimulatorUdid(udid)) {
         res.writeHead(400, {
-          ...SCREENSHOT_RESPONSE_HEADERS,
+          "Cache-Control": "no-store",
           "Content-Type": "application/json",
         });
         res.end(JSON.stringify({ ok: false, error: "Invalid simulator device ID" }));
@@ -2206,7 +2213,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       }
       if (!udid) {
         res.writeHead(400, {
-          ...SCREENSHOT_RESPONSE_HEADERS,
+          "Cache-Control": "no-store",
           "Content-Type": "application/json",
         });
         res.end(JSON.stringify({ ok: false, error: "No booted simulator to screenshot" }));
@@ -2229,7 +2236,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         });
         const png = await readFile(file);
         res.writeHead(200, {
-          ...SCREENSHOT_RESPONSE_HEADERS,
+          "Cache-Control": "no-store",
           "Content-Type": "image/png",
         });
         res.end(png);
@@ -2239,7 +2246,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           (typeof stderr === "string" && stderr.trim()) ||
           (err instanceof Error ? err.message : String(err));
         res.writeHead(500, {
-          ...SCREENSHOT_RESPONSE_HEADERS,
+          "Cache-Control": "no-store",
           "Content-Type": "application/json",
         });
         res.end(JSON.stringify({ ok: false, error: message }));
@@ -2463,7 +2470,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     if (url === base + "/metrics") {
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
-      handleMetricsRequest(req, res, state, metricsSamplerCache, metricsCorsOrigins);
+      handleMetricsRequest(req, res, state, metricsSamplerCache);
       return;
     }
 

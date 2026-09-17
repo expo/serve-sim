@@ -195,15 +195,20 @@ export function corsAllowOriginHeaders(
   return {};
 }
 
+// A wildcard is only as narrow as the host the caller names: `*.github.io` passes.
+const FRAMEABLE_ORIGIN =
+  /^https?:\/\/(?:\[[0-9a-f:.]+\]|[a-z0-9.-]+|\*\.[a-z0-9-]+(?:\.[a-z0-9-]+)+)(?::\d+)?$/i;
+
 /**
  * Who may frame a gated preview. Browsers that ignore the Partitioned cookie attribute would
- * otherwise let any site embed one and drive it. Values that are not origins are dropped, so a
- * stray `*` or `;` cannot widen the policy.
+ * otherwise let any site embed one and drive it. The caller chooses the origins; this only
+ * refuses shapes that would widen the policy beyond what it names.
  */
 export function frameAncestorsPolicy(allowedOrigins: string[]): string {
-  const origins = allowedOrigins.flatMap((origin) => {
+  const origins = allowedOrigins.flatMap((allowed) => {
     try {
-      return [new URL(origin).origin];
+      const { origin } = new URL(allowed);
+      return FRAMEABLE_ORIGIN.test(origin) ? [origin] : [];
     } catch {
       return [];
     }

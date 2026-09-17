@@ -1898,8 +1898,9 @@ program
   )
   .option(
     "--frame-ancestor <origin>",
-    "Allow this origin to embed the preview in a frame (repeatable). Only applies with " +
-      "--require-token; an ungated preview sends no frame policy.",
+    "Allow this origin to embed the preview in a frame (repeatable). Accepts a subdomain " +
+      "wildcard, e.g. https://*.expo.dev. Only applies with --require-token; an ungated " +
+      "preview sends no frame policy.",
     (value: string, prev: string[]) => [...prev, value],
     [] as string[],
   )
@@ -1910,8 +1911,8 @@ program
   )
   .option(
     "--cors-origin <origin>",
-    "Allow this origin to read the preview cross-origin (repeatable). " +
-      "Loopback origins are always allowed.",
+    "Allow this origin to read the preview cross-origin (repeatable). Accepts a subdomain " +
+      "wildcard, e.g. https://*.expo.dev. Loopback origins are always allowed.",
     (value: string, prev: string[]) => [...prev, value],
     [] as string[],
   )

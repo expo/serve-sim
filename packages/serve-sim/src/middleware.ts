@@ -1639,6 +1639,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     const ownPath = url === base || url.startsWith(`${base}/`);
     // Whole-middleware, so a new route is reachable cross-origin without opting in.
     if (ownPath) {
+      // Unconditional, including when the origin is refused: a cached copy carrying no policy
+      // would otherwise be replayed to an origin that is allowed one.
+      res.setHeader("Vary", "Origin");
       const corsHeaders = corsAllowOriginHeaders(req.headers.origin, corsOrigins);
       for (const [name, value] of Object.entries(corsHeaders)) res.setHeader(name, value);
     }

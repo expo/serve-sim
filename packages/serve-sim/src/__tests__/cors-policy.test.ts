@@ -31,11 +31,21 @@ describe("CORS preflight", () => {
     expect(response?.headers.get("vary")).toBe("Origin");
   });
 
-  test("tells an unconfigured origin nothing", async () => {
+  test("tells an unconfigured origin nothing, but still varies on Origin", async () => {
     const middleware = simMiddleware({ basePath: "/.sim", corsOrigins: ["https://expo.dev"] });
     const response = await middleware(preflight("https://evil.test"));
 
     expect(response?.headers.get("access-control-allow-origin")).toBeNull();
+    // Without this a shared cache could replay the refusal to an origin that is allowed.
+    expect(response?.headers.get("vary")).toBe("Origin");
+  });
+
+  test("names a deploy preview matched by a wildcard", async () => {
+    const middleware = simMiddleware({ basePath: "/.sim", corsOrigins: ["https://*.expo.dev"] });
+    const response = await middleware(preflight("https://pr-31018.expo.dev"));
+
+    expect(response?.headers.get("access-control-allow-origin")).toBe("https://pr-31018.expo.dev");
+    expect(response?.headers.get("vary")).toBe("Origin");
   });
 
   test("answers a preflight before the token gate, which it cannot satisfy", async () => {

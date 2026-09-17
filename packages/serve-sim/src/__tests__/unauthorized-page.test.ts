@@ -9,6 +9,7 @@ describe("unauthorizedPreviewPage", () => {
     expect(html).toContain("<title>Simulator Preview</title>");
     expect(html).toContain("This session is protected");
     expect(html).toContain("only opens with a token");
+    expect(html).toContain(">Submit</button>");
     expect(html).toContain(">Security token</label>");
     expect(html.match(/Security token/g)).toEqual(["Security token"]);
     expect(html).toContain('name="token"');
@@ -22,14 +23,15 @@ describe("unauthorizedPreviewPage", () => {
     const html = unauthorizedPreviewPage({ rejectedToken: true });
 
     expect(html).toContain("<title>Simulator Preview</title>");
-    expect(html).toContain("doesn't match the session");
+    expect(html).toContain("only opens with a token");
     expect(html).toContain("This token isn't valid.");
     expect(html).toContain(">Security token</label>");
     expect(html.match(/Security token/g)).toEqual(["Security token"]);
+    expect(html).toContain(">Submit</button>");
     expect(html).toContain('aria-invalid="true"');
     expect(html).toContain('role="alert"');
     expect(html).toContain('name="token"');
-    expect(html).not.toContain("only opens with a token");
+    expect(html).not.toContain("doesn't match");
   });
 
   test("shows no example link carrying a token", () => {

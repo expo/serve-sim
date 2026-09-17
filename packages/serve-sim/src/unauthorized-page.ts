@@ -60,8 +60,8 @@ export const TOKEN_FORM_SCRIPT = `
 export function unauthorizedPreviewPage(opts: { rejectedToken?: boolean } = {}): string {
   const rejected = !!opts.rejectedToken;
   const lead = rejected
-    ? "This token doesn't match the session. Open a new link, or paste another."
-    : "This preview only opens with a token. Open the full session link, or paste it below.";
+    ? "This token doesn't match the session."
+    : "This preview only opens with a token.";
   const invalidAttrs = rejected ? ` aria-invalid="true" aria-describedby="token-error"` : "";
   const fieldError = rejected
     ? `<p class="field-error" id="token-error" role="alert">This token isn't valid.</p>`

@@ -354,7 +354,12 @@ export function useWebRtcStream({
         if (!local) throw new Error("WebRTC offer was not created");
         // Only what the encoder reads is rewritten; our own description stays as the
         // browser built it. See raiseH264OfferLevel.
-        const offerSdp = codec === "h264" ? raiseH264OfferLevel(local.sdp) : local.sdp;
+        // TEMPORARY, revert before merge: `?noLevelRaise=1` posts the browser's own level so
+        // the negotiated-level clamp can be exercised on the same build.
+        const raiseLevel =
+          codec === "h264" &&
+          !new URLSearchParams(window.location?.search ?? "").has("noLevelRaise");
+        const offerSdp = raiseLevel ? raiseH264OfferLevel(local.sdp) : local.sdp;
         const response = await postWebRtcOffer({
           url: offerUrl,
           signal: lifecycleController.signal,

@@ -1662,7 +1662,11 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // Gated as a whole rather than per route, so a new route is protected by default.
     if (
       !UNGATED_PATHS.some((path) => url === base + path)
-      && !assertPreviewAccess(req, res, execToken, { required: requirePreviewToken, basePath: base })
+      && !assertPreviewAccess(req, res, execToken, {
+        required: requirePreviewToken,
+        basePath: base,
+        htmlHeaders: framePolicyHeaders,
+      })
     ) {
       return;
     }

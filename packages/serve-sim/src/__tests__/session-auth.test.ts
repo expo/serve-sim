@@ -18,6 +18,7 @@ describe("safeEqualString", () => {
 
 describe("assertPreviewAccess", () => {
   const TOKEN = "s3cret-token";
+  const NOT_THE_TOKEN = "not-the-session-token-9f2";
 
   function res() {
     const sent: { status?: number; headers?: Record<string, string>; body?: string } = {};
@@ -236,7 +237,109 @@ describe("assertPreviewAccess", () => {
     const { sent, res: r } = res();
     expect(assertPreviewAccess(req(), r, TOKEN, { required: true, basePath: "/" })).toBe(false);
     expect(sent.status).toBe(401);
+    expect(sent.headers?.["Content-Type"]).toBe("text/plain");
     expect(sent.body).toContain("token");
+    expect(sent.body).not.toContain("<html");
+  });
+
+  test("serves the HTML 401 page to a browser", () => {
+    const browsers: Record<string, string>[] = [
+      { "sec-fetch-dest": "document" },
+      { "sec-fetch-dest": "iframe" },
+      { accept: "text/html,application/xhtml+xml" },
+    ];
+    for (const headers of browsers) {
+      const { sent, res: r } = res();
+      expect(
+        assertPreviewAccess(req(headers, "/preview?device=ABC"), r, TOKEN, {
+          required: true,
+          basePath: "/",
+        }),
+      ).toBe(false);
+      expect(sent.status).toBe(401);
+      expect(sent.headers?.["Content-Type"]).toBe("text/html; charset=utf-8");
+      expect(sent.headers?.["Cache-Control"]).toBe("no-store, private");
+      expect(sent.body).toContain("only opens with a token");
+      expect(sent.body).not.toContain(TOKEN);
+    }
+  });
+
+  test("scopes the cookie to a non-root mount", () => {
+    const { sent, res: r } = res();
+    assertPreviewAccess(
+      req({ "sec-fetch-dest": "document" }, `/.sim/preview?token=${TOKEN}`),
+      r,
+      TOKEN,
+      { required: true, basePath: "/.sim" },
+    );
+
+    expect(sent.status).toBe(302);
+    expect(sent.headers?.Location).toBe("/.sim/preview");
+    expect(sent.headers?.["Set-Cookie"]).toContain("Path=/.sim");
+  });
+
+  test("reports a rejected token differently from a missing one", () => {
+    const { sent, res: r } = res();
+    assertPreviewAccess(req({ "sec-fetch-dest": "document" }, `/?token=${NOT_THE_TOKEN}`), r, TOKEN, {
+      required: true,
+      basePath: "/",
+    });
+    expect(sent.status).toBe(401);
+    expect(sent.body).toContain("doesn't match");
+    expect(sent.body).not.toContain("only opens with a token");
+    expect(sent.body).not.toContain(NOT_THE_TOKEN);
+
+    const { sent: missing, res: r2 } = res();
+    assertPreviewAccess(req({ "sec-fetch-dest": "document" }), r2, TOKEN, { required: true, basePath: "/" });
+    expect(missing.body).toContain("only opens with a token");
+    expect(missing.body).not.toContain("doesn't match");
+  });
+
+  test("adds the given headers to the HTML 401 only", () => {
+    const { sent, res: r } = res();
+    assertPreviewAccess(req({ "sec-fetch-dest": "iframe" }), r, TOKEN, {
+      required: true,
+      basePath: "/",
+      htmlHeaders: { "Content-Security-Policy": "frame-ancestors 'self' https://expo.dev" },
+    });
+    expect(sent.headers?.["Content-Security-Policy"]).toBe("frame-ancestors 'self' https://expo.dev");
+
+    const { sent: plain, res: r2 } = res();
+    assertPreviewAccess(req(), r2, TOKEN, {
+      required: true,
+      basePath: "/",
+      htmlHeaders: { "Content-Security-Policy": "frame-ancestors 'self'" },
+    });
+    expect(plain.headers?.["Content-Security-Policy"]).toBeUndefined();
+  });
+
+  test("treats an empty ?token= as missing, not rejected", () => {
+    const { sent, res: r } = res();
+    assertPreviewAccess(req({ "sec-fetch-dest": "document" }, "/?token="), r, TOKEN, {
+      required: true,
+      basePath: "/",
+    });
+    expect(sent.status).toBe(401);
+    expect(sent.body).toContain("only opens with a token");
+    expect(sent.body).not.toContain("doesn't match");
+  });
+
+  test("keeps the plain-text 401 for callers that are not rendering the response", () => {
+    const callers: Record<string, string>[] = [
+      { accept: "application/json" },
+      { accept: "text/html", "sec-fetch-dest": "empty", "sec-fetch-mode": "cors" },
+      { accept: "application/json", "sec-fetch-dest": "empty", "sec-fetch-mode": "cors" },
+    ];
+    for (const headers of callers) {
+      const { sent, res: r } = res();
+      assertPreviewAccess(req(headers, `/api?token=${NOT_THE_TOKEN}`), r, TOKEN, {
+        required: true,
+        basePath: "/",
+      });
+      expect(sent.status).toBe(401);
+      expect(sent.headers?.["Content-Type"]).toBe("text/plain");
+      expect(sent.body).toContain("Unauthorized.");
+    }
   });
 
   test("refuses a wrong token in every position it accepts a right one", () => {
@@ -253,7 +356,7 @@ describe("assertPreviewAccess", () => {
     }
     const { sent, res: r } = res();
     expect(
-      assertPreviewAccess(req({}, "/?token=wrong"), r, TOKEN, { required: true, basePath: "/" }),
+      assertPreviewAccess(req({}, `/?token=${NOT_THE_TOKEN}`), r, TOKEN, { required: true, basePath: "/" }),
     ).toBe(false);
     expect(sent.status).toBe(401);
   });

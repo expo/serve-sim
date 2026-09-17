@@ -1,5 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
+import { unauthorizedPreviewPage } from "./unauthorized-page";
+
 export interface SessionAuthReq {
   method?: string;
   headers: {
@@ -103,6 +105,10 @@ function isDocumentNavigation(headers: SessionAuthReq["headers"]): boolean {
   return (headerValue(headers["accept"]) ?? "").includes("text/html");
 }
 
+function prefersHtmlResponse(req: SessionAuthReq): boolean {
+  return isDocumentNavigation(req.headers) || isEmbeddedNavigation(req);
+}
+
 function isEmbeddedNavigation(req: SessionAuthReq): boolean {
   return isNavigation(req) && headerValue(req.headers["sec-fetch-dest"]) === "iframe";
 }
@@ -126,7 +132,11 @@ export function assertPreviewAccess(
   req: SessionAuthReq & { url?: string },
   res: SessionAuthRes,
   sessionToken: string,
-  opts: { required: boolean; basePath: string },
+  opts: {
+    required: boolean;
+    basePath: string;
+    htmlHeaders?: Record<string, string>;
+  },
 ): boolean {
   if (!opts.required) return true;
 
@@ -162,6 +172,15 @@ export function assertPreviewAccess(
     return true;
   }
 
+  if (prefersHtmlResponse(req)) {
+    res.writeHead(401, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store, private",
+      ...(opts.htmlHeaders ?? {}),
+    });
+    res.end(unauthorizedPreviewPage({ rejectedToken: !!fromQuery }));
+    return false;
+  }
   res.writeHead(401, { "Content-Type": "text/plain", "Cache-Control": "no-store, private" });
   res.end(
     "Unauthorized. This serve-sim was started with --require-token, so the preview needs the access " +

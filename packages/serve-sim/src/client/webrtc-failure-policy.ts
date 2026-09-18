@@ -47,6 +47,14 @@ export function playbackStallAction(
   return msSinceCodecReconnect < STALL_RECONNECT_TTL_MS ? "fail-codec" : "retry-transport";
 }
 
+/// Whether a rejected offer is worth trying again. The signalling path 404s while a helper
+/// restarts or a reaped session's route comes back, and that resolves on its own. A refused
+/// or malformed request never will, and retrying one only hides it.
+export function offerFailureIsTransient(status: number): boolean {
+  if (status >= 500) return true;
+  return status === 404 || status === 408 || status === 425 || status === 429;
+}
+
 /// One read a second, shared with the stats panel so nothing polls `getStats` twice.
 export const PLAYBACK_STALL_POLL_MS = 1_000;
 /// Polls, not wall-clock: a hidden tab's interval is throttled, so elapsed time there says

@@ -39,6 +39,9 @@ function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/// Callers arm a reconnect behind this close, so it cannot be allowed to hang.
+const CLOSE_TIMEOUT_MS = 2_000;
+
 export async function closeWebRtcSession({
   url,
   sessionId,
@@ -65,11 +68,14 @@ export async function closeWebRtcSession({
       if (beacon(url, new Blob([body], { type: "text/plain;charset=UTF-8" }))) return;
     } catch {}
   }
+  // A helper that accepts the socket and never answers would otherwise hold the reconnect that
+  // follows this. An unload close is left alone: the page is going away regardless.
   await fetchImpl(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
     keepalive,
+    signal: keepalive ? undefined : AbortSignal.timeout(CLOSE_TIMEOUT_MS),
   }).then(() => undefined, () => undefined);
 }
 

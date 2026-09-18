@@ -27,6 +27,9 @@ export interface SenderStreamStats {
   sourceFrames: number | null;
   sourceFps: number | null;
   sourceFramesDropped: number | null;
+  /** The size fed to the encoder, and the H.264 level's bound on it. */
+  sourceLongEdge: number | null;
+  levelMaxLongEdge: number | null;
 }
 
 export interface CaptureCounts {
@@ -44,8 +47,10 @@ export interface CaptureCounts {
 /// Which encoder the publisher selected. `hardware: false` means the stream is being
 /// encoded on the CPU, which otherwise looks identical to a healthy one.
 export interface EncoderIdentity {
+  /// The H.264 encoder this host would use. Null when the live session is not H.264.
   id: string | null;
   hardware: boolean | null;
+  codec: string | null;
 }
 
 export interface SenderStats {
@@ -105,6 +110,8 @@ function readSenderSession(raw: Record<string, unknown>): SenderStreamStats {
     sourceFrames: maybeNumber(raw.sourceFrames),
     sourceFps: maybeNumber(raw.sourceFramesPerSecond),
     sourceFramesDropped: maybeNumber(raw.sourceFramesDropped),
+    sourceLongEdge: maybeNumber(raw.sourceLongEdge),
+    levelMaxLongEdge: maybeNumber(raw.levelMaxLongEdge),
     codec: maybeString(raw.codec),
     connected: raw.connected === true,
     qualityLimitationReason: maybeString(raw.qualityLimitationReason),
@@ -129,10 +136,15 @@ function readSenderSession(raw: Record<string, unknown>): SenderStreamStats {
 
 function readEncoderIdentity(raw: unknown): EncoderIdentity | null {
   if (!isRecord(raw)) return null;
-  return {
+  const identity = {
     id: maybeString(raw.id),
     hardware: typeof raw.hardware === "boolean" ? raw.hardware : null,
+    codec: maybeString(raw.codec),
   };
+  // A session that has not connected yet reports nothing at all, which arrives as `{}`.
+  // Describing that as an encoder puts a bare "?" in the panel for the whole setup window.
+  if (identity.id === null && identity.hardware === null && identity.codec === null) return null;
+  return identity;
 }
 
 export function readSenderStats(raw: unknown): SenderStats {

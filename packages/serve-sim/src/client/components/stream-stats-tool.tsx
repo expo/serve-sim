@@ -5,6 +5,7 @@ import { triggerBrowserDownload } from "../utils/screenshot-capture";
 import type { CaptureCounts, EncoderIdentity, SenderStreamStats } from "../../webrtc-sender-stats";
 import type { StreamStats } from "../utils/webrtc-stats";
 import { Sparkline } from "./sparkline";
+import { describeDownscale, encoderLabel } from "./stream-stats-labels";
 
 export function StreamStatsBody({
   stats,
@@ -14,6 +15,7 @@ export function StreamStatsBody({
   capture,
   encoder,
   requestedFps,
+  selectedMaxDimension,
   stale,
   action,
 }: {
@@ -24,6 +26,7 @@ export function StreamStatsBody({
   capture?: CaptureCounts | null;
   encoder?: EncoderIdentity | null;
   requestedFps?: number;
+  selectedMaxDimension?: number;
   stale?: boolean;
   action?: ReactNode;
 }) {
@@ -78,26 +81,26 @@ export function StreamStatsBody({
         )}
       </div>
 
-      {sender && <SenderRows sender={sender} encoder={encoder} />}
+      {sender && (
+        <SenderRows
+          sender={sender}
+          encoder={encoder}
+          selectedMaxDimension={selectedMaxDimension}
+        />
+      )}
       {capture && <CaptureRows capture={capture} />}
     </div>
   );
 }
 
-/** The encoder's own view. None of this is visible to a receive-only browser. */
-/// Short, readable name for an encoder id. The paravirtualized prefix marks a guest that
-/// is reaching the host's hardware encoder; a bare software id means the CPU is doing it.
-function encoderLabel(encoder: EncoderIdentity): string {
-  const id = encoder.id ?? "";
-  const tail = id.split(".").pop() ?? id;
-  const kind = encoder.hardware === true ? "hardware" : encoder.hardware === false ? "CPU" : "?";
-  if (!id) return kind;
-  return `${id.startsWith("paravirtualized:") ? `paravirt ${tail}` : tail} (${kind})`;
-}
-
 function SenderRows(
-  { sender, encoder }: { sender: SenderStreamStats; encoder?: EncoderIdentity | null },
+  { sender, encoder, selectedMaxDimension = 0 }: {
+    sender: SenderStreamStats;
+    encoder?: EncoderIdentity | null;
+    selectedMaxDimension?: number;
+  },
 ) {
+  const downscale = describeDownscale(selectedMaxDimension, sender);
   return (
     <div className="flex flex-col gap-0.5 border-t border-white/10 pt-1.5">
       <div className="pb-0.5 text-[10px] uppercase tracking-[0.08em] text-white/30">Encoder</div>
@@ -109,6 +112,7 @@ function SenderRows(
         <Cell label="Frames sent" value={compact(sender.framesSent)} />
         <Cell label="Loss" value={percent(sender.lossRatio)} hint="total" />
         {encoder && <Cell label="Using" value={encoderLabel(encoder)} />}
+        {downscale && <Cell label="Scaled" value={downscale} />}
       </div>
     </div>
   );
@@ -189,7 +193,7 @@ function limitation(reason: string | null | undefined): string | null {
     case "cpu":
       return "Encoder cannot keep up (CPU)";
     case "bandwidth":
-      return "Bitrate reduced by the network";
+      return "Quality reduced to fit the bitrate";
     case undefined:
     case null:
     case "none":
@@ -264,6 +268,7 @@ export function StreamStatsSection({
   capture,
   encoder,
   requestedFps,
+  selectedMaxDimension,
   stale,
   action,
 }: {
@@ -274,6 +279,7 @@ export function StreamStatsSection({
   capture?: CaptureCounts | null;
   encoder?: EncoderIdentity | null;
   requestedFps?: number;
+  selectedMaxDimension?: number;
   stale?: boolean;
   action?: ReactNode;
 }) {
@@ -287,6 +293,7 @@ export function StreamStatsSection({
       capture={capture}
       encoder={encoder}
       requestedFps={requestedFps}
+      selectedMaxDimension={selectedMaxDimension}
       stale={stale}
       action={action}
     />
@@ -319,6 +326,7 @@ export interface StatsContext {
   codec?: string | null;
   sender?: SenderStreamStats | null;
   capture?: CaptureCounts | null;
+  encoder?: EncoderIdentity | null;
 }
 
 /** Serialize the recorded window so a session can be handed to someone else to read. */

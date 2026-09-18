@@ -2016,8 +2016,9 @@ program
   )
   .option(
     "--cors-origin <origin>",
-    "Allow this origin to read the preview cross-origin (repeatable). Accepts a subdomain " +
-      "wildcard, e.g. https://*.expo.dev. Loopback origins are always allowed.",
+    "Allow this origin to read the preview cross-origin and open its control socket " +
+      "(repeatable). Accepts a subdomain wildcard, e.g. https://*.expo.dev. Loopback origins " +
+      "are always allowed to read, but never to open the control socket.",
     (value: string, prev: string[]) => [...prev, value],
     [] as string[],
   )

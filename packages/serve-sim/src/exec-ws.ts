@@ -3,7 +3,7 @@ import {
   requestHost,
   type SseRequestHandler,
 } from "./exec-ws-utils";
-import { type UpgradeHandlerWebSocket } from "./middleware-utils";
+import { isWebOrigin, originMatches, type UpgradeHandlerWebSocket } from "./middleware-utils";
 import { InvalidHostActionError, runHostActionAsync } from "./host-actions";
 import {
   TOKEN_SUBPROTOCOL_PREFIX,
@@ -65,6 +65,13 @@ export type ActionResultHandler = (
 interface ExecChannelOptions {
   path: string;
   execToken: string;
+  /**
+   * Origins allowed to open this channel from another site, as passed to `--cors-origin`.
+   * Named origins only. Loopback is implicitly allowed to READ the preview, and an ungated
+   * server serves `execToken` to any of them, so honouring that here would hand one localhost
+   * page the typed host actions of another's session: screenshots, uploads, permission grants.
+   */
+  corsOrigins?: readonly string[];
   /** Exact pathnames (query excluded) the channel may proxy as SSE. */
   ssePrefixes?: string[];
   /** In-process handler for `{id, ui}` simulator-settings requests. */
@@ -275,6 +282,22 @@ function wireExecSocket(
   });
 }
 
+function isAllowedExecOrigin(
+  origin: string,
+  request: Request,
+  corsOrigins: readonly string[],
+): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (!isWebOrigin(parsed)) return false;
+  if (parsed.host === requestHost(request)) return true;
+  return corsOrigins.some((allowed) => originMatches(allowed, parsed));
+}
+
 /**
  * Websocket handler for `<basePath>/exec-ws`. Returns true when the request was
  * for the exec channel, false when the caller should close or route it.
@@ -285,17 +308,12 @@ export function createExecWebSocketHandler(opts: ExecChannelOptions) {
     if (url.pathname !== opts.path && url.pathname !== `${opts.path}/`) return false;
 
     // Browsers always send Origin on upgrades, so this keeps another site's page off the channel.
+    // A named origin is let through: it still has to present the token below, and without this a
+    // browser could never reach the channel cross-origin however good its credential.
     const origin = request.headers.get("origin");
-    if (origin) {
-      try {
-        if (new URL(origin).host !== requestHost(request)) {
-          websocket.close();
-          return true;
-        }
-      } catch {
-        websocket.close();
-        return true;
-      }
+    if (origin && !isAllowedExecOrigin(origin, request, opts.corsOrigins ?? [])) {
+      websocket.close();
+      return true;
     }
 
     wireExecSocket(websocket, request, opts);

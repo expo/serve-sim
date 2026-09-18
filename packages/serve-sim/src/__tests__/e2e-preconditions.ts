@@ -3,12 +3,7 @@ import { execFileSync } from "child_process";
 
 import { findBootedDevice } from "../device";
 
-/**
- * The device an e2e test should drive, or null when there is none. Pinning with
- * SERVE_SIM_TEST_UDID matters because other sessions share these simulators, but
- * a pin that is not booted has to read as "no device" rather than run every test
- * against nothing.
- */
+/** Use the pinned simulator when provided; never fall back from an invalid pin. */
 export function e2eDevice(): string | null {
   const pinned = process.env.SERVE_SIM_TEST_UDID?.trim();
   const udid = pinned && pinned.length > 0 ? pinned : findBootedDevice();
@@ -25,11 +20,7 @@ export function e2eDevice(): string | null {
   }
 }
 
-/**
- * The device-wide insert, or null when it could not be read. A test proving the
- * insert was cleared has to tell "cleared" from "could not ask", or a neighbour
- * shutting the simulator down reads as success.
- */
+/** Null means the check failed; an empty string means no insert is set. */
 export function readInsert(udid: string): string | null {
   try {
     return execFileSync(
@@ -42,11 +33,7 @@ export function readInsert(udid: string): string | null {
   }
 }
 
-/**
- * A device test that quietly skips is worse than one that fails: CI stays green
- * while the feature goes uncovered. Every e2e file declares what it needs, and
- * under SERVE_SIM_E2E_REQUIRED an unmet requirement fails instead of skipping.
- */
+/** CI requires preconditions to fail explicitly instead of silently skipping. */
 export function requireE2E(what: string, ready: boolean): void {
   test(`preconditions for ${what}`, () => {
     if (process.env.SERVE_SIM_E2E_REQUIRED) {

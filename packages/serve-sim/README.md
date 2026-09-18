@@ -323,6 +323,7 @@ The npm package ships the native capture addon and LiveKit WebRTC framework alon
 ```sh
 bun install
 bun run packages/serve-sim/build.ts                   # full production build
+bash packages/serve-sim/Sources/build-test-fixtures.sh # simulator test fixtures
 packages/serve-sim/Sources/SimNative/build.sh         # native addon only
 bun run --filter @expo/serve-sim dev                  # watch mode
 bun run --filter @expo/serve-sim tart-dev             # guest preview at localhost:3200

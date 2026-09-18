@@ -207,6 +207,23 @@ const compile = spawnSync(
 if (compile.status !== 0) process.exit(compile.status ?? 1);
 console.log("dist/serve-sim      (compiled binary)");
 
+{
+  const res = spawnSync(
+    "bash",
+    [
+      resolve(root, "Sources/ServeSimCapabilityLoader/build.sh"),
+      resolve(distDir, "capability-loader"),
+    ],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  if (res.status !== 0) {
+    console.error("ServeSimCapabilityLoader dylib build failed.");
+    process.exit(1);
+  }
+  console.log("dist/capability-loader/libServeSimCapabilityLoader.dylib");
+}
+
+
 // ─── 6. SimCameraInjector dylib + SimCameraHelper host CLI ───────────────
 // Both ship in dist/simcam/ so they tarball alongside the JS bin. The CLI's
 // `camera` verb resolves them via locateCameraDylib / locateCameraHelper.

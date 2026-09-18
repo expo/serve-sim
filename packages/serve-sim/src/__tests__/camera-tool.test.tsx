@@ -239,6 +239,14 @@ describe("CameraMediaPreview — source states", () => {
     expect(html).toContain("Video");
   });
 
+  test("browser source identifies the viewer camera", () => {
+    const html = renderToStaticMarkup(
+      <CameraMediaPreview mode="browser" fileName={null} webcamName="Laptop camera" sourceKind="browser" />,
+    );
+    expect(html).toContain("Browser");
+    expect(html).toContain("Laptop camera");
+  });
+
   test("webcam source shows the webcam name and Webcam badge", () => {
     const html = renderToStaticMarkup(
       <CameraMediaPreview mode="webcam" fileName={null} webcamName="MacBook Pro Camera" sourceKind="webcam" />,

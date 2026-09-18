@@ -98,6 +98,11 @@ the same values. That includes one leading wildcard label,
 `https://*.expo.dev`, which names deploy previews. The scheme and port still have
 to match, and a wildcard covers subdomains only, never the bare host.
 
+Naming an origin here also lets it open the control socket, which runs typed
+actions on the host, so it grants more than read access. Loopback is the
+exception: it may read the preview without a flag, but it may not open the
+control socket unless it is named.
+
 A gated request still answers 401 with the CORS headers attached, so the browser
 can read the status rather than reporting an opaque network error.
 
@@ -119,15 +124,17 @@ policy beyond that.
 
 ## WebSockets
 
-All of these are gated by the token, but not identically. `/exec-ws` also
-requires a same-origin request. The HID and CDP sockets check the token only, so
+All of these are gated by the token, but not identically. `/exec-ws` also checks
+the `Origin` a browser sends: it accepts the preview's own origin and any origin
+named by `--cors-origin`, and closes anything else even with a valid token.
+Loopback is not implicit here. The HID and CDP sockets check the token only, so
 any origin holding it can drive them; `frame-ancestors` does not constrain a
 WebSocket.
 
 | Path | Purpose |
 | --- | --- |
 | `{helper}/ws` | HID input. Pointer and key events to the device. |
-| `/exec-ws` | Scoped simulator actions. Request and response frames. Also requires same-origin when the caller sends an `Origin`. |
+| `/exec-ws` | Scoped simulator actions. Request and response frames. When the caller sends an `Origin`, it must be the preview's own or one named by `--cors-origin`. |
 | `/devtools/page/{targetId}` | CDP bridge to an inspectable WebKit target. |
 
 `{helper}` is the helper proxy prefix under the mount point. The target ids for

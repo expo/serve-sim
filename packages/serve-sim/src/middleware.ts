@@ -2598,6 +2598,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const execWebSocketHandler = createExecWebSocketHandler({
     path: `${base}/exec-ws`,
     execToken,
+    corsOrigins,
     ssePrefixes: [
       `${base}/api/events`,
       `${base}/api/event-log/events`,

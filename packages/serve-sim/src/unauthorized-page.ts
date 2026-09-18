@@ -38,6 +38,17 @@ const EXPO_MARK = `<svg width="26" height="22" viewBox="0 0 26 22" fill="none" a
 /** @lintignore */
 export const TOKEN_FORM_SCRIPT = `
 (function () {
+  // A fragment never reaches the server, but the gate only reads the query.
+  // Clear the fragment first: a rejected token would otherwise reload this page forever.
+  var here = new URL(window.location.href);
+  var fromFragment = new URLSearchParams(here.hash.slice(1)).get("token");
+  if (fromFragment) {
+    here.hash = "";
+    here.searchParams.set("token", fromFragment);
+    window.location.replace(here.href);
+    return;
+  }
+
   var form = document.forms[0];
   form.addEventListener("submit", function (event) {
     event.preventDefault();

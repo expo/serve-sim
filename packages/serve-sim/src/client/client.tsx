@@ -79,6 +79,7 @@ import {
   PANEL_WIDTH,
 } from "./utils/panel-widths";
 import { proxyPreviewConfigForBrowser } from "./utils/preview-config";
+import { stripTokenFromFragment } from "./utils/share-link";
 import { mjpegStreamUrlFrom, simEndpoint, streamConfigFrom, webrtcCloseUrlFrom, webrtcOfferUrlFrom, webrtcStatsUrlFrom } from "./utils/sim-endpoint";
 import { shouldStreamSimulatorLogs } from "./utils/simulator-logs";
 import { useBlockPageZoom } from "./hooks/use-block-page-zoom";
@@ -1680,4 +1681,5 @@ function AppWithConfig({
   );
 }
 
+stripTokenFromFragment(window.location, window.history);
 createRoot(document.getElementById("root")!).render(<App />);

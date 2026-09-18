@@ -5,6 +5,8 @@ import {
   accessCookieName,
   assertPreviewAccess,
   assertUpgradeAccess,
+  acceptedTokenSubprotocol,
+  upgradeAuthHeaders,
   safeEqualString,
 } from "../session-auth";
 
@@ -282,6 +284,82 @@ describe("assertUpgradeAccess", () => {
     ).toBe(true);
   });
 
+  test("accepts the subprotocol a browser can offer, since it cannot set a header", () => {
+    expect(
+      assertUpgradeAccess(
+        { "sec-websocket-protocol": `serve-sim.token.${TOKEN}` },
+        TOKEN,
+        { required: true },
+      ),
+    ).toBe(true);
+  });
+
+  test("accepts it alongside the subprotocols the client actually wants", () => {
+    expect(
+      assertUpgradeAccess(
+        { "sec-websocket-protocol": `hid, serve-sim.token.${TOKEN}` },
+        TOKEN,
+        { required: true },
+      ),
+    ).toBe(true);
+  });
+
+  test("names the entry that authenticated, not the first one offered", () => {
+    expect(
+      acceptedTokenSubprotocol(
+        { "sec-websocket-protocol": `serve-sim.token.stale, serve-sim.token.${TOKEN}` },
+        TOKEN,
+      ),
+    ).toBe(`serve-sim.token.${TOKEN}`);
+  });
+
+  test("reads the header when a client sent it as repeated lines", () => {
+    expect(
+      assertUpgradeAccess(
+        { "sec-websocket-protocol": ["hid", `serve-sim.token.${TOKEN}`] },
+        TOKEN,
+        { required: true },
+      ),
+    ).toBe(true);
+  });
+
+  test("drops a value carrying characters a subprotocol cannot hold", () => {
+    expect(
+      acceptedTokenSubprotocol(
+        { "sec-websocket-protocol": `serve-sim.token.${TOKEN}\nX-Injected: 1` },
+        TOKEN,
+      ),
+    ).toBeNull();
+  });
+
+  test("refuses a subprotocol carrying the wrong token", () => {
+    expect(
+      assertUpgradeAccess(
+        { "sec-websocket-protocol": "serve-sim.token.not-the-token" },
+        TOKEN,
+        { required: true },
+      ),
+    ).toBe(false);
+  });
+
+  test("refuses the bare prefix with no token after it", () => {
+    expect(
+      assertUpgradeAccess({ "sec-websocket-protocol": "serve-sim.token." }, TOKEN, {
+        required: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("refuses a cross-origin upgrade that offers no credential at all", () => {
+    expect(
+      assertUpgradeAccess(
+        { origin: "https://expo.dev", host: "preview.example", "sec-websocket-protocol": "hid" },
+        TOKEN,
+        { required: true },
+      ),
+    ).toBe(false);
+  });
+
   test("refuses a ?token= query param, so the credential stays out of URLs and proxy logs", () => {
     expect(
       assertUpgradeAccess(
@@ -334,5 +412,29 @@ describe("assertUpgradeAccess", () => {
     expect(
       assertUpgradeAccess({ cookie: `${accessCookieName(TOKEN)}=wrong` }, TOKEN, { required: true }),
     ).toBe(false);
+  });
+});
+
+describe(upgradeAuthHeaders, () => {
+  test("reads the same names from a node request and a fetch Request", () => {
+    const node = upgradeAuthHeaders({
+      authorization: "Bearer t",
+      "sec-websocket-protocol": "serve-sim.token.t",
+    });
+    const web = upgradeAuthHeaders(
+      new Request("http://h/", {
+        headers: { authorization: "Bearer t", "sec-websocket-protocol": "serve-sim.token.t" },
+      }),
+    );
+
+    expect(node).toEqual(web);
+  });
+
+  test("carries the subprotocol, which a socket added later would otherwise forget", () => {
+    expect(
+      upgradeAuthHeaders(new Request("http://h/", {
+        headers: { "sec-websocket-protocol": "serve-sim.token.t" },
+      }))["sec-websocket-protocol"],
+    ).toBe("serve-sim.token.t");
   });
 });

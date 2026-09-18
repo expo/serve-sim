@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { SlidersHorizontal, Video } from "lucide-react";
+import { RotateCcw, SlidersHorizontal, Video } from "lucide-react";
 import { CollapsibleSection } from "./collapsible-section";
 import { TriangleAlert } from "lucide-react";
 import { useSenderStats } from "../hooks/use-sender-stats";
-import { useStreamStats } from "../hooks/use-stream-stats";
+import { useStreamStats, type StatsSubscriber } from "../hooks/use-stream-stats";
 import { StreamStatsDownload, StreamStatsSection, describeFaults, summariseStream } from "./stream-stats-tool";
+import { codecDrifted } from "./stream-stats-labels";
 import { SettingRow, SettingSelect } from "./simulator-settings-tool";
 import { maxDimensionOptions } from "../utils/stream-max-dimension-options";
 import { streamFpsOptions } from "../utils/stream-fps-options";
@@ -68,11 +69,13 @@ export function StreamSettingsTool({
   activeCodec,
   avccSupported,
   peerConnection,
+  subscribeStats,
   webrtcStatsUrl,
   webrtcSessionId,
   encoderSettingsDisabled = false,
   transportLocked = false,
   configuredMaxDimension = 0,
+  onResetCodec,
 }: {
   settings: StreamControlSettings;
   onPlaybackSettingsChange: (patch: Partial<StreamPlaybackSettings>) => void;
@@ -83,11 +86,14 @@ export function StreamSettingsTool({
   transportLocked?: boolean;
   configuredMaxDimension?: number;
   peerConnection: RTCPeerConnection | null;
+  subscribeStats: StatsSubscriber;
   webrtcStatsUrl?: string;
   webrtcSessionId?: string | null;
+  /// Renegotiate on the selected codec. Offered only when the stream has fallen off it.
+  onResetCodec?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const { stats, history, stale } = useStreamStats(peerConnection);
+  const { stats, history, stale } = useStreamStats(peerConnection, subscribeStats);
   const senderView = useSenderStats(
     webrtcStatsUrl ?? "",
     webrtcSessionId ?? null,
@@ -107,6 +113,7 @@ export function StreamSettingsTool({
   const summary = stats === null ? null : summariseStream(stats);
   const httpActive = settings.transport === "http";
   const webrtcActive = settings.transport === "webrtc";
+  const drifted = webrtcActive && codecDrifted(settings.webRtcCodec, negotiatedCodec);
 
   return (
     <CollapsibleSection
@@ -187,13 +194,26 @@ export function StreamSettingsTool({
           </SettingRow>
         )}
         <SettingRow icon={<Video className={iconClass} />} label="WebRTC codec">
-          <SettingSelect
-            label="WebRTC codec"
-            value={settings.webRtcCodec}
-            options={WEBRTC_CODEC_OPTIONS}
-            disabled={!webrtcActive}
-            onChange={(v) => onPlaybackSettingsChange({ webRtcCodec: v as WebRtcStreamCodec })}
-          />
+          <span className="flex min-w-0 items-center gap-1.5">
+            {drifted && onResetCodec && (
+              <button
+                type="button"
+                onClick={onResetCodec}
+                title={`Streaming ${negotiatedCodec}. Reconnect on ${settings.webRtcCodec}.`}
+                aria-label={`Streaming ${negotiatedCodec}, reconnect on ${settings.webRtcCodec}`}
+                className="inline-flex size-[22px] shrink-0 cursor-pointer items-center justify-center rounded text-amber-400 hover:bg-white/[0.06]"
+              >
+                <RotateCcw aria-hidden="true" className="h-3 w-3" />
+              </button>
+            )}
+            <SettingSelect
+              label="WebRTC codec"
+              value={settings.webRtcCodec}
+              options={WEBRTC_CODEC_OPTIONS}
+              disabled={!webrtcActive}
+              onChange={(v) => onPlaybackSettingsChange({ webRtcCodec: v as WebRtcStreamCodec })}
+            />
+          </span>
         </SettingRow>
         <SettingRow icon={<SlidersHorizontal className={iconClass} />} label="Max size">
           <SettingSelect

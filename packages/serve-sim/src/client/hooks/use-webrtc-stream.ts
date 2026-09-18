@@ -12,6 +12,7 @@ import {
   webRtcFailureDisposition,
 } from "../webrtc-failure-policy";
 import { WEBRTC_ICE_TRANSPORT_POLICY, type IceServer } from "../webrtc-ice";
+import { raiseH264OfferLevel } from "../webrtc-sdp-level";
 import { webrtcSessionStatsUrl } from "../utils/sim-endpoint";
 import {
   closeWebRtcSession,
@@ -465,6 +466,9 @@ export function useWebRtcStream({
         await waitForIce(pc);
         const local = pc.localDescription;
         if (!local) throw new Error("WebRTC offer was not created");
+        // Only what the encoder reads is rewritten; our own description stays as the
+        // browser built it. See raiseH264OfferLevel.
+        const offerSdp = codec === "h264" ? raiseH264OfferLevel(local.sdp) : local.sdp;
         const response = await postWebRtcOffer({
           url: offerUrl,
           signal: lifecycleController.signal,
@@ -473,7 +477,7 @@ export function useWebRtcStream({
           busyRetryCount: BUSY_RETRY_COUNT,
           body: JSON.stringify({
             type: local.type,
-            sdp: local.sdp,
+            sdp: offerSdp,
             sessionId,
             codec,
             iceServers: servers,

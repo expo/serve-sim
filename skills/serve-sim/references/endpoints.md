@@ -101,8 +101,31 @@ history rather than only what happens next.
 | `?envelope` | Wrap each SSE frame as `{seq, at, raw}` so a stream reader can track its cursor. Default frames are the bare line, which is already JSON. |
 | `?follow` | Start the device tail if it is not already running, and keep it running between polls. Without it a snapshot reads whatever is buffered and reports `status: "stopped"` when nothing is. |
 
-The JSON body carries `lines`, `latestSeq`, `oldestSeq`, `bufferedBytes`,
+The JSON body carries `device`, `lines`, `latestSeq`, `oldestSeq`, `bufferedBytes`,
 `status` (`streaming` / `restarting` / `stopped`), and `streamError`.
+
+### Reading `/crashes`
+
+JSON returns `{meta, crashes}`. SSE sends `meta` (`{type, meta}`) and an
+authoritative `list` (`{type, crashes}`) on every connection, then `crash` or
+`recurred` (`{type, record}`) and `evicted` (`{type, id}`) updates. Replace the
+local list on `list`; remove the matching id on `evicted`. A changed collection
+status is sent in another `meta` frame on a heartbeat.
+
+Pass `?tail=1` to an SSE request to keep the device log buffer running for that
+connection. The preview opts in while its Crashes section is expanded. JSON
+requests and requests without `tail` do not hold this long-lived lease.
+
+`meta` contains `schemaVersion`, `status` (`idle`, `watching`, or `unavailable`),
+`statusError`, `reportsDir`, and `reportDelaySeconds` (an estimate, not a delivery
+deadline). Crash summaries contain `occurrenceTimes` with each retained
+occurrence's `capturedAt`, `capturedAtMs`, and `rawPath`, in oldest-first order.
+
+`/crashes/<id>?occurrence=<n>` returns `{record, occurrence, report, reportError}`.
+`occurrence` includes its `index`, retained `total`, `incidentId`, `pid`,
+`capturedAt`, `capturedAtMs`, `rawPath`, `frames`, `logTail`, and `logTailSource`.
+An unavailable raw report returns `report: null` with `reportError`; the retained
+occurrence is still returned.
 
 ## Authentication and state
 
@@ -128,7 +151,7 @@ simulator without it, which is the wrong one as soon as two are running.
 
 A crash report lands a few seconds after the process dies, so an empty
 `crashes` array shortly after a crash means "not yet", not "nothing happened".
-The `meta.reportDelaySeconds` field carries that bound, and `meta.status` says
+The `meta.reportDelaySeconds` field estimates that delay, and `meta.status` says
 whether collection is running at all.
 
 A stream opens with a `meta` frame and one `list` frame holding the current

@@ -40,7 +40,7 @@ actor HIDInjector {
     private var deviceUDID: String?
     private var selectedScreenID: UInt32?
     private var nativeScreenRotations: [UInt32: Int] = [:]
-    private var usesUniversalTouch = false
+    private var isFoldable = false
     private var digitizerCapability: CoreDeviceCapabilityObject?
     private var touchTarget = HIDTargetPolicy()
     private var multiTouchTarget = HIDTargetPolicy()
@@ -87,9 +87,10 @@ actor HIDInjector {
         }
         self.simDevice = device
         self.deviceUDID = deviceUDID
-        self.nativeScreenRotations = Self.readNativeScreenRotations(device: device)
-        self.usesUniversalTouch = await CoreDeviceBridge.shared.supportsHingeAngle(udid: deviceUDID)
-        if usesUniversalTouch {
+        let displayProfile = Self.readDisplayProfile(device: device)
+        self.nativeScreenRotations = displayProfile.nativeRotations
+        self.isFoldable = displayProfile.isFoldable
+        if isFoldable {
             guard SSCoreDeviceDigitizerAvailable() else { throw CoreDeviceBridge.BridgeError.unavailable }
             // Capabilities can become available after the simulator is listed.
             // Do not cache a transient lookup failure or fall back to Indigo on
@@ -176,13 +177,13 @@ actor HIDInjector {
     /// Existing gestures retain their target until their corresponding touch-up.
     func setScreen(screenID: UInt32?) {
         selectedScreenID = screenID
-        touchTarget.setScreen(screenID, universalHID: usesUniversalTouch)
-        multiTouchTarget.setScreen(screenID, universalHID: usesUniversalTouch)
+        touchTarget.setScreen(screenID, universalHID: isFoldable)
+        multiTouchTarget.setScreen(screenID, universalHID: isFoldable)
     }
 
     /// Device Hub's physical orientation is relative to each panel's mounting.
     /// Read the static device profile once; capture supplies the active screen ID.
-    private static func readNativeScreenRotations(device: NSObject) -> [UInt32: Int] {
+    private static func readDisplayProfile(device: NSObject) -> SimulatorDisplayProfile {
         let typeSelector = NSSelectorFromString("deviceType")
         let capabilitiesSelector = NSSelectorFromString("capabilities")
         guard device.responds(to: typeSelector),
@@ -191,18 +192,8 @@ actor HIDInjector {
               let profile = type.perform(capabilitiesSelector)?.takeUnretainedValue() as? [String: Any],
               let capabilities = profile["capabilities"] as? [String: Any],
               let displays = capabilities["displays"] as? [[String: Any]]
-        else { return [:] }
-
-        var rotations: [UInt32: Int] = [:]
-        for display in displays {
-            guard let id = display["screenID"] as? NSNumber,
-                  let screenID = UInt32(exactly: id.int64Value),
-                  let rotation = display["nativeRotation"] as? NSNumber,
-                  [0, 90, 180, 270].contains(rotation.intValue)
-            else { continue }
-            rotations[screenID] = rotation.intValue
-        }
-        return rotations
+        else { return SimulatorDisplayProfile() }
+        return SimulatorDisplayProfile(displays: displays)
     }
 
     // IndigoHIDEdge values (x4 param to IndigoHIDMessageForMouseNSEvent).
@@ -215,11 +206,10 @@ actor HIDInjector {
     static let edgeLeft: UInt32   = 1  // Left edge
     static let edgeRight: UInt32  = 4  // Right edge
 
-    // NSEventType values consumed by IndigoHIDMessageForMouseNSEvent. A dragged
-    // event sets the position-change flag; another down event starts a new touch.
+    // Preserve the original Down encoding for begin and move for compatibility
+    // with older runtimes. Foldables send Universal HID reports instead.
     private static let touchDownEvent: Int32 = 1
     private static let touchUpEvent: Int32 = 2
-    private static let touchDraggedEvent: Int32 = 6
 
     /// Synchronously hand an already-built Indigo message to the guest, freeing it.
     /// Must run on `inputQueue`.
@@ -246,15 +236,14 @@ actor HIDInjector {
     /// idle touch-up, and swipe-home. Routing is pinned until touch-up.
     private func rawSendTouch(type: String, x: Double, y: Double, edge: UInt32 = 0) {
         guard let target = touchTarget.target(for: type) else { return }
-        if usesUniversalTouch {
+        if isFoldable {
             sendUniversalTouches(target: target, type: type, contacts: [.init(x: x, y: y)], edge: edge)
             return
         }
         guard let mouseFunc else { return }
         let eventType: Int32
         switch type {
-        case "begin": eventType = Self.touchDownEvent
-        case "move":  eventType = Self.touchDraggedEvent
+        case "begin", "move": eventType = Self.touchDownEvent
         case "end":   eventType = Self.touchUpEvent
         default: return
         }
@@ -271,7 +260,7 @@ actor HIDInjector {
 
     func sendMultiTouch(type: String, x1: Double, y1: Double, x2: Double, y2: Double, screenWidth: Int, screenHeight: Int) {
         guard let target = multiTouchTarget.target(for: type) else { return }
-        if usesUniversalTouch {
+        if isFoldable {
             sendUniversalTouches(target: target, type: type,
                                  contacts: [.init(x: x1, y: y1), .init(x: x2, y: y2)])
             return
@@ -280,8 +269,7 @@ actor HIDInjector {
 
         let eventType: Int32
         switch type {
-        case "begin": eventType = Self.touchDownEvent
-        case "move":  eventType = Self.touchDraggedEvent
+        case "begin", "move": eventType = Self.touchDownEvent
         case "end":   eventType = Self.touchUpEvent
         default: return
         }
@@ -290,13 +278,7 @@ actor HIDInjector {
         var point1 = CGPoint(x: x1, y: y1)
         var point2 = CGPoint(x: x2, y: y2)
         guard let rawMsg = mouseFunc(&point1, &point2, target, eventType, 1.0, 1.0, 0) else {
-            // The constructor normally drops drag events within 16 ms of the
-            // previous event. This throttling also applies to single touches.
-            if type == "move" {
-                hidLog("[hid] IndigoHIDMessageForMouseNSEvent throttled multi-touch move")
-            } else {
-                print("[hid] IndigoHIDMessageForMouseNSEvent returned nil for multi-touch \(type)")
-            }
+            print("[hid] IndigoHIDMessageForMouseNSEvent returned nil for multi-touch \(type)")
             return
         }
 
@@ -565,12 +547,12 @@ actor HIDInjector {
     // MARK: - SimDevice private control
 
     func setHingeAngle(_ angle: Double) async -> Bool {
-        guard let deviceUDID else { return false }
+        guard isFoldable, let deviceUDID else { return false }
         return await CoreDeviceBridge.shared.setHingeAngle(udid: deviceUDID, angle: angle)
     }
 
     func supportsHingeAngle() async -> Bool {
-        guard let deviceUDID else { return false }
+        guard isFoldable, let deviceUDID else { return false }
         return await CoreDeviceBridge.shared.supportsHingeAngle(udid: deviceUDID)
     }
 
@@ -683,8 +665,7 @@ actor HIDInjector {
     /// Simulator.app itself rotates the device, and how idb's
     /// `FBSimulatorPurpleHID.orientationEvent:` is delivered.
     func sendOrientation(orientation: UInt32) async -> Bool {
-        if let deviceUDID,
-           await CoreDeviceBridge.shared.supportsHingeAngle(udid: deviceUDID) {
+        if isFoldable, let deviceUDID {
             // Modern foldable simulators acknowledge legacy GSEvent delivery
             // without changing orientation. Use the same vendor channel as
             // Device Hub and report its failure without a legacy fallback.

@@ -91,8 +91,12 @@ selected service stays pinned through each gesture's final report. Input waits
 for capture to identify a panel. Capability lookup retries transient startup
 failures and never falls back to the disconnected legacy inner service.
 
-Nonfoldable devices keep their existing Indigo input. Legacy keyboard and
-button input can coexist with Universal HID touch reports on the Duo.
+The new path is restricted to profiles with exactly two integrated displays;
+virtual outputs (such as CarPlay) do not count. Nonfoldable devices keep their
+original Indigo target (`0x32`), Down events for both begin and move, and legacy
+rotation, without CoreDevice capability queries. The new behavior worked in
+iOS 27.2 testing, but remains guarded to protect older runtimes. Legacy keyboard
+and button input can coexist with Universal HID touch reports on the Duo.
 
 Verified at 0°, 90°, and 180° in portrait and both landscape directions:
 all four corner buttons, single-finger drags, wheel-generated drags, and two

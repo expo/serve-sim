@@ -11,7 +11,7 @@ public struct HIDTargetPolicy: Sendable {
         // Wait for capture to identify the panel instead of guessing a default.
         selectedTarget = universalHID
             ? screenID.map { 0x100 + $0 }
-            : screenID.map { 0x4000_0000 | $0 } ?? 0x32
+            : 0x32
     }
 
     public mutating func target(for phase: String) -> UInt32? {

@@ -106,7 +106,8 @@ actor FrameCapture {
         try wireUpFramebuffer()
         // The largest retained surface can belong to the closed inner panel.
         // Resolve the active panel before emitting the first frame/config.
-        if screenMetadata.values.filter({ $0.screenType == 0 }).count > 1 {
+        let integratedIDs = Set(screenMetadata.values.filter { $0.screenType == 0 }.map(\.screenID))
+        if integratedIDs.count == 2 {
             let displays = try? await CoreDeviceDisplayInfo.read(udid: deviceUDID)
             guard generation == captureGeneration else { throw CancellationError() }
             if let displays {

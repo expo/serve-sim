@@ -23,10 +23,12 @@ import {
   axDescribeAsync,
   axFrontmostAsync,
   type MjpegFrame,
+  type NativeScreenInfo,
   type NativeUnsubscribe,
 } from "./native";
 import { isSoftwareKeyboardVisible } from "./ax";
 import { debugKeyboard } from "./debug";
+import { isHingeAngle, type HingeAngleResult } from "./hinge-angle";
 import { clearDeviceOptionState, setUiOption } from "./ui-settings";
 import { eventLogEventForHidMessage, formatEventLogPoint, recordEventLogEvent, updateEventLogEvent } from "./event-log";
 import {
@@ -232,6 +234,11 @@ export class DeviceSession {
   private width = 0;
   private height = 0;
   private orientation = "portrait";
+  private supportsHingeAngle?: boolean;
+  private hingeAngle?: number;
+  private nativeScreen?: NativeScreenInfo;
+  private screenRefresh?: Promise<boolean>;
+  private screenRefreshTimer?: ReturnType<typeof setTimeout>;
 
   private latestJpegBuffer: Buffer | null = null;
   private latestJpegLength = 0;
@@ -259,16 +266,28 @@ export class DeviceSession {
     if (this.phase === "running") return this.captureStart ?? Promise.resolve();
     if (this.phase === "stopped") return Promise.reject(new Error("Capture session is stopped"));
     this.phase = "running";
-    this.captureStart = this.capture.start();
+    this.captureStart = this.capture.start().then(async () => {
+      if (await this.refreshScreenSizeFromNative()) this.broadcastConfig();
+      this.scheduleScreenRefresh();
+      // Discover fold controls without delaying the first frame or inventing
+      // an initial angle when CoreDevice has not reported one.
+      void this.hid.supportsHingeAngle().then((supported) => {
+        if (this.phase !== "running") return;
+        this.supportsHingeAngle = supported;
+        this.broadcastConfig();
+      });
+    });
     return this.captureStart;
   }
 
   close(): void {
     if (this.phase !== "running") return;
+    this.phase = "stopped";
+    clearTimeout(this.screenRefreshTimer);
+    this.screenRefreshTimer = undefined;
     for (const ws of this.hidSockets) ws.close();
     this.hidSockets.clear();
     void this.capture.stop().catch(() => {});
-    this.phase = "stopped";
   }
 
   // ── Frame handling ───────────────────────────────────────────────────────
@@ -686,7 +705,7 @@ export class DeviceSession {
     this.hidSockets.add(ws);
     const cfg = this.configFrame();
     if (cfg) ws.send(cfg); // seed dimensions/orientation, replacing the old poll
-    ws.on("message", (data: Buffer) => this.handleHidMessage(Buffer.isBuffer(data) ? data : Buffer.from(data)));
+    ws.on("message", (data: Buffer) => this.handleHidMessage(Buffer.isBuffer(data) ? data : Buffer.from(data), ws));
     ws.on("close", () => this.detachHidSocket(ws));
     ws.on("error", () => this.detachHidSocket(ws));
   }
@@ -701,8 +720,15 @@ export class DeviceSession {
     }
   }
 
-  private async handleHidMessage(data: Buffer): Promise<void> {
+  private async handleHidMessage(data: Buffer, ws: HidSocket): Promise<void> {
     if (data.length < 1) return;
+    try {
+      // Capture startup identifies the active display and configures HID's
+      // target before the first gesture can be delivered.
+      await this.waitForCapture();
+    } catch {
+      return;
+    }
     const tag = data[0];
     const body = data.length > 1 ? data.subarray(1) : null;
     const json = <T>(): T | null => {
@@ -813,6 +839,31 @@ export class DeviceSession {
         if (m) {
           this.recordHidEvent(tag, m);
           void setUiOption(this.udid, "hardware-keyboard", m.enabled ? "on" : "off").catch(() => {});
+        }
+        break;
+      }
+      case 0x0f: {
+        const m = json<{ angle: unknown }>();
+        let result: HingeAngleResult;
+        if (!isHingeAngle(m?.angle)) {
+          result = { ok: false, error: "Hinge angle must be a number from 0 to 180 degrees." };
+        } else {
+          const angle = m.angle;
+          const ok = await this.hid.setHingeAngle(angle);
+          if (ok) {
+            this.supportsHingeAngle = true;
+            this.hingeAngle = angle;
+            this.recordHidEvent(tag, { angle });
+            this.broadcastConfig();
+          }
+          result = ok
+            ? { ok: true, angle }
+            : { ok: false, angle, error: "Simulator could not change the hinge angle." };
+        }
+        try {
+          ws.send(Buffer.concat([Buffer.from([0x8f]), Buffer.from(JSON.stringify(result))]));
+        } catch {
+          // The requester can disconnect while the simulator applies the angle.
         }
         break;
       }
@@ -978,8 +1029,22 @@ export class DeviceSession {
 
   // ── Config ───────────────────────────────────────────────────────────────
 
-  screenConfig(): { width: number; height: number; orientation: string } {
-    return { width: this.width, height: this.height, orientation: this.orientation };
+  screenConfig(): {
+    width: number;
+    height: number;
+    orientation: string;
+    screenId?: number;
+    supportsHingeAngle?: boolean;
+    hingeAngle?: number;
+  } {
+    return {
+      width: this.width,
+      height: this.height,
+      orientation: this.orientation,
+      ...(this.nativeScreen?.screenId !== undefined ? { screenId: this.nativeScreen.screenId } : {}),
+      ...(this.supportsHingeAngle !== undefined ? { supportsHingeAngle: this.supportsHingeAngle } : {}),
+      ...(this.hingeAngle !== undefined ? { hingeAngle: this.hingeAngle } : {}),
+    };
   }
 
   private configFrame(): Buffer | null {
@@ -987,12 +1052,54 @@ export class DeviceSession {
     return Buffer.concat([Buffer.from([WS_MSG_CONFIG]), Buffer.from(JSON.stringify(this.screenConfig()))]);
   }
 
-  private async refreshScreenSizeFromNative(): Promise<boolean> {
-    const { width, height } = await this.capture.screenSize();
-    if (!width || !height || (width === this.width && height === this.height)) return false;
-    this.width = width;
-    this.height = height;
-    return true;
+  private refreshScreenSizeFromNative(): Promise<boolean> {
+    if (this.screenRefresh) return this.screenRefresh;
+    this.screenRefresh = this.readScreenFromNative().finally(() => {
+      this.screenRefresh = undefined;
+    });
+    return this.screenRefresh;
+  }
+
+  private async readScreenFromNative(): Promise<boolean> {
+    const screen = await this.capture.screenSize();
+    if (this.phase !== "running") return false;
+    const previous = this.nativeScreen;
+    let changed = false;
+    if (screen.screenId !== previous?.screenId) {
+      await this.hid.setScreen(screen.screenId ?? 0);
+      if (this.phase !== "running") return false;
+      changed = true;
+    }
+    // Encoders can publish smaller frames than the native framebuffer. Only a
+    // change in the framebuffer itself should replace those encoded dimensions.
+    if (screen.width > 0 && screen.height > 0 &&
+        (screen.width !== previous?.width || screen.height !== previous?.height)) {
+      this.width = screen.width;
+      this.height = screen.height;
+      changed = true;
+    }
+    if (screen.orientation !== undefined && screen.orientation !== this.orientation) {
+      this.orientation = screen.orientation;
+      changed = true;
+    }
+    this.nativeScreen = screen;
+    return changed;
+  }
+
+  private scheduleScreenRefresh(): void {
+    if (this.phase !== "running") return;
+    // Metadata changes when Simulator rotates/folds a device even while its
+    // framebuffer is idle. Keep one non-overlapping poll per running session.
+    this.screenRefreshTimer = setTimeout(async () => {
+      try {
+        if (await this.refreshScreenSizeFromNative()) this.broadcastConfig();
+      } catch {
+        // A transitioning simulator can temporarily have no readable screen.
+      } finally {
+        this.scheduleScreenRefresh();
+      }
+    }, 250);
+    this.screenRefreshTimer.unref();
   }
 
   private updateScreenSize(width: number, height: number): void {

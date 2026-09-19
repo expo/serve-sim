@@ -2,10 +2,12 @@
 //
 // Builds serve-sim-native — the in-process N-API addon that replaces the
 // spawned serve-sim-bin helper. The JS bindings are written directly in Swift
-// with node-swift (NodeAPI), so there is no Objective-C++ glue: SimHID /
+// with node-swift (NodeAPI): SimHID /
 // SimCapture are NodeClasses and the accessibility dumps are async NodeFunctions
 // (see Sources/SimNative/sim-module.swift). The reverse-engineered streaming
 // logic originates in SimStreamHelper and is adapted for the in-process API.
+// CoreDeviceShim isolates the private Swift calling convention used for
+// foldable-device controls and active display metadata.
 //
 // The actual .node is produced by Sources/SimNative/build.sh, which drives
 // `swift build --arch arm64` and links
@@ -35,9 +37,14 @@ let package = Package(
             name: "StreamingPolicy"
         ),
         .target(
+            name: "CoreDeviceShim",
+            linkerSettings: [.linkedFramework("Foundation"), .linkedFramework("IOKit")]
+        ),
+        .target(
             name: "SimNative",
             dependencies: [
                 "StreamingPolicy",
+                "CoreDeviceShim",
                 .product(name: "NodeAPI", package: "node-swift"),
                 .product(name: "NodeModuleSupport", package: "node-swift"),
                 .product(name: "LiveKitWebRTC", package: "webrtc-xcframework"),

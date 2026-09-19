@@ -1,6 +1,7 @@
 import Foundation
 import ObjectiveC
 import Darwin
+import StreamingPolicy
 
 /// Per-event HID logging is gated behind `SERVE_SIM_DEBUG_HID`. These lines fire
 /// on every touch/move/button/key/crown event — a single drag emits a dozen —
@@ -34,6 +35,9 @@ actor HIDInjector {
     private var hidClient: NSObject?
     private var sendSel: Selector?
     private var simDevice: NSObject?
+    private var deviceUDID: String?
+    private var touchTarget = HIDTargetPolicy()
+    private var multiTouchTarget = HIDTargetPolicy()
 
     // IndigoHIDMessageForMouseNSEvent(CGPoint*, CGPoint*, IndigoHIDTarget, NSEventType, NSSize, IndigoHIDEdge)
     // arm64 ABI: pointer/int params → x0-x4, float params → d0-d1 (independent numbering).
@@ -76,6 +80,7 @@ actor HIDInjector {
                           userInfo: [NSLocalizedDescriptionKey: "Device \(deviceUDID) not found"])
         }
         self.simDevice = device
+        self.deviceUDID = deviceUDID
 
         guard let funcPtr = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "IndigoHIDMessageForMouseNSEvent") else {
             throw NSError(domain: "HIDInjector", code: 5,
@@ -139,6 +144,13 @@ actor HIDInjector {
         hidLog("[hid] IndigoHIDMessageForMouseNSEvent loaded (with edge gesture support)")
     }
 
+    /// Keep digitizer routing aligned with capture's selected internal screen.
+    /// Existing gestures retain their target until their corresponding touch-up.
+    func setScreen(screenID: UInt32?) {
+        touchTarget.setScreen(screenID)
+        multiTouchTarget.setScreen(screenID)
+    }
+
     // IndigoHIDEdge values (x4 param to IndigoHIDMessageForMouseNSEvent).
     // These control system edge gesture recognition in the simulated iOS device.
     // Determined by disassembling IndigoHIDMessageForMouseNSEvent and testing
@@ -148,6 +160,12 @@ actor HIDInjector {
     static let edgeTop: UInt32    = 2  // Top edge (notification center)
     static let edgeLeft: UInt32   = 1  // Left edge
     static let edgeRight: UInt32  = 4  // Right edge
+
+    // NSEventType values consumed by IndigoHIDMessageForMouseNSEvent. A dragged
+    // event sets the position-change flag; another down event starts a new touch.
+    private static let touchDownEvent: Int32 = 1
+    private static let touchUpEvent: Int32 = 2
+    private static let touchDraggedEvent: Int32 = 6
 
     /// Synchronously hand an already-built Indigo message to the guest, freeing it.
     /// Must run on `inputQueue`.
@@ -161,18 +179,19 @@ actor HIDInjector {
         unsafeBitCast(sendIMP, to: SendFunc.self)(client, sendSel, msg, ObjCBool(true), nil, nil)
     }
 
-    /// Build a single-finger touch message (normalized 0..1 coords). Pure — safe
-    /// to call off `inputQueue`. NSSize(1,1) makes ratio = point.
+    /// Build a single-finger touch message (normalized 0..1 framebuffer coords).
+    /// NSSize(1,1) makes ratio = point. Routing is pinned until touch-up.
     private func touchMessage(type: String, x: Double, y: Double, edge: UInt32) -> UnsafeMutableRawPointer? {
-        guard let mouseFunc = mouseFunc else { return nil }
+        guard let mouseFunc = mouseFunc, let target = touchTarget.target(for: type) else { return nil }
         let eventType: Int32
         switch type {
-        case "begin", "move": eventType = 1  // Down (C function rejects Dragged=6)
-        case "end":           eventType = 2  // Up
+        case "begin": eventType = Self.touchDownEvent
+        case "move":  eventType = Self.touchDraggedEvent
+        case "end":   eventType = Self.touchUpEvent
         default: return nil
         }
         var point = CGPoint(x: x, y: y)
-        return mouseFunc(&point, nil, 0x32, eventType, 1.0, 1.0, edge)
+        return mouseFunc(&point, nil, target, eventType, 1.0, 1.0, edge)
     }
 
     /// Synchronously build + send a single touch. For use inside gesture blocks
@@ -188,20 +207,27 @@ actor HIDInjector {
     }
 
     func sendMultiTouch(type: String, x1: Double, y1: Double, x2: Double, y2: Double, screenWidth: Int, screenHeight: Int) {
-        guard let mouseFunc = mouseFunc else { return }
+        guard let mouseFunc = mouseFunc, let target = multiTouchTarget.target(for: type) else { return }
 
         let eventType: Int32
         switch type {
-        case "begin", "move": eventType = 1
-        case "end":           eventType = 2
+        case "begin": eventType = Self.touchDownEvent
+        case "move":  eventType = Self.touchDraggedEvent
+        case "end":   eventType = Self.touchUpEvent
         default: return
         }
 
         // Pass both CGPoints to create a 3-block multi-touch message.
         var point1 = CGPoint(x: x1, y: y1)
         var point2 = CGPoint(x: x2, y: y2)
-        guard let rawMsg = mouseFunc(&point1, &point2, 0x32, eventType, 1.0, 1.0, 0) else {
-            print("[hid] IndigoHIDMessageForMouseNSEvent returned nil for multi-touch \(type)")
+        guard let rawMsg = mouseFunc(&point1, &point2, target, eventType, 1.0, 1.0, 0) else {
+            // The constructor normally drops drag events within 16 ms of the
+            // previous event. This throttling also applies to single touches.
+            if type == "move" {
+                hidLog("[hid] IndigoHIDMessageForMouseNSEvent throttled multi-touch move")
+            } else {
+                print("[hid] IndigoHIDMessageForMouseNSEvent returned nil for multi-touch \(type)")
+            }
             return
         }
 
@@ -299,7 +325,7 @@ actor HIDInjector {
     // pointer service 0x35 is silently dropped). See docs/scroll-injection-devicehub.md.
     //
     // So we scroll the way a finger does: translate the wheel delta into a touch
-    // drag on the digitizer (target 0x32) — the same path taps/swipes use, which
+    // drag on the selected screen's digitizer — the same path taps/swipes use, which
     // is verified to scroll on iOS 27. A wheel burst becomes one continuous drag
     // (begin → moves → end on idle), re-anchoring to center when it nears an edge
     // so long scrolls aren't capped by the screen bounds.
@@ -326,7 +352,9 @@ actor HIDInjector {
     /// touch-down before the finger moves. Runs on `inputQueue`.
     private func beginDrag(x: Double, y: Double) {
         rawSendTouch(type: "begin", x: x, y: y)
-        usleep(8000)
+        // Indigo throttles dragged events within 16 ms of the previous event.
+        // Let even a single wheel event send its initial movement before lift.
+        usleep(20_000)
     }
 
     /// Inject a scroll-wheel / trackpad pan as a touch drag on the digitizer.
@@ -343,6 +371,14 @@ actor HIDInjector {
         let stepY = -(dy / Double(screenHeight)) * HIDInjector.scrollDragGain
         let aX = clampFinger(anchorX.flatMap { $0.isFinite ? $0 : nil } ?? 0.5)
         let aY = clampFinger(anchorY.flatMap { $0.isFinite ? $0 : nil } ?? 0.5)
+        let step = ScrollDragStep(
+            x: scrollDragActive ? scrollFingerX : aX,
+            y: scrollDragActive ? scrollFingerY : aY,
+            anchorX: scrollDragActive ? scrollAnchorX : aX,
+            anchorY: scrollDragActive ? scrollAnchorY : aY,
+            dx: stepX, dy: stepY, margin: Self.scrollEdgeMargin
+        )
+        guard step.moves else { return }
 
         if !scrollDragActive {
             // Anchor a fresh gesture under the cursor so iOS hit-tests the
@@ -353,25 +389,17 @@ actor HIDInjector {
             scrollFingerY = aY
             beginDrag(x: scrollFingerX, y: scrollFingerY)
             scrollDragActive = true
-        }
-
-        var nextX = scrollFingerX + stepX
-        var nextY = scrollFingerY + stepY
-
-        // Near an edge: lift, re-anchor back under the cursor, and continue.
-        // Re-beginning at the anchor keeps the gesture hit-testing the same view.
-        if nextX <= HIDInjector.scrollEdgeMargin || nextX >= 1 - HIDInjector.scrollEdgeMargin ||
-            nextY <= HIDInjector.scrollEdgeMargin || nextY >= 1 - HIDInjector.scrollEdgeMargin {
+        } else if step.shouldReanchor {
+            // Lift only after reaching an edge. An oversized first wheel delta
+            // must move before lifting, or iOS interprets the gesture as a tap.
             rawSendTouch(type: "end", x: scrollFingerX, y: scrollFingerY)
             scrollFingerX = scrollAnchorX
             scrollFingerY = scrollAnchorY
             beginDrag(x: scrollFingerX, y: scrollFingerY)
-            nextX = scrollFingerX + stepX
-            nextY = scrollFingerY + stepY
         }
 
-        scrollFingerX = clampFinger(nextX)
-        scrollFingerY = clampFinger(nextY)
+        scrollFingerX = step.x
+        scrollFingerY = step.y
         rawSendTouch(type: "move", x: scrollFingerX, y: scrollFingerY)
 
         // End the drag shortly after the wheel goes idle.
@@ -466,6 +494,16 @@ actor HIDInjector {
     }
 
     // MARK: - SimDevice private control
+
+    func setHingeAngle(_ angle: Double) async -> Bool {
+        guard let deviceUDID else { return false }
+        return await CoreDeviceBridge.shared.setHingeAngle(udid: deviceUDID, angle: angle)
+    }
+
+    func supportsHingeAngle() async -> Bool {
+        guard let deviceUDID else { return false }
+        return await CoreDeviceBridge.shared.supportsHingeAngle(udid: deviceUDID)
+    }
 
     /// Toggle a CoreAnimation render debug flag on the simulator. Names are the
     /// strings Simulator.app's Debug menu passes to `-[SimDevice

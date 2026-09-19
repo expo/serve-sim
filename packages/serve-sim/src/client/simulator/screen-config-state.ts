@@ -7,22 +7,26 @@ export interface ScreenConfigUpdate {
   notifyParent: boolean;
 }
 
+export function screenConfigsEqual(a: StreamConfig | null, b: StreamConfig): boolean {
+  return !!a && a.width === b.width && a.height === b.height &&
+    a.orientation === b.orientation && a.hingeAngle === b.hingeAngle &&
+    a.supportsHingeAngle === b.supportsHingeAngle;
+}
+
 export function resolveScreenConfigUpdate(
   prev: StreamConfig | null,
   config: StreamConfig | null | undefined,
   source: ScreenConfigSource,
 ): ScreenConfigUpdate | null {
   if (!config || config.width <= 0 || config.height <= 0) return null;
-  const next =
-    config.orientation === undefined && prev?.orientation
-      ? { ...config, orientation: prev.orientation }
-      : config;
-  if (
-    prev &&
-    prev.width === next.width &&
-    prev.height === next.height &&
-    prev.orientation === next.orientation
-  ) {
+  const next = { ...prev, ...config };
+  if (config.orientation === undefined && prev?.orientation !== undefined) {
+    next.orientation = prev.orientation;
+  }
+  if (config.hingeAngle === undefined && prev?.hingeAngle !== undefined) {
+    next.hingeAngle = prev.hingeAngle;
+  }
+  if (screenConfigsEqual(prev, next)) {
     return null;
   }
   return {

@@ -41,6 +41,8 @@ import {
 } from "./camera-helper";
 import { parseIceUrlList, streamHelperArgs, streamSettingsEqual } from "./stream-runtime-args";
 import { MAX_MJPEG_STREAM_FPS, MAX_VIDEO_STREAM_FPS } from "./stream-settings";
+import { parseHingeAngle } from "./hinge-angle";
+import { sendHingeAngleToWs } from "./hinge-command";
 
 // `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
 // CLI works under plain `node` too.
@@ -884,6 +886,16 @@ async function typeText(
   }
 
   await sendKeyEventsToWs(state.wsUrl, events, { token: state.token });
+}
+
+async function hinge(angle: number, deviceArg?: string) {
+  const state = readState(deviceArg ? resolveDevice(deviceArg) : undefined);
+  if (!state) {
+    console.error("No serve-sim server running. Run `serve-sim` first.");
+    process.exit(1);
+  }
+  await sendHingeAngleToWs(state.wsUrl, angle, { token: state.token });
+  console.log(JSON.stringify({ device: state.device, hingeAngle: angle }));
 }
 
 async function rotate(orientation: string, deviceArg?: string) {
@@ -2101,6 +2113,17 @@ program
   .argument("<orientation>")
   .option(...deviceOpt)
   .action((orientation: string, opts) => rotate(orientation, opts.device));
+
+program
+  .command("hinge")
+  .description("Set a foldable simulator's hinge angle (0° folded, 90° half folded, 180° unfolded)")
+  .argument("<position>", "fold|half|unfold or an angle from 0 to 180 degrees", (value: string) => {
+    const angle = parseHingeAngle(value);
+    if (angle === undefined) throw new InvalidArgumentError("Expected fold, half, unfold, or an angle from 0 to 180");
+    return angle;
+  })
+  .option(...deviceOpt)
+  .action((angle: number, opts) => hinge(angle, opts.device));
 
 program
   .command("ca-debug")

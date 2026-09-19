@@ -50,6 +50,8 @@ serve-sim type <text> [-d udid]       Type text via the simulator keyboard
 serve-sim rotate <orientation> [-d udid]
                                       portrait | portrait_upside_down |
                                       landscape_left | landscape_right
+serve-sim hinge <fold|half|unfold|degrees> [-d udid]
+                                      Set the hinge angle (0° folded, 180° unfolded)
 serve-sim ca-debug <option> <on|off> [-d udid]
                                       Toggle a CoreAnimation debug flag
                                       (blended|copies|misaligned|offscreen|slow-animations)

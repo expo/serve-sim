@@ -1,0 +1,13 @@
+#pragma once
+#include <stdbool.h>
+#include <stdint.h>
+#include "CoreDeviceDisplayShim.h"
+#include "CoreDeviceMotionShim.h"
+
+// The private framework has no public Swift module. These entry points isolate
+// its calling convention, and resolve every symbol before exposing the bridge.
+bool SSCoreDeviceInitialize(void);
+void *SSCoreDeviceSymbol(const char *name);
+void SSCoreDeviceRetainBridgeObject(void *object);
+void *SSCoreDeviceHingeData(double angle);
+bool SSCoreDeviceSendHinge(void *capability, uint64_t data0, uint64_t data1);

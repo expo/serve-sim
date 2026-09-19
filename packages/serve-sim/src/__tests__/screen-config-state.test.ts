@@ -55,4 +55,33 @@ describe("screen config state", () => {
       ),
     ).toBeNull();
   });
+
+  test("retains hinge state when decoded media reports only dimensions", () => {
+    expect(resolveScreenConfigUpdate(
+      { width: 2007, height: 2853, orientation: "landscape_left", hingeAngle: 0 },
+      { width: 900, height: 1280 },
+      "media",
+    )?.config).toEqual({
+      width: 900,
+      height: 1280,
+      orientation: "landscape_left",
+      hingeAngle: 0,
+    });
+  });
+
+  test("reports hinge movement even when screen geometry stays the same", () => {
+    expect(resolveScreenConfigUpdate(
+      { width: 2007, height: 2853, hingeAngle: 180 },
+      { width: 2007, height: 2853, hingeAngle: 90 },
+      "reported",
+    )?.config.hingeAngle).toBe(90);
+  });
+
+  test("reports hinge capability before the initial angle is known", () => {
+    expect(resolveScreenConfigUpdate(
+      { width: 2007, height: 2853 },
+      { width: 2007, height: 2853, supportsHingeAngle: true },
+      "reported",
+    )?.config.supportsHingeAngle).toBe(true);
+  });
 });

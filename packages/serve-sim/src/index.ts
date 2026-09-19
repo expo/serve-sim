@@ -889,7 +889,7 @@ async function typeText(
 }
 
 async function hinge(angle: number, deviceArg?: string) {
-  const state = readState(deviceArg ? resolveDevice(deviceArg) : undefined);
+  const state = readState(deviceArg);
   if (!state) {
     console.error("No serve-sim server running. Run `serve-sim` first.");
     process.exit(1);

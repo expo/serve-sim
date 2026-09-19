@@ -68,7 +68,11 @@ bool SSCoreDeviceDigitizerAvailable(void) {
         Metadata errorMetadata;
         errorMetadata = (Metadata)SSCoreDeviceSymbol("$s10CoreDevice0aB5ErrorVMa");
         if (errorMetadata) coreDeviceErrorMetadata = errorMetadata(0).metadata;
-        available = found && coreDeviceErrorMetadata;
+        // Both the stack buffers and the Swift by-value calls assume two words.
+        // Reject a changed layout before any constructor or setter can use it.
+        available = found && coreDeviceErrorMetadata &&
+            SSCoreDeviceValueSize(reportMetadata) == sizeof(struct DataWords) &&
+            SSCoreDeviceValueSize(contactMetadata) == sizeof(struct DataWords);
     });
     return available;
 }

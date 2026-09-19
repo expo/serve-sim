@@ -27,6 +27,8 @@ interface SimHIDHandle {
   setScreen(screenId: number): Promise<void>;
   supportsHingeAngle(): Promise<boolean>;
   setHingeAngle(angle: number): Promise<boolean>;
+  setHingePose(pose: string): Promise<boolean>;
+  setTableMode(enabled: boolean): Promise<boolean>;
   touch(type: TouchType, x: number, y: number, w: number, hh: number, edge: number): Promise<void>;
   multiTouch(type: TouchType, x1: number, y1: number, x2: number, y2: number, w: number, hh: number): Promise<void>;
   button(button: string): Promise<void>;
@@ -197,6 +199,14 @@ export class NativeHid {
 
   setHingeAngle(angle: number): Promise<boolean> {
     return this.guard("setHingeAngle", () => this.handle.setHingeAngle(angle), false);
+  }
+
+  setHingePose(pose: string): Promise<boolean> {
+    return this.guard("setHingePose", () => this.handle.setHingePose(pose), false);
+  }
+
+  setTableMode(enabled: boolean): Promise<boolean> {
+    return this.guard("setTableMode", () => this.handle.setTableMode(enabled), false);
   }
 
   supportsHingeAngle(): Promise<boolean> {

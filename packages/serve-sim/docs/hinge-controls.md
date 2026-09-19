@@ -1,9 +1,50 @@
 # Hinge controls and display selection
 
-Foldable device position is a **hinge angle**. serve-sim uses degrees for its
-controls and CLI:
+The iPhone Duo's physical pose combines a **hinge angle** with the device's
+orientation. serve-sim's web UI provides five pose presets matching Device Hub:
 
-| Control | CLI | Angle | UIKit status |
+| Pose | Hinge angle |
+| --- | --- |
+| Closed | 0° |
+| Open | 180° |
+| Laptop | 90° |
+| Book | 90° |
+| Tent | 80° |
+
+Laptop and Book have the same hinge angle but different physical orientations.
+The live slider covers 0–180°, and the numeric input accepts decimal angles.
+Changing the angle preserves the current physical orientation, releases Table
+Mode, and clears the selected preset. Rotating the device releases Table Mode
+after applying the new orientation. Frames still follow the active display and
+any orientation restrictions imposed by the foreground app.
+
+The Table Mode toggle controls the simulator's persistent table state. Tent
+enables it automatically; the other presets disable it.
+
+Confirmed hinge angles, named poses, and Table Mode values reflect successful
+commands in the current serve-sim session. serve-sim does not monitor the live
+hinge sensor for changes made externally in Device Hub. The streamed display
+and its orientation still follow native display readback.
+
+Table Mode eligibility requires a known physical orientation, established by
+choosing a preset. An independent rotation invalidates that knowledge because
+its screen orientation can differ from physical orientation. Choose a preset
+again to restore Table Mode eligibility after rotating. Angle adjustments keep
+the known physical orientation and update eligibility for the new angle.
+
+The preview renders the active panel in 2D. It does not render Device Hub's 3D
+device model; the pose controls change the simulator's hinge and motion state.
+
+Each control waits for acknowledgement. While dragging, the latest queued
+angle replaces intermediate values; selecting a preset replaces queued slider
+changes. Disconnects, failures, and timeouts discard queued changes so they
+are not replayed on reconnect or on another device.
+
+With the simulator focused, ⌘1–⌘5 select Closed, Open, Laptop, Book, and Tent.
+
+The existing CLI uses degrees and keeps its three angle aliases:
+
+| Alias | CLI | Angle | UIKit status |
 | --- | --- | --- | --- |
 | Fold | `serve-sim hinge fold` | 0° | `closed` |
 | Half Fold | `serve-sim hinge half` | 90° | `partiallyOpen` |
@@ -32,7 +73,87 @@ Source: `UIKit.framework/Headers/UIHinge.h` and `UIHingeInteraction.h` in the lo
 Xcode 27.1 beta iPhoneSimulator SDK, Apple's [UIHinge documentation](https://developer.apple.com/documentation/uikit/uihinge),
 and [Leverage multiple displays and scenes on iPhone Duo](https://developer.apple.com/videos/play/tech-talks/111464/).
 
-## DeviceHub's simulation control
+## Device Hub's hidden Action Bar
+
+Xcode 27.1's Device Hub has an internal Action Bar for iPhone Duo. Enable it,
+then quit and reopen Device Hub:
+
+```sh
+defaults write com.apple.dt.Devices com.apple.dt.coredevicepop.useInternalV68ActionBar -bool true
+```
+
+The bar exposes a continuous 0–180° hinge slider, five pose presets, rotation
+controls, and Table Mode. The preset shortcuts and physical states are:
+
+| Shortcut | Pose | Angle | Physical orientation | Table Mode |
+| --- | --- | --- | --- | --- |
+| ⌘1 | Closed | 0° | Portrait | Off |
+| ⌘2 | Open | 180° | Portrait | Off |
+| ⌘3 | Laptop | 90° | Landscape left | Off |
+| ⌘4 | Book | 90° | Portrait | Off |
+| ⌘5 | Tent | 80° | Face down | On |
+
+These orientations describe the physical device, independently of the active
+panel's native rotation. A Laptop preset therefore differs from sending a 90°
+hinge angle alone. Non-Tent presets release Table Mode before applying their
+hinge angle and orientation. Tent sets 80°, then face down, then Table Mode.
+Device Hub's hinge-slider editing callback releases Table Mode, and its
+rotation control sends the new orientation before releasing Table Mode.
+
+Table Mode is a persistent simulated state. Device Hub enables its control for
+these combinations:
+
+| Hinge state | Physical orientations |
+| --- | --- |
+| Closed | Landscape left or right |
+| Partially open | Portrait, upside down, landscape left or right, face down |
+| Open flat | Portrait |
+
+The installed Action Bar exposes one hinge-angle slider. Its other physical
+controls are presets and rotation controls; no independent pitch, roll, or yaw
+sliders were found.
+
+A reply to the source post describes holding Option to access the hinge-angle
+slider. The installed binary also changes the rotation control from Rotate
+Right to Rotate Left while Option is held. serve-sim's decimal input provides
+fine angle adjustment directly.
+
+A second hidden preference controls how Device Hub sends a requested angle:
+
+```sh
+defaults write com.apple.dt.Devices com.apple.dt.coredevicepop.disableHingeInterpolation -bool true
+```
+
+With this enabled, Device Hub sends the target angle in one event instead of
+sweeping through intermediate angles. It does not change the 3D model or
+sliders. This is a Device Hub setting; serve-sim sends the requested angle
+directly and does not depend on either preference.
+
+The [source post and video](https://x.com/itspdfu/status/2101038602528375181)
+demonstrate the internal Action Bar and its keyboard shortcuts. The pose
+values, Table Mode availability, and preference strings above were checked
+against the installed Xcode 27.1 beta binary:
+
+```text
+/Applications/Xcode-27.1.0-Beta.app/Contents/SharedFrameworks/DeviceKit.framework/Versions/A/PlugIns/CoreDevicePopDeviceKitExtension.devicekitplugin/Contents/MacOS/CoreDevicePopDeviceKitExtension
+```
+
+The video also shows the hidden `HingeStatePoster` wallpaper visualizing the
+hinge with a circular progress indicator and state labels: 0.00 Closed, 0.50
+Partial, and 1.00 Fully Open. The installed iOS 27.1 runtime also contains its
+extension at this path relative to the `runtimeRoot` reported by
+`xcrun simctl list runtimes --json`:
+
+```text
+System/Library/ExtensionKit/Extensions/HingeStatePoster.appex
+```
+
+Its bundle identifier is `com.apple.Posters.HingeStatePoster`. The extension
+declares a Lock Screen poster with `PRSupportsGallery = false`, consistent
+with its hidden status. Bundle inspection confirms its presence; the wallpaper
+was not enabled or changed during this investigation.
+
+## Device Hub's simulation transport
 
 DeviceHub's internal names are `closed`, `partiallyOpen`, and `openFlat`.
 Its hinge slider sends a private CoreDevice vendor-defined HID event:
@@ -58,6 +179,12 @@ rotation path. The picker describes physical pose, so serve-sim converts the
 requested screen orientation using the active panel's profile `nativeRotation`
 (0° outside, 270° inside). Native display readback remains authoritative when an
 app restricts rotation.
+
+Table Mode uses a different report: a
+`CoreDeviceUtilities.CustomButtonReport` with packed usage `0x005bff61`, sent
+through `UniversalHIDService` to `HIDServiceID.avpCustom`. Its `down` field is the
+desired enabled state. It must be retained until the next explicit change,
+rather than sent as a button press followed immediately by release.
 
 ## Selecting the stream's display
 
@@ -112,3 +239,15 @@ xcrun devicectl device motion hinge-angle --device <udid>
 
 The motion command is a monitor. Its stdout can contain valid angle samples even
 when a command timeout causes the final JSON report to record a timeout.
+
+
+## Pose-control validation
+
+The rebuilt local CLI was exercised in the in-app browser against iOS 27.1:
+all five presets, decimal angle entry, range keyboard controls, ⌘3, Table Mode
+on/off, and a 390px viewport. Independent CoreDevice hinge readback confirmed
+90° and 123.5°. A read-only `monitorDeviceMotionState()` probe confirmed Laptop
+(physical orientation 3, partially open), Book (orientation 1, partially open),
+and Tent (orientation 6, partially open, table state nonzero). Turning Table
+Mode off returned its sensor property to zero. `devicectl`'s spatial-orientation
+monitor is unavailable on this simulator; that command was not used as evidence.

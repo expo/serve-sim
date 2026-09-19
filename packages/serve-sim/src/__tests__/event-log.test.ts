@@ -211,6 +211,16 @@ describe("eventLogEventForHidMessage", () => {
     expect(eventLogEventForHidMessage("UDID", 0x0f, { angle: "90" })).toBeNull();
   });
 
+  test("distinguishes physical poses, fine angles, and Table Mode", () => {
+    for (const [control, value, summary] of [["pose", "laptop", "Laptop"], ["pose", "book", "Book"], ["angle", 42.5, "Hinge 42.5°"], ["table", true, "Table Mode on"]] as const) {
+      expect(eventLogEventForHidMessage("UDID", 0x10, { control, value, extra: "not logged" })).toMatchObject({
+        kind: "hinge", action: `set-${control}`, summary, details: { control, value },
+      });
+      expect(eventLogEventForHidMessage("UDID", 0x10, { control, value, extra: "not logged" })?.details).not.toHaveProperty("extra");
+    }
+    expect(eventLogEventForHidMessage("UDID", 0x10, { control: "pose", value: "invalid" })).toBeNull();
+  });
+
   test("maps button HID payloads", () => {
     expect(
       eventLogEventForHidMessage("UDID", 0x04, {

@@ -75,13 +75,29 @@ stream, whose touch coordinates remain aligned with its active screen. The
 inner frame's button PDFs declare `/Rotate 270`; both asset dimensions and PNG
 conversion must apply that page rotation.
 
-In Xcode 27.1 beta, explicit touches to the inner display's digitizer can abort
-`backboardd` with “Unable to dispatch event through disconnected service.” The
-default digitizer alias also failed to deliver touches during testing. Until
-that connection is resolved, foldable touch input is restricted to cover screen
-1; inner streaming, hinge controls, and rotation remain available. Portrait and
-both landscape directions were verified at 0°, 90°, and 180°. The test app
-declined upside-down orientation, so that case is not counted as verified.
+## Touch transport
+
+The Duo's legacy Indigo inner-screen target (`0x40000003`) is disconnected.
+Sending input there can abort `backboardd` with “Unable to dispatch event through
+disconnected service.” This was a serve-sim transport mismatch, not an inability
+of the simulator to accept inner-screen input.
+
+Foldable touch input now uses CoreDevice's `UniversalHIDServiceCapability` and
+Apple's `UniversalHID.DigitizerReport` / `DigitizerContact` constructors. Reports
+go to touchscreen service `0x100 + screenID`: `0x101` for the cover and `0x103`
+for the inner display. Each contact retains its identity until lift. Taps,
+drags, wheel-generated drags, and two-finger gestures share this path; the
+selected service stays pinned through each gesture's final report. Input waits
+for capture to identify a panel. Capability lookup retries transient startup
+failures and never falls back to the disconnected legacy inner service.
+
+Nonfoldable devices keep their existing Indigo input. Legacy keyboard and
+button input can coexist with Universal HID touch reports on the Duo.
+
+Verified at 0°, 90°, and 180° in portrait and both landscape directions:
+all four corner buttons, single-finger drags, wheel-generated drags, and two
+simultaneous contacts reached an instrumented UIKit app. `backboardd` retained
+its PID throughout. Upside-down orientation is not included in this check.
 
 For independent checks on Xcode 27.1 beta:
 

@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "CoreDeviceDisplayShim.h"
 #include "CoreDeviceMotionShim.h"
+#include "CoreDeviceDigitizerShim.h"
 
 // The private framework has no public Swift module. These entry points isolate
 // its calling convention, and resolve every symbol before exposing the bridge.

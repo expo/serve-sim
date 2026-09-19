@@ -4,38 +4,39 @@ import Testing
 
 @Suite("HIDTargetPolicy")
 struct HIDTargetPolicyTests {
-    @Test("blocked inner-screen gestures stay blocked when the cover becomes active")
-    func blockedInnerGesture() {
+    @Test("Universal HID delivers inner input and releases on its original panel")
+    func universalInnerGesture() {
         var policy = HIDTargetPolicy()
-        policy.setScreen(3, primaryScreenOnly: true)
-        #expect(policy.target(for: "begin") == nil)
-        policy.setScreen(1, primaryScreenOnly: true)
-        #expect(policy.target(for: "move") == nil)
-        #expect(policy.target(for: "end") == nil)
-        #expect(policy.target(for: "begin") == 0x4000_0001)
-        #expect(policy.target(for: "end") == 0x4000_0001)
+        policy.setScreen(3, universalHID: true)
+        #expect(policy.target(for: "begin") == 0x103)
+        policy.setScreen(1, universalHID: true)
+        #expect(policy.target(for: "move") == 0x103)
+        #expect(policy.target(for: "end") == 0x103)
+        #expect(policy.target(for: "begin") == 0x101)
+        #expect(policy.target(for: "end") == 0x101)
     }
 
     @Test("a cover touch releases on the cover when the inner screen becomes active")
     func coverGestureRelease() {
         var policy = HIDTargetPolicy()
-        policy.setScreen(1, primaryScreenOnly: true)
-        #expect(policy.target(for: "begin") == 0x4000_0001)
-        policy.setScreen(3, primaryScreenOnly: true)
-        #expect(policy.target(for: "move") == 0x4000_0001)
-        #expect(policy.target(for: "end") == 0x4000_0001)
-        #expect(policy.target(for: "begin") == nil)
-        #expect(policy.target(for: "move") == nil)
-        #expect(policy.target(for: "end") == nil)
+        policy.setScreen(1, universalHID: true)
+        #expect(policy.target(for: "begin") == 0x101)
+        policy.setScreen(3, universalHID: true)
+        #expect(policy.target(for: "move") == 0x101)
+        #expect(policy.target(for: "end") == 0x101)
+        #expect(policy.target(for: "begin") == 0x103)
+        #expect(policy.target(for: "end") == 0x103)
     }
 
-    @Test("a restricted digitizer cannot route input without a known primary screen")
-    func unknownRestrictedScreen() {
+    @Test("Universal HID waits for a known panel without redirecting an in-flight gesture")
+    func unknownUniversalScreen() {
         var policy = HIDTargetPolicy()
-        policy.setScreen(nil, primaryScreenOnly: true)
-        #expect(policy.target(for: "move") == nil)
+        policy.setScreen(nil, universalHID: true)
         #expect(policy.target(for: "begin") == nil)
+        policy.setScreen(3, universalHID: true)
+        #expect(policy.target(for: "move") == nil)
         #expect(policy.target(for: "end") == nil)
+        #expect(policy.target(for: "begin") == 0x103)
     }
 
     @Test("uses the legacy digitizer until capture identifies a screen")

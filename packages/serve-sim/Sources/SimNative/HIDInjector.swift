@@ -2,6 +2,7 @@ import Foundation
 import ObjectiveC
 import Darwin
 import StreamingPolicy
+import CoreDeviceShim
 
 /// Per-event HID logging is gated behind `SERVE_SIM_DEBUG_HID`. These lines fire
 /// on every touch/move/button/key/crown event — a single drag emits a dozen —
@@ -19,7 +20,8 @@ private func hidLog(_ message: @autoclosure () -> String) {
 ///
 /// Uses IndigoHIDMessageForMouseNSEvent to create touch messages and
 /// IndigoHIDMessageForButton for hardware button presses, sent via
-/// SimDeviceLegacyHIDClient. Foldable-device orientation uses Device Hub's
+/// SimDeviceLegacyHIDClient. Foldable touches use per-display Universal HID
+/// reports; foldable-device orientation uses Device Hub's
 /// CoreDevice vendor control; other devices use PurpleWorkspacePort / GSEvent.
 ///
 /// The real C signature for touch is:
@@ -38,8 +40,8 @@ actor HIDInjector {
     private var deviceUDID: String?
     private var selectedScreenID: UInt32?
     private var nativeScreenRotations: [UInt32: Int] = [:]
-    private var restrictsTouchToPrimaryScreen = false
-    private var didLogBlockedTouch = false
+    private var usesUniversalTouch = false
+    private var digitizerCapability: CoreDeviceCapabilityObject?
     private var touchTarget = HIDTargetPolicy()
     private var multiTouchTarget = HIDTargetPolicy()
 
@@ -86,7 +88,26 @@ actor HIDInjector {
         self.simDevice = device
         self.deviceUDID = deviceUDID
         self.nativeScreenRotations = Self.readNativeScreenRotations(device: device)
-        self.restrictsTouchToPrimaryScreen = await CoreDeviceBridge.shared.supportsHingeAngle(udid: deviceUDID)
+        self.usesUniversalTouch = await CoreDeviceBridge.shared.supportsHingeAngle(udid: deviceUDID)
+        if usesUniversalTouch {
+            guard SSCoreDeviceDigitizerAvailable() else { throw CoreDeviceBridge.BridgeError.unavailable }
+            // Capabilities can become available after the simulator is listed.
+            // Do not cache a transient lookup failure or fall back to Indigo on
+            // the inner panel: its legacy service is disconnected.
+            for attempt in 0..<10 {
+                do {
+                    digitizerCapability = try await CoreDeviceBridge.shared.capability(
+                        udid: deviceUDID,
+                        metadataSymbol: "$s10CoreDevice29UniversalHIDServiceCapabilityVN",
+                        witnessSymbol: "$s10CoreDevice29UniversalHIDServiceCapabilityVAA0bE0AAWP"
+                    )
+                    break
+                } catch {
+                    if attempt == 9 { throw error }
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                }
+            }
+        }
         setScreen(screenID: nil)
 
         guard let funcPtr = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "IndigoHIDMessageForMouseNSEvent") else {
@@ -151,13 +172,12 @@ actor HIDInjector {
         hidLog("[hid] IndigoHIDMessageForMouseNSEvent loaded (with edge gesture support)")
     }
 
-    /// Keep panel metadata aligned with capture. On foldable simulators, only
-    /// the primary digitizer is usable without crashing the Xcode beta guest.
+    /// Keep panel metadata aligned with capture and select the transport’s service.
     /// Existing gestures retain their target until their corresponding touch-up.
     func setScreen(screenID: UInt32?) {
         selectedScreenID = screenID
-        touchTarget.setScreen(screenID, primaryScreenOnly: restrictsTouchToPrimaryScreen)
-        multiTouchTarget.setScreen(screenID, primaryScreenOnly: restrictsTouchToPrimaryScreen)
+        touchTarget.setScreen(screenID, universalHID: usesUniversalTouch)
+        multiTouchTarget.setScreen(screenID, universalHID: usesUniversalTouch)
     }
 
     /// Device Hub's physical orientation is relative to each panel's mounting.
@@ -213,17 +233,21 @@ actor HIDInjector {
         unsafeBitCast(sendIMP, to: SendFunc.self)(client, sendSel, msg, ObjCBool(true), nil, nil)
     }
 
-    private func logBlockedTouch(phase: String) {
-        guard phase == "begin", restrictsTouchToPrimaryScreen, !didLogBlockedTouch else { return }
-        didLogBlockedTouch = true
-        fputs("[hid] Inner-screen touch input is disabled on this foldable simulator: Xcode 27.1 beta's secondary digitizer can crash the guest. Fold the device to use the cover touchscreen.\n", stderr)
+    private func sendUniversalTouches(target: UInt32, type: String, contacts: [SSCoreDeviceTouch], edge: UInt32 = 0) {
+        guard let digitizerCapability else { return }
+        let sent = contacts.withUnsafeBufferPointer {
+            SSCoreDeviceSendTouches(digitizerCapability.storage, target, $0.baseAddress,
+                                    UInt8($0.count), type != "end", edge)
+        }
+        if !sent { fputs("[hid] Universal HID touch delivery failed for service \(target)\n", stderr) }
     }
 
     /// All single-finger sources use this path: taps, gestures, wheel drags,
     /// idle touch-up, and swipe-home. Routing is pinned until touch-up.
     private func rawSendTouch(type: String, x: Double, y: Double, edge: UInt32 = 0) {
-        guard let target = touchTarget.target(for: type) else {
-            logBlockedTouch(phase: type)
+        guard let target = touchTarget.target(for: type) else { return }
+        if usesUniversalTouch {
+            sendUniversalTouches(target: target, type: type, contacts: [.init(x: x, y: y)], edge: edge)
             return
         }
         guard let mouseFunc else { return }
@@ -246,8 +270,10 @@ actor HIDInjector {
     }
 
     func sendMultiTouch(type: String, x1: Double, y1: Double, x2: Double, y2: Double, screenWidth: Int, screenHeight: Int) {
-        guard let target = multiTouchTarget.target(for: type) else {
-            logBlockedTouch(phase: type)
+        guard let target = multiTouchTarget.target(for: type) else { return }
+        if usesUniversalTouch {
+            sendUniversalTouches(target: target, type: type,
+                                 contacts: [.init(x: x1, y: y1), .init(x: x2, y: y2)])
             return
         }
         guard let mouseFunc else { return }

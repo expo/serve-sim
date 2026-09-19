@@ -10,4 +10,5 @@ bool SSCoreDeviceInitialize(void);
 void *SSCoreDeviceSymbol(const char *name);
 void SSCoreDeviceRetainBridgeObject(void *object);
 void *SSCoreDeviceHingeData(double angle);
-bool SSCoreDeviceSendHinge(void *capability, uint64_t data0, uint64_t data1);
+void *SSCoreDeviceOrientationData(const char *value);
+bool SSCoreDeviceSendControl(void *capability, uint64_t data0, uint64_t data1);

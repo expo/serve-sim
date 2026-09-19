@@ -178,7 +178,18 @@ export function parsePdfPageSize(pdf: Buffer | string): Size | null {
   const y1 = Number(box[4]);
   const width = Math.abs(x1 - x0);
   const height = Math.abs(y1 - y0);
-  return width > 0 && height > 0 ? { width, height } : null;
+  if (width <= 0 || height <= 0) return null;
+  const rotation = pdfPageRotation(text);
+  return rotation === 90 || rotation === 270 ? { width: height, height: width } : { width, height };
+}
+
+function pdfPageRotation(pdf: Buffer | string): number {
+  const text = typeof pdf === "string" ? pdf : pdf.toString("latin1");
+  // DeviceKit uses single-page PDFs. Incremental edits append a replacement
+  // page dictionary, so its final /Rotate declaration supersedes earlier ones.
+  const rotations = [...text.matchAll(/\/Rotate\s+(-?\d+)\b/g)];
+  const rotation = Number(rotations.at(-1)?.[1] ?? 0);
+  return ((rotation % 360) + 360) % 360;
 }
 
 export function logicalScreenSizeFromProfile(
@@ -830,6 +841,7 @@ function chromeAssetPath(identifier: string, imageName: string): string {
 function cachedPngPath(identifier: string, imageName: string, pdfPath: string): string {
   mkdirSync(PNG_CACHE_ROOT, { recursive: true });
   const stat = statSync(pdfPath);
+  const rotation = pdfPageRotation(readFileSync(pdfPath));
   const key = createHash("sha1")
     .update(identifier)
     .update("\0")
@@ -838,12 +850,17 @@ function cachedPngPath(identifier: string, imageName: string, pdfPath: string): 
     .update(String(stat.mtimeMs))
     .update("\0")
     .update(String(stat.size))
+    .update(`\0page-rotation:${rotation}`)
     .digest("hex");
   const outPath = join(PNG_CACHE_ROOT, `${identifier}-${key}.png`);
   if (existsSync(outPath)) return outPath;
 
   const tmpPath = `${outPath}.${process.pid}.tmp`;
-  execFileSync("sips", ["-s", "format", "png", pdfPath, "--out", tmpPath], {
+  // sips rasterizes DeviceKit's unrotated PDF content even when its page has
+  // /Rotate (phone14 button sprites use 270). Apply that page transform so the
+  // PNG and descriptor agree; the client then only rotates the whole device.
+  const rotationArgs = rotation ? ["-r", String(rotation)] : [];
+  execFileSync("sips", ["-s", "format", "png", ...rotationArgs, pdfPath, "--out", tmpPath], {
     stdio: ["ignore", "ignore", "ignore"],
     timeout: 10_000,
   });

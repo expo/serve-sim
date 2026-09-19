@@ -142,6 +142,17 @@ describe("native active screen config", () => {
     expect(screenReads).toBe(readsAtClose);
   });
 
+  test("waits for Duo's actual orientation instead of briefly rotating a locked app", async () => {
+    const { configs } = await start({ width: 1398, height: 2034, orientation: "portrait", screenId: 1 }, true);
+    await waitUntil(() => configs.at(-1)?.supportsHingeAngle === true);
+    const readsBefore = screenReads;
+    ws!.send(Buffer.concat([Buffer.from([0x07]), Buffer.from(JSON.stringify({ orientation: "landscape_left" }))]));
+    await waitUntil(() => screenReads > readsBefore);
+    expect(configs.every((config) => config.orientation === "portrait")).toBe(true);
+    screen = { ...screen, orientation: "landscape_left" };
+    await waitUntil(() => configs.at(-1)?.orientation === "landscape_left");
+  });
+
   test("forwards hinge degrees and acknowledges native success", async () => {
     const { hingeResults, configs } = await start({ width: 2007, height: 2853 });
     for (const angle of [0, 90, 180]) {

@@ -38,6 +38,8 @@ Requires an Apple silicon (`arm64`) Mac with Xcode command line tools (`xcrun si
 
 The bundled native addon, simulator tools, and host helpers are arm64-only.
 
+On the iPhone Duo simulator in Xcode 27.1 beta, touch input works on the folded cover screen. Touches, scrolling, and touch gestures on the inner screen are disabled because its digitizer can crash the simulator guest. Streaming, device frames, hinge controls, and rotation remain available; an app can still restrict its supported orientations.
+
 ## CLI
 
 ```

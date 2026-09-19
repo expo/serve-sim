@@ -1,27 +1,33 @@
-/// Routes internal-display touches to the screen being captured. A gesture must
-/// lift on the display where it began, even if folding changes the active screen.
+/// Pins Indigo's digitizer target, including a blocked target, until lift.
 public struct HIDTargetPolicy: Sendable {
-    private var selectedTarget: UInt32 = 0x32
+    private var selectedTarget: UInt32? = 0x32
     private var gestureTarget: UInt32?
+    private var gestureIsActive = false
 
     public init() {}
 
-    public mutating func setScreen(_ screenID: UInt32?) {
-        // SimulatorKit's SimDeviceHIDDigitizerHost uses this flag plus screenID
-        // for internal displays. The legacy 0x32 target addresses the default
-        // digitizer only, so it misses the Duo's unfolded display (screen 3).
-        selectedTarget = screenID.map { 0x4000_0000 | $0 } ?? 0x32
+    public mutating func setScreen(_ screenID: UInt32?, primaryScreenOnly: Bool = false) {
+        // Xcode 27.1 beta leaves the Duo's inner digitizer disconnected.
+        // Explicit secondary input crashes backboardd; the default alias
+        // delivers no input. Restrict that device to its working cover panel.
+        if primaryScreenOnly && screenID != 1 {
+            selectedTarget = nil
+        } else {
+            selectedTarget = screenID.map { 0x4000_0000 | $0 } ?? 0x32
+        }
     }
 
     public mutating func target(for phase: String) -> UInt32? {
         switch phase {
         case "begin":
+            gestureIsActive = true
             gestureTarget = selectedTarget
-            return selectedTarget
+            return gestureTarget
         case "move":
-            return gestureTarget ?? selectedTarget
+            return gestureIsActive ? gestureTarget : selectedTarget
         case "end":
-            let target = gestureTarget ?? selectedTarget
+            let target = gestureIsActive ? gestureTarget : selectedTarget
+            gestureIsActive = false
             gestureTarget = nil
             return target
         default:

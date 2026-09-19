@@ -78,12 +78,25 @@ void *SSCoreDeviceHingeData(double angle) {
     return (void *)IOCFSerialize((__bridge CFDictionaryRef)command, 1);
 }
 
+void *SSCoreDeviceOrientationData(const char *value) {
+    if (!value) return NULL;
+    NSString *orientation = [NSString stringWithUTF8String:value];
+    if (!orientation) return NULL;
+    NSDictionary *command = @{
+        @"provider": @"com.apple.Virtualization.VirtualMachines",
+        @"source": @"orientation-picker-control",
+        @"type": @"enum",
+        @"value": orientation
+    };
+    return (void *)IOCFSerialize((__bridge CFDictionaryRef)command, 1);
+}
+
 struct MetadataResponse { void *metadata; uintptr_t state; };
 typedef struct MetadataResponse (*Metadata)(uintptr_t) __attribute__((swiftcall));
 typedef void (*Send)(uint16_t, uint16_t, uint32_t, uint64_t, uint64_t, void *, void *, void *, void * __attribute__((swift_context)), void ** __attribute__((swift_error_result))) __attribute__((swiftcall));
 typedef void (*Barrier)(void *, void *, void * __attribute__((swift_context))) __attribute__((swiftcall));
 
-bool SSCoreDeviceSendHinge(void *capability, uint64_t data0, uint64_t data1) {
+bool SSCoreDeviceSendControl(void *capability, uint64_t data0, uint64_t data1) {
     if (!SSCoreDeviceInitialize()) return false;
     void *metadata = ((void **)capability)[3], *witness = ((void **)capability)[4];
     if (!metadata || !witness) return false;

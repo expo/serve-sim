@@ -19,8 +19,8 @@ private func hidLog(_ message: @autoclosure () -> String) {
 ///
 /// Uses IndigoHIDMessageForMouseNSEvent to create touch messages and
 /// IndigoHIDMessageForButton for hardware button presses, sent via
-/// SimDeviceLegacyHIDClient. Orientation goes through a separate transport
-/// (PurpleWorkspacePort / GSEvent mach messages), matching idb's approach.
+/// SimDeviceLegacyHIDClient. Foldable-device orientation uses Device Hub's
+/// CoreDevice vendor control; other devices use PurpleWorkspacePort / GSEvent.
 ///
 /// The real C signature for touch is:
 ///   IndigoHIDMessageForMouseNSEvent(CGPoint*, CGPoint*, IndigoHIDTarget, NSEventType, NSSize, IndigoHIDEdge)
@@ -36,6 +36,10 @@ actor HIDInjector {
     private var sendSel: Selector?
     private var simDevice: NSObject?
     private var deviceUDID: String?
+    private var selectedScreenID: UInt32?
+    private var nativeScreenRotations: [UInt32: Int] = [:]
+    private var restrictsTouchToPrimaryScreen = false
+    private var didLogBlockedTouch = false
     private var touchTarget = HIDTargetPolicy()
     private var multiTouchTarget = HIDTargetPolicy()
 
@@ -73,7 +77,7 @@ actor HIDInjector {
     // Apple HID entitlements an unprivileged helper can't have, and synthetic
     // scroll events are ignored by iOS, so we scroll via a touch drag instead.
 
-    func setup(deviceUDID: String) throws {
+    func setup(deviceUDID: String) async throws {
         SimFrameworks.load()
         guard let device = FrameCapture.findSimDevice(udid: deviceUDID) else {
             throw NSError(domain: "HIDInjector", code: 1,
@@ -81,6 +85,9 @@ actor HIDInjector {
         }
         self.simDevice = device
         self.deviceUDID = deviceUDID
+        self.nativeScreenRotations = Self.readNativeScreenRotations(device: device)
+        self.restrictsTouchToPrimaryScreen = await CoreDeviceBridge.shared.supportsHingeAngle(udid: deviceUDID)
+        setScreen(screenID: nil)
 
         guard let funcPtr = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "IndigoHIDMessageForMouseNSEvent") else {
             throw NSError(domain: "HIDInjector", code: 5,
@@ -144,11 +151,38 @@ actor HIDInjector {
         hidLog("[hid] IndigoHIDMessageForMouseNSEvent loaded (with edge gesture support)")
     }
 
-    /// Keep digitizer routing aligned with capture's selected internal screen.
+    /// Keep panel metadata aligned with capture. On foldable simulators, only
+    /// the primary digitizer is usable without crashing the Xcode beta guest.
     /// Existing gestures retain their target until their corresponding touch-up.
     func setScreen(screenID: UInt32?) {
-        touchTarget.setScreen(screenID)
-        multiTouchTarget.setScreen(screenID)
+        selectedScreenID = screenID
+        touchTarget.setScreen(screenID, primaryScreenOnly: restrictsTouchToPrimaryScreen)
+        multiTouchTarget.setScreen(screenID, primaryScreenOnly: restrictsTouchToPrimaryScreen)
+    }
+
+    /// Device Hub's physical orientation is relative to each panel's mounting.
+    /// Read the static device profile once; capture supplies the active screen ID.
+    private static func readNativeScreenRotations(device: NSObject) -> [UInt32: Int] {
+        let typeSelector = NSSelectorFromString("deviceType")
+        let capabilitiesSelector = NSSelectorFromString("capabilities")
+        guard device.responds(to: typeSelector),
+              let type = device.perform(typeSelector)?.takeUnretainedValue() as? NSObject,
+              type.responds(to: capabilitiesSelector),
+              let profile = type.perform(capabilitiesSelector)?.takeUnretainedValue() as? [String: Any],
+              let capabilities = profile["capabilities"] as? [String: Any],
+              let displays = capabilities["displays"] as? [[String: Any]]
+        else { return [:] }
+
+        var rotations: [UInt32: Int] = [:]
+        for display in displays {
+            guard let id = display["screenID"] as? NSNumber,
+                  let screenID = UInt32(exactly: id.int64Value),
+                  let rotation = display["nativeRotation"] as? NSNumber,
+                  [0, 90, 180, 270].contains(rotation.intValue)
+            else { continue }
+            rotations[screenID] = rotation.intValue
+        }
+        return rotations
     }
 
     // IndigoHIDEdge values (x4 param to IndigoHIDMessageForMouseNSEvent).
@@ -179,35 +213,44 @@ actor HIDInjector {
         unsafeBitCast(sendIMP, to: SendFunc.self)(client, sendSel, msg, ObjCBool(true), nil, nil)
     }
 
-    /// Build a single-finger touch message (normalized 0..1 framebuffer coords).
-    /// NSSize(1,1) makes ratio = point. Routing is pinned until touch-up.
-    private func touchMessage(type: String, x: Double, y: Double, edge: UInt32) -> UnsafeMutableRawPointer? {
-        guard let mouseFunc = mouseFunc, let target = touchTarget.target(for: type) else { return nil }
+    private func logBlockedTouch(phase: String) {
+        guard phase == "begin", restrictsTouchToPrimaryScreen, !didLogBlockedTouch else { return }
+        didLogBlockedTouch = true
+        fputs("[hid] Inner-screen touch input is disabled on this foldable simulator: Xcode 27.1 beta's secondary digitizer can crash the guest. Fold the device to use the cover touchscreen.\n", stderr)
+    }
+
+    /// All single-finger sources use this path: taps, gestures, wheel drags,
+    /// idle touch-up, and swipe-home. Routing is pinned until touch-up.
+    private func rawSendTouch(type: String, x: Double, y: Double, edge: UInt32 = 0) {
+        guard let target = touchTarget.target(for: type) else {
+            logBlockedTouch(phase: type)
+            return
+        }
+        guard let mouseFunc else { return }
         let eventType: Int32
         switch type {
         case "begin": eventType = Self.touchDownEvent
         case "move":  eventType = Self.touchDraggedEvent
         case "end":   eventType = Self.touchUpEvent
-        default: return nil
+        default: return
         }
         var point = CGPoint(x: x, y: y)
-        return mouseFunc(&point, nil, target, eventType, 1.0, 1.0, edge)
-    }
-
-    /// Synchronously build + send a single touch. For use inside gesture blocks
-    /// already running on `inputQueue`.
-    private func rawSendTouch(type: String, x: Double, y: Double, edge: UInt32 = 0) {
-        if let msg = touchMessage(type: type, x: x, y: y, edge: edge) { rawSend(msg) }
+        if let message = mouseFunc(&point, nil, target, eventType, 1.0, 1.0, edge) {
+            rawSend(message)
+        }
     }
 
     func sendTouch(type: String, x: Double, y: Double, screenWidth: Int, screenHeight: Int, edge: UInt32 = 0) {
-        guard let msg = touchMessage(type: type, x: x, y: y, edge: edge) else { return }
         hidLog("[hid] Sending \(type) at (\(String(format:"%.3f",x)),\(String(format:"%.3f",y)))\(edge > 0 ? " edge=\(edge)" : "")")
-        rawSend(msg)
+        rawSendTouch(type: type, x: x, y: y, edge: edge)
     }
 
     func sendMultiTouch(type: String, x1: Double, y1: Double, x2: Double, y2: Double, screenWidth: Int, screenHeight: Int) {
-        guard let mouseFunc = mouseFunc, let target = multiTouchTarget.target(for: type) else { return }
+        guard let target = multiTouchTarget.target(for: type) else {
+            logBlockedTouch(phase: type)
+            return
+        }
+        guard let mouseFunc else { return }
 
         let eventType: Int32
         switch type {
@@ -606,14 +649,24 @@ actor HIDInjector {
     private static let gsEventHostFlag: UInt32 = 0x20000
     private static let gsEventMachMessageID: mach_msg_id_t = 0x7B
 
-    /// Send a device-orientation GSEvent to the simulator.
+    /// Send a device-orientation command to the simulator.
     ///
     /// GSEvent messages travel a different path from Indigo HID: they go
     /// through `mach_msg_send` → `PurpleWorkspacePort` →
     /// `GraphicsServices._PurpleEventCallback` → backboardd. This is how
     /// Simulator.app itself rotates the device, and how idb's
     /// `FBSimulatorPurpleHID.orientationEvent:` is delivered.
-    func sendOrientation(orientation: UInt32) -> Bool {
+    func sendOrientation(orientation: UInt32) async -> Bool {
+        if let deviceUDID,
+           await CoreDeviceBridge.shared.supportsHingeAngle(udid: deviceUDID) {
+            // Modern foldable simulators acknowledge legacy GSEvent delivery
+            // without changing orientation. Use the same vendor channel as
+            // Device Hub and report its failure without a legacy fallback.
+            let nativeRotation = selectedScreenID.flatMap { nativeScreenRotations[$0] } ?? 0
+            return await CoreDeviceBridge.shared.setOrientation(
+                udid: deviceUDID, deviceOrientation: orientation, nativeRotation: nativeRotation
+            )
+        }
         guard let device = simDevice else {
             fputs("[hid] sendOrientation: no SimDevice (setup not called?)\n", stderr)
             return false

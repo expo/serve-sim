@@ -51,6 +51,14 @@ value = angle in degrees, clamped to 0...180
 This was verified against the booted iPhone Duo using CoreDevice's hinge-motion
 readback. It is a private Xcode API and is separate from the public UIKit APIs.
 
+DeviceHub's orientation picker uses the same transport with
+`source = orientation-picker-control`, `type = enum`, and a value of `portrait`,
+`pud`, `landscape-left`, or `landscape-right`. Duo ignores the legacy GSEvent
+rotation path. The picker describes physical pose, so serve-sim converts the
+requested screen orientation using the active panel's profile `nativeRotation`
+(0° outside, 270° inside). Native display readback remains authoritative when an
+app restricts rotation.
+
 ## Selecting the stream's display
 
 The hinge angle alone is not a reliable substitute for the active display ID.
@@ -59,6 +67,21 @@ remain allocated, so choosing the largest surface can stream an inactive panel.
 Legacy `SimScreenProperties.backlight` was also observed to retain stale values
 after a fold. CoreDevice's display information supplies the authoritative active
 display and orientation; capture and touch routing must follow the same display.
+
+The closed screen uses DeviceKit's `phone15` frame. Half-folded and fully open
+use the same `phone14` inner-display frame; there is no separate half-folded 2D
+bezel in the installed assets. The frame and hardware buttons rotate around the
+stream, whose touch coordinates remain aligned with its active screen. The
+inner frame's button PDFs declare `/Rotate 270`; both asset dimensions and PNG
+conversion must apply that page rotation.
+
+In Xcode 27.1 beta, explicit touches to the inner display's digitizer can abort
+`backboardd` with “Unable to dispatch event through disconnected service.” The
+default digitizer alias also failed to deliver touches during testing. Until
+that connection is resolved, foldable touch input is restricted to cover screen
+1; inner streaming, hinge controls, and rotation remain available. Portrait and
+both landscape directions were verified at 0°, 90°, and 180°. The test app
+declined upside-down orientation, so that case is not counted as verified.
 
 For independent checks on Xcode 27.1 beta:
 

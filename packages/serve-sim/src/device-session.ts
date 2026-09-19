@@ -784,7 +784,11 @@ export class DeviceSession {
         const value = ORIENTATION_BY_NAME[m.orientation];
         if (value != null && await this.hid.orientation(value)) {
           this.recordHidEvent(tag, m);
-          if (m.orientation !== this.orientation) {
+          if (this.supportsHingeAngle) {
+            // Device Hub changes physical pose; the active app may keep its
+            // interface locked. Rotate the stream only after native readback.
+            if (await this.refreshScreenSizeFromNative()) this.broadcastConfig();
+          } else if (m.orientation !== this.orientation) {
             this.orientation = m.orientation;
             this.broadcastConfig();
           }

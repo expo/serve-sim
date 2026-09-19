@@ -1,6 +1,27 @@
 /// CoreSimulator's SimScreenUIOrientation values, shared by the framebuffer and
 /// its properties-change callbacks. Zero means ambiguous, not portrait.
 public enum SimulatorScreenOrientation {
+    /// Device Hub's orientation-picker-control uses device orientation names,
+    /// whereas screen orientation names describe the rotated framebuffer. A
+    /// panel's mounting rotation converts that request into the physical pose.
+    public static func vendorControlValue(forDeviceOrientation value: UInt32, nativeRotation: Int = 0) -> String? {
+        let requestedRotation: Int
+        switch value {
+        case 1: requestedRotation = 0
+        case 2: requestedRotation = 180
+        case 3: requestedRotation = 270
+        case 4: requestedRotation = 90
+        default: return nil
+        }
+        switch (requestedRotation + nativeRotation % 360 + 360) % 360 {
+        case 0: return "portrait"
+        case 90: return "landscape-right"
+        case 180: return "pud"
+        case 270: return "landscape-left"
+        default: return nil
+        }
+    }
+
     public static func name(for value: UInt32) -> String? {
         switch value {
         case 1: return "portrait"

@@ -1,5 +1,6 @@
 import Foundation
 import CoreDeviceShim
+import StreamingPolicy
 
 /// A narrow adapter for CoreDevice's private Swift API. Apple does not ship its
 /// module interface, so the C target preserves the ABI through guarded symbol
@@ -72,22 +73,35 @@ actor CoreDeviceBridge {
 
     func setHingeAngle(udid: String, angle: Double) async -> Bool {
         guard angle.isFinite, (0...180).contains(angle), await supportsHingeAngle(udid: udid) else { return false }
+        guard let rawData = SSCoreDeviceHingeData(angle) else { return false }
+        let data = Unmanaged<NSData>.fromOpaque(rawData).takeRetainedValue() as Data
+        return await sendControl(udid: udid, data: data)
+    }
+
+    func setOrientation(udid: String, deviceOrientation: UInt32, nativeRotation: Int = 0) async -> Bool {
+        guard let value = SimulatorScreenOrientation.vendorControlValue(
+                  forDeviceOrientation: deviceOrientation, nativeRotation: nativeRotation
+              ),
+              let rawData = value.withCString({ SSCoreDeviceOrientationData($0) }) else { return false }
+        let data = Unmanaged<NSData>.fromOpaque(rawData).takeRetainedValue() as Data
+        return await sendControl(udid: udid, data: data)
+    }
+
+    private func sendControl(udid: String, data: Data) async -> Bool {
         do {
             let capability = try await capability(
                 udid: udid,
                 metadataSymbol: "$s10CoreDevice26VendorDefinedHIDCapabilityVN",
                 witnessSymbol: "$s10CoreDevice26VendorDefinedHIDCapabilityVAA0B10CapabilityAAWP"
             )
-            guard let rawData = SSCoreDeviceHingeData(angle) else { return false }
-            let data = Unmanaged<NSData>.fromOpaque(rawData).takeRetainedValue() as Data
             let words = unsafeBitCast(data, to: (UInt64, UInt64).self)
             let sent = withExtendedLifetime(data) {
-                SSCoreDeviceSendHinge(capability.storage, words.0, words.1)
+                SSCoreDeviceSendControl(capability.storage, words.0, words.1)
             }
             if !sent { capabilities.removeValue(forKey: "\(udid):$s10CoreDevice26VendorDefinedHIDCapabilityVN") }
             return sent
         } catch {
-            fputs("[hinge] CoreDevice control unavailable: \(error)\n", stderr)
+            fputs("[hid] CoreDevice control unavailable: \(error)\n", stderr)
             return false
         }
     }

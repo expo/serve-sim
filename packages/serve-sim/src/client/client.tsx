@@ -14,7 +14,6 @@ import {
   digitalCrownDeltaFromWheel,
   displayStreamConfig,
   fallbackScreenSize,
-  isLandscapeConfig,
   screenBorderRadius,
   SimulatorToolbar,
   getDeviceType,
@@ -39,7 +38,7 @@ import {
   KeyboardCapture,
   KeyboardToggleButton,
 } from "./components/keyboard-capture";
-import { DeviceKitChrome, deviceKitChromeForScreen, deviceKitScreenRadius, type ChromeButtonPress } from "./components/device-chrome-frame";
+import { DeviceKitChrome, deviceKitChromeForScreen, deviceKitChromeGeometry, deviceKitScreenRadius, type ChromeButtonPress } from "./components/device-chrome-frame";
 import { createPacedKeySender } from "./utils/paced-key-sender";
 import { GridPanel } from "./components/grid-panel";
 import { IconButton } from "./components/icon-button";
@@ -755,21 +754,21 @@ function AppWithConfig({
     : 1;
 
   // DeviceKit chrome wraps the live stream in the real device bezel (with
-  // working hardware buttons). It's authored portrait, so in landscape we drop
-  // back to the bare rounded screen. When chromed, the on-screen container is
-  // the full frame (bezel + screen): `chromeScale` is how much bigger the frame
+  // working hardware buttons), rotating its artwork around the active screen.
+  // When chromed, the on-screen container is the full frame (bezel + screen):
+  // `chromeScale` is how much bigger the frame
   // is than the screen, so we scale the container up by it while keeping the
   // *screen* at the same comfortable size — and resize / panel-collision math
   // all operate on the frame dimensions.
-  const isLandscape = isLandscapeConfig(activeStreamConfig);
-  const useChrome = !!chrome && !isLandscape && clipOrientation !== "portrait_upside_down" && chromeEnabled;
-  const chromeScale = useChrome ? chrome!.frame.width / chrome!.screen.width : 1;
+  const chromeGeometry = chrome ? deviceKitChromeGeometry(chrome, clipOrientation) : null;
+  const useChrome = !!chromeGeometry && chromeEnabled;
+  const chromeScale = useChrome ? chromeGeometry!.frame.width / chromeGeometry!.screen.width : 1;
   const containerDefaultWidth = frameMaxWidth * chromeScale;
   const containerAspectRatioValue = useChrome
-    ? chrome!.frame.width / chrome!.frame.height
+    ? chromeGeometry!.frame.width / chromeGeometry!.frame.height
     : frameAspectRatioValue;
   const containerAspectRatio = useChrome
-    ? `${chrome!.frame.width} / ${chrome!.frame.height}`
+    ? `${chromeGeometry!.frame.width} / ${chromeGeometry!.frame.height}`
     : frameAspectRatio;
 
   // Touch/button relay via direct WebSocket
@@ -1495,6 +1494,7 @@ function AppWithConfig({
             return (
               <DeviceKitChrome
                 chrome={chrome!}
+                orientation={clipOrientation}
                 interactive
                 containerSize={
                   // Measured, not computed: pixel rects can't self-correct the
@@ -1700,7 +1700,7 @@ function AppWithConfig({
         width={toolsPanelWidth}
         chromeEnabled={chromeEnabled}
         onChromeEnabledChange={setChromeEnabled}
-        hasChrome={!!chrome && !isLandscape}
+        hasChrome={!!chrome}
       />
       <ResizeHandle
         panelWidth={toolsPanelWidth}

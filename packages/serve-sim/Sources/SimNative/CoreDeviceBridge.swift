@@ -8,9 +8,10 @@ import StreamingPolicy
 actor CoreDeviceBridge {
     static let shared = CoreDeviceBridge()
 
-    enum BridgeError: Error { case unavailable, deviceUnavailable }
+    enum BridgeError: Error { case unavailable, deviceUnavailable, initializationTimedOut }
 
     private var manager: CoreDeviceManagerObject?
+    private let managerReadiness = SharedReadiness()
     private var capabilities: [String: CoreDeviceCapabilityObject] = [:]
     private var hingeSupport: [String: Bool] = [:]
 
@@ -37,13 +38,20 @@ actor CoreDeviceBridge {
             }
         }
         guard let manager else { throw BridgeError.unavailable }
-        for _ in 0..<100 {
-            if manager.initialized() { break }
-            try await Task.sleep(nanoseconds: 50_000_000)
+        do {
+            try await managerReadiness.waitUntilReady {
+                await self.managerIsInitialized()
+            }
+        } catch SharedReadiness.Failure.timedOut {
+            throw BridgeError.initializationTimedOut
         }
         guard let device = manager.allDevices().first(where: { $0.identifier().uuidString.caseInsensitiveCompare(udid) == .orderedSame })
         else { throw BridgeError.deviceUnavailable }
         return device
+    }
+
+    private func managerIsInitialized() -> Bool {
+        manager?.initialized() == true
     }
 
     private static func makeVisibilitySet<T: Hashable>(_: T.Type) -> Any {

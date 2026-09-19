@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { createServer, type Server } from "http";
 import { WebSocket, WebSocketServer } from "ws";
 import type { NativeScreenInfo, MjpegFrame } from "../../native";
@@ -10,6 +10,40 @@ const routedScreens: number[] = [];
 const hingeAngles: number[] = [];
 let hingeResult = true;
 let hingeSupported = false;
+let inputSetupError: Error | undefined;
+const inputCalls: string[] = [];
+
+// Keep NativeHid's real error handling in the loop; only replace the addon.
+const addon = {
+  SimHID: class {
+    async setScreen(screenId: number) {
+      await Bun.sleep(5);
+      routedScreens.push(screenId);
+      if (inputSetupError) throw inputSetupError;
+    }
+    async touch() { inputCalls.push("touch"); }
+    async orientation() { inputCalls.push("orientation"); return true; }
+    async supportsHingeAngle() { inputCalls.push("supportsHingeAngle"); return hingeSupported; }
+    async setHingeAngle(angle: number) { hingeAngles.push(angle); return hingeResult; }
+  },
+};
+const moduleExports = await import("module");
+const originalCreateRequire = moduleExports.createRequire;
+mock.module("module", () => ({
+  ...moduleExports,
+  createRequire: (url: string | URL) => {
+    const require = originalCreateRequire(url);
+    return Object.assign((path: string) => path.endsWith("serve-sim-native.node") ? addon : require(path), require);
+  },
+}));
+const fsExports = await import("fs");
+const originalExistsSync = fsExports.existsSync;
+mock.module("fs", () => ({
+  ...fsExports,
+  existsSync: (path: Parameters<typeof originalExistsSync>[0]) =>
+    String(path).endsWith("serve-sim-native.node") || originalExistsSync(path),
+}));
+const { NativeHid } = await import("../../native");
 
 mock.module("../../native", () => ({
   NativeCapture: class {
@@ -18,15 +52,7 @@ mock.module("../../native", () => ({
     async screenSize() { screenReads++; return { ...screen }; }
     async subscribeMjpeg(callback: typeof mjpeg) { mjpeg = callback; return async () => {}; }
   },
-  NativeHid: class {
-    async setScreen(screenId: number) {
-      await Bun.sleep(5);
-      routedScreens.push(screenId);
-    }
-    async orientation() { return true; }
-    async supportsHingeAngle() { return hingeSupported; }
-    async setHingeAngle(angle: number) { hingeAngles.push(angle); return hingeResult; }
-  },
+  NativeHid,
   Orientation: { portrait: 1, portraitUpsideDown: 2, landscapeRight: 3, landscapeLeft: 4 },
   axDescribeAsync: async () => "{}",
   axFrontmostAsync: async () => "{}",
@@ -41,6 +67,7 @@ let session: InstanceType<typeof DeviceSession> | undefined;
 let server: Server | undefined;
 let wsServer: WebSocketServer | undefined;
 let ws: WebSocket | undefined;
+let errorLog: ReturnType<typeof spyOn<typeof console, "error">> | undefined;
 
 async function waitUntil(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 1500;
@@ -50,13 +77,15 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
   }
 }
 
-async function start(initialScreen: NativeScreenInfo, supportsHingeAngle = false) {
+async function start(initialScreen: NativeScreenInfo, supportsHingeAngle = false, setupError?: Error) {
   screen = initialScreen;
   screenReads = 0;
   routedScreens.length = 0;
   hingeAngles.length = 0;
   hingeResult = true;
   hingeSupported = supportsHingeAngle;
+  inputSetupError = setupError;
+  inputCalls.length = 0;
   mjpeg = undefined;
   session = new DeviceSession("SCREEN-TEST");
   await session.start();
@@ -84,9 +113,52 @@ afterEach(() => {
   wsServer?.close();
   server?.closeAllConnections();
   server?.close();
+  errorLog?.mockRestore();
+  errorLog = undefined;
 });
 
 describe("native active screen config", () => {
+  test.each([1, undefined])("streams after input setup fails with screen ID %s", async (screenId) => {
+    errorLog = spyOn(console, "error").mockImplementation(() => {});
+    const { configs, hingeResults, url } = await start(
+      { width: 1398, height: 2034, orientation: "portrait", screenId },
+      true,
+      new Error("Digitizer symbols unavailable"),
+    );
+    await waitUntil(() => configs.length > 0);
+    expect(errorLog).toHaveBeenCalledTimes(1);
+    expect(errorLog.mock.calls.flat().join(" ")).toContain("Digitizer symbols unavailable");
+    expect(errorLog.mock.calls.flat().join(" ")).toContain("without input");
+    expect(routedScreens).toEqual([screenId ?? 0]);
+
+    const controller = new AbortController();
+    try {
+      const responsePromise = fetch(url, { signal: controller.signal });
+      await waitUntil(() => !!mjpeg);
+      const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+      await mjpeg!({ width: 900, height: 1280, data: jpeg });
+      const response = await responsePromise;
+      expect(response.status).toBe(200);
+      const chunk = await response.body!.getReader().read();
+      expect(Buffer.from(chunk.value!).includes(Buffer.from(jpeg))).toBe(true);
+
+      ws!.send(Buffer.concat([Buffer.from([0x03]), Buffer.from(JSON.stringify({ type: "begin", x: 0.5, y: 0.5 }))]));
+      ws!.send(Buffer.concat([Buffer.from([0x0f]), Buffer.from(JSON.stringify({ angle: 90 }))]));
+      await waitUntil(() => hingeResults.length === 1);
+      expect(hingeResults[0]?.ok).toBe(false);
+      expect(inputCalls).toEqual([]);
+      expect(hingeAngles).toEqual([]);
+
+      screen = { width: 2007, height: 2853, orientation: "landscape_left", screenId: 3 };
+      await waitUntil(() => configs.at(-1)?.screenId === 3);
+      expect(configs.at(-1)).toMatchObject({ width: 2007, height: 2853, orientation: "landscape_left" });
+      expect(errorLog).toHaveBeenCalledTimes(1);
+      expect(routedScreens).toEqual([screenId ?? 0]);
+    } finally {
+      controller.abort();
+    }
+  });
+
   test("seeds a booted Duo's orientation and routes input before advertising its screen", async () => {
     const { configs } = await start({ width: 2007, height: 2853, orientation: "landscape_left", screenId: 1 });
     await waitUntil(() => configs.length > 0);
@@ -135,7 +207,7 @@ describe("native active screen config", () => {
     const readsBefore = screenReads;
     await waitUntil(() => screenReads > readsBefore);
     expect(configs.at(-1)?.orientation).toBe("landscape_right");
-    expect(routedScreens).toEqual([]);
+    expect(routedScreens).toEqual([0]);
     session!.close();
     const readsAtClose = screenReads;
     await Bun.sleep(350);

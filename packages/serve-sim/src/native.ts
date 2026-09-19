@@ -156,6 +156,7 @@ function load(): NativeAddon {
  */
 export class NativeHid {
   private readonly handle: SimHIDHandle;
+  private inputUnavailable = false;
 
   constructor(udid: string) {
     this.handle = new (load().SimHID)(udid);
@@ -169,6 +170,7 @@ export class NativeHid {
   // the sim reboots. The spawned helper used to absorb this in its own process;
   // `guard` restores that isolation by swallowing malformed-input errors.
   private async guard<T>(op: string, fn: () => PromiseLike<T>, fallback: T): Promise<T> {
+    if (this.inputUnavailable) return fallback;
     try {
       return await fn();
     } catch (err) {
@@ -181,8 +183,16 @@ export class NativeHid {
     return this.guard("touch", () => this.handle.touch(type, x, y, w, h, edge), undefined);
   }
 
-  setScreen(screenId: number): Promise<void> {
-    return this.handle.setScreen(screenId);
+  async setScreen(screenId: number): Promise<void> {
+    if (this.inputUnavailable) return;
+    try {
+      await this.handle.setScreen(screenId);
+    } catch (err) {
+      // Native setup is cached for this handle; a failed setup cannot recover
+      // until a new session. Keep capture running without calling partial HID state.
+      this.inputUnavailable = true;
+      console.error("[hid] Input setup failed; streaming will continue without input:", err instanceof Error ? err.message : err);
+    }
   }
 
   setHingeAngle(angle: number): Promise<boolean> {

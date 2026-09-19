@@ -1069,7 +1069,7 @@ export class DeviceSession {
     if (this.phase !== "running") return false;
     const previous = this.nativeScreen;
     let changed = false;
-    if (screen.screenId !== previous?.screenId) {
+    if (!previous || screen.screenId !== previous.screenId) {
       await this.hid.setScreen(screen.screenId ?? 0);
       if (this.phase !== "running") return false;
       changed = true;

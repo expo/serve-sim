@@ -9,8 +9,14 @@ export type SimulatorOrientation =
 export interface StreamConfig {
   width: number;
   height: number;
-  /** Last orientation requested through serve-sim, when known. */
+  /** Current simulator orientation, when known. */
   orientation?: SimulatorOrientation;
+  /** Active simulator display, used to select its frame and corner geometry. */
+  screenId?: number;
+  /** Whether this simulator exposes hinge angle control. */
+  supportsHingeAngle?: boolean;
+  /** Last reported or confirmed hinge angle in degrees. */
+  hingeAngle?: number;
 }
 
 export type ConnectionQuality = "good" | "degraded" | "poor";

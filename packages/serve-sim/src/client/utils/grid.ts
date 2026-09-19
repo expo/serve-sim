@@ -69,6 +69,8 @@ export interface DevicePlaceholderAssetDescriptor {
 
 export interface DeviceKitChromeDescriptor {
   identifier: string;
+  screenId?: number;
+  displayVariants?: Record<number, DeviceKitChromeDescriptor>;
   frame: GridSize;
   body: GridRect;
   screen: GridRect;
@@ -76,6 +78,12 @@ export interface DeviceKitChromeDescriptor {
   outerCornerRadius: number;
   innerCornerRadius: number;
   screenRadius: number;
+  screenCornerRadii?: {
+    topLeft: number;
+    topRight: number;
+    bottomRight: number;
+    bottomLeft: number;
+  };
   compositeImage: string | null;
   slice: DeviceKitChromeSlice | null;
   corner: GridSize | null;

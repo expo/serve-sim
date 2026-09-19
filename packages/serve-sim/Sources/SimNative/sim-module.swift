@@ -23,12 +23,23 @@ private func u32(_ v: Int) -> UInt32 {
 /// released (freeing the injector) when its JS handle is garbage-collected.
 @NodeClass @NodeActor final class SimHID {
     private let injector: HIDInjector
+    private let setup: Task<Void, Error>
     private let udid: String
 
     @NodeConstructor init(_ udid: String) throws {
         self.udid = udid
-        injector = HIDInjector()
-        Task { try await injector.setup(deviceUDID: udid) }
+        let injector = HIDInjector()
+        self.injector = injector
+        setup = Task { try await injector.setup(deviceUDID: udid) }
+    }
+
+    /// Zero means capture has no modern screen metadata; retain legacy routing.
+    @NodeMethod func setScreen(_ screenID: Int) async throws {
+        // Publishing the first captured screen also establishes readiness for
+        // input; actor task scheduling alone does not order it after setup.
+        try await setup.value
+        let id = UInt32(exactly: screenID).flatMap { $0 > 0 ? $0 : nil }
+        await injector.setScreen(screenID: id)
     }
 
     @NodeMethod func touch(_ type: String, _ x: Double, _ y: Double,
@@ -70,6 +81,14 @@ private func u32(_ v: Int) -> UInt32 {
 
     @NodeMethod func orientation(_ orientation: Int) async -> Bool {
         await injector.sendOrientation(orientation: u32(orientation))
+    }
+
+    @NodeMethod func setHingeAngle(_ angle: Double) async -> Bool {
+        await injector.setHingeAngle(angle)
+    }
+
+    @NodeMethod func supportsHingeAngle() async -> Bool {
+        await injector.supportsHingeAngle()
     }
 
     @NodeMethod func memoryWarning() async {
@@ -197,7 +216,15 @@ private func u32(_ v: Int) -> UInt32 {
 
     @NodeMethod func screenSize() async -> [String: any NodePropertyConvertible] {
         let dimensions = await engine.currentScreenSize()
-        return ["width": dimensions.width, "height": dimensions.height]
+        var result: [String: any NodePropertyConvertible] = ["width": dimensions.width, "height": dimensions.height]
+        if let display = dimensions.display {
+            // The screen-ID Indigo target is for integrated digitizers. Keep
+            // external/scene displays on the existing input fallback.
+            if display.screenType == 0 { result["screenId"] = Int(display.screenID) }
+            if let orientation = display.orientation { result["orientation"] = orientation }
+            if let chromeIdentifier = display.chromeIdentifier { result["chromeIdentifier"] = chromeIdentifier }
+        }
+        return result
     }
 
     deinit {

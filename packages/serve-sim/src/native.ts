@@ -24,6 +24,9 @@ const require = createRequire(import.meta.url);
 // handle is garbage-collected (Swift `deinit`), so there are no explicit
 // destroy/free calls here.
 interface SimHIDHandle {
+  setScreen(screenId: number): Promise<void>;
+  supportsHingeAngle(): Promise<boolean>;
+  setHingeAngle(angle: number): Promise<boolean>;
   touch(type: TouchType, x: number, y: number, w: number, hh: number, edge: number): Promise<void>;
   multiTouch(type: TouchType, x1: number, y1: number, x2: number, y2: number, w: number, hh: number): Promise<void>;
   button(button: string): Promise<void>;
@@ -49,7 +52,7 @@ interface SimCaptureHandle {
   handleWebRTCOffer(offerJson: string): Promise<string>;
   closeWebRTCSession(sessionId: string): Promise<void>;
   webRTCSenderStats(sessionId: string): Promise<string>;
-  screenSize(): Promise<{ width: number; height: number }>;
+  screenSize(): Promise<NativeScreenInfo>;
   stop(): Promise<void>;
   subscribe(codec: number, onFrame: RawFrameCallback): Promise<NativeUnsubscribe>;
 }
@@ -98,6 +101,15 @@ export type AvccFrame = {
 
 export type NativeCaptureOptions = StreamEncoderSettings;
 
+export type NativeScreenInfo = {
+  width: number;
+  height: number;
+  /** Present when CoreSimulator exposes its active screen metadata. */
+  orientation?: "portrait" | "portrait_upside_down" | "landscape_left" | "landscape_right";
+  screenId?: number;
+  chromeIdentifier?: string;
+};
+
 export type NativeUnsubscribe = () => Promise<void>;
 
 export type TouchType = "begin" | "move" | "end";
@@ -144,6 +156,7 @@ function load(): NativeAddon {
  */
 export class NativeHid {
   private readonly handle: SimHIDHandle;
+  private inputUnavailable = false;
 
   constructor(udid: string) {
     this.handle = new (load().SimHID)(udid);
@@ -157,6 +170,7 @@ export class NativeHid {
   // the sim reboots. The spawned helper used to absorb this in its own process;
   // `guard` restores that isolation by swallowing malformed-input errors.
   private async guard<T>(op: string, fn: () => PromiseLike<T>, fallback: T): Promise<T> {
+    if (this.inputUnavailable) return fallback;
     try {
       return await fn();
     } catch (err) {
@@ -167,6 +181,26 @@ export class NativeHid {
 
   touch(type: TouchType, x: number, y: number, w: number, h: number, edge = 0): Promise<void> {
     return this.guard("touch", () => this.handle.touch(type, x, y, w, h, edge), undefined);
+  }
+
+  async setScreen(screenId: number): Promise<void> {
+    if (this.inputUnavailable) return;
+    try {
+      await this.handle.setScreen(screenId);
+    } catch (err) {
+      // Native setup is cached for this handle; a failed setup cannot recover
+      // until a new session. Keep capture running without calling partial HID state.
+      this.inputUnavailable = true;
+      console.error("[hid] Input setup failed; streaming will continue without input:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  setHingeAngle(angle: number): Promise<boolean> {
+    return this.guard("setHingeAngle", () => this.handle.setHingeAngle(angle), false);
+  }
+
+  supportsHingeAngle(): Promise<boolean> {
+    return this.guard("supportsHingeAngle", () => this.handle.supportsHingeAngle(), false);
   }
 
   multiTouch(type: TouchType, x1: number, y1: number, x2: number, y2: number, w: number, h: number): Promise<void> {
@@ -281,7 +315,7 @@ export class NativeCapture {
     return readSenderStats(JSON.parse(await this.handle.webRTCSenderStats(sessionId ?? "")));
   }
 
-  screenSize(): Promise<{ width: number; height: number }> {
+  screenSize(): Promise<NativeScreenInfo> {
     return this.handle.screenSize();
   }
 

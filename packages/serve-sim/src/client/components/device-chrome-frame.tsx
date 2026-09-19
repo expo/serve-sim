@@ -12,6 +12,8 @@ import type {
   DeviceKitChromeDescriptor,
   GridRect,
 } from "../utils/grid";
+import type { SimulatorOrientation } from "../types";
+import { rotationDegreesForOrientation } from "../simulator/orientation";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { currentDevicePixelRatio, roundToDevicePixel } from "../utils/simulator-resize";
 
@@ -34,6 +36,7 @@ export function DeviceKitChrome({
   onButton,
   onCrownWheel,
   containerSize,
+  orientation = "portrait",
 }: {
   chrome: DeviceKitChromeDescriptor;
   /** Rendered inside the screen cutout (the live stream, or a black fill). */
@@ -43,63 +46,154 @@ export function DeviceKitChrome({
   /** Wheel over the Digital Crown — forwards rotation to scroll the watch. */
   onCrownWheel?: (deltaY: number, deltaMode: number) => void;
   containerSize?: { width: number; height: number };
+  orientation?: SimulatorOrientation;
 }) {
+  const geometry = deviceKitChromeGeometry(chrome, orientation);
+  const rotation = rotationDegreesForOrientation(orientation);
+  const sideways = Math.abs(rotation) === 90;
+  const artworkSize = sideways && containerSize
+    ? { width: containerSize.height, height: containerSize.width }
+    : containerSize;
+  const artworkStyle: CSSProperties = {
+    pointerEvents: "none",
+    ...(rotation === 0
+      ? { inset: 0 }
+      : {
+          left: "50%",
+          top: "50%",
+          width: artworkSize?.width ?? pct(chrome.frame.width, geometry.frame.width),
+          height: artworkSize?.height ?? pct(chrome.frame.height, geometry.frame.height),
+          transform: `translate(-50%, -50%) rotate(${rotation}deg)`,
+          transformOrigin: "center",
+        }),
+  };
+  const renderButton = (button: DeviceKitChromeButton) => (
+    <ChromeButton
+      key={`button-${button.name}`}
+      chrome={chrome}
+      button={button}
+      interactive={interactive}
+      onButton={onButton}
+      onWheel={interactive && button.name === "digital-crown" ? onCrownWheel : undefined}
+      containerSize={artworkSize}
+    />
+  );
+
   // Apple's composite pictures only the bezel — the hardware buttons are
   // separate sprites that poke out past the metal edge (the part overshooting
   // the bezel is what's visible). So every button is always drawn; `onTop` ones
   // (watch crown / side / action) sit above the bezel, the rest behind it.
   return (
-    <div className="absolute inset-0">
-      {chrome.buttons.map((button) => (
-        <ChromeButton
-          key={`button-${button.name}`}
-          chrome={chrome}
-          button={button}
-          interactive={interactive}
-          onButton={onButton}
-          onWheel={
-            interactive && button.name === "digital-crown" ? onCrownWheel : undefined
-          }
-          containerSize={containerSize}
-        />
-      ))}
-
-      {/* Bezel BEHIND (z1) — the full device incl. its opaque black screen
-          border, which frames the stream the way a real display's black border
-          does (the metal edge → black border → active screen). */}
-      {chrome.compositeImage ? (
-        <ChromeImage
-          chrome={chrome}
-          image={chrome.compositeImage}
-          rect={chrome.body}
-          zIndex={1}
-          containerSize={containerSize}
-        />
-      ) : chrome.slice && chrome.corner ? (
-        <NineSliceChrome chrome={chrome} containerSize={containerSize} />
-      ) : null}
+    <div className="absolute inset-0" style={{ pointerEvents: "none" }}>
+      <div
+        data-devicekit-artwork="back"
+        className="absolute"
+        style={{ ...artworkStyle, zIndex: 1 }}
+      >
+        {chrome.buttons.filter((button) => !button.onTop).map(renderButton)}
+        {/* The bezel and button artwork retain Apple's portrait coordinates;
+            the whole layer rotates around the oriented frame's center. */}
+        {chrome.compositeImage ? (
+          <ChromeImage
+            chrome={chrome}
+            image={chrome.compositeImage}
+            rect={chrome.body}
+            zIndex={1}
+            containerSize={artworkSize}
+          />
+        ) : chrome.slice && chrome.corner ? (
+          <NineSliceChrome chrome={chrome} containerSize={artworkSize} />
+        ) : null}
+      </div>
 
       {/* Stream ON TOP of the bezel (z2), clipped to the active screen rect with
           the inner-corner radius, so it sits exactly in the screen opening with
           the bezel framing it (matches Apple Simulator). */}
       <div
+        data-devicekit-screen=""
         className="absolute overflow-hidden bg-black"
         style={{
-          ...rectStyle(chrome, chrome.screen, 2, containerSize),
-          borderRadius: deviceKitScreenRadius(chrome),
+          ...rectStyle(geometry, geometry.screen, 2, containerSize),
+          borderRadius: deviceKitScreenRadius(chrome, orientation),
+          pointerEvents: "auto",
         }}
       >
         {screen}
       </div>
+
+      {/* A transformed element creates a stacking context. Front buttons need
+          their own layer to stay above the untransformed live screen. */}
+      {chrome.buttons.some((button) => button.onTop) && (
+        <div
+          data-devicekit-artwork="front"
+          className="absolute"
+          style={{ ...artworkStyle, zIndex: 5 }}
+        >
+          {chrome.buttons.filter((button) => button.onTop).map(renderButton)}
+        </div>
+      )}
     </div>
   );
 }
 
-/** CSS border-radius for the screen cutout, matched to its measured corner radius. */
-export function deviceKitScreenRadius(chrome: DeviceKitChromeDescriptor): string {
-  return `${(chrome.screenRadius / chrome.screen.width) * 100}% / ${
-    (chrome.screenRadius / chrome.screen.height) * 100
-  }%`;
+/** Oriented frame and axis-aligned screen bounds, in DeviceKit coordinates. */
+export function deviceKitChromeGeometry(
+  chrome: DeviceKitChromeDescriptor,
+  orientation: SimulatorOrientation = "portrait",
+): { frame: { width: number; height: number }; screen: GridRect } {
+  const { frame, screen } = chrome;
+  const { x, y, width, height } = screen;
+  switch (orientation) {
+    case "landscape_left":
+      return {
+        frame: { width: frame.height, height: frame.width },
+        screen: { x: frame.height - y - height, y: x, width: height, height: width },
+      };
+    case "portrait_upside_down":
+      return {
+        frame,
+        screen: { x: frame.width - x - width, y: frame.height - y - height, width, height },
+      };
+    case "landscape_right":
+      return {
+        frame: { width: frame.height, height: frame.width },
+        screen: { x: y, y: frame.width - x - width, width: height, height: width },
+      };
+    default:
+      return { frame, screen };
+  }
+}
+
+/** Select the chrome measurements for the currently captured screen. */
+export function deviceKitChromeForScreen(
+  chrome: DeviceKitChromeDescriptor,
+  screenId?: number,
+): DeviceKitChromeDescriptor {
+  return (screenId === undefined ? undefined : chrome.displayVariants?.[screenId]) ?? chrome;
+}
+
+/** CSS border-radius for the screen cutout, matched to its measured corners. */
+export function deviceKitScreenRadius(
+  chrome: DeviceKitChromeDescriptor,
+  orientation?: SimulatorOrientation,
+): string {
+  const landscape = orientation === "landscape_left" || orientation === "landscape_right";
+  const width = landscape ? chrome.screen.height : chrome.screen.width;
+  const height = landscape ? chrome.screen.width : chrome.screen.height;
+  if (chrome.screenCornerRadii) {
+    const { topLeft, topRight, bottomRight, bottomLeft } = chrome.screenCornerRadii;
+    const radii = orientation === "landscape_left"
+      ? [bottomLeft, topLeft, topRight, bottomRight]
+      : orientation === "landscape_right"
+        ? [topRight, bottomRight, bottomLeft, topLeft]
+        : orientation === "portrait_upside_down"
+          ? [bottomRight, bottomLeft, topLeft, topRight]
+          : [topLeft, topRight, bottomRight, bottomLeft];
+    return `${radii.map((radius) => pct(radius, width)).join(" ")} / ${
+      radii.map((radius) => pct(radius, height)).join(" ")
+    }`;
+  }
+  return `${pct(chrome.screenRadius, width)} / ${pct(chrome.screenRadius, height)}`;
 }
 
 function ChromeButton({
@@ -369,14 +463,15 @@ export function ChromeImage({
 }
 
 export function chromeAssetUrl(identifier: string, image: string): string {
-  const path = `grid/api/devicekit-chrome?chrome=${encodeURIComponent(identifier)}&image=${encodeURIComponent(image)}`;
+  // v2 honors the PDF page rotation; old rasterizations were cached immutable.
+  const path = `grid/api/devicekit-chrome?chrome=${encodeURIComponent(identifier)}&image=${encodeURIComponent(image)}&v=2`;
   return typeof window === "undefined" ? `/${path}` : simEndpoint(path);
 }
 
 // Neighbours derive their shared edge from the same number, so no hairline
 // seams open between adjacent nine-slice pieces.
 export function snapChromeRect(
-  chrome: DeviceKitChromeDescriptor,
+  chrome: Pick<DeviceKitChromeDescriptor, "frame">,
   rect: GridRect,
   container: { width: number; height: number },
   dpr = currentDevicePixelRatio(),
@@ -400,7 +495,7 @@ export function snapChromeRect(
 }
 
 function rectStyle(
-  chrome: DeviceKitChromeDescriptor,
+  chrome: Pick<DeviceKitChromeDescriptor, "frame">,
   rect: GridRect,
   zIndex: number,
   containerSize?: { width: number; height: number },

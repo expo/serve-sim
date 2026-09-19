@@ -305,9 +305,9 @@ actor CaptureEngine {
         return String(decoding: data, as: UTF8.self)
     }
 
-    func currentScreenSize() async -> Dimensions {
-        guard let size = await frameCapture.getScreenSize() else { return screenSize }
-        return Dimensions(width: size.width, height: size.height)
+    func currentScreenSize() async -> CapturedScreenInfo {
+        await frameCapture.getScreenSize()
+            ?? CapturedScreenInfo(width: screenSize.width, height: screenSize.height)
     }
 
     func stop() async {

@@ -15,7 +15,7 @@ import { useCoarsePointer } from "../hooks/use-coarse-pointer.js";
 import { runHostAction, type ExecResult } from "../utils/exec";
 import type { SimulatorOrientation } from "../types.js";
 import { getDeviceType, type DeviceType } from "./deviceFrames.js";
-import { ROTATE_LEFT_CYCLE } from "./orientation.js";
+import { createRotationCursor } from "./rotation-cursor.js";
 
 type RotateFn = (orientation: SimulatorOrientation) => void | Promise<void>;
 
@@ -498,10 +498,15 @@ const RotateButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function 
 ) {
   const ctx = useToolbar("RotateButton");
   const cantRotate = ctx.deviceType === "watch" || ctx.deviceType === "vision";
-  // Reset the cycle when the device changes — each sim boots in portrait.
-  const [orientation, setOrientation] = useState<SimulatorOrientation>("portrait");
+  const rotationCursor = useRef(createRotationCursor(ctx.orientation ?? "portrait"));
+  const rotationDevice = useRef(ctx.deviceUdid);
   useEffect(() => {
-    setOrientation(ctx.orientation ?? "portrait");
+    if (rotationDevice.current !== ctx.deviceUdid) {
+      rotationDevice.current = ctx.deviceUdid;
+      rotationCursor.current = createRotationCursor(ctx.orientation ?? "portrait");
+    } else {
+      rotationCursor.current.updateReadback(ctx.orientation);
+    }
   }, [ctx.deviceUdid, ctx.orientation]);
 
   return (
@@ -513,8 +518,9 @@ const RotateButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function 
         onClick?.(e);
         if (e.defaultPrevented) return;
         if (!ctx.deviceUdid || cantRotate) return;
-        const next = ROTATE_LEFT_CYCLE[ctx.orientation ?? orientation];
-        setOrientation(next);
+        // An app may decline an orientation. Keep cycling from the last
+        // request so the button can move past that pose on the next click.
+        const next = rotationCursor.current.requestNext();
         if (ctx.onRotate) {
           void ctx.onRotate(next);
         } else {

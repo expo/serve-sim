@@ -198,6 +198,19 @@ describe("event log store", () => {
 });
 
 describe("eventLogEventForHidMessage", () => {
+  test("describes hinge positions", () => {
+    for (const [angle, summary] of [[0, "Fold"], [90, "Half Fold"], [180, "Unfold"]] as const) {
+      expect(eventLogEventForHidMessage("UDID", 0x0f, { angle })).toMatchObject({
+        kind: "hinge",
+        action: "set-angle",
+        summary,
+        details: { angle },
+      });
+    }
+    expect(eventLogEventForHidMessage("UDID", 0x0f, { angle: 45 })?.summary).toBe("Hinge 45°");
+    expect(eventLogEventForHidMessage("UDID", 0x0f, { angle: "90" })).toBeNull();
+  });
+
   test("maps button HID payloads", () => {
     expect(
       eventLogEventForHidMessage("UDID", 0x04, {
@@ -284,4 +297,3 @@ describe("eventLogEventForHidMessage", () => {
     expect(entry.summary.length).toBeLessThanOrEqual(256);
   });
 });
-

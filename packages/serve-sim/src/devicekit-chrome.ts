@@ -841,7 +841,6 @@ function chromeAssetPath(identifier: string, imageName: string): string {
 function cachedPngPath(identifier: string, imageName: string, pdfPath: string): string {
   mkdirSync(PNG_CACHE_ROOT, { recursive: true });
   const stat = statSync(pdfPath);
-  const rotation = pdfPageRotation(readFileSync(pdfPath));
   const key = createHash("sha1")
     .update(identifier)
     .update("\0")
@@ -850,11 +849,13 @@ function cachedPngPath(identifier: string, imageName: string, pdfPath: string): 
     .update(String(stat.mtimeMs))
     .update("\0")
     .update(String(stat.size))
-    .update(`\0page-rotation:${rotation}`)
+    // Invalidate older rasterizations that did not apply the PDF page rotation.
+    .update("\0page-rotation-v1")
     .digest("hex");
   const outPath = join(PNG_CACHE_ROOT, `${identifier}-${key}.png`);
   if (existsSync(outPath)) return outPath;
 
+  const rotation = pdfPageRotation(readFileSync(pdfPath));
   const tmpPath = `${outPath}.${process.pid}.tmp`;
   // sips rasterizes DeviceKit's unrotated PDF content even when its page has
   // /Rotate (phone14 button sprites use 270). Apply that page transform so the

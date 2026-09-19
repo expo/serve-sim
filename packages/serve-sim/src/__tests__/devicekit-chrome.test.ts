@@ -1,6 +1,6 @@
-import { existsSync } from "fs";
+import * as fs from "fs";
 import { createServer } from "http";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   bareChromeIdentifier,
   logicalScreenSizeFromProfile,
@@ -49,7 +49,7 @@ describe("DeviceKit chrome helpers", () => {
   });
 
   test("resolves both Duo screens and the asymmetric closed screen from installed assets", () => {
-    if (!existsSync("/Library/Developer/DeviceKit/Chrome/phone15.devicechrome")) return;
+    if (!fs.existsSync("/Library/Developer/DeviceKit/Chrome/phone15.devicechrome")) return;
     const chrome = resolveDeviceKitChrome({ name: "iPhone Duo" });
     if (!chrome) return;
     expect(chrome.screenId).toBe(1);
@@ -80,7 +80,7 @@ describe("DeviceKit chrome helpers", () => {
   });
 
   test("serves button rasterizations in the same orientation as their descriptor", async () => {
-    if (!existsSync("/Library/Developer/DeviceKit/Chrome/phone15.devicechrome")) return;
+    if (!fs.existsSync("/Library/Developer/DeviceKit/Chrome/phone15.devicechrome")) return;
     const server = createServer((req, res) => {
       serveDeviceKitChromeAsset(new URL(req.url ?? "/", "http://localhost"), res);
     });
@@ -102,6 +102,15 @@ describe("DeviceKit chrome helpers", () => {
         const png = Buffer.from(await response.arrayBuffer());
         expect(png.toString("ascii", 12, 16)).toBe("IHDR");
         expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([width, height]);
+        const reads = spyOn(fs, "readFileSync");
+        try {
+          const cached = await fetch(url);
+          expect(cached.status).toBe(200);
+          expect(Buffer.from(await cached.arrayBuffer())).toEqual(png);
+          expect(reads.mock.calls.some(([path]) => String(path).endsWith(".pdf"))).toBe(false);
+        } finally {
+          reads.mockRestore();
+        }
       }
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
@@ -143,7 +152,7 @@ describe("DeviceKit chrome helpers", () => {
   });
 
   test("resolves stock watch chrome from installed DeviceKit assets when available", () => {
-    if (!existsSync("/Library/Developer/DeviceKit/Chrome/watch2.devicechrome")) return;
+    if (!fs.existsSync("/Library/Developer/DeviceKit/Chrome/watch2.devicechrome")) return;
 
     const chrome = resolveDeviceKitChrome({
       name: "renamed clone",
@@ -161,7 +170,7 @@ describe("DeviceKit chrome helpers", () => {
   });
 
   test("resolves Device Hub-style placeholder assets from CoreTypes metadata", () => {
-    if (!existsSync("/System/Library/CoreServices/CoreTypes.bundle/Contents/Library/MobileDevices.bundle")) return;
+    if (!fs.existsSync("/System/Library/CoreServices/CoreTypes.bundle/Contents/Library/MobileDevices.bundle")) return;
 
     // The CoreTypes icon set ships with the host SDK, so older runner images
     // (e.g. GitHub's macos-latest) may not carry every current device's asset.

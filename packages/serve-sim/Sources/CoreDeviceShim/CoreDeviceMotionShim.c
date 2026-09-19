@@ -1,4 +1,5 @@
 #include "CoreDeviceShim.h"
+#include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <stdint.h>
 
@@ -6,15 +7,20 @@ static void *motionTarget, *supportsTarget, *metadataTarget, *errorTarget;
 extern int32_t SSCDMotionManagerDescriptor[2];
 
 bool SSCoreDeviceMotionAvailable(void) {
-    if (!SSCoreDeviceInitialize()) return false;
-    motionTarget = SSCoreDeviceSymbol("$s10CoreDevice21MonitorMotionProtocolP13motionManagerAA0bdG0VyYaAA0aB5ErrorVYKFTj");
-    int32_t *descriptor = SSCoreDeviceSymbol("$s10CoreDevice21MonitorMotionProtocolP13motionManagerAA0bdG0VyYaAA0aB5ErrorVYKFTjTu");
-    supportsTarget = SSCoreDeviceSymbol("$s10CoreDevice0B13MotionManagerV18supportsHingeAngleSbvg");
-    metadataTarget = SSCoreDeviceSymbol("$s10CoreDevice0B13MotionManagerVMa");
-    errorTarget = SSCoreDeviceSymbol("$s10CoreDevice0aB5ErrorVMa");
-    if (!motionTarget || !descriptor || !supportsTarget || !metadataTarget || !errorTarget) return false;
-    SSCDMotionManagerDescriptor[1] = descriptor[1];
-    return true;
+    static dispatch_once_t once;
+    static bool available;
+    dispatch_once(&once, ^{
+        if (!SSCoreDeviceInitialize()) return;
+        motionTarget = SSCoreDeviceSymbol("$s10CoreDevice21MonitorMotionProtocolP13motionManagerAA0bdG0VyYaAA0aB5ErrorVYKFTj");
+        int32_t *descriptor = SSCoreDeviceSymbol("$s10CoreDevice21MonitorMotionProtocolP13motionManagerAA0bdG0VyYaAA0aB5ErrorVYKFTjTu");
+        supportsTarget = SSCoreDeviceSymbol("$s10CoreDevice0B13MotionManagerV18supportsHingeAngleSbvg");
+        metadataTarget = SSCoreDeviceSymbol("$s10CoreDevice0B13MotionManagerVMa");
+        errorTarget = SSCoreDeviceSymbol("$s10CoreDevice0aB5ErrorVMa");
+        if (!motionTarget || !descriptor || !supportsTarget || !metadataTarget || !errorTarget) return;
+        SSCDMotionManagerDescriptor[1] = descriptor[1];
+        available = true;
+    });
+    return available;
 }
 
 typedef void (*Motion)(void *, void *, void *, void *, void * __attribute__((swift_context)), void * __attribute__((swift_async_context))) __attribute__((swiftasynccall));

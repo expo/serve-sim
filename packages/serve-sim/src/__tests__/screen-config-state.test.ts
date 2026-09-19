@@ -84,4 +84,17 @@ describe("screen config state", () => {
       "reported",
     )?.config.supportsHingeAngle).toBe(true);
   });
+
+  test("reports a display switch even when both screens have the same dimensions", () => {
+    expect(resolveScreenConfigUpdate(
+      { width: 900, height: 1280, screenId: 1 },
+      { width: 900, height: 1280, screenId: 3 },
+      "external",
+    )?.config.screenId).toBe(3);
+    expect(resolveScreenConfigUpdate(
+      { width: 900, height: 1280, screenId: 3 },
+      { width: 450, height: 640 },
+      "media",
+    )?.config.screenId).toBe(3);
+  });
 });

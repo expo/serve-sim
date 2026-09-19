@@ -39,7 +39,7 @@ import {
   KeyboardCapture,
   KeyboardToggleButton,
 } from "./components/keyboard-capture";
-import { DeviceKitChrome, type ChromeButtonPress } from "./components/device-chrome-frame";
+import { DeviceKitChrome, deviceKitChromeForScreen, deviceKitScreenRadius, type ChromeButtonPress } from "./components/device-chrome-frame";
 import { createPacedKeySender } from "./utils/paced-key-sender";
 import { GridPanel } from "./components/grid-panel";
 import { IconButton } from "./components/icon-button";
@@ -591,7 +591,7 @@ function AppWithConfig({
   config,
   deviceName,
   deviceRuntime,
-  chrome,
+  chrome: defaultChrome,
   axOverlayEnabled,
   setAxOverlayEnabled,
   devtoolsOpen,
@@ -736,11 +736,17 @@ function AppWithConfig({
   const [hingeError, setHingeError] = useState<string | null>(null);
   const hingeRequestRef = useRef<{ angle: number; timer: ReturnType<typeof setTimeout> } | null>(null);
   const streamConfig = wsStreamConfig;
-  const activeStreamConfig = liveStreamConfig ?? streamConfig ?? fallbackScreenSize(deviceType, deviceName);
+  const activeStreamConfig: StreamConfig = liveStreamConfig ?? streamConfig ?? fallbackScreenSize(deviceType, deviceName);
+  const activeScreenId = liveStreamConfig?.screenId ?? streamConfig?.screenId;
+  const chrome = defaultChrome ? deviceKitChromeForScreen(defaultChrome, activeScreenId) : null;
   const hingeAngle = liveStreamConfig?.hingeAngle ?? streamConfig?.hingeAngle;
   const supportsHingeAngle = liveStreamConfig?.supportsHingeAngle ?? streamConfig?.supportsHingeAngle;
   const showHingeControls = !presentation && (supportsHingeAngle ?? hingeAngle !== undefined);
-  const imgBorderRadius = screenBorderRadius(deviceType, activeStreamConfig);
+  const clipOrientation = activeStreamConfig.orientation ?? (activeStreamConfig.width > activeStreamConfig.height ? "landscape_left" : "portrait");
+  const hasDisplayRadii = !!chrome?.screenCornerRadii;
+  const imgBorderRadius = chrome && hasDisplayRadii
+    ? deviceKitScreenRadius(chrome, clipOrientation)
+    : screenBorderRadius(deviceType, activeStreamConfig);
   const frameMaxWidth = simulatorMaxWidth(deviceType, activeStreamConfig);
   const frameAspectRatio = simulatorAspectRatio(activeStreamConfig);
   const frameDisplayConfig = displayStreamConfig(activeStreamConfig);
@@ -756,7 +762,7 @@ function AppWithConfig({
   // *screen* at the same comfortable size — and resize / panel-collision math
   // all operate on the frame dimensions.
   const isLandscape = isLandscapeConfig(activeStreamConfig);
-  const useChrome = !!chrome && !isLandscape && chromeEnabled;
+  const useChrome = !!chrome && !isLandscape && clipOrientation !== "portrait_upside_down" && chromeEnabled;
   const chromeScale = useChrome ? chrome!.frame.width / chrome!.screen.width : 1;
   const containerDefaultWidth = frameMaxWidth * chromeScale;
   const containerAspectRatioValue = useChrome
@@ -953,7 +959,7 @@ function AppWithConfig({
     setLiveStreamConfig((prev) =>
       screenConfigsEqual(prev, confirmedConfig) ? prev : null,
     );
-  }, [streamConfig, streamConfig?.width, streamConfig?.height, streamConfig?.orientation, streamConfig?.hingeAngle, streamConfig?.supportsHingeAngle]);
+  }, [streamConfig, streamConfig?.width, streamConfig?.height, streamConfig?.orientation, streamConfig?.screenId, streamConfig?.hingeAngle, streamConfig?.supportsHingeAngle]);
 
   const sendKey = useCallback((type: "down" | "up", usage: number) => {
     sendWs(0x06, { type, usage });
@@ -1449,7 +1455,7 @@ function AppWithConfig({
                   // semi-transparent white against the black page as a visible
                   // outline. An inset shadow paints over the (opaque) video edge.
                   borderRadius: useChrome ? 0 : imgBorderRadius,
-                  cornerShape: useChrome ? undefined : "superellipse(1.3)",
+                  cornerShape: useChrome || hasDisplayRadii ? undefined : "superellipse(1.3)",
                   ...(useChrome
                     ? {}
                     : { boxShadow: "inset 0 0 0 1px rgba(255, 255, 255, 0.2)" }),

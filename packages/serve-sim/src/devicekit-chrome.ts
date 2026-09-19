@@ -67,6 +67,10 @@ export type DeviceKitChromeDescriptor = {
   innerCornerRadius: number;
   /** The active screen's corner radius (composite px) for rounding the stream. */
   screenRadius: number;
+  /** Individual active-screen radii in composite coordinates, clockwise from top left. */
+  screenCornerRadii?: ScreenCornerRadii;
+  screenId?: number;
+  displayVariants?: Record<number, DeviceKitChromeDescriptor>;
   compositeImage: string | null;
   slice: DeviceKitChromeSlice | null;
   corner: Size | null;
@@ -103,6 +107,7 @@ type Size = { width: number; height: number };
 type Point = { x: number; y: number };
 type Rect = Point & Size;
 type Insets = { top: number; left: number; bottom: number; right: number };
+type ScreenCornerRadii = { topLeft: number; topRight: number; bottomRight: number; bottomLeft: number };
 
 type DeviceProfileMetadata = {
   chromeIdentifier: string | null;
@@ -112,6 +117,15 @@ type DeviceProfileMetadata = {
   /** Raw framebuffer-mask PDF size — Apple's active-display shape, but in
    * inconsistent units across families (iPhone @3x px, watch @1x pt). */
   framebufferMaskSize: Size | null;
+  display?: DisplayProfile;
+};
+
+type DisplayProfile = {
+  screenId: number;
+  chromeIdentifier: string;
+  screenSize: Size;
+  cornerRadii: ScreenCornerRadii;
+  framebufferMask: string | null;
 };
 
 type ParsedChrome = {
@@ -318,6 +332,52 @@ function resolveDeviceKitChromeUncached(profileName: string): DeviceKitChromeDes
 
   const profile = readProfileMetadata(profilePath);
   if (!profile?.chromeIdentifier) return null;
+  const capabilities = readPlist(join(dirname(profilePath), "capabilities.plist"));
+  const displays = parseDisplayProfiles(record(capabilities?.capabilities).displays);
+  const variants: Record<number, DeviceKitChromeDescriptor> = {};
+  for (const display of displays) {
+    const descriptor = buildChromeDescriptor({
+      ...profile,
+      chromeIdentifier: display.chromeIdentifier,
+      screenSize: display.screenSize,
+      framebufferMaskSize: framebufferMaskSize({
+        framebufferMask: display.framebufferMask,
+        __profileDir: dirname(profilePath),
+      }),
+      display,
+    });
+    if (descriptor) variants[display.screenId] = descriptor;
+  }
+  const primary = Object.values(variants).find((variant) => variant.identifier === profile.chromeIdentifier)
+    ?? buildChromeDescriptor(profile);
+  if (!primary) return null;
+  // The variants themselves stay non-recursive, so the descriptor is plain JSON.
+  return Object.keys(variants).length > 0 ? { ...primary, displayVariants: variants } : primary;
+}
+
+/** Display-specific geometry supplied by newer simulator profiles (including Duo). */
+export function parseDisplayProfiles(value: unknown): DisplayProfile[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): DisplayProfile[] => {
+    const display = record(entry);
+    const chromeIdentifier = stringValue(display.chromeIdentifier);
+    const { screenID, width, height, scale, cornerRadiusUL, cornerRadiusUR, cornerRadiusLR, cornerRadiusLL } = display;
+    if (display.displayType !== "integrated" || !chromeIdentifier ||
+      typeof screenID !== "number" || !Number.isInteger(screenID) || screenID < 0 ||
+      ![width, height, scale].every((n) => typeof n === "number" && Number.isFinite(n) && n > 0) ||
+      ![cornerRadiusUL, cornerRadiusUR, cornerRadiusLR, cornerRadiusLL].every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0)) return [];
+    return [{
+      screenId: screenID,
+      chromeIdentifier: bareChromeIdentifier(chromeIdentifier),
+      screenSize: { width: Number(width) / Number(scale), height: Number(height) / Number(scale) },
+      cornerRadii: { topLeft: Number(cornerRadiusUL), topRight: Number(cornerRadiusUR), bottomRight: Number(cornerRadiusLR), bottomLeft: Number(cornerRadiusLL) },
+      framebufferMask: stringValue(display.framebufferMaskIdentifier),
+    }];
+  });
+}
+
+function buildChromeDescriptor(profile: DeviceProfileMetadata): DeviceKitChromeDescriptor | null {
+  if (!profile.chromeIdentifier) return null;
   const chrome = readChrome(profile.chromeIdentifier);
   if (!chrome) return null;
 
@@ -364,12 +424,13 @@ function resolveDeviceKitChromeUncached(profileName: string): DeviceKitChromeDes
     width: resolvedBodySize.width + chrome.devicePadding.left + chrome.devicePadding.right,
     height: resolvedBodySize.height + chrome.devicePadding.top + chrome.devicePadding.bottom,
   };
-  // The active screen, centered in the device body (the case). The stream renders
-  // here ON TOP of the bezel; the composite's own black screen border (between
+  // Center the active screen within the measured opening, which need not be
+  // centered in a foldable device's case. The stream renders here ON TOP of the
+  // bezel; the composite's own black screen border (between
   // the metal edge and this rect) frames it like a real device's display border.
   const screen: Rect = {
-    x: body.x + (resolvedBodySize.width - screenSize.width) / 2,
-    y: body.y + (resolvedBodySize.height - screenSize.height) / 2,
+    x: body.x + (opening ? opening.x + (opening.width - screenSize.width) / 2 : (resolvedBodySize.width - screenSize.width) / 2),
+    y: body.y + (opening ? opening.y + (opening.height - screenSize.height) / 2 : (resolvedBodySize.height - screenSize.height) / 2),
     width: screenSize.width,
     height: screenSize.height,
   };
@@ -377,8 +438,29 @@ function resolveDeviceKitChromeUncached(profileName: string): DeviceKitChromeDes
   // for the iPhone but far too small for the watch's very rounded display, so
   // measure the composite's screen-cutout radius and step it in by the same
   // amount the active display is inset from that cutout.
-  const screenRadius = opening
-    ? Math.max(0, opening.radius - (opening.width - screenSize.width) / 2)
+  const screenInset = opening ? (opening.width - screenSize.width) / 2 : 0;
+  const measuredCornerRadii = opening
+    ? {
+        topLeft: Math.max(0, opening.cornerRadii.topLeft - screenInset),
+        topRight: Math.max(0, opening.cornerRadii.topRight - screenInset),
+        bottomRight: Math.max(0, opening.cornerRadii.bottomRight - screenInset),
+        bottomLeft: Math.max(0, opening.cornerRadii.bottomLeft - screenInset),
+      }
+    : undefined;
+  // Profile radii are logical display points. Normalize them to the artwork's
+  // active-screen width because older/newer DeviceKit assets can use a different scale.
+  const radiusScale = profile.display ? screenSize.width / profile.display.screenSize.width : 1;
+  const screenCornerRadii = profile.display
+    ? {
+        topLeft: profile.display.cornerRadii.topLeft * radiusScale,
+        topRight: profile.display.cornerRadii.topRight * radiusScale,
+        bottomRight: profile.display.cornerRadii.bottomRight * radiusScale,
+        bottomLeft: profile.display.cornerRadii.bottomLeft * radiusScale,
+      }
+    : measuredCornerRadii;
+  // Keep the scalar for clients that predate per-corner clipping.
+  const screenRadius = screenCornerRadii
+    ? Object.values(screenCornerRadii).reduce((sum, radius) => sum + radius, 0) / 4
     : chrome.innerCornerRadius;
 
   const corner = chrome.slice ? pdfAssetSize(chrome.identifier, chrome.slice.topLeft) : null;
@@ -417,6 +499,8 @@ function resolveDeviceKitChromeUncached(profileName: string): DeviceKitChromeDes
     outerCornerRadius: chrome.outerCornerRadius,
     innerCornerRadius: chrome.innerCornerRadius,
     screenRadius,
+    screenCornerRadii,
+    screenId: profile.display?.screenId,
     compositeImage: chrome.compositeImage,
     slice: chrome.slice,
     corner,
@@ -936,11 +1020,16 @@ function scaleMaskToPoints(mask: Size, opening: Rect): Size | null {
  * center along the center row + column, so dark metal / button slots elsewhere
  * don't inflate the rect. In the composite's own pixel/point coordinates.
  */
-function compositeScreenBounds(identifier: string, imageName: string): (Rect & { radius: number }) | null {
+function compositeScreenBounds(identifier: string, imageName: string): (Rect & { cornerRadii: ScreenCornerRadii }) | null {
   const png = readCompositePng(identifier, imageName);
   if (!png) return null;
   const decoded = decodeMask(png, (r, g, b, a) => a > 200 && r < 30 && g < 30 && b < 30);
   if (!decoded) return null;
+  return measureScreenOpening(decoded);
+}
+
+/** Preserve each corner: foldable displays can have tighter corners at the hinge. */
+export function measureScreenOpening(decoded: PixelMask): (Rect & { cornerRadii: ScreenCornerRadii }) | null {
   const { width, height, mask } = decoded;
   const cx = Math.floor(width / 2);
   const cy = Math.floor(height / 2);
@@ -955,18 +1044,20 @@ function compositeScreenBounds(identifier: string, imageName: string): (Rect & {
   while (y0 > 0 && dark(cx, y0 - 1)) y0--;
   let y1 = cy;
   while (y1 < height - 1 && dark(cx, y1 + 1)) y1++;
-  // Corner radius: down each corner column the rounded corner stays non-dark for
-  // ~r rows. Averaged over the four corners (innerCornerRadius is wrong for the
-  // watch's very rounded screen).
+  // Down each corner column the rounded corner stays non-dark for ~r rows.
   const span = y1 - y0;
   const cornerInset = (x: number, fromTop: boolean) => {
     let n = 0;
     while (n < span && !dark(x, fromTop ? y0 + n : y1 - n)) n++;
     return n;
   };
-  const radii = [cornerInset(x0, true), cornerInset(x1, true), cornerInset(x0, false), cornerInset(x1, false)];
-  const radius = radii.reduce((a, b) => a + b, 0) / radii.length;
-  return { x: x0, y: y0, width: x1 - x0 + 1, height: y1 - y0 + 1, radius };
+  const cornerRadii = {
+    topLeft: cornerInset(x0, true),
+    topRight: cornerInset(x1, true),
+    bottomRight: cornerInset(x1, false),
+    bottomLeft: cornerInset(x0, false),
+  };
+  return { x: x0, y: y0, width: x1 - x0 + 1, height: y1 - y0 + 1, cornerRadii };
 }
 
 function readCompositePng(identifier: string, imageName: string): Buffer | null {

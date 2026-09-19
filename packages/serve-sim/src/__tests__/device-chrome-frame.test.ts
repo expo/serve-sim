@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { snapChromeRect } from "../client/components/device-chrome-frame";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import {
+  DeviceKitChrome,
+  deviceKitChromeForScreen,
+  deviceKitScreenRadius,
+  snapChromeRect,
+} from "../client/components/device-chrome-frame";
 import type { DeviceKitChromeDescriptor } from "../client/utils/grid";
 
 function chromeFixture(): DeviceKitChromeDescriptor {
@@ -18,6 +25,74 @@ function chromeFixture(): DeviceKitChromeDescriptor {
     buttons: [],
   };
 }
+
+describe("deviceKitChromeForScreen", () => {
+  test("selects the active screen's descriptor and falls back for unknown screens", () => {
+    const inner = { ...chromeFixture(), identifier: "inner", screenId: 3 };
+    const chrome = { ...chromeFixture(), screenId: 1, displayVariants: { 3: inner } };
+
+    expect(deviceKitChromeForScreen(chrome, 3)).toBe(inner);
+    expect(deviceKitChromeForScreen(chrome, 1)).toBe(chrome);
+    expect(deviceKitChromeForScreen(chrome, 99)).toBe(chrome);
+    expect(deviceKitChromeForScreen(chrome, undefined)).toBe(chrome);
+    const legacy = chromeFixture();
+    expect(deviceKitChromeForScreen(legacy, 3)).toBe(legacy);
+  });
+});
+
+describe("deviceKitScreenRadius", () => {
+  test("rotates asymmetric corners and their percentage axes with the display", () => {
+    const chrome = {
+      ...chromeFixture(),
+      screen: { x: 40, y: 80, width: 200, height: 400 },
+      screenCornerRadii: { topLeft: 10, topRight: 20, bottomRight: 30, bottomLeft: 40 },
+    };
+
+    expect(deviceKitScreenRadius(chrome, "landscape_left")).toBe("10% 2.5% 5% 7.5% / 20% 5% 10% 15%");
+    expect(deviceKitScreenRadius(chrome, "landscape_right")).toBe("5% 7.5% 10% 2.5% / 10% 15% 20% 5%");
+    expect(deviceKitScreenRadius(chrome, "portrait_upside_down")).toBe("15% 20% 5% 10% / 7.5% 10% 2.5% 5%");
+    expect(deviceKitScreenRadius(chrome, "portrait")).toBe("5% 10% 15% 20% / 2.5% 5% 7.5% 10%");
+  });
+
+  test("preserves each corner in clockwise CSS order", () => {
+    const chrome = {
+      ...chromeFixture(),
+      screen: { x: 40, y: 80, width: 200, height: 400 },
+      screenCornerRadii: { topLeft: 10, topRight: 20, bottomRight: 30, bottomLeft: 0 },
+    };
+
+    expect(deviceKitScreenRadius(chrome)).toBe("5% 10% 15% 0% / 2.5% 5% 7.5% 0%");
+  });
+
+  test("keeps clipping proportional as the rendered screen scales", () => {
+    const chrome: DeviceKitChromeDescriptor = {
+      ...chromeFixture(),
+      frame: { width: 200, height: 400 },
+      screen: { x: 0, y: 0, width: 200, height: 400 },
+      compositeImage: null,
+      screenCornerRadii: { topLeft: 10, topRight: 20, bottomRight: 30, bottomLeft: 0 },
+    };
+
+    for (const containerSize of [{ width: 100, height: 200 }, { width: 200, height: 400 }]) {
+      const markup = renderToStaticMarkup(createElement(DeviceKitChrome, { chrome, containerSize }));
+
+      expect(markup).toContain(`width:${containerSize.width}px;height:${containerSize.height}px`);
+      expect(markup).toContain("border-radius:5% 10% 15% 0% / 2.5% 5% 7.5% 0%");
+    }
+  });
+
+  test("retains the scalar CSS format for legacy descriptors", () => {
+    const chrome = {
+      ...chromeFixture(),
+      screen: { x: 40, y: 80, width: 200, height: 400 },
+    };
+
+    expect(deviceKitScreenRadius(chrome)).toBe("5% / 2.5%");
+    expect(deviceKitScreenRadius(chrome, "landscape_left")).toBe("2.5% / 5%");
+    expect(deviceKitScreenRadius(chrome, "landscape_right")).toBe("2.5% / 5%");
+    expect(deviceKitScreenRadius(chrome, "portrait_upside_down")).toBe("5% / 2.5%");
+  });
+});
 
 describe("snapChromeRect", () => {
   const chrome = chromeFixture();

@@ -12,6 +12,7 @@ import type {
   DeviceKitChromeDescriptor,
   GridRect,
 } from "../utils/grid";
+import type { SimulatorOrientation } from "../types";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { currentDevicePixelRatio, roundToDevicePixel } from "../utils/simulator-resize";
 
@@ -95,11 +96,36 @@ export function DeviceKitChrome({
   );
 }
 
-/** CSS border-radius for the screen cutout, matched to its measured corner radius. */
-export function deviceKitScreenRadius(chrome: DeviceKitChromeDescriptor): string {
-  return `${(chrome.screenRadius / chrome.screen.width) * 100}% / ${
-    (chrome.screenRadius / chrome.screen.height) * 100
-  }%`;
+/** Select the chrome measurements for the currently captured screen. */
+export function deviceKitChromeForScreen(
+  chrome: DeviceKitChromeDescriptor,
+  screenId?: number,
+): DeviceKitChromeDescriptor {
+  return (screenId === undefined ? undefined : chrome.displayVariants?.[screenId]) ?? chrome;
+}
+
+/** CSS border-radius for the screen cutout, matched to its measured corners. */
+export function deviceKitScreenRadius(
+  chrome: DeviceKitChromeDescriptor,
+  orientation?: SimulatorOrientation,
+): string {
+  const landscape = orientation === "landscape_left" || orientation === "landscape_right";
+  const width = landscape ? chrome.screen.height : chrome.screen.width;
+  const height = landscape ? chrome.screen.width : chrome.screen.height;
+  if (chrome.screenCornerRadii) {
+    const { topLeft, topRight, bottomRight, bottomLeft } = chrome.screenCornerRadii;
+    const radii = orientation === "landscape_left"
+      ? [bottomLeft, topLeft, topRight, bottomRight]
+      : orientation === "landscape_right"
+        ? [topRight, bottomRight, bottomLeft, topLeft]
+        : orientation === "portrait_upside_down"
+          ? [bottomRight, bottomLeft, topLeft, topRight]
+          : [topLeft, topRight, bottomRight, bottomLeft];
+    return `${radii.map((radius) => pct(radius, width)).join(" ")} / ${
+      radii.map((radius) => pct(radius, height)).join(" ")
+    }`;
+  }
+  return `${pct(chrome.screenRadius, width)} / ${pct(chrome.screenRadius, height)}`;
 }
 
 function ChromeButton({

@@ -9,7 +9,7 @@ export interface ScreenConfigUpdate {
 
 export function screenConfigsEqual(a: StreamConfig | null, b: StreamConfig): boolean {
   return !!a && a.width === b.width && a.height === b.height &&
-    a.orientation === b.orientation && a.hingeAngle === b.hingeAngle &&
+    a.orientation === b.orientation && a.screenId === b.screenId && a.hingeAngle === b.hingeAngle &&
     a.supportsHingeAngle === b.supportsHingeAngle;
 }
 

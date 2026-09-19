@@ -4,11 +4,63 @@ import {
   bareChromeIdentifier,
   logicalScreenSizeFromProfile,
   parsePdfPageSize,
+  parseDisplayProfiles,
+  measureScreenOpening,
   resolveDevicePlaceholderAsset,
   resolveDeviceKitChrome,
 } from "../devicekit-chrome";
 
 describe("DeviceKit chrome helpers", () => {
+  test("reads each display's corner metadata without averaging or mixing displays", () => {
+    const display = {
+      displayType: "integrated", screenID: 1,
+      chromeIdentifier: "com.apple.dt.devicekit.chrome.phone15",
+      width: 1398, height: 2034, scale: 3,
+      cornerRadiusUL: 8, cornerRadiusUR: 59, cornerRadiusLR: 59, cornerRadiusLL: 8,
+      framebufferMaskIdentifier: "closed-mask",
+    };
+    expect(parseDisplayProfiles([display])).toEqual([{
+      screenId: 1, chromeIdentifier: "phone15", screenSize: { width: 466, height: 678 },
+      cornerRadii: { topLeft: 8, topRight: 59, bottomRight: 59, bottomLeft: 8 },
+      framebufferMask: "closed-mask",
+    }]);
+    expect(parseDisplayProfiles([
+      { ...display, scale: 0 }, { ...display, cornerRadiusUL: undefined },
+      { ...display, displayType: "tvOut" },
+    ])).toEqual([]);
+  });
+
+  test("keeps all four measured corners distinct when profile metadata is absent", () => {
+    const width = 40, height = 50;
+    const mask = new Uint8Array(width * height);
+    for (let y = 5; y < 45; y++) {
+      for (let x = 5; x < 35; x++) {
+        if ((x - 5) + (y - 5) < 2 || (34 - x) + (y - 5) < 8 ||
+            (34 - x) + (44 - y) < 6 || (x - 5) + (44 - y) < 4) continue;
+        mask[y * width + x] = 1;
+      }
+    }
+    expect(measureScreenOpening({ width, height, mask })).toEqual({
+      x: 5, y: 5, width: 30, height: 40,
+      cornerRadii: { topLeft: 2, topRight: 8, bottomRight: 6, bottomLeft: 4 },
+    });
+  });
+
+  test("resolves both Duo screens and the asymmetric closed screen from installed assets", () => {
+    if (!existsSync("/Library/Developer/DeviceKit/Chrome/phone15.devicechrome")) return;
+    const chrome = resolveDeviceKitChrome({ name: "iPhone Duo" });
+    if (!chrome) return;
+    expect(chrome.screenId).toBe(1);
+    expect(chrome.screenCornerRadii).toEqual({ topLeft: 8, topRight: 59, bottomRight: 59, bottomLeft: 8 });
+    expect(chrome.screen.x - chrome.body.x).toBe(25);
+    expect(chrome.screen.y - chrome.body.y).toBe(14);
+    const inner = chrome.displayVariants?.[3];
+    expect(inner?.identifier).toBe("phone14");
+    expect(inner?.screen.width).toBeGreaterThan(chrome.screen.width);
+    expect(inner?.screenCornerRadii?.topLeft).toBe(inner?.screenCornerRadii?.bottomRight);
+    expect(() => JSON.stringify(chrome)).not.toThrow();
+  });
+
   test("strips Apple's chrome bundle prefix", () => {
     expect(bareChromeIdentifier("com.apple.dt.devicekit.chrome.phone11")).toBe("phone11");
     expect(bareChromeIdentifier("watch2")).toBe("watch2");
@@ -62,11 +114,11 @@ describe("DeviceKit chrome helpers", () => {
     // the metadata mapping (icon name) and that cropping produced sane bounds.
     const expectPlaceholder = (
       device: { name: string; deviceTypeIdentifier: string },
-      expectedName: string,
+      expectedName: string | string[],
     ) => {
       const resolved = resolveDevicePlaceholderAsset(device);
       if (!resolved) return;
-      expect(resolved.name).toBe(expectedName);
+      expect(Array.isArray(expectedName) ? expectedName : [expectedName]).toContain(resolved.name);
       expect(resolved.width).toBeGreaterThan(0);
       expect(resolved.height).toBeGreaterThan(0);
     };
@@ -90,7 +142,8 @@ describe("DeviceKit chrome helpers", () => {
         name: "iPad Air 11-inch (M4)",
         deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Air-11-inch-M4",
       },
-      "ipad-air-11-inch-m4",
+      // Newer CoreTypes includes the exact M4 artwork; older SDKs use the fallback.
+      ["com.apple.ipad-air-11-inch-m4-1", "ipad-air-11-inch-m4"],
     );
   });
 });

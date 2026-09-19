@@ -40,6 +40,13 @@ The bundled native addon, simulator tools, and host helpers are arm64-only.
 
 The iPhone Duo simulator supports touch input, scrolling, and touch gestures on both the folded cover screen and the half-open or fully open inner screen. Frames and input follow the active display and its orientation; an app can still restrict its supported orientations.
 
+Its hinge controls offer Closed, Open, Laptop, Book, and Tent poses, a live
+0–180° angle slider, a numeric input for decimal angles, and Table Mode. Laptop
+and Book both use a 90° hinge angle with different physical orientations; Tent uses 80°.
+The preview shows the active display in 2D. See [hinge controls and display
+selection](packages/serve-sim/docs/hinge-controls.md) for Device Hub's hidden
+controls and the simulator APIs behind them.
+
 ## CLI
 
 ```

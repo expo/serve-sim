@@ -1,4 +1,5 @@
 // Protocol types used by the simulator UI.
+import type { HingeControlState } from "../hinge-control";
 
 export type SimulatorOrientation =
   | "portrait"
@@ -6,7 +7,7 @@ export type SimulatorOrientation =
   | "landscape_left"
   | "landscape_right";
 
-export interface StreamConfig {
+export interface StreamConfig extends HingeControlState {
   width: number;
   height: number;
   /** Current simulator orientation, when known. */
@@ -15,8 +16,6 @@ export interface StreamConfig {
   screenId?: number;
   /** Whether this simulator exposes hinge angle control. */
   supportsHingeAngle?: boolean;
-  /** Last reported or confirmed hinge angle in degrees. */
-  hingeAngle?: number;
 }
 
 export type ConnectionQuality = "good" | "degraded" | "poor";

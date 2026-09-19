@@ -98,3 +98,14 @@ describe("screen config state", () => {
     )?.config.screenId).toBe(3);
   });
 });
+
+
+test("preserves physical pose and table state through media updates, but accepts clearing a pose", () => {
+  const current = { width: 900, height: 1280, hingeAngle: 90, hingePose: "laptop" as const, tableMode: false, tableModeAvailable: true };
+  expect(resolveScreenConfigUpdate(current, { width: 450, height: 640 }, "media")?.config)
+    .toMatchObject({ hingePose: "laptop", tableMode: false, tableModeAvailable: true });
+  expect(resolveScreenConfigUpdate(current, { ...current, hingePose: "book" }, "external")?.config.hingePose).toBe("book");
+  expect(resolveScreenConfigUpdate(current, { ...current, hingePose: null }, "external")?.config.hingePose).toBeNull();
+  expect(resolveScreenConfigUpdate(current, { ...current, tableMode: true }, "external")?.config.tableMode).toBe(true);
+  expect(resolveScreenConfigUpdate(current, { ...current, tableModeAvailable: false }, "external")?.config.tableModeAvailable).toBe(false);
+});

@@ -95,6 +95,14 @@ private func u32(_ v: Int) -> UInt32 {
         try await setup.run { await injector.supportsHingeAngle() }
     }
 
+    @NodeMethod func setHingePose(_ pose: String) async throws -> Bool {
+        try await setup.run { await injector.setHingePose(pose) }
+    }
+
+    @NodeMethod func setTableMode(_ enabled: Bool) async throws -> Bool {
+        try await setup.run { await injector.setTableMode(enabled) }
+    }
+
     @NodeMethod func memoryWarning() async throws {
         try await setup.run { await injector.simulateMemoryWarning() }
     }

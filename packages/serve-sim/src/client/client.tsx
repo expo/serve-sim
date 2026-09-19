@@ -50,8 +50,8 @@ import { SimulatorResizeSizeBadge } from "./components/simulator-resize-size-bad
 import { StreamStatusPill } from "./components/stream-status-pill";
 import { HingeControls } from "./components/hinge-controls";
 import { screenConfigsEqual } from "./simulator/screen-config-state";
-import type { HingeAngleResult } from "../hinge-angle";
-import { completeHingeRequest, type PendingHingeRequest } from "./utils/hinge-request";
+import { HINGE_POSES, type HingeControlCommand } from "../hinge-control";
+import { createAcknowledgedControlQueue, type AcknowledgedControlReply } from "./utils/acknowledged-control-queue";
 import { ToolsPanel } from "./components/tools-panel";
 import { WebKitDevtoolsPanel } from "./components/webkit-devtools-panel";
 import { useMediaDrop } from "./hooks/use-media-drop";
@@ -734,13 +734,14 @@ function AppWithConfig({
   const [wsStreamConfig, setWsStreamConfig] = useState<StreamConfig | null>(null);
   const [hingePending, setHingePending] = useState(false);
   const [hingeError, setHingeError] = useState<string | null>(null);
-  const hingeRequestRef = useRef<PendingHingeRequest | null>(null);
+  const hingePendingRef = useRef(false);
+  const hingeQueueRef = useRef<ReturnType<typeof createAcknowledgedControlQueue<HingeControlCommand>> | null>(null);
   const streamConfig = wsStreamConfig;
   const activeStreamConfig: StreamConfig = liveStreamConfig ?? streamConfig ?? fallbackScreenSize(deviceType, deviceName);
   const activeScreenId = liveStreamConfig?.screenId ?? streamConfig?.screenId;
   const chrome = defaultChrome ? deviceKitChromeForScreen(defaultChrome, activeScreenId) : null;
-  const hingeAngle = liveStreamConfig?.hingeAngle ?? streamConfig?.hingeAngle;
-  const supportsHingeAngle = liveStreamConfig?.supportsHingeAngle ?? streamConfig?.supportsHingeAngle;
+  const hingeAngle = streamConfig?.hingeAngle;
+  const supportsHingeAngle = streamConfig?.supportsHingeAngle;
   const showHingeControls = !presentation && (supportsHingeAngle ?? hingeAngle !== undefined);
   const clipOrientation = activeStreamConfig.orientation ?? (activeStreamConfig.width > activeStreamConfig.height ? "landscape_left" : "portrait");
   const hasDisplayRadii = !!chrome?.screenCornerRadii;
@@ -774,6 +775,13 @@ function AppWithConfig({
 
   // Touch/button relay via direct WebSocket
   const wsRef = useRef<WebSocket | null>(null);
+  if (!hingeQueueRef.current) {
+    hingeQueueRef.current = createAcknowledgedControlQueue<HingeControlCommand>({
+      send: (request) => trySendWsMessage(wsRef.current, 0x10, request),
+      onPendingChange: (pending) => { hingePendingRef.current = pending; setHingePending(pending); },
+      onError: setHingeError,
+    });
+  }
   const pendingWsMessagesRef = useRef<QueuedWsMessage[]>([]);
   const coarsePointerRef = useRef(false);
   useEffect(() => {
@@ -817,16 +825,11 @@ function AppWithConfig({
         if (!(ev.data instanceof ArrayBuffer)) return;
         const bytes = new Uint8Array(ev.data);
         if (bytes.length < 1) return;
-        if (bytes[0] === 0x8f) {
+        if (bytes[0] === 0x90) {
           try {
-            const result = JSON.parse(new TextDecoder().decode(bytes.subarray(1))) as HingeAngleResult;
-            const completed = completeHingeRequest(hingeRequestRef.current, result);
-            if (!completed) return;
-            hingeRequestRef.current = null;
-            setHingePending(false);
-            setHingeError(completed.error);
-            if (completed.angle !== undefined) {
-              setWsStreamConfig((prev) => prev ? { ...prev, hingeAngle: completed.angle } : prev);
+            const result = JSON.parse(new TextDecoder().decode(bytes.subarray(1))) as AcknowledgedControlReply;
+            if (result && typeof result.requestId === "number" && typeof result.ok === "boolean") {
+              hingeQueueRef.current?.receive(result);
             }
           } catch {}
           return;
@@ -842,11 +845,9 @@ function AppWithConfig({
       };
       ws.onclose = () => {
         if (wsRef.current === ws) wsRef.current = null;
-        if (!stopped && hingeRequestRef.current) {
-          clearTimeout(hingeRequestRef.current.timer);
-          hingeRequestRef.current = null;
-          setHingePending(false);
-          setHingeError("Connection lost while changing the hinge angle.");
+        if (!stopped && hingePendingRef.current) {
+          hingeQueueRef.current?.clear();
+          setHingeError("Connection lost while changing the device pose.");
         }
         scheduleReconnect();
       };
@@ -861,8 +862,7 @@ function AppWithConfig({
       stopped = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (wsRef.current === currentWs) wsRef.current = null;
-      if (hingeRequestRef.current) clearTimeout(hingeRequestRef.current.timer);
-      hingeRequestRef.current = null;
+      hingeQueueRef.current?.clear();
       currentWs?.close();
     };
   }, [config.wsUrl]);
@@ -913,22 +913,9 @@ function AppWithConfig({
       screenConfigsEqual(prev, next) ? prev : next,
     );
   }, []);
-  const setHingeAngle = useCallback((angle: number) => {
-    if (hingeRequestRef.current) return;
-    setHingePending(true);
+  const setHingeControl = useCallback((command: HingeControlCommand) => {
     setHingeError(null);
-    const timer = setTimeout(() => {
-      hingeRequestRef.current = null;
-      setHingePending(false);
-      setHingeError("The simulator did not confirm the hinge angle change.");
-    }, 5000);
-    hingeRequestRef.current = { angle, timer };
-    if (!trySendWsMessage(wsRef.current, 0x0f, { angle })) {
-      clearTimeout(timer);
-      hingeRequestRef.current = null;
-      setHingePending(false);
-      setHingeError("Connect to the simulator before changing its fold position.");
-    }
+    hingeQueueRef.current?.enqueue(command, { key: command.control, replaceQueued: command.control === "pose" });
   }, []);
   const rotateDevice = useCallback((orientation: SimulatorOrientation) => {
     sendWs(0x07, { orientation });
@@ -958,7 +945,7 @@ function AppWithConfig({
     setLiveStreamConfig((prev) =>
       screenConfigsEqual(prev, confirmedConfig) ? prev : null,
     );
-  }, [streamConfig, streamConfig?.width, streamConfig?.height, streamConfig?.orientation, streamConfig?.screenId, streamConfig?.hingeAngle, streamConfig?.supportsHingeAngle]);
+  }, [streamConfig, streamConfig?.width, streamConfig?.height, streamConfig?.orientation, streamConfig?.screenId, streamConfig?.hingeAngle, streamConfig?.supportsHingeAngle, streamConfig?.hingePose, streamConfig?.tableMode, streamConfig?.tableModeAvailable]);
 
   const sendKey = useCallback((type: "down" | "up", usage: number) => {
     sendWs(0x06, { type, usage });
@@ -1169,6 +1156,14 @@ function AppWithConfig({
       const simFocused = simFocusedRef.current;
       const keyboardOpen = keyboardOpenRef.current;
       if (simFocused && !keyboardOpen) {
+        if (supportsHingeAngle && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && /^Digit[1-5]$/.test(e.code)) {
+          e.preventDefault();
+          if (type === "down" && !e.repeat) {
+            const pose = HINGE_POSES[Number(e.code.slice(-1)) - 1];
+            if (pose) setHingeControl({ control: "pose", value: pose.id });
+          }
+          return;
+        }
         if (e.code === "KeyH" && e.metaKey && e.shiftKey) {
           e.preventDefault();
           if (type === "down" && !e.repeat) sendWs(0x04, { button: "home" });
@@ -1225,7 +1220,7 @@ function AppWithConfig({
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, [sendWs, config.device, rotateBy]);
+  }, [sendWs, config.device, rotateBy, supportsHingeAngle, setHingeControl]);
 
   const uploads = useUploadToasts();
   const screenshot = useScreenshotToast(config.device);
@@ -1551,14 +1546,18 @@ function AppWithConfig({
         </div>
         </div>
         {!presentation && (
-        <div className="inline-flex items-center justify-center gap-2 max-w-full pb-1 sm:pb-0">
+        <div className="inline-flex flex-wrap items-center justify-center gap-2 max-w-full pb-1 sm:pb-0">
           {showHingeControls && (
             <HingeControls
+              key={config.device}
               angle={hingeAngle}
+              pose={streamConfig?.hingePose}
+              tableMode={streamConfig?.tableMode}
+              tableModeAvailable={streamConfig?.tableModeAvailable}
               supported={supportsHingeAngle}
               pending={hingePending}
               error={hingeError}
-              onChange={setHingeAngle}
+              onChange={setHingeControl}
             />
           )}
           <SimulatorToolbar

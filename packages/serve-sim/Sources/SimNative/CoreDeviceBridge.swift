@@ -86,13 +86,58 @@ actor CoreDeviceBridge {
         return await sendControl(udid: udid, data: data)
     }
 
+    func setHingePose(udid: String, pose: String) async -> Bool {
+        let angle: Double
+        let orientation: String
+        let tableMode: Bool
+        // These are Device Hub's physical orientations. They must not use the
+        // active panel's nativeRotation conversion used by screen rotation.
+        switch pose {
+        case "closed": (angle, orientation, tableMode) = (0, "portrait", false)
+        case "open": (angle, orientation, tableMode) = (180, "portrait", false)
+        case "laptop": (angle, orientation, tableMode) = (90, "landscape-left", false)
+        case "book": (angle, orientation, tableMode) = (90, "portrait", false)
+        case "tent": (angle, orientation, tableMode) = (80, "facedown", true)
+        default: return false
+        }
+        guard await supportsHingeAngle(udid: udid) else { return false }
+        // Match Device Hub's ordering: release the table sensor before leaving
+        // a tabletop pose; enter Tent only after angle and orientation are set.
+        if !tableMode, !(await setTableMode(udid: udid, enabled: false)) { return false }
+        guard await setHingeAngle(udid: udid, angle: angle),
+              await setPhysicalOrientation(udid: udid, value: orientation) else { return false }
+        if tableMode { return await setTableMode(udid: udid, enabled: true) }
+        return true
+    }
+
+    func setTableMode(udid: String, enabled: Bool) async -> Bool {
+        guard await supportsHingeAngle(udid: udid) else { return false }
+        do {
+            let metadataSymbol = "$s10CoreDevice29UniversalHIDServiceCapabilityVN"
+            let capability = try await capability(
+                udid: udid, metadataSymbol: metadataSymbol,
+                witnessSymbol: "$s10CoreDevice29UniversalHIDServiceCapabilityVAA0bE0AAWP"
+            )
+            let sent = SSCoreDeviceSendTableMode(capability.storage, enabled)
+            if !sent { capabilities.removeValue(forKey: "\(udid):\(metadataSymbol)") }
+            return sent
+        } catch {
+            fputs("[hid] CoreDevice Table Mode unavailable: \(error)\n", stderr)
+            return false
+        }
+    }
+
+    private func setPhysicalOrientation(udid: String, value: String) async -> Bool {
+        guard let rawData = value.withCString({ SSCoreDeviceOrientationData($0) }) else { return false }
+        let data = Unmanaged<NSData>.fromOpaque(rawData).takeRetainedValue() as Data
+        return await sendControl(udid: udid, data: data)
+    }
+
     func setOrientation(udid: String, deviceOrientation: UInt32, nativeRotation: Int = 0) async -> Bool {
         guard let value = SimulatorScreenOrientation.vendorControlValue(
                   forDeviceOrientation: deviceOrientation, nativeRotation: nativeRotation
-              ),
-              let rawData = value.withCString({ SSCoreDeviceOrientationData($0) }) else { return false }
-        let data = Unmanaged<NSData>.fromOpaque(rawData).takeRetainedValue() as Data
-        return await sendControl(udid: udid, data: data)
+              ) else { return false }
+        return await setPhysicalOrientation(udid: udid, value: value)
     }
 
     private func sendControl(udid: String, data: Data) async -> Bool {

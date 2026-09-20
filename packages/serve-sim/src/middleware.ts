@@ -552,6 +552,7 @@ function helperProxyTarget(rawUrl: string, prefix: string): { device: string | n
     "config",
     "foreground",
     "health",
+    "panel",
     "stream.avcc",
     "stream.mjpeg",
     "webrtc",
@@ -797,6 +798,19 @@ function serveHelperInProcess(
 ): boolean {
   if (!device) return false;
   const endpoint = upstreamPath.split("?")[0];
+  const panelRoute = /^\/panel\/([^/]+)\/(.+)$/.exec(endpoint ?? "");
+  if (panelRoute) {
+    const method = panelRoute[2] === "webrtc/offer" || panelRoute[2] === "webrtc/close" ? "POST" : "GET";
+    const status = !["1", "3"].includes(panelRoute[1]!) ? 400
+      : !["stream.mjpeg", "stream.avcc", "webrtc/offer", "webrtc/close", "webrtc/stats"].includes(panelRoute[2]!) ? 404
+      : req.method !== "OPTIONS" && req.method !== method ? 405 : undefined;
+    if (status) {
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: status === 400 ? "invalid_panel" : status === 405 ? "method_not_allowed" : "unknown_panel_endpoint" }));
+      return true;
+    }
+    if (req.method === "OPTIONS") { sendCorsPreflight(res); return true; }
+  }
   if (endpoint === "/camera/status") {
     void handleCameraStatus(req, res, device);
     return true;
@@ -810,10 +824,24 @@ function serveHelperInProcess(
     return true;
   }
   let session;
+  if (panelRoute && (panelRoute[2] === "webrtc/stats" || panelRoute[2] === "webrtc/close")) {
+    const live = peekDeviceSession(device);
+    if (!live) {
+      res.writeHead(panelRoute[2] === "webrtc/close" ? 204 : 404);
+      res.end();
+      return true;
+    }
+    void live.handlePanel(req, res, Number(panelRoute[1]), panelRoute[2]!);
+    return true;
+  }
   try {
     session = getDeviceSession(device, initialStreamSettings);
   } catch {
     return false; // not booted / capture unavailable → 404
+  }
+  if (panelRoute) {
+    void session.handlePanel(req, res, Number(panelRoute[1]), panelRoute[2]!);
+    return true;
   }
   switch (endpoint) {
     case "/stream.mjpeg": session.handleMjpeg(req, res); return true;

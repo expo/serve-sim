@@ -68,6 +68,7 @@ interface NativeAddon {
     maxDimension: number,
     h264Fps: number,
     h264Bitrate: number,
+    screenId?: number,
   ) => SimCaptureHandle;
   axDescribe(udid: string): Promise<string>;
   axFrontmost(udid: string): Promise<string>;
@@ -264,7 +265,11 @@ export class NativeHid {
 export class NativeCapture {
   private readonly handle: SimCaptureHandle;
 
-  constructor(udid: string, options: NativeCaptureOptions = DEFAULT_STREAM_ENCODER_SETTINGS) {
+  /** A fixed screen ID captures that panel independently of active-display/input routing. */
+  constructor(udid: string, options: NativeCaptureOptions = DEFAULT_STREAM_ENCODER_SETTINGS, screenId?: number) {
+    if (screenId !== undefined && (!Number.isInteger(screenId) || screenId < 0 || screenId > 0xffff_ffff)) {
+      throw new RangeError("Screen ID must be an unsigned 32-bit integer.");
+    }
     this.handle = new (load().SimCapture)(
       udid,
       options.mjpegFps,
@@ -272,6 +277,7 @@ export class NativeCapture {
       options.maxDimension,
       options.h264Fps,
       options.h264Bitrate,
+      screenId ?? 0,
     );
   }
 

@@ -2,13 +2,28 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import type { DuoModelViewProps } from "../components/duo-model-view";
+import type { StreamConfig } from "../types";
 import { duoPose, duoIntendedScreen, duoScreenRoll, duoFrameMatchesDisplay, duoScreenMapping, duoScreenPoint, stepDuoSpring, type DuoScreenMapping } from "./duo-pose";
 import { HID_EDGE_BOTTOM, HID_EDGE_LEFT, HID_EDGE_RIGHT, HID_EDGE_TOP, HOME_INDICATOR_BAND_NORM, rawEdgeForDisplayEdge, streamDisplayGeometry } from "./orientation";
 import modelData from "../assets/iphone-duo/model.glb.gz.txt" with { type: "text" };
 
 export type DuoSceneState = Omit<DuoModelViewProps, "children">;
 type FrameSource = HTMLVideoElement | HTMLCanvasElement | HTMLImageElement;
-type Surface = { canvas: HTMLCanvasElement; context: CanvasRenderingContext2D; texture: THREE.CanvasTexture; material: THREE.MeshBasicMaterial; meshes: THREE.Mesh[]; ready: boolean; mapping?: DuoScreenMapping; mappingConfigKey?: string };
+type Surface = {
+  canvas: HTMLCanvasElement;
+  context: CanvasRenderingContext2D;
+  texture: THREE.CanvasTexture;
+  material: THREE.MeshBasicMaterial;
+  meshes: THREE.Mesh[];
+  ready: boolean;
+  mapping?: DuoScreenMapping;
+  mappingConfigKey?: string;
+  lastFrameKey?: string;
+  lastImage?: string;
+  lastVideoTime?: number;
+  sawOtherActiveScreen: boolean;
+  handoff?: { sawBlack: boolean };
+};
 
 let modelBytes: Promise<ArrayBuffer> | undefined;
 function loadModel() {
@@ -39,7 +54,7 @@ export function createDuoScene(
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.35;
-  renderer.domElement.style.cssText = "display:block;width:100%;height:100%;touch-action:none;outline:none";
+  renderer.domElement.style.cssText = "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:block;touch-action:none;outline:none";
   host.appendChild(renderer.domElement);
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(36, 1, 0.1, 120);
@@ -73,7 +88,7 @@ export function createDuoScene(
     texture.magFilter = THREE.LinearFilter;
     texture.generateMipmaps = false;
     const material = new THREE.MeshBasicMaterial({ map: texture, toneMapped: false, side: THREE.FrontSide });
-    return { canvas, context, texture, material, meshes: [], ready: false };
+    return { canvas, context, texture, material, meshes: [], ready: false, sawOtherActiveScreen: false };
   };
   const inner = createSurface(1600, 1125);
   const cover = createSurface(784, 1140);
@@ -89,12 +104,32 @@ export function createDuoScene(
   const targetQuaternion = new THREE.Quaternion();
   const center = new THREE.Vector3();
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-  const resize = new ResizeObserver(() => {
-    const { width, height } = host.getBoundingClientRect();
-    if (!width || !height) return;
-    renderer.setSize(width, height, false);
-    camera.aspect = width / height;
-    camera.updateProjectionMatrix();
+  let viewportWidth = 0;
+  let viewportHeight = 0;
+  let stageHeight = 0;
+  let resizePending = false;
+  let projectionPending = false;
+  const resizeViewport = () => {
+    const width = Math.max(1, window.innerWidth);
+    const height = Math.max(1, window.innerHeight);
+    if (width === viewportWidth && height === viewportHeight) return;
+    viewportWidth = width;
+    viewportHeight = height;
+    renderer.domElement.style.width = `${width}px`;
+    renderer.domElement.style.height = `${height}px`;
+    resizePending = true;
+    projectionPending = true;
+  };
+  resizeViewport();
+  window.addEventListener("resize", resizeViewport);
+  const resize = new ResizeObserver(([entry]) => {
+    if (!entry) return;
+    // contentRect excludes presentation transforms, as do the canvas CSS
+    // dimensions. The handle changes model zoom inside that fixed canvas.
+    const { width, height } = entry.contentRect;
+    if (!width || !height || height === stageHeight) return;
+    stageHeight = height;
+    projectionPending = true;
   });
   resize.observe(host);
 
@@ -160,46 +195,69 @@ export function createDuoScene(
     callbacks.ready();
   }).catch(fail);
 
-  function currentSource(): FrameSource | null {
-    const video = sourceHost.querySelector("video");
+  function currentSource(parent = sourceHost): FrameSource | null {
+    const video = parent.querySelector("video");
     if (video && video.readyState >= 2 && video.videoWidth) return video;
-    const canvas = sourceHost.querySelector("canvas");
+    const canvas = parent.querySelector("canvas");
     if (canvas && canvas.width > 1 && canvas.height > 1) return canvas;
-    const images = sourceHost.querySelectorAll("img");
+    const images = parent.querySelectorAll("img");
     for (let index = images.length - 1; index >= 0; index--) {
       const image = images[index]!;
       if (image.complete && image.naturalWidth > 1) return image;
     }
     return null;
   }
-  let lastImage = "";
-  let lastVideoTime = -1;
-  let lastScreenKey = "";
-  function updateScreen() {
-    const current = state();
-    const config = current.streamConfig;
-    const physicalPose = current.physicalPose === undefined ? current.pose : current.physicalPose;
-    // The native panel may go dark before its metadata switches. Freeze its
-    // cached pixels and mapping as soon as the requested pose leaves it.
-    if (config?.screenId !== duoIntendedScreen(current.angle, physicalPose, config?.screenId)) return;
-    const source = currentSource();
-    if (!source || !config || (config.screenId !== 1 && config.screenId !== 3)) return;
+
+  function sourceSize(source: FrameSource) {
     const width = source instanceof HTMLVideoElement ? source.videoWidth : source instanceof HTMLImageElement ? source.naturalWidth : source.width;
     const height = source instanceof HTMLVideoElement ? source.videoHeight : source instanceof HTMLImageElement ? source.naturalHeight : source.height;
-    // Config and video travel independently. Keep the last correct frame until
-    // the new display's frame arrives, instead of stretching the old one.
-    if (!duoFrameMatchesDisplay(width, height, config)) return;
+    return { width, height };
+  }
+
+  let handoffProbe: CanvasRenderingContext2D | undefined;
+  function hasVisiblePixels(source: FrameSource) {
+    if (!handoffProbe) {
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 8;
+      handoffProbe = canvas.getContext("2d", { willReadFrequently: true })!;
+    }
+    handoffProbe.fillStyle = "#000";
+    handoffProbe.fillRect(0, 0, 8, 8);
+    handoffProbe.drawImage(source, 0, 0, 8, 8);
+    const { data } = handoffProbe.getImageData(0, 0, 8, 8);
+    for (let index = 0; index < data.length; index += 4) {
+      if (data[index]! * 0.2126 + data[index + 1]! * 0.7152 + data[index + 2]! * 0.0722 > 3) return true;
+    }
+    return false;
+  }
+
+  function uploadScreen(source: FrameSource, config: StreamConfig, inputConfig?: StreamConfig | null, provisional = false) {
+    const surface = config.screenId === 1 ? cover : inner;
+    const active = inputConfig?.screenId === config.screenId;
+    if (surface.handoff && active && surface.sawOtherActiveScreen) surface.handoff = undefined;
+    // An inactive panel emits black frames until iOS lights it. Keep a prior
+    // correct image through that handoff. On a rapid round trip, a matching
+    // active ID can still describe the previous activation: wait for metadata
+    // to cycle or for the panel itself to change from black back to content.
+    if (provisional || surface.handoff) {
+      if (!hasVisiblePixels(source)) {
+        if (surface.handoff) surface.handoff.sawBlack = true;
+        return;
+      }
+      if (surface.handoff?.sawBlack && active) surface.handoff = undefined;
+    }
+    const binding = inputConfig && inputConfig.screenId === config.screenId && duoFrameMatchesDisplay(config.width, config.height, inputConfig)
+      ? inputConfigKey(inputConfig) : undefined;
     // UVs remain fixed to the hardware through the entire pose animation.
     // The body carries the image, including cached frames on an inactive panel.
-    const screenKey = `${config.screenId}:${config.width}:${config.height}:${config.orientation}`;
-    if (screenKey === lastScreenKey) {
-      if (source instanceof HTMLImageElement && source.src === lastImage) return;
-      if (source instanceof HTMLVideoElement && source.currentTime === lastVideoTime) return;
+    const frameKey = `${config.width}:${config.height}:${binding}`;
+    if (frameKey === surface.lastFrameKey) {
+      if (source instanceof HTMLImageElement && source.src === surface.lastImage) return;
+      if (source instanceof HTMLVideoElement && source.currentTime === surface.lastVideoTime) return;
     }
-    lastScreenKey = screenKey;
-    if (source instanceof HTMLImageElement) lastImage = source.src;
-    if (source instanceof HTMLVideoElement) lastVideoTime = source.currentTime;
-    const surface = config.screenId === 1 ? cover : inner;
+    surface.lastFrameKey = frameKey;
+    if (source instanceof HTMLImageElement) surface.lastImage = source.src;
+    if (source instanceof HTMLVideoElement) surface.lastVideoTime = source.currentTime;
     const { context, canvas } = surface;
     const mapping = duoScreenMapping(config, canvas.width, canvas.height);
     surface.mapping = mapping;
@@ -210,9 +268,53 @@ export function createDuoScene(
     context.rotate(mapping.rotation);
     context.drawImage(source, -mapping.drawnWidth / 2, -mapping.drawnHeight / 2, mapping.drawnWidth, mapping.drawnHeight);
     context.restore();
-    surface.mappingConfigKey = inputConfigKey(config);
+    surface.mappingConfigKey = binding;
     surface.texture.needsUpdate = true;
     surface.ready = true;
+  }
+
+  let previousIntendedScreen: 1 | 3 | undefined;
+  function updateScreen() {
+    const current = state();
+    const config = current.streamConfig;
+    const physicalPose = current.physicalPose === undefined ? current.pose : current.physicalPose;
+    const intended = duoIntendedScreen(current.angle, physicalPose, config?.screenId);
+    const coverHost = sourceHost.querySelector<HTMLElement>('[data-duo-panel="1"]');
+    const innerHost = sourceHost.querySelector<HTMLElement>('[data-duo-panel="3"]');
+    if (coverHost || innerHost) {
+      if (previousIntendedScreen !== undefined && previousIntendedScreen !== intended) {
+        const departing = previousIntendedScreen === 1 ? cover : inner;
+        departing.sawOtherActiveScreen = false;
+        const arriving = intended === 1 ? cover : inner;
+        arriving.handoff = { sawBlack: false };
+      }
+      previousIntendedScreen = intended;
+      if (config?.screenId === 1) inner.sawOtherActiveScreen = true;
+      if (config?.screenId === 3) cover.sawOtherActiveScreen = true;
+      // The route identifies the physical panel. Its stream can paint before
+      // the independent active-display metadata catches up. Only update the
+      // intended panel so departing shutdown frames cannot erase its cache.
+      const panelHost = intended === 1 ? coverHost : innerHost;
+      const source = panelHost ? currentSource(panelHost) : null;
+      if (source) {
+        const size = sourceSize(source);
+        if (size.width > 0 && size.height > 0) {
+          uploadScreen(source, { ...size, screenId: intended }, config, config?.screenId !== intended);
+        }
+      }
+      const surface = intended === 1 ? cover : inner;
+      host.dataset.screenReady = String(surface.ready);
+      if (surface.ready) host.dataset.screenId = String(intended);
+      return;
+    }
+    // Keep the single-stream fallback tied to its authoritative panel and
+    // matching frame geometry; it cannot identify an incoming panel itself.
+    if (!config || config.screenId !== intended || (config.screenId !== 1 && config.screenId !== 3)) return;
+    const source = currentSource();
+    if (!source) return;
+    const { width, height } = sourceSize(source);
+    if (!duoFrameMatchesDisplay(width, height, config)) return;
+    uploadScreen(source, config, config);
     host.dataset.screenId = String(config.screenId);
     host.dataset.screenReady = "true";
   }
@@ -249,7 +351,7 @@ export function createDuoScene(
     const mapping = surface.mapping;
     // A new native config can precede its video frame. The retained image is
     // still useful visually, but its transform must not target the new layout.
-    if (!mapping || surface.mappingConfigKey !== inputConfigKey(config)) return null;
+    if (surface.handoff || !mapping || surface.mappingConfigKey !== inputConfigKey(config)) return null;
     const point = duoScreenPoint(hit.uv.x, 1 - hit.uv.y, mapping);
     if (point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1) return null;
     const positions = hit.object.geometry.getAttribute("position");
@@ -335,6 +437,7 @@ export function createDuoScene(
   cancelInput = endGesture;
   function validateGesture() {
     if (gesture && (gesture.configKey !== inputConfigKey() ||
+      (gesture.screenId === 1 ? cover : inner).handoff ||
       !(gesture.multi ? state().onMultiTouch : state().onTouch))) endGesture();
   }
   const down = (event: PointerEvent) => {
@@ -400,7 +503,7 @@ export function createDuoScene(
     const hit = screenHit(event.clientX, event.clientY);
     const send = state().onScroll;
     if (!hit || !send) return;
-    const rect = renderer.domElement.getBoundingClientRect();
+    const rect = host.getBoundingClientRect();
     const dxPixels = event.deltaX * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.width : 1);
     const dyPixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.height : 1);
     const xStep = pointOnPanel(hit, event.clientX + 1, event.clientY);
@@ -463,6 +566,18 @@ export function createDuoScene(
       root.position.copy(center).multiplyScalar(-1);
     }
     try {
+      // Only a window resize reallocates the buffer. Apply it with rendering
+      // because changing canvas dimensions clears the previously drawn frame.
+      if (resizePending) {
+        renderer.setSize(viewportWidth, viewportHeight, false);
+        resizePending = false;
+      }
+      if (projectionPending) {
+        camera.aspect = viewportWidth / viewportHeight;
+        camera.zoom = stageHeight > 0 ? stageHeight / viewportHeight : 1;
+        camera.updateProjectionMatrix();
+        projectionPending = false;
+      }
       renderer.render(scene, camera);
     } catch { fail(); }
     host.dataset.hingeAngle = (180 - fold * 360 / Math.PI).toFixed(2);
@@ -483,6 +598,7 @@ export function createDuoScene(
       canvas.removeEventListener("lostpointercapture", up);
       canvas.removeEventListener("wheel", wheel);
       window.removeEventListener("blur", endGesture);
+      window.removeEventListener("resize", resizeViewport);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       if (model) disposeModel(model);
       for (const surface of [inner, cover]) { surface.texture.dispose(); surface.material.dispose(); }

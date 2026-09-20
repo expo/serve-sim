@@ -83,6 +83,7 @@ actor FrameCapture {
     private var callbackBlocks: [ObjectIdentifier: ScreenCallbackBlocks] = [:]
     private var framebufferSurfaces: [ObjectIdentifier: IOSurface] = [:]
     private var screenMetadata: [ObjectIdentifier: SimDisplayMetadata] = [:]
+    private var fixedScreenID: UInt32?
     private var authoritativeDisplay: CoreDeviceDisplayState?
     private var displayInfoTask: Task<Void, Never>?
     private var displayConfigurationReady = false
@@ -92,8 +93,9 @@ actor FrameCapture {
     private var lastPickAttempt: ContinuousClock.Instant?
     private var ioClient: NSObject?
 
-    func start(deviceUDID: String, onFrame: @escaping @Sendable (CVPixelBuffer, CMTime) -> Void) async throws {
+    func start(deviceUDID: String, screenID: UInt32? = nil, onFrame: @escaping @Sendable (CVPixelBuffer, CMTime) -> Void) async throws {
         self.onFrame = onFrame
+        fixedScreenID = screenID
         displayConfigurationReady = false
         captureGeneration &+= 1
         let generation = captureGeneration
@@ -114,10 +116,11 @@ actor FrameCapture {
         self.ioClient = io
 
         try wireUpFramebuffer()
-        // The largest retained surface can belong to the closed inner panel.
-        // Resolve the active panel before emitting the first frame/config.
+        // Main capture follows authoritative display election. Independent
+        // fixed-panel feeds observe their own surface immediately, including
+        // during a native display handoff, without waiting for that election.
         let integratedIDs = Set(screenMetadata.values.filter { $0.screenType == 0 }.map(\.screenID))
-        if integratedIDs.count == 2 {
+        if fixedScreenID == nil, integratedIDs.count == 2 {
             let displays = try? await CoreDeviceDisplayInfo.read(udid: deviceUDID)
             guard generation == captureGeneration else { throw CancellationError() }
             if let displays {
@@ -218,8 +221,8 @@ actor FrameCapture {
         return surface
     }
 
-    /// Prefer the authoritative active panel; older runtimes and unavailable
-    /// surfaces retain the largest-area fallback.
+    /// Fixed feeds select only their panel. Main capture prefers the
+    /// authoritative active panel and retains its legacy largest-area fallback.
     private func pickBestSurface() -> (key: ObjectIdentifier, surface: IOSurface)? {
         let surfaces = descriptors.compactMap { descriptor -> (key: ObjectIdentifier, surface: IOSurface)? in
             guard let surface = surface(for: descriptor) else { return nil }
@@ -232,7 +235,8 @@ actor FrameCapture {
             )
         }
         guard let index = FramebufferSelectionPolicy.preferredIndex(
-            in: candidates, activeScreenID: authoritativeDisplay?.screenID
+            in: candidates, activeScreenID: authoritativeDisplay?.screenID,
+            fixedScreenID: fixedScreenID
         ) else { return nil }
         return surfaces[index]
     }

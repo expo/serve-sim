@@ -132,8 +132,14 @@ private func u32(_ v: Int) -> UInt32 {
         _ mjpegQuality: Double,
         _ maxDimension: Int,
         _ h264Fps: Int,
-        _ h264Bitrate: Int
+        _ h264Bitrate: Int,
+        _ screenID: Int?
     ) throws {
+        // Omitted/zero preserves active-display capture for existing callers.
+        // Each positive ID owns an independent exact-panel capture pipeline.
+        guard let requestedScreenID = UInt32(exactly: screenID ?? 0) else {
+            throw Errors.invalidScreenID
+        }
         // unref'd by NodeAsyncQueue's init, so the frame pipeline alone won't
         // keep the event loop alive. Bounded queue + blocking AVCC preserves
         // inter-frame ordering; MJPEG is nonblocking and drops under backpressure.
@@ -147,7 +153,8 @@ private func u32(_ v: Int) -> UInt32 {
                 maxDimension: maxDimension,
                 h264Fps: h264Fps,
                 h264Bitrate: h264Bitrate
-            )
+            ),
+            screenID: requestedScreenID == 0 ? nil : requestedScreenID
         )
     }
 
@@ -245,6 +252,7 @@ private func u32(_ v: Int) -> UInt32 {
 
     enum Errors: Error {
         case invalidCodec
+        case invalidScreenID
     }
 }
 

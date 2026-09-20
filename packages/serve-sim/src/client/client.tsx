@@ -34,6 +34,8 @@ import { AxToolbarButton } from "./components/ax-toolbar-button";
 import { DeviceSidebarToggle } from "./components/device-sidebar-toggle";
 import { DevicePlaceholder } from "./components/device-placeholder";
 import { DuoModelView } from "./components/duo-model-view";
+import { DuoPanelStreams, type DuoPanelPeer } from "./components/duo-panel-streams";
+import { duoIntendedScreen } from "./simulator/duo-pose";
 import { PresentationControls } from "./components/presentation-controls";
 import {
   KeyboardCapture,
@@ -113,6 +115,7 @@ import {
 import {
   webRtcFallbackDecision,
   type WebRtcCodec,
+  type WebRtcStreamFailure,
 } from "./webrtc-codec-fallback";
 
 // ─── App ───
@@ -616,6 +619,22 @@ function AppWithConfig({
   }, [deviceName]);
 
   const deviceType: DeviceType = getDeviceType(deviceName);
+  // Screen config now arrives over the input WebSocket (pushed by the helper on
+  // connect + on every dimension/orientation change) instead of a 1s /config poll.
+  const [wsStreamConfig, setWsStreamConfig] = useState<StreamConfig | null>(null);
+  const streamConfig = wsStreamConfig;
+  const hingeAngle = streamConfig?.hingeAngle;
+  const supportsHingeAngle = streamConfig?.supportsHingeAngle;
+  const isDuo = supportsHingeAngle === true ||
+    /\biphone\s+duo\b/i.test(deviceName ?? "") ||
+    defaultChrome?.identifier === "phone14" || defaultChrome?.identifier === "phone15";
+  const useDuoModel = isDuo && chromeEnabled && !axOverlayEnabled;
+  const [duoModelUnavailable, setDuoModelUnavailable] = useState(false);
+  const [duoPanelPeer, setDuoPanelPeer] = useState<DuoPanelPeer | null>(null);
+  const [duoPanelError, setDuoPanelError] = useState<string | null>(null);
+  const useDuoPanelFeeds = useDuoModel && !duoModelUnavailable;
+  const onDuoUnavailable = useCallback(() => setDuoModelUnavailable(true), []);
+  useEffect(() => setDuoModelUnavailable(false), [config.streamUrl]);
   const devtools = useWebKitDevtools(config.devtoolsEndpoint ?? simEndpoint("devtools"), devtoolsOpen);
 
   useEffect(() => {
@@ -656,7 +675,7 @@ function AppWithConfig({
   const webrtc = useWebRtcStream({
     offerUrl: webrtcOfferUrlFrom(config),
     closeUrl: webrtcCloseUrlFrom(config),
-    enabled: useWebRtcVideo,
+    enabled: useWebRtcVideo && !useDuoPanelFeeds,
     codec: effectiveWebRtcCodec,
     iceServers: streamSettings.iceServers,
   });
@@ -677,7 +696,7 @@ function AppWithConfig({
     avcc.supported &&
     !avccFallback.fellBack &&
     !forceMjpeg;
-  const mjpeg = useMjpegStream(useAvccVideo || useWebRtcVideo ? null : mjpegStreamUrlFrom(config));
+  const mjpeg = useMjpegStream(useDuoPanelFeeds || useAvccVideo || useWebRtcVideo ? null : mjpegStreamUrlFrom(config));
 
   // Re-arm AVCC whenever the target stream changes (device switch / reconnect).
   useEffect(() => {
@@ -691,30 +710,21 @@ function AppWithConfig({
     streamSettings.httpCodec,
     streamSettings.webRtcCodec,
   ]);
-  useEffect(() => {
-    if (!wantsWebRtcVideo || !webrtc.failure) return;
-    if (handledWebRtcFailureRef.current === webrtc.failure.sessionId) return;
-    handledWebRtcFailureRef.current = webrtc.failure.sessionId;
-    const decision = webRtcFallbackDecision(
-      configuredWebRtcCodec,
-      effectiveWebRtcCodec,
-      webrtc.failure,
-    );
+  const handleWebRtcFailure = useCallback((failure: WebRtcStreamFailure) => {
+    if (!wantsWebRtcVideo || handledWebRtcFailureRef.current === failure.sessionId) return;
+    handledWebRtcFailureRef.current = failure.sessionId;
+    const decision = webRtcFallbackDecision(configuredWebRtcCodec, effectiveWebRtcCodec, failure);
     if (!decision) return;
     if (decision.type === "switch-to-http") {
-      if (streamTransportLocked) return;
-      updateStreamPlayback({ transport: "http" });
+      if (!streamTransportLocked) updateStreamPlayback({ transport: "http" });
       return;
     }
     setWebRtcCodecOverride(decision.codec);
-  }, [
-    configuredWebRtcCodec,
-    effectiveWebRtcCodec,
-    streamTransportLocked,
-    updateStreamPlayback,
-    wantsWebRtcVideo,
-    webrtc.failure,
-  ]);
+  }, [configuredWebRtcCodec, effectiveWebRtcCodec, streamTransportLocked, updateStreamPlayback, wantsWebRtcVideo]);
+  useEffect(() => {
+    if (webrtc.failure) handleWebRtcFailure(webrtc.failure);
+  }, [webrtc.failure, handleWebRtcFailure]);
+  const onPanelAvccError = useCallback(() => dispatchAvccFallback("error"), []);
   const lockedWebRtcError =
     streamTransportLocked && webrtc.failure && !webrtc.error
       ? "WebRTC streaming failed. HTTP fallback is disabled for this session."
@@ -722,17 +732,14 @@ function AppWithConfig({
   // One-shot startup window; the JPEG seed paints immediately but only a
   // decoded H.264 frame proves AVCC is viable and cancels this fallback.
   useEffect(() => {
-    if (!useAvccVideo) return;
+    if (!useAvccVideo || useDuoPanelFeeds) return;
     const timer = setTimeout(
       () => dispatchAvccFallback("timeout"),
       AVCC_FRAME_TIMEOUT_MS,
     );
     return () => clearTimeout(timer);
-  }, [useAvccVideo, config.streamUrl]);
+  }, [useAvccVideo, useDuoPanelFeeds, config.streamUrl]);
   const [liveStreamConfig, setLiveStreamConfig] = useState<StreamConfig | null>(null);
-  // Screen config now arrives over the input WebSocket (pushed by the helper on
-  // connect + on every dimension/orientation change) instead of a 1s /config poll.
-  const [wsStreamConfig, setWsStreamConfig] = useState<StreamConfig | null>(null);
   const [hingePending, setHingePending] = useState(false);
   const [hingeError, setHingeError] = useState<string | null>(null);
   const [hingePreview, setHingePreview] = useState<HingeControlState | null>(null);
@@ -740,16 +747,9 @@ function AppWithConfig({
   const [orientationOverride, setOrientationOverride] = useState(false);
   const hingePendingRef = useRef(false);
   const hingeQueueRef = useRef<ReturnType<typeof createAcknowledgedControlQueue<HingeControlCommand>> | null>(null);
-  const streamConfig = wsStreamConfig;
   const activeStreamConfig: StreamConfig = liveStreamConfig ?? streamConfig ?? fallbackScreenSize(deviceType, deviceName);
   const activeScreenId = liveStreamConfig?.screenId ?? streamConfig?.screenId;
   const chrome = defaultChrome ? deviceKitChromeForScreen(defaultChrome, activeScreenId) : null;
-  const hingeAngle = streamConfig?.hingeAngle;
-  const supportsHingeAngle = streamConfig?.supportsHingeAngle;
-  const isDuo = supportsHingeAngle === true ||
-    /\biphone\s+duo\b/i.test(deviceName ?? "") ||
-    defaultChrome?.identifier === "phone14" || defaultChrome?.identifier === "phone15";
-  const useDuoModel = isDuo && chromeEnabled && !axOverlayEnabled;
   const previewHingeAngle = hingePreview?.hingeAngle ?? hingeAngle;
   const previewHingePose = hingePreview ? hingePreview.hingePose : streamConfig?.hingePose;
   const showHingeControls = !presentation && (supportsHingeAngle ?? hingeAngle !== undefined);
@@ -1552,11 +1552,24 @@ function AppWithConfig({
                 pose={previewHingePose}
                 physicalPose={physicalPose}
                 streamConfig={activeStreamConfig}
+                onUnavailable={onDuoUnavailable}
+                streamError={useDuoPanelFeeds ? duoPanelError : null}
                 onTouch={resizing ? undefined : onStreamTouch}
                 onMultiTouch={resizing ? undefined : onStreamMultiTouch}
                 onScroll={resizing ? undefined : onStreamScroll}
               >
-                {streamView}
+                {useDuoPanelFeeds ? <DuoPanelStreams
+                  streamUrl={config.streamUrl}
+                  mode={useWebRtcVideo ? "webrtc" : useAvccVideo ? "avcc" : "mjpeg"}
+                  activeScreenId={duoIntendedScreen(previewHingeAngle, physicalPose === undefined ? previewHingePose : physicalPose, activeScreenId)}
+                  codec={effectiveWebRtcCodec}
+                  iceServers={streamSettings.iceServers}
+                  onStreamingChange={setStreaming}
+                  onAvccError={onPanelAvccError}
+                  onWebRtcFailure={handleWebRtcFailure}
+                  onWebRtcPeerChange={setDuoPanelPeer}
+                  onStreamError={setDuoPanelError}
+                /> : streamView}
               </DuoModelView>
             );
             if (!useChrome) return screenContent;
@@ -1764,9 +1777,9 @@ function AppWithConfig({
         onStreamPlaybackSettingsChange={streamSettingsState.updatePlayback}
         onStreamEncoderSettingsChange={streamSettingsState.updateEncoder}
         activeCodec={useWebRtcVideo ? `webrtc/${effectiveWebRtcCodec}` : useAvccVideo ? "h264" : "mjpeg"}
-        peerConnection={webrtc.peerConnection}
-        webrtcSessionId={webrtc.sessionId}
-        webrtcStatsUrl={webrtcStatsUrlFrom(config)}
+        peerConnection={useDuoPanelFeeds ? duoPanelPeer?.peerConnection ?? null : webrtc.peerConnection}
+        webrtcSessionId={useDuoPanelFeeds ? duoPanelPeer?.sessionId ?? null : webrtc.sessionId}
+        webrtcStatsUrl={useDuoPanelFeeds && duoPanelPeer ? duoPanelPeer.statsUrl : webrtcStatsUrlFrom(config)}
         avccSupported={avcc.supported}
         streamSettingsPending={
           streamSettingsState.pending || !streamSettingsState.encoderSettingsAvailable

@@ -1,14 +1,19 @@
 # Hinge controls and display selection
 
 The iPhone Duo's physical pose combines a **hinge angle** with the device's
-orientation. serve-sim's web UI provides five pose presets matching Device Hub:
+orientation. Three shortcuts below the phone select Fully folded, Partially open,
+and Fully open. At the top of **Simulator** settings in the Tools sidebar, the
+Fold pose dropdown offers those same options plus Laptop and Tent. Hinge angle
+and Table Mode follow as standard settings rows, with the decimal angle input
+beside the slider. Partially open uses Device Hub's Book pose.
+Both control locations share the same pending and confirmed state.
 
 | Pose | Hinge angle |
 | --- | --- |
-| Closed | 0° |
-| Open | 180° |
+| Fully folded (Closed) | 0° |
+| Partially open (Book) | 90° |
+| Fully open (Open) | 180° |
 | Laptop | 90° |
-| Book | 90° |
 | Tent | 80° |
 
 Laptop and Book have the same hinge angle but different physical orientations.
@@ -32,8 +37,37 @@ its screen orientation can differ from physical orientation. Choose a preset
 again to restore Table Mode eligibility after rotating. Angle adjustments keep
 the known physical orientation and update eligibility for the new angle.
 
-The preview renders the active panel in 2D. It does not render Device Hub's 3D
-device model; the pose controls change the simulator's hinge and motion state.
+With the device frame enabled, the preview renders Apple's
+[Star White iPhone Duo 3D model](https://www.apple.com/105/media/us/iphone-duo/2026/9305e4b9-72d9-4c05-9381-b572adadd5e5/ar/iPhone_Duo_e-sim_Star-White_Variant.usdz)
+with the live stream on its cover or inner display. Folding, unfolding, and
+switching poses animate continuously, including when a new preset interrupts a
+transition. Closed presents the cover straight toward the viewer, and Open
+presents the inner display straight toward the viewer. The open model turns with
+the active screen's portrait or landscape layout so the UI stays readable.
+Laptop has a level base and horizontal hinge; Tent presents the outer cover
+screen with both halves descending from a horizontal ridge. Slider adjustments
+blend these views into the same straight-on closed and open endpoints.
+The browser's reduced-motion preference applies pose changes immediately.
+
+Raw framebuffer pixels use a fixed mapping to each physical panel: no rotation
+for the cover, and a clockwise 90° rotation in canvas coordinates for the inner
+display. This matches the inner panel's native 270° mounting in Y-up coordinates.
+App rotation is already present in the captured pixels, so the renderer does not
+apply an additional correction from app orientation or the model's viewing angle.
+View rotation follows the intended display only after a matching frame is ready,
+so a delayed cover/inner display switch does not add a spurious quarter-turn.
+Native frames fill their corresponding panels without changing aspect ratio;
+touch coordinates use the inverse of the same mapping. The inactive display
+keeps its last decoded frame while the simulator switches between cover and inner
+screens. As soon as a pose requests the other display, updates to the departing
+panel stop so its shutdown frames cannot replace that cached image.
+
+The converted model and textures are embedded in the client, so rendering needs
+no request to Apple or an external asset server. Source attribution and
+conversion details are in the [model README](../src/client/assets/iphone-duo/README.md).
+Turn off the device frame to use a flat live display. AX inspection uses the
+flat view to keep its overlays aligned; a WebGL or model-loading failure also
+falls back to the live display.
 
 Each control waits for acknowledgement. While dragging, the latest queued
 angle replaces intermediate values; selecting a preset replaces queued slider
@@ -195,12 +229,15 @@ Legacy `SimScreenProperties.backlight` was also observed to retain stale values
 after a fold. CoreDevice's display information supplies the authoritative active
 display and orientation; capture and touch routing must follow the same display.
 
-The closed screen uses DeviceKit's `phone15` frame. Half-folded and fully open
-use the same `phone14` inner-display frame; there is no separate half-folded 2D
-bezel in the installed assets. The frame and hardware buttons rotate around the
-stream, whose touch coordinates remain aligned with its active screen. The
-inner frame's button PDFs declare `/Rotate 270`; both asset dimensions and PNG
-conversion must apply that page rotation.
+The 3D preview retains one model while the active stream changes between the
+cover and inner displays. Pointer input is projected onto the visible active
+display and mapped back to its streamed coordinates.
+
+In the flat framed view used for AX inspection, the closed screen uses
+DeviceKit's `phone15` frame; half-folded and fully open use the same `phone14`
+inner-display frame. The frame and hardware buttons rotate around the stream.
+The inner frame's button PDFs declare `/Rotate 270`; both asset dimensions and
+PNG conversion must apply that page rotation.
 
 ## Touch transport
 

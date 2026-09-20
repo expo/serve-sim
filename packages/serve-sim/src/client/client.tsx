@@ -33,6 +33,7 @@ import { AxStateProvider } from "./components/ax-state-provider";
 import { AxToolbarButton } from "./components/ax-toolbar-button";
 import { DeviceSidebarToggle } from "./components/device-sidebar-toggle";
 import { DevicePlaceholder } from "./components/device-placeholder";
+import { DuoModelView } from "./components/duo-model-view";
 import { PresentationControls } from "./components/presentation-controls";
 import {
   KeyboardCapture,
@@ -50,7 +51,7 @@ import { SimulatorResizeSizeBadge } from "./components/simulator-resize-size-bad
 import { StreamStatusPill } from "./components/stream-status-pill";
 import { HingeControls } from "./components/hinge-controls";
 import { screenConfigsEqual } from "./simulator/screen-config-state";
-import { HINGE_POSES, type HingeControlCommand } from "../hinge-control";
+import { HINGE_POSES, hingeControlState, type HingeControlCommand, type HingeControlState, type HingePose } from "../hinge-control";
 import { createAcknowledgedControlQueue, type AcknowledgedControlReply } from "./utils/acknowledged-control-queue";
 import { ToolsPanel } from "./components/tools-panel";
 import { WebKitDevtoolsPanel } from "./components/webkit-devtools-panel";
@@ -734,6 +735,9 @@ function AppWithConfig({
   const [wsStreamConfig, setWsStreamConfig] = useState<StreamConfig | null>(null);
   const [hingePending, setHingePending] = useState(false);
   const [hingeError, setHingeError] = useState<string | null>(null);
+  const [hingePreview, setHingePreview] = useState<HingeControlState | null>(null);
+  const [physicalPose, setPhysicalPose] = useState<HingePose | null | undefined>(undefined);
+  const [orientationOverride, setOrientationOverride] = useState(false);
   const hingePendingRef = useRef(false);
   const hingeQueueRef = useRef<ReturnType<typeof createAcknowledgedControlQueue<HingeControlCommand>> | null>(null);
   const streamConfig = wsStreamConfig;
@@ -742,6 +746,12 @@ function AppWithConfig({
   const chrome = defaultChrome ? deviceKitChromeForScreen(defaultChrome, activeScreenId) : null;
   const hingeAngle = streamConfig?.hingeAngle;
   const supportsHingeAngle = streamConfig?.supportsHingeAngle;
+  const isDuo = supportsHingeAngle === true ||
+    /\biphone\s+duo\b/i.test(deviceName ?? "") ||
+    defaultChrome?.identifier === "phone14" || defaultChrome?.identifier === "phone15";
+  const useDuoModel = isDuo && chromeEnabled && !axOverlayEnabled;
+  const previewHingeAngle = hingePreview?.hingeAngle ?? hingeAngle;
+  const previewHingePose = hingePreview ? hingePreview.hingePose : streamConfig?.hingePose;
   const showHingeControls = !presentation && (supportsHingeAngle ?? hingeAngle !== undefined);
   const clipOrientation = activeStreamConfig.orientation ?? (activeStreamConfig.width > activeStreamConfig.height ? "landscape_left" : "portrait");
   const hasDisplayRadii = !!chrome?.screenCornerRadii;
@@ -763,13 +773,16 @@ function AppWithConfig({
   // *screen* at the same comfortable size — and resize / panel-collision math
   // all operate on the frame dimensions.
   const chromeGeometry = chrome ? deviceKitChromeGeometry(chrome, clipOrientation) : null;
-  const useChrome = !!chromeGeometry && chromeEnabled;
+  const useChrome = !!chromeGeometry && chromeEnabled && !useDuoModel;
   const chromeScale = useChrome ? chromeGeometry!.frame.width / chromeGeometry!.screen.width : 1;
-  const containerDefaultWidth = frameMaxWidth * chromeScale;
-  const containerAspectRatioValue = useChrome
+  // The 3D stage keeps one footprint as the device folds and changes active
+  // displays. Resizing it with each native screen configuration would apply a
+  // second animation on top of the physical hinge motion and crop the model.
+  const containerDefaultWidth = useDuoModel ? 580 : frameMaxWidth * chromeScale;
+  const containerAspectRatioValue = useDuoModel ? 1 : useChrome
     ? chromeGeometry!.frame.width / chromeGeometry!.frame.height
     : frameAspectRatioValue;
-  const containerAspectRatio = useChrome
+  const containerAspectRatio = useDuoModel ? "1 / 1" : useChrome
     ? `${chromeGeometry!.frame.width} / ${chromeGeometry!.frame.height}`
     : frameAspectRatio;
 
@@ -779,7 +792,12 @@ function AppWithConfig({
     hingeQueueRef.current = createAcknowledgedControlQueue<HingeControlCommand>({
       send: (request) => trySendWsMessage(wsRef.current, 0x10, request),
       onPendingChange: (pending) => { hingePendingRef.current = pending; setHingePending(pending); },
-      onError: setHingeError,
+      onError: (message) => {
+        setHingeError(message);
+        setHingePreview(null);
+        setPhysicalPose(undefined);
+        setOrientationOverride(false);
+      },
     });
   }
   const pendingWsMessagesRef = useRef<QueuedWsMessage[]>([]);
@@ -838,6 +856,9 @@ function AppWithConfig({
         try {
           const cfg = JSON.parse(new TextDecoder().decode(bytes.subarray(1))) as StreamConfig;
           if (cfg.width <= 0 || cfg.height <= 0) return;
+          // A rotation clears the native named pose. Observe the received
+          // config even when its values equal the previous React state.
+          if (cfg.hingePose === null && !hingePendingRef.current) setOrientationOverride(false);
           setWsStreamConfig((prev) =>
             screenConfigsEqual(prev, cfg) ? prev : cfg,
           );
@@ -845,8 +866,13 @@ function AppWithConfig({
       };
       ws.onclose = () => {
         if (wsRef.current === ws) wsRef.current = null;
+        if (!stopped) {
+          setPhysicalPose(undefined);
+          setOrientationOverride(false);
+        }
         if (!stopped && hingePendingRef.current) {
           hingeQueueRef.current?.clear();
+          setHingePreview(null);
           setHingeError("Connection lost while changing the device pose.");
         }
         scheduleReconnect();
@@ -915,9 +941,24 @@ function AppWithConfig({
   }, []);
   const setHingeControl = useCallback((command: HingeControlCommand) => {
     setHingeError(null);
+    // Editing the hinge or Table Mode clears the named preset, but preserves
+    // the simulator's physical orientation (for example Laptop on a table).
+    if (command.control === "pose") {
+      setPhysicalPose(command.value);
+      setOrientationOverride(false);
+    }
+    setHingePreview((previous) => ({
+      hingeAngle: previous?.hingeAngle ?? streamConfig?.hingeAngle,
+      hingePose: previous ? previous.hingePose : streamConfig?.hingePose,
+      tableMode: previous?.tableMode ?? streamConfig?.tableMode,
+      ...hingeControlState(command),
+    }));
     hingeQueueRef.current?.enqueue(command, { key: command.control, replaceQueued: command.control === "pose" });
-  }, []);
+  }, [streamConfig]);
   const rotateDevice = useCallback((orientation: SimulatorOrientation) => {
+    setHingePreview(null);
+    setPhysicalPose(null);
+    setOrientationOverride(true);
     sendWs(0x07, { orientation });
   }, [sendWs]);
   const currentOrientation =
@@ -937,7 +978,32 @@ function AppWithConfig({
     setWsStreamConfig(null);
     setHingePending(false);
     setHingeError(null);
+    setHingePreview(null);
+    setPhysicalPose(undefined);
+    setOrientationOverride(false);
   }, [config.streamUrl]);
+
+  useEffect(() => {
+    if (!hingePreview || hingePending || !streamConfig) return;
+    // Configs from earlier commands can arrive while the latest request is
+    // queued. Hold the requested pose until both its acknowledgement and its
+    // matching config arrive, so rapid preset changes never animate backwards.
+    if (
+      (hingePreview.hingeAngle === undefined || hingePreview.hingeAngle === streamConfig.hingeAngle) &&
+      (hingePreview.hingePose === undefined || hingePreview.hingePose === streamConfig.hingePose) &&
+      (hingePreview.tableMode === undefined || hingePreview.tableMode === streamConfig.tableMode)
+    ) setHingePreview(null);
+  }, [hingePreview, hingePending, streamConfig]);
+
+  useEffect(() => {
+    // Also learn poses applied outside this browser. An older queued reply
+    // must not replace the orientation chosen by the latest local request.
+    // Rotate explicitly selects a generic presentation. Ignore an older
+    // preset acknowledgement until native reports that its pose was cleared.
+    if (!orientationOverride && !hingePreview && !hingePending && streamConfig?.hingePose) {
+      setPhysicalPose(streamConfig.hingePose);
+    }
+  }, [orientationOverride, hingePreview, hingePending, streamConfig?.hingePose]);
 
   useEffect(() => {
     const confirmedConfig = streamConfig;
@@ -1308,7 +1374,7 @@ function AppWithConfig({
   const resizing = simulatorResize.isResizing || simulatorResize.isInertia;
   useFlipLayout(
     flipRef,
-    !resizing && !presentation,
+    !resizing && !presentation && !useDuoModel,
     layoutWidth,
     layoutHeight,
     stableViewportHeight,
@@ -1448,9 +1514,9 @@ function AppWithConfig({
                   // content and, on the <canvas> path, composites its
                   // semi-transparent white against the black page as a visible
                   // outline. An inset shadow paints over the (opaque) video edge.
-                  borderRadius: useChrome ? 0 : imgBorderRadius,
-                  cornerShape: useChrome || hasDisplayRadii ? undefined : "superellipse(1.3)",
-                  ...(useChrome
+                  borderRadius: useChrome || useDuoModel ? 0 : imgBorderRadius,
+                  cornerShape: useChrome || useDuoModel || hasDisplayRadii ? undefined : "superellipse(1.3)",
+                  ...(useChrome || useDuoModel
                     ? {}
                     : { boxShadow: "inset 0 0 0 1px rgba(255, 255, 255, 0.2)" }),
                 } as CSSProperties}
@@ -1479,6 +1545,19 @@ function AppWithConfig({
                 {streamView}
                 {axOverlayEnabled && !presentation && <AxDomOverlay />}
               </>
+            );
+            if (useDuoModel) return (
+              <DuoModelView
+                angle={previewHingeAngle}
+                pose={previewHingePose}
+                physicalPose={physicalPose}
+                streamConfig={activeStreamConfig}
+                onTouch={resizing ? undefined : onStreamTouch}
+                onMultiTouch={resizing ? undefined : onStreamMultiTouch}
+                onScroll={resizing ? undefined : onStreamScroll}
+              >
+                {streamView}
+              </DuoModelView>
             );
             if (!useChrome) return screenContent;
             // The screen slot is the bezel's true opening; the stream letterboxes
@@ -1550,13 +1629,11 @@ function AppWithConfig({
           {showHingeControls && (
             <HingeControls
               key={config.device}
-              angle={hingeAngle}
-              pose={streamConfig?.hingePose}
-              tableMode={streamConfig?.tableMode}
-              tableModeAvailable={streamConfig?.tableModeAvailable}
+              angle={previewHingeAngle}
+              pose={previewHingePose}
               supported={supportsHingeAngle}
               pending={hingePending}
-              error={hingeError}
+              error={panelOpen ? null : hingeError}
               onChange={setHingeControl}
             />
           )}
@@ -1699,7 +1776,17 @@ function AppWithConfig({
         width={toolsPanelWidth}
         chromeEnabled={chromeEnabled}
         onChromeEnabledChange={setChromeEnabled}
-        hasChrome={!!chrome}
+        hasChrome={!!chrome || isDuo}
+        hingeControls={showHingeControls ? {
+          angle: previewHingeAngle,
+          pose: previewHingePose,
+          tableMode: hingePreview?.tableMode ?? streamConfig?.tableMode,
+          tableModeAvailable: streamConfig?.tableModeAvailable,
+          supported: supportsHingeAngle,
+          pending: hingePending,
+          error: hingeError,
+          onChange: setHingeControl,
+        } : undefined}
       />
       <ResizeHandle
         panelWidth={toolsPanelWidth}

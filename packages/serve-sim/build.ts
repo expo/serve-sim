@@ -17,8 +17,9 @@
  * via the __PREVIEW_HTML_B64__ build-time define.
  */
 import { resolve } from "path";
-import { mkdirSync, writeFileSync, rmSync, readFileSync } from "fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, readFileSync } from "fs";
 import { spawnSync } from "child_process";
+import { tmpdir } from "os";
 import tailwindPlugin from "bun-plugin-tailwind";
 
 const root = import.meta.dir;
@@ -184,27 +185,46 @@ const binJsSize = (await binJsResult.outputs[0]!.text()).length;
 console.log(`dist/serve-sim.js   ${kb(binJsSize)}`);
 
 // ─── 5. Compiled single-file executable ──────────────────────────────────
-// Bun.build doesn't expose --compile yet, so shell out. The define arg carries
-// the base64 HTML (~100 KB) which is well under the macOS ARG_MAX.
-
-const compile = spawnSync(
-  "bun",
-  [
-    "build",
-    "--compile",
-    "--minify",
-    resolve(root, "src/index.ts"),
-    "--outfile", resolve(distDir, "serve-sim"),
-    "--define", `__PREVIEW_HTML_B64__=${JSON.stringify(htmlB64)}`,
-    "--define", `__SERVE_SIM_VERSION__=${JSON.stringify(pkgVersion)}`,
-    // `ws` must stay a runtime-resolved specifier so Bun substitutes its
-    // native implementation — bundling the Node implementation breaks
-    // upgrades (raw handshake writes never flush under Bun's node:http).
-    "--external", "ws",
-  ],
-  { stdio: "inherit" },
-);
-if (compile.status !== 0) process.exit(compile.status ?? 1);
+// Embed large preview assets through the build API, not a --define argument:
+// the model exceeds OS command-line size limits. Stage a Bun-target bundle so
+// compilation preserves Bun semantics independently of the Node CLI above.
+const compileDir = mkdtempSync(resolve(tmpdir(), "serve-sim-compile-"));
+let compileStatus = 1;
+try {
+  const staged = await Bun.build({
+    entrypoints: [resolve(root, "src/index.ts")],
+    target: "bun",
+    format: "esm",
+    minify: true,
+    outdir: compileDir,
+    naming: "serve-sim.js",
+    define: PREVIEW_DEFINE,
+    external: ["ws"],
+  });
+  if (!staged.success) {
+    for (const log of staged.logs) console.error(log);
+    throw new Error("Compiled executable staging failed.");
+  }
+  const compile = spawnSync(
+    "bun",
+    [
+      "build",
+      "--compile",
+      "--minify",
+      resolve(compileDir, "serve-sim.js"),
+      "--outfile", resolve(distDir, "serve-sim"),
+      // Keep ws external in both stages so Bun uses its native WebSocket
+      // implementation; bundling Node's implementation breaks upgrades.
+      "--external", "ws",
+    ],
+    { stdio: "inherit" },
+  );
+  if (compile.error) throw compile.error;
+  compileStatus = compile.status ?? 1;
+} finally {
+  rmSync(compileDir, { recursive: true, force: true });
+}
+if (compileStatus !== 0) process.exit(compileStatus);
 console.log("dist/serve-sim      (compiled binary)");
 
 // ─── 6. SimCameraInjector dylib + SimCameraHelper host CLI ───────────────

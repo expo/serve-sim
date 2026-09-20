@@ -3,6 +3,7 @@ import type { HingePose } from "../../hinge-control";
 import type { StreamConfig } from "../types";
 import { createDuoScene, type DuoSceneState } from "../simulator/duo-scene";
 import { DuoHingeHandle } from "./duo-hinge-handle";
+import type { DuoHingeCommands } from "../simulator/duo-hinge-commands";
 
 export interface DuoModelViewProps {
   angle?: number;
@@ -10,6 +11,7 @@ export interface DuoModelViewProps {
   /** Undefined follows the confirmed pose; null explicitly uses a generic presentation. */
   physicalPose?: HingePose | null;
   streamConfig?: StreamConfig | null;
+  hingeCommands?: DuoHingeCommands;
   children: ReactNode;
   onUnavailable?: () => void;
   streamError?: string | null;

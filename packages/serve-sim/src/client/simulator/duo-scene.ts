@@ -23,6 +23,7 @@ type Surface = {
   lastImage?: string;
   lastVideoTime?: number;
   sawOtherActiveScreen: boolean;
+  nativeDeparture?: number;
   handoff?: { sawBlack: boolean };
 };
 
@@ -309,15 +310,37 @@ export function createDuoScene(
     const coverHost = sourceHost.querySelector<HTMLElement>('[data-duo-panel="1"]');
     const innerHost = sourceHost.querySelector<HTMLElement>('[data-duo-panel="3"]');
     if (coverHost || innerHost) {
+      const commands = current.hingeCommands;
+      if (commands) {
+        for (const surface of [cover, inner]) {
+          const departures = surface === cover ? commands.coverDepartures : commands.innerDepartures;
+          if (surface.nativeDeparture === undefined) surface.nativeDeparture = departures;
+          else if (surface.nativeDeparture !== departures && !surface.handoff) {
+            // A native away/return can be batched into one React render, even
+            // when the intermediate visual preview was never presented.
+            surface.handoff = { sawBlack: false };
+            surface.sawOtherActiveScreen = false;
+          }
+        }
+      }
       if (previousIntendedScreen !== undefined && previousIntendedScreen !== intended) {
         const departing = previousIntendedScreen === 1 ? cover : inner;
         departing.sawOtherActiveScreen = false;
         const arriving = intended === 1 ? cover : inner;
-        arriving.handoff = { sawBlack: false };
+        arriving.handoff ??= { sawBlack: false };
       }
       previousIntendedScreen = intended;
       if (config?.screenId === 1) inner.sawOtherActiveScreen = true;
       if (config?.screenId === 3) cover.sawOtherActiveScreen = true;
+      const intendedSurface = intended === 1 ? cover : inner;
+      if (intendedSurface.handoff && commands && !commands.pending &&
+        intendedSurface.nativeDeparture === (intended === 1 ? commands.coverDepartures : commands.innerDepartures) &&
+        config?.screenId === intended && current.angle !== undefined && config.hingeAngle === current.angle) {
+        // The queue discarded the away preview: native never left this panel.
+        // A confirmed return (or a failed preview reverting to native state)
+        // needs no black frame or display election cycle to restore input.
+        intendedSurface.handoff = undefined;
+      }
       // The route identifies each physical panel independently of active
       // metadata. Both textures follow their live streams by default; opting
       // into caching freezes the departing panel instead.
@@ -329,6 +352,10 @@ export function createDuoScene(
           const size = sourceSize(source);
           if (size.width > 0 && size.height > 0) {
             uploadScreen(source, { ...size, screenId }, config, cacheScreenOnFold);
+            const surface = screenId === 1 ? cover : inner;
+            if (commands && !surface.handoff && config?.screenId === screenId) {
+              surface.nativeDeparture = screenId === 1 ? commands.coverDepartures : commands.innerDepartures;
+            }
           }
         }
       }

@@ -10,6 +10,10 @@ class TestCanvas extends EventTarget {
   draws = 0;
   style = { cssText: "", width: "", height: "" };
   remove() {}
+  getBoundingClientRect() { return { left: 0, top: 0, width: 480, height: 540 }; }
+  setPointerCapture() {}
+  hasPointerCapture() { return false; }
+  releasePointerCapture() {}
   getContext() {
     const context = {
       fillStyle: "",
@@ -51,6 +55,8 @@ Object.assign(globalThis, {
   ImageBitmap: class {},
 });
 const three = await import("three");
+const NativeRaycaster = three.Raycaster;
+let hitScreenId = 1;
 const renderers: TestRenderer[] = [];
 class TestRenderer {
   domElement = new TestCanvas();
@@ -65,6 +71,17 @@ class TestRenderer {
 mock.module("three", () => ({
   ...three,
   WebGLRenderer: TestRenderer,
+  Raycaster: class {
+    private actual = new NativeRaycaster();
+    ray = this.actual.ray;
+    setFromCamera(...args: Parameters<InstanceType<typeof three.Raycaster>["setFromCamera"]>) {
+      this.actual.setFromCamera(...args);
+    }
+    intersectObject(object: InstanceType<typeof three.Object3D>) {
+      const mesh = object.getObjectByName(hitScreenId === 1 ? "cover-display" : "inner-display-left");
+      return mesh ? [{ object: mesh, uv: new three.Vector2(0.5, 0.5), face: { a: 0, b: 1, c: 2 } }] : [];
+    }
+  },
   PMREMGenerator: class {
     fromScene() { return { texture: new three.Texture(), dispose() {} }; }
     dispose() {}
@@ -76,6 +93,11 @@ mock.module("three/addons/loaders/GLTFLoader.js", () => ({
       const scene = new three.Group();
       for (const name of ["left-half", "right-half"]) {
         const half = new three.Group(); half.name = name; scene.add(half);
+        for (const display of name === "left-half" ? ["cover-display", "inner-display-left"] : ["inner-display-right"]) {
+          const mesh = new three.Mesh(new three.PlaneGeometry(4, 6), new three.MeshBasicMaterial());
+          mesh.name = display;
+          half.add(mesh);
+        }
       }
       return Promise.resolve({ scene });
     }
@@ -98,14 +120,28 @@ function setup(dual: boolean, cacheScreenOnFold?: boolean) {
     streamConfig: { screenId: 1, width: 1398, height: 2034, orientation: "portrait" },
   };
   const previous = canvases.length;
+  const touches: { type: string }[] = [];
+  state.onTouch = (touch) => touches.push(touch);
+  let ready!: () => void;
+  const loaded = new Promise<void>((resolve) => { ready = resolve; });
   const scene = createDuoScene(host as unknown as HTMLElement, sourceHost as unknown as HTMLElement,
-    () => state, { ready() {}, error: () => { throw new Error("Scene failed"); } });
+    () => state, { ready, error: () => { throw new Error("Scene failed"); } });
   const [innerTexture, coverTexture] = canvases.slice(previous);
+  const renderer = renderers.at(-1)!;
   let now = 0;
   return {
     host, sourceHost, cover, inner, innerTexture: innerTexture!, coverTexture: coverTexture!,
+    loaded,
+    tap: (screenId: 1 | 3) => {
+      hitScreenId = screenId;
+      const before = touches.filter(({ type }) => type === "begin").length;
+      for (const type of ["pointerdown", "pointerup"]) renderer.domElement.dispatchEvent(Object.assign(new Event(type), {
+        button: 0, pointerId: 1, pointerType: "mouse", clientX: 240, clientY: 270,
+      }));
+      return touches.filter(({ type }) => type === "begin").length - before;
+    },
     setState: (next: Partial<DuoSceneState>) => { state = { ...state, ...next }; },
-    tick: (milliseconds = 16) => renderers.at(-1)!.loop!(now += milliseconds),
+    tick: (milliseconds = 16) => renderer.loop!(now += milliseconds),
     dispose: () => scene.dispose(),
   };
 }
@@ -149,6 +185,101 @@ test("inner frames appear before active metadata and provisional black cannot ov
     test.tick();
     expect(test.coverTexture.pixel).toBe(70);
     expect(test.coverTexture.draws).toBe(coverDraws);
+  } finally { test.dispose(); }
+});
+
+test("coalesced panel previews release input after the native return is acknowledged, including same-angle returns on either panel", async () => {
+  for (const [start, preview, finish, screenId] of [[40, 55, 54, 1], [0, 55, 0, 1], [180, 0, 180, 3]] as const) {
+    for (const caching of [false, true]) {
+      const test = setup(true, caching);
+      const commands = { pending: false, coverDepartures: 0, innerDepartures: 0 };
+      try {
+        await test.loaded;
+        test.inner.pixel = 180;
+        const config = { screenId, width: screenId === 1 ? 1398 : 2007, height: screenId === 1 ? 2034 : 2853, orientation: "portrait" as const, hingeAngle: start };
+        test.setState({ angle: start, streamConfig: config, hingeCommands: commands });
+        test.tick();
+        expect(test.tap(screenId)).toBe(1);
+        test.setState({ angle: preview, hingeCommands: { ...commands, pending: true } });
+        test.tick();
+        // The queued55° command is replaced by the return before native send.
+        test.setState({ angle: finish });
+        test.tick();
+        expect(test.tap(screenId)).toBe(0);
+        test.setState({
+          streamConfig: { ...config, hingeAngle: finish },
+          hingeCommands: commands,
+        });
+        test.tick();
+        expect(test.tap(screenId)).toBe(1);
+      } finally { test.dispose(); }
+    }
+  }
+});
+
+test("an actually submitted away command retains the input guard after its same-angle return acknowledgement", async () => {
+  const test = setup(true);
+  const config = { screenId: 1, width: 1398, height: 2034, orientation: "portrait" as const, hingeAngle: 0 };
+  const commands = { pending: false, coverDepartures: 0, innerDepartures: 0 };
+  try {
+    await test.loaded;
+    test.setState({ streamConfig: config, hingeCommands: commands });
+    test.tick();
+    expect(test.tap(1)).toBe(1);
+    test.setState({ angle: 55, hingeCommands: { ...commands, pending: true, coverDepartures: 1 } });
+    test.tick();
+    test.setState({ angle: 0, hingeCommands: { ...commands, coverDepartures: 1, innerDepartures: 1 } });
+    test.tick();
+    // An acknowledgement is not proof that iOS completed a real panel switch.
+    expect(test.tap(1)).toBe(0);
+    test.cover.pixel = 0;
+    test.tick();
+    expect(test.tap(1)).toBe(0);
+    test.cover.pixel = 90;
+    test.tick();
+    expect(test.tap(1)).toBe(1);
+    // Once that real activation finishes, its old departure count must not
+    // prevent a later preview-only round trip from releasing input.
+    const completed = { ...commands, coverDepartures: 1, innerDepartures: 1 };
+    test.setState({ angle: 55, hingeCommands: { ...completed, pending: true } });
+    test.tick();
+    test.setState({ angle: 0, hingeCommands: completed });
+    test.tick();
+    expect(test.tap(1)).toBe(1);
+  } finally { test.dispose(); }
+});
+
+test("a discarded preview restores input after the queue fails without submitting an away command", async () => {
+  const test = setup(true);
+  const commands = { pending: false, coverDepartures: 0, innerDepartures: 0 };
+  try {
+    await test.loaded;
+    test.setState({ hingeCommands: commands, streamConfig: { screenId: 1, width: 1398, height: 2034, orientation: "portrait", hingeAngle: 0 } });
+    test.tick();
+    test.setState({ angle: 55, hingeCommands: { ...commands, pending: true } });
+    test.tick();
+    test.setState({ angle: 0, hingeCommands: commands });
+    test.tick();
+    expect(test.tap(1)).toBe(1);
+  } finally { test.dispose(); }
+});
+
+test("native away and return submissions keep input guarded even when React batches away the intermediate preview", async () => {
+  const test = setup(true);
+  try {
+    await test.loaded;
+    test.setState({ hingeCommands: { pending: false, coverDepartures: 0, innerDepartures: 0 },
+      streamConfig: { screenId: 1, width: 1398, height: 2034, orientation: "portrait", hingeAngle: 0 } });
+    test.tick();
+    expect(test.tap(1)).toBe(1);
+    test.setState({ hingeCommands: { pending: false, coverDepartures: 1, innerDepartures: 1 } });
+    test.tick();
+    expect(test.tap(1)).toBe(0);
+    test.cover.pixel = 0;
+    test.tick();
+    test.cover.pixel = 80;
+    test.tick();
+    expect(test.tap(1)).toBe(1);
   } finally { test.dispose(); }
 });
 

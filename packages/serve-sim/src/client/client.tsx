@@ -36,6 +36,7 @@ import { DevicePlaceholder } from "./components/device-placeholder";
 import { DuoModelView } from "./components/duo-model-view";
 import { DuoPanelStreams, type DuoPanelPeer } from "./components/duo-panel-streams";
 import { duoIntendedScreen } from "./simulator/duo-pose";
+import { recordDuoHingeCommand, type DuoHingeCommands } from "./simulator/duo-hinge-commands";
 import { PresentationControls } from "./components/presentation-controls";
 import {
   KeyboardCapture,
@@ -760,6 +761,8 @@ function AppWithConfig({
   const [physicalPose, setPhysicalPose] = useState<HingePose | null | undefined>(undefined);
   const [orientationOverride, setOrientationOverride] = useState(false);
   const hingePendingRef = useRef(false);
+  const [hingeCommands, setHingeCommands] = useState<DuoHingeCommands>({ pending: false, coverDepartures: 0, innerDepartures: 0 });
+  const sentHingePoseRef = useRef<HingePose | null | undefined>(undefined);
   const hingeQueueRef = useRef<ReturnType<typeof createAcknowledgedControlQueue<HingeControlCommand>> | null>(null);
   const activeStreamConfig: StreamConfig = liveStreamConfig ?? streamConfig ?? fallbackScreenSize(deviceType, deviceName);
   const activeScreenId = liveStreamConfig?.screenId ?? streamConfig?.screenId;
@@ -804,12 +807,23 @@ function AppWithConfig({
   const wsRef = useRef<WebSocket | null>(null);
   if (!hingeQueueRef.current) {
     hingeQueueRef.current = createAcknowledgedControlQueue<HingeControlCommand>({
-      send: (request) => trySendWsMessage(wsRef.current, 0x10, request),
-      onPendingChange: (pending) => { hingePendingRef.current = pending; setHingePending(pending); },
+      send: (request) => {
+        if (!trySendWsMessage(wsRef.current, 0x10, request)) return false;
+        if (request.command.control === "pose") sentHingePoseRef.current = request.command.value;
+        const pose = sentHingePoseRef.current;
+        setHingeCommands((previous) => recordDuoHingeCommand(previous, request.command, pose));
+        return true;
+      },
+      onPendingChange: (pending) => {
+        hingePendingRef.current = pending;
+        setHingePending(pending);
+        setHingeCommands((previous) => ({ ...previous, pending }));
+      },
       onError: (message) => {
         setHingeError(message);
         setHingePreview(null);
         setPhysicalPose(undefined);
+        sentHingePoseRef.current = undefined;
         setOrientationOverride(false);
       },
     });
@@ -882,6 +896,7 @@ function AppWithConfig({
         if (wsRef.current === ws) wsRef.current = null;
         if (!stopped) {
           setPhysicalPose(undefined);
+          sentHingePoseRef.current = undefined;
           setOrientationOverride(false);
         }
         if (!stopped && hingePendingRef.current) {
@@ -975,6 +990,7 @@ function AppWithConfig({
   const rotateDevice = useCallback((orientation: SimulatorOrientation) => {
     setHingePreview(null);
     setPhysicalPose(null);
+    sentHingePoseRef.current = null;
     setOrientationOverride(true);
     sendWs(0x07, { orientation });
   }, [sendWs]);
@@ -997,6 +1013,7 @@ function AppWithConfig({
     setHingeError(null);
     setHingePreview(null);
     setPhysicalPose(undefined);
+    sentHingePoseRef.current = undefined;
     setOrientationOverride(false);
   }, [config.streamUrl]);
 
@@ -1019,6 +1036,7 @@ function AppWithConfig({
     // preset acknowledgement until native reports that its pose was cleared.
     if (!orientationOverride && !hingePreview && !hingePending && streamConfig?.hingePose) {
       setPhysicalPose(streamConfig.hingePose);
+      sentHingePoseRef.current = streamConfig.hingePose;
     }
   }, [orientationOverride, hingePreview, hingePending, streamConfig?.hingePose]);
 
@@ -1565,10 +1583,12 @@ function AppWithConfig({
             );
             if (useDuoModel) return (
               <DuoModelView
+                key={config.device}
                 angle={previewHingeAngle}
                 pose={previewHingePose}
                 physicalPose={physicalPose}
                 streamConfig={activeStreamConfig}
+                hingeCommands={hingeCommands}
                 onUnavailable={onDuoUnavailable}
                 streamError={useDuoPanelFeeds ? duoPanelError : null}
                 cacheScreenOnFold={cacheScreenOnFold}

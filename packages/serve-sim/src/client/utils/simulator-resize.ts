@@ -32,6 +32,8 @@ export const SIMULATOR_RESIZE_LAYOUT_TRANSITION = "width 0.24s cubic-bezier(0.22
 export const SIMULATOR_RESIZE_PRESENTATION_TRANSITION_MS = 280;
 export const SIMULATOR_RESIZE_PRESENTATION_TRANSITION =
   "transform 0.28s cubic-bezier(0.4, 0, 0.2, 1)";
+export const FOLD_POSE_TRANSITION_MS = 420;
+export const FOLD_POSE_TRANSITION = "transform 0.42s cubic-bezier(0.22, 1, 0.36, 1)";
 // All sides: presentation drops every gutter at once.
 export const SIMULATOR_RESIZE_PAGE_TRANSITION = "padding 0.24s cubic-bezier(0.22, 1, 0.36, 1)";
 

@@ -21,6 +21,7 @@ import {
   simulatorMaxWidth,
   ROTATE_LEFT_CYCLE,
   ROTATE_RIGHT_CYCLE,
+  rotationDegreesForOrientation,
   type DeviceType,
   type SimulatorOrientation,
   type StreamConfig,
@@ -38,7 +39,7 @@ import {
   KeyboardCapture,
   KeyboardToggleButton,
 } from "./components/keyboard-capture";
-import { DeviceKitChrome, deviceKitChromeForScreen, deviceKitChromeGeometry, deviceKitScreenRadius, type ChromeButtonPress } from "./components/device-chrome-frame";
+import { DeviceKitChrome, DuoFoldChrome, deviceKitChromeForScreen, deviceKitChromeGeometry, deviceKitScreenIdForStream, deviceKitScreenRadius, type ChromeButtonPress } from "./components/device-chrome-frame";
 import { createPacedKeySender } from "./utils/paced-key-sender";
 import { GridPanel } from "./components/grid-panel";
 import { IconButton } from "./components/icon-button";
@@ -48,6 +49,7 @@ import { ServeSimToaster } from "./components/app-toasts";
 import { ShareSessionButton } from "./components/share-session-button";
 import { SimulatorResizeSizeBadge } from "./components/simulator-resize-size-badge";
 import { StreamStatusPill } from "./components/stream-status-pill";
+import { HingeRequestQueue } from "./utils/hinge-request-queue";
 import { HingeControls } from "./components/hinge-controls";
 import { screenConfigsEqual } from "./simulator/screen-config-state";
 import { isHingeAngle, type HingeAngleResult } from "../hinge-angle";
@@ -93,6 +95,7 @@ import {
 import {
   getPresentationFrameWidth,
   roundToDevicePixel,
+  FOLD_POSE_TRANSITION,
   SIMULATOR_RESIZE_DRAG_TRANSITION,
   SIMULATOR_RESIZE_PAGE_TRANSITION,
   SIMULATOR_RESIZE_PRESENTATION_TRANSITION,
@@ -590,7 +593,7 @@ function AppWithConfig({
   config,
   deviceName,
   deviceRuntime,
-  chrome: defaultChrome,
+  chrome,
   axOverlayEnabled,
   setAxOverlayEnabled,
   devtoolsOpen,
@@ -732,23 +735,56 @@ function AppWithConfig({
   // connect + on every dimension/orientation change) instead of a 1s /config poll.
   const [wsStreamConfig, setWsStreamConfig] = useState<StreamConfig | null>(null);
   const [hingePending, setHingePending] = useState(false);
+  const [hingeMotion, setHingeMotion] = useState<"animate" | "direct">("direct");
+  const [requestedHingeAngle, setRequestedHingeAngle] = useState<number | null>(null);
   const [hingeError, setHingeError] = useState<string | null>(null);
-  const hingeRequestRef = useRef<{ angle: number; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const hingeQueueRef = useRef<HingeRequestQueue | null>(null);
+  if (!hingeQueueRef.current) hingeQueueRef.current = new HingeRequestQueue(
+    (angle) => trySendWsMessage(wsRef.current, 0x0f, { angle }),
+    (result, idle) => {
+      setHingePending(!idle);
+      if (idle) setRequestedHingeAngle(null);
+      setHingeError(result.ok ? null : result.error ?? "Simulator could not change the hinge angle.");
+      if (result.ok && isHingeAngle(result.angle)) {
+        const angle = result.angle;
+        setWsStreamConfig((prev) => prev ? { ...prev, hingeAngle: angle } : prev);
+      }
+    },
+  );
   const streamConfig = wsStreamConfig;
   const activeStreamConfig: StreamConfig = liveStreamConfig ?? streamConfig ?? fallbackScreenSize(deviceType, deviceName);
-  const activeScreenId = liveStreamConfig?.screenId ?? streamConfig?.screenId;
-  const chrome = defaultChrome ? deviceKitChromeForScreen(defaultChrome, activeScreenId) : null;
-  const hingeAngle = liveStreamConfig?.hingeAngle ?? streamConfig?.hingeAngle;
-  const supportsHingeAngle = liveStreamConfig?.supportsHingeAngle ?? streamConfig?.supportsHingeAngle;
-  const showHingeControls = !presentation && (supportsHingeAngle ?? hingeAngle !== undefined);
-  const clipOrientation = activeStreamConfig.orientation ?? (activeStreamConfig.width > activeStreamConfig.height ? "landscape_left" : "portrait");
-  const hasDisplayRadii = !!chrome?.screenCornerRadii;
-  const imgBorderRadius = chrome && hasDisplayRadii
-    ? deviceKitScreenRadius(chrome, clipOrientation)
-    : screenBorderRadius(deviceType, activeStreamConfig);
-  const frameMaxWidth = simulatorMaxWidth(deviceType, activeStreamConfig);
-  const frameAspectRatio = simulatorAspectRatio(activeStreamConfig);
-  const frameDisplayConfig = displayStreamConfig(activeStreamConfig);
+  const activeScreenId = liveStreamConfig?.screenId ?? streamConfig?.screenId
+    ?? (chrome ? deviceKitScreenIdForStream(chrome, activeStreamConfig) : undefined);
+  const confirmedHingeAngle = streamConfig?.hingeAngle ?? liveStreamConfig?.hingeAngle;
+  const hingeAngle = requestedHingeAngle ?? confirmedHingeAngle;
+  const panelVariants = Object.values(chrome?.displayVariants ?? {})
+    .sort((a, b) => a.screen.width * a.screen.height - b.screen.width * b.screen.height);
+  const poseChrome = panelVariants.length > 1 ? panelVariants.at(-1) : undefined;
+  const activeChrome = poseChrome ?? (chrome ? deviceKitChromeForScreen(chrome, activeScreenId) : null);
+  const supportsHingeAngle = (liveStreamConfig?.supportsHingeAngle ?? streamConfig?.supportsHingeAngle) === true;
+  const foldableChrome = Object.keys(chrome?.displayVariants ?? {}).length > 1;
+  const [duoPresentationOrientation, setDuoPresentationOrientation] = useState<SimulatorOrientation>("landscape_left");
+  const showHingeControls = !presentation && supportsHingeAngle;
+  const deviceOrientation = streamConfig?.orientation ?? activeStreamConfig.orientation
+    ?? (activeStreamConfig.width > activeStreamConfig.height ? "landscape_left" : "portrait");
+  const clipOrientation = foldableChrome ? "landscape_left" : deviceOrientation;
+  const presentationOrientation = foldableChrome ? duoPresentationOrientation : deviceOrientation;
+  const duoRotation = foldableChrome
+    ? rotationDegreesForOrientation(presentationOrientation) - rotationDegreesForOrientation(clipOrientation)
+    : 0;
+  const duoSideways = foldableChrome && Math.abs(duoRotation) % 180 === 90;
+  const orientedStreamConfig = { ...activeStreamConfig, orientation: clipOrientation };
+  const hasDisplayRadii = !!activeChrome?.screenCornerRadii;
+  const imgBorderRadius = activeChrome && hasDisplayRadii
+    ? deviceKitScreenRadius(activeChrome, clipOrientation)
+    : screenBorderRadius(deviceType, orientedStreamConfig);
+  const frameMaxWidth = simulatorMaxWidth(
+    deviceType,
+    foldableChrome && poseChrome ? { width: poseChrome.screen.height, height: poseChrome.screen.width, orientation: "landscape_left" } : orientedStreamConfig,
+    { keepShortSide: foldableChrome },
+  );
+  const frameAspectRatio = simulatorAspectRatio(orientedStreamConfig);
+  const frameDisplayConfig = displayStreamConfig(orientedStreamConfig);
   const frameAspectRatioValue = frameDisplayConfig
     ? frameDisplayConfig.width / frameDisplayConfig.height
     : 1;
@@ -760,13 +796,16 @@ function AppWithConfig({
   // is than the screen, so we scale the container up by it while keeping the
   // *screen* at the same comfortable size — and resize / panel-collision math
   // all operate on the frame dimensions.
-  const chromeGeometry = chrome ? deviceKitChromeGeometry(chrome, clipOrientation) : null;
+  const chromeGeometry = activeChrome ? deviceKitChromeGeometry(activeChrome, clipOrientation) : null;
   const useChrome = !!chromeGeometry && chromeEnabled;
   const chromeScale = useChrome ? chromeGeometry!.frame.width / chromeGeometry!.screen.width : 1;
   const containerDefaultWidth = frameMaxWidth * chromeScale;
   const containerAspectRatioValue = useChrome
     ? chromeGeometry!.frame.width / chromeGeometry!.frame.height
     : frameAspectRatioValue;
+  const layoutAspectRatioValue = duoSideways
+    ? 1 / containerAspectRatioValue
+    : containerAspectRatioValue;
   const containerAspectRatio = useChrome
     ? `${chromeGeometry!.frame.width} / ${chromeGeometry!.frame.height}`
     : frameAspectRatio;
@@ -811,26 +850,17 @@ function AppWithConfig({
         }
       };
       ws.onmessage = (ev) => {
-        if (stopped) return;
-        // Server -> client screen-config push (tag 0x82): [tag][JSON].
         if (!(ev.data instanceof ArrayBuffer)) return;
         const bytes = new Uint8Array(ev.data);
         if (bytes.length < 1) return;
         if (bytes[0] === 0x8f) {
           try {
             const result = JSON.parse(new TextDecoder().decode(bytes.subarray(1))) as HingeAngleResult;
-            const request = hingeRequestRef.current;
-            if (!request || result.angle !== request.angle) return;
-            clearTimeout(request.timer);
-            hingeRequestRef.current = null;
-            setHingePending(false);
-            setHingeError(result.ok ? null : result.error ?? "Simulator could not change the hinge angle.");
-            if (result.ok && isHingeAngle(result.angle)) {
-              setWsStreamConfig((prev) => prev ? { ...prev, hingeAngle: result.angle } : prev);
-            }
+            hingeQueueRef.current?.acknowledge(result);
           } catch {}
           return;
         }
+        // Server -> client screen-config push (tag 0x82): [tag][JSON].
         if (bytes[0] !== 0x82) return;
         try {
           const cfg = JSON.parse(new TextDecoder().decode(bytes.subarray(1))) as StreamConfig;
@@ -842,10 +872,10 @@ function AppWithConfig({
       };
       ws.onclose = () => {
         if (wsRef.current === ws) wsRef.current = null;
-        if (!stopped && hingeRequestRef.current) {
-          clearTimeout(hingeRequestRef.current.timer);
-          hingeRequestRef.current = null;
+        if (!stopped && hingeQueueRef.current?.isPending) {
+          hingeQueueRef.current.cancel();
           setHingePending(false);
+          setRequestedHingeAngle(null);
           setHingeError("Connection lost while changing the hinge angle.");
         }
         scheduleReconnect();
@@ -861,8 +891,7 @@ function AppWithConfig({
       stopped = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (wsRef.current === currentWs) wsRef.current = null;
-      if (hingeRequestRef.current) clearTimeout(hingeRequestRef.current.timer);
-      hingeRequestRef.current = null;
+      hingeQueueRef.current?.cancel();
       currentWs?.close();
     };
   }, [config.wsUrl]);
@@ -913,28 +942,19 @@ function AppWithConfig({
       screenConfigsEqual(prev, next) ? prev : next,
     );
   }, []);
-  const setHingeAngle = useCallback((angle: number) => {
-    if (hingeRequestRef.current) return;
+  const setHingeAngle = useCallback((angle: number, mode: "animate" | "direct" = "animate") => {
+    if (!isHingeAngle(angle)) return;
+    setHingeMotion(mode);
     setHingePending(true);
     setHingeError(null);
-    const timer = setTimeout(() => {
-      hingeRequestRef.current = null;
-      setHingePending(false);
-      setHingeError("The simulator did not confirm the hinge angle change.");
-    }, 5000);
-    hingeRequestRef.current = { angle, timer };
-    if (!trySendWsMessage(wsRef.current, 0x0f, { angle })) {
-      clearTimeout(timer);
-      hingeRequestRef.current = null;
-      setHingePending(false);
-      setHingeError("Connect to the simulator before changing its fold position.");
-    }
+    setRequestedHingeAngle(angle);
+    hingeQueueRef.current?.request(angle);
   }, []);
   const rotateDevice = useCallback((orientation: SimulatorOrientation) => {
+    if (foldableChrome) setDuoPresentationOrientation(orientation);
     sendWs(0x07, { orientation });
-  }, [sendWs]);
-  const currentOrientation =
-    (activeStreamConfig as { orientation?: SimulatorOrientation }).orientation ?? "portrait";
+  }, [foldableChrome, sendWs]);
+  const currentOrientation = presentationOrientation;
   const canRotate = deviceType !== "watch" && deviceType !== "vision";
   const rotateBy = useCallback(
     (direction: "left" | "right") => {
@@ -950,6 +970,7 @@ function AppWithConfig({
     setWsStreamConfig(null);
     setHingePending(false);
     setHingeError(null);
+    setDuoPresentationOrientation("landscape_left");
   }, [config.streamUrl]);
 
   useEffect(() => {
@@ -1250,7 +1271,7 @@ function AppWithConfig({
     defaultWidth: containerDefaultWidth,
     viewportWidth,
     viewportHeight: stableViewportHeight,
-    aspectRatio: containerAspectRatioValue,
+    aspectRatio: layoutAspectRatioValue,
     reservedForChrome: SIMULATOR_RESIZE_VIEWPORT_HEIGHT_RESERVED_FOR_CHROME,
     onStart: () => setSimFocused(false),
   });
@@ -1297,14 +1318,14 @@ function AppWithConfig({
   const presentationInset = SIMULATOR_RESIZE_VIEWPORT_INSET_FOR_PRESENTATION;
   const layoutWidth = simulatorResize.width;
   const layoutHeight =
-    containerAspectRatioValue > 0
-      ? roundToDevicePixel(layoutWidth / containerAspectRatioValue)
+    layoutAspectRatioValue > 0
+      ? roundToDevicePixel(layoutWidth / layoutAspectRatioValue)
       : 0;
   const frameWidth = presentation
     ? getPresentationFrameWidth(
         viewportWidth,
         stableViewportHeight,
-        containerAspectRatioValue,
+        layoutAspectRatioValue,
         presentationInset,
       )
     : layoutWidth;
@@ -1313,12 +1334,13 @@ function AppWithConfig({
   const resizing = simulatorResize.isResizing || simulatorResize.isInertia;
   useFlipLayout(
     flipRef,
-    !resizing && !presentation,
+    !resizing && !presentation && !foldableChrome,
     layoutWidth,
     layoutHeight,
     stableViewportHeight,
     phoneKeyboardRaised,
     scaling,
+    presentationOrientation,
   );
 
   return (
@@ -1360,7 +1382,7 @@ function AppWithConfig({
         <div className={`fixed sm:static top-[18px] sm:top-auto left-1/2 -translate-x-1/2 sm:translate-x-0 z-30 sm:z-auto self-center ${panelOpen || devtoolsOpen ? "max-sm:hidden" : ""}`}>
           <SimulatorToolbar
             onRotate={rotateDevice}
-            orientation={(activeStreamConfig as { orientation?: SimulatorOrientation }).orientation ?? null}
+            orientation={currentOrientation}
             deviceUdid={config.device}
             deviceName={deviceName}
             deviceRuntime={deviceRuntime}
@@ -1412,6 +1434,7 @@ function AppWithConfig({
         <div
           ref={flipRef}
           style={{
+            position: "relative",
             width: layoutWidth,
             height: layoutHeight > 0 ? layoutHeight : undefined,
             transition: resizing ? SIMULATOR_RESIZE_DRAG_TRANSITION : undefined,
@@ -1419,100 +1442,137 @@ function AppWithConfig({
         >
         <div
           ref={simContainerRef}
-          className="relative w-full h-full"
+          className={foldableChrome ? "absolute" : "relative w-full h-full"}
           style={{
             aspectRatio: containerAspectRatio,
-            transform: scaling ? `scale(${layoutScale})` : undefined,
+            ...(foldableChrome
+              ? {
+                  left: "50%",
+                  top: "50%",
+                  width: duoSideways ? layoutHeight : layoutWidth,
+                  height: duoSideways ? layoutWidth : layoutHeight,
+                  transform: `translate(-50%, -50%) rotate(${duoRotation}deg)${scaling ? ` scale(${layoutScale})` : ""}`,
+                }
+              : { transform: scaling ? `scale(${layoutScale})` : undefined }),
             transformOrigin: "center center",
             transition: resizing
               ? undefined
               : scaling
                 ? SIMULATOR_RESIZE_PRESENTATION_TRANSITION
-                : undefined,
+                : foldableChrome
+                  ? FOLD_POSE_TRANSITION
+                  : undefined,
             willChange: resizing ? "width" : scaling ? "transform" : undefined,
           }}
           {...mediaDrop.dropZoneProps}
         >
           {(() => {
-            const streamView = (
-              <SimulatorView
-                url={config.url}
-                wsUrl={config.wsUrl}
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  border: "none",
-                  pointerEvents:
-                    simulatorResize.isResizing || simulatorResize.isInertia ? "none" : undefined,
-                }}
-                imageStyle={{
-                  // With chrome the screen slot clips (rounded) and the bezel
-                  // provides the edge, so the stream itself is square + flush.
-                  // Without chrome, round the screen and add a subtle bezel as an
-                  // INSET shadow (not a border): a 1px border sits outside the
-                  // content and, on the <canvas> path, composites its
-                  // semi-transparent white against the black page as a visible
-                  // outline. An inset shadow paints over the (opaque) video edge.
-                  borderRadius: useChrome ? 0 : imgBorderRadius,
-                  cornerShape: useChrome || hasDisplayRadii ? undefined : "superellipse(1.3)",
-                  ...(useChrome
-                    ? {}
-                    : { boxShadow: "inset 0 0 0 1px rgba(255, 255, 255, 0.2)" }),
-                } as CSSProperties}
-                hideControls
-                onStreamingChange={setStreaming}
-                onStreamTouch={onStreamTouch}
-                onStreamMultiTouch={onStreamMultiTouch}
-                onStreamButton={onStreamButton}
-                onStreamDigitalCrown={onStreamDigitalCrown}
-                onStreamScroll={onStreamScroll}
-                streamMode={useWebRtcVideo ? "webrtc" : useAvccVideo ? "avcc" : "mjpeg"}
-                webRtcStream={webrtc.stream}
-                onWebRtcFrame={webrtc.markFrameDecoded}
-                streamError={useWebRtcVideo ? webrtc.error ?? lockedWebRtcError : null}
-                onAvccError={() => dispatchAvccFallback("error")}
-                onAvccDecodedFrame={() => dispatchAvccFallback("decoded-frame")}
-                subscribeFrame={useAvccVideo ? undefined : mjpeg.subscribeFrame}
-                streamFrame={useAvccVideo ? undefined : mjpeg.frame}
-                streamConfig={activeStreamConfig}
-                enableDigitalCrown={deviceType === "watch"}
-                onScreenConfigChange={onScreenConfigChange}
-              />
-            );
-            const screenContent = (
+            const renderScreen = (opts?: { overlay?: boolean; cover?: boolean; framePolicy?: "live" | "hold" | "handoff" }) => {
+              const panelScreenId = (opts?.cover ? panelVariants[0] : panelVariants.at(-1))?.screenId;
+              const panelActive = !foldableChrome || activeScreenId === undefined || activeScreenId === panelScreenId;
+              return (
               <>
-                {streamView}
-                {axOverlayEnabled && !presentation && <AxDomOverlay />}
+                <SimulatorView
+                  url={config.url}
+                  wsUrl={config.wsUrl}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    border: "none",
+                    pointerEvents:
+                      simulatorResize.isResizing || simulatorResize.isInertia ? "none" : undefined,
+                  }}
+                  imageStyle={{
+                    // With chrome the screen slot clips (rounded) and the bezel
+                    // provides the edge, so the stream itself is square + flush.
+                    // Without chrome, round the screen and add a subtle bezel as an
+                    // INSET shadow (not a border): a 1px border sits outside the
+                    // content and, on the <canvas> path, composites its
+                    // semi-transparent white against the black page as a visible
+                    // outline. An inset shadow paints over the (opaque) video edge.
+                    borderRadius: useChrome ? 0 : imgBorderRadius,
+                    cornerShape: useChrome || hasDisplayRadii ? undefined : "superellipse(1.3)",
+                    ...(useChrome
+                      ? {}
+                      : { boxShadow: "inset 0 0 0 1px rgba(255, 255, 255, 0.2)" }),
+                  } as CSSProperties}
+                  hideControls
+                  frameAspectRatio={foldableChrome && panelVariants.length > 1
+                    ? activeStreamConfig.width / activeStreamConfig.height
+                    : undefined}
+                  onStreamingChange={panelActive ? setStreaming : undefined}
+                  onStreamTouch={onStreamTouch}
+                  onStreamMultiTouch={onStreamMultiTouch}
+                  onStreamButton={onStreamButton}
+                  onStreamDigitalCrown={onStreamDigitalCrown}
+                  onStreamScroll={onStreamScroll}
+                  streamMode={useWebRtcVideo ? "webrtc" : useAvccVideo ? "avcc" : "mjpeg"}
+                  webRtcStream={webrtc.stream}
+                  onWebRtcFrame={webrtc.markFrameDecoded}
+                  streamError={useWebRtcVideo ? webrtc.error ?? lockedWebRtcError : null}
+                  duoFramePolicy={panelActive ? opts?.framePolicy : "hold"}
+                  onAvccError={() => dispatchAvccFallback("error")}
+                  onAvccDecodedFrame={() => dispatchAvccFallback("decoded-frame")}
+                  subscribeFrame={useAvccVideo ? undefined : mjpeg.subscribeFrame}
+                  streamFrame={useAvccVideo ? undefined : mjpeg.frame}
+                  streamConfig={foldableChrome && panelVariants.length > 1 ? {
+                    ...activeStreamConfig,
+                    width: (opts?.cover ? panelVariants[0]! : panelVariants.at(-1)!).screen.width,
+                    height: (opts?.cover ? panelVariants[0]! : panelVariants.at(-1)!).screen.height,
+                    orientation: opts?.cover ? "portrait" : clipOrientation,
+                  } : orientedStreamConfig}
+                  enableDigitalCrown={deviceType === "watch"}
+                  onScreenConfigChange={onScreenConfigChange}
+                />
+                {opts?.overlay && axOverlayEnabled && !presentation && <AxDomOverlay />}
               </>
-            );
-            if (!useChrome) return screenContent;
+              );
+            };
+            if (!useChrome) return renderScreen({ overlay: true });
+            const chromeSize = duoSideways
+              ? { width: layoutHeight, height: layoutWidth }
+              : deviceRenderedWidth > 0 && deviceRenderedHeight > 0
+                ? { width: deviceRenderedWidth, height: deviceRenderedHeight }
+                : undefined;
+            const onCrownWheel = (deltaY: number, deltaMode: number) => {
+              const delta = digitalCrownDeltaFromWheel(
+                deltaY,
+                deltaMode,
+                deviceRenderedHeight || 1,
+              );
+              if (delta != null) onStreamDigitalCrown(delta);
+            };
             // The screen slot is the bezel's true opening; the stream letterboxes
             // (contains) inside it, filling the constraining axis and leaving a
             // thin black margin on the other — the device's own black screen
             // border. Containing (not covering) keeps the stream from ever
             // overflowing past the bezel.
+            if (foldableChrome) {
+              return (
+                <DuoFoldChrome
+                  chrome={activeChrome!}
+                  coverChrome={panelVariants[0]}
+                  hingeAngle={hingeAngle}
+                  hingePending={hingePending}
+                  motion={hingeMotion}
+                  orientation={clipOrientation}
+                  interactive
+                  containerSize={chromeSize}
+                  onButton={handleChromeButton}
+                  onCrownWheel={onCrownWheel}
+                  renderScreen={renderScreen}
+                />
+              );
+            }
             return (
               <DeviceKitChrome
-                chrome={chrome!}
+                chrome={activeChrome!}
                 orientation={clipOrientation}
                 interactive
-                containerSize={
-                  // Measured, not computed: pixel rects can't self-correct the
-                  // way the percentage layout did.
-                  deviceRenderedWidth > 0 && deviceRenderedHeight > 0
-                    ? { width: deviceRenderedWidth, height: deviceRenderedHeight }
-                    : undefined
-                }
+                containerSize={chromeSize}
                 onButton={handleChromeButton}
-                onCrownWheel={(deltaY, deltaMode) => {
-                  const delta = digitalCrownDeltaFromWheel(
-                    deltaY,
-                    deltaMode,
-                    deviceRenderedHeight || 1,
-                  );
-                  if (delta != null) onStreamDigitalCrown(delta);
-                }}
-                screen={screenContent}
+                onCrownWheel={onCrownWheel}
+                screen={renderScreen({ overlay: true })}
               />
             );
           })()}
@@ -1532,11 +1592,11 @@ function AppWithConfig({
             <SimulatorResizeCornerHandle
               simulatorResize={simulatorResize}
               deviceType={deviceType}
-              streamConfig={activeStreamConfig}
+              streamConfig={orientedStreamConfig}
               containerWidth={deviceRenderedWidth || simulatorResize.width}
               containerHeight={
                 deviceRenderedHeight ||
-                (containerAspectRatioValue > 0 ? simulatorResize.width / containerAspectRatioValue : 0)
+                (layoutAspectRatioValue > 0 ? simulatorResize.width / layoutAspectRatioValue : 0)
               }
             />
           )}
@@ -1544,7 +1604,7 @@ function AppWithConfig({
             width={deviceRenderedWidth || simulatorResize.width}
             height={
               deviceRenderedHeight ||
-              (containerAspectRatioValue > 0 ? simulatorResize.width / containerAspectRatioValue : 0)
+              (layoutAspectRatioValue > 0 ? simulatorResize.width / layoutAspectRatioValue : 0)
             }
             visible={!presentation && (simulatorResize.isResizing || simulatorResize.isInertia)}
           />
@@ -1555,7 +1615,6 @@ function AppWithConfig({
           {showHingeControls && (
             <HingeControls
               angle={hingeAngle}
-              supported={supportsHingeAngle}
               pending={hingePending}
               error={hingeError}
               onChange={setHingeAngle}
@@ -1563,7 +1622,7 @@ function AppWithConfig({
           )}
           <SimulatorToolbar
             onRotate={rotateDevice}
-            orientation={(activeStreamConfig as { orientation?: SimulatorOrientation }).orientation ?? null}
+            orientation={currentOrientation}
             deviceUdid={config.device}
             deviceName={deviceName}
             deviceRuntime={deviceRuntime}
@@ -1599,7 +1658,7 @@ function AppWithConfig({
           </SimulatorToolbar>
           <SimulatorToolbar
             onRotate={rotateDevice}
-            orientation={(activeStreamConfig as { orientation?: SimulatorOrientation }).orientation ?? null}
+            orientation={currentOrientation}
             deviceUdid={config.device}
             deviceName={deviceName}
             deviceRuntime={deviceRuntime}

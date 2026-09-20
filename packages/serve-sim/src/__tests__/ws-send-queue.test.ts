@@ -88,6 +88,18 @@ describe("ws send queue", () => {
     expect(sent).toEqual([]);
   });
 
+  test("sends immediately without queueing when the socket is open", () => {
+    const { ws, sent } = openWs();
+    expect(trySendWsMessage(ws, 0x0f, { angle: 90 })).toBe(true);
+    expect(sent.map((data) => sentPayload(new Uint8Array(data)))).toEqual([
+      { tag: 0x0f, payload: { angle: 90 } },
+    ]);
+  });
+
+  test("fails closed when the socket is missing instead of replaying later", () => {
+    expect(trySendWsMessage(null, 0x0f, { angle: 90 })).toBe(false);
+  });
+
   test("caps the queue by trimming oldest messages", () => {
     const queue = enqueueWsMessage(
       [

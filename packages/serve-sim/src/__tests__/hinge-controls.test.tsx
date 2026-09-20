@@ -15,7 +15,7 @@ describe("foldable simulator controls", () => {
     expect(html).toContain('aria-label="Half Fold"');
     expect(html).toContain('aria-label="Unfold"');
     expect(html).not.toContain('aria-pressed="true"');
-    expect(html.match(/mask-image:/g)).toHaveLength(3);
+    expect(html.match(/<svg/g)).toHaveLength(4);
     const withoutTooltips = html.replace(/<span[^>]*role="tooltip"[^>]*>.*?<\/span>/g, "");
     expect(withoutTooltips).not.toMatch(/>(Fold|Half Fold|Unfold)</);
   });

@@ -38,4 +38,11 @@ struct SnapshotSizePolicyTests {
         #expect(size.width == 1206)
         #expect(size.height == 2622)
     }
+
+    @Test("even-rounds a full-size Duo inner LCD so 4:2:0 snapshot does not trap")
+    func duoInnerOdd() {
+        let size = SnapshotSizePolicy(width: 2007, height: 2853, maxDimension: 0)
+        #expect(size.width == 2006)
+        #expect(size.height == 2852)
+    }
 }

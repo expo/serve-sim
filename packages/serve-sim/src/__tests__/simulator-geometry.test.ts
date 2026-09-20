@@ -15,6 +15,7 @@ import {
   rawEdgeForDisplayEdge,
   rawPointForDisplayPoint,
   rotationDegreesForOrientation,
+  shortestRotationDelta,
   streamDisplayGeometry,
 } from "../client/simulator/orientation";
 
@@ -65,6 +66,25 @@ describe("simulator geometry helpers", () => {
     expect(simulatorMaxWidth("iphone", { width: 2868, height: 1320 })).toBe(620);
     expect(simulatorMaxWidth("ipad", { width: 2752, height: 2064 })).toBe(720);
     expect(simulatorMaxWidth("iphone", { width: 1320, height: 2868 })).toBe(320);
+  });
+
+  test("keeps a foldable's landscape short side at the portrait max so fold does not balloon", () => {
+    const innerLandscape = {
+      width: 2007,
+      height: 2853,
+      orientation: "landscape_right" as const,
+    };
+    expect(simulatorMaxWidth("iphone", innerLandscape, { keepShortSide: true })).toBe(
+      Math.round(320 * (2853 / 2007)),
+    );
+    expect(simulatorMaxWidth("iphone", innerLandscape, { keepShortSide: true })).toBeLessThan(500);
+    expect(simulatorMaxWidth("iphone", innerLandscape)).toBe(620);
+  });
+
+  test("takes the short rotation from closed portrait to half-fold landscape-right", () => {
+    expect(shortestRotationDelta("portrait", "landscape_right")).toBe(-90);
+    expect(shortestRotationDelta("landscape_right", "portrait")).toBe(90);
+    expect(shortestRotationDelta("portrait", "landscape_left")).toBe(90);
   });
 
   test("swaps border-radius percentages for landscape screens", () => {

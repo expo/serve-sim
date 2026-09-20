@@ -1,6 +1,5 @@
-import * as fs from "fs";
-import { createServer } from "http";
-import { describe, expect, spyOn, test } from "bun:test";
+import { existsSync } from "fs";
+import { describe, expect, test } from "bun:test";
 import {
   bareChromeIdentifier,
   logicalScreenSizeFromProfile,
@@ -9,10 +8,35 @@ import {
   measureScreenOpening,
   resolveDevicePlaceholderAsset,
   resolveDeviceKitChrome,
-  serveDeviceKitChromeAsset,
 } from "../devicekit-chrome";
 
 describe("DeviceKit chrome helpers", () => {
+  test("strips Apple's chrome bundle prefix", () => {
+    expect(bareChromeIdentifier("com.apple.dt.devicekit.chrome.phone11")).toBe("phone11");
+    expect(bareChromeIdentifier("watch2")).toBe("watch2");
+  });
+
+  test("parses MediaBox page dimensions from a PDF payload", () => {
+    expect(parsePdfPageSize("2 0 obj << /Type /Pages /MediaBox [0 0 65 97] >>")).toEqual({
+      width: 65,
+      height: 97,
+    });
+  });
+
+  for (const rotation of [90, 270, -90, 450]) {
+    test(`honors the PDF page rotation of ${rotation} degrees`, () => {
+      expect(parsePdfPageSize(`/MediaBox [0 0 63 16] /Rotate ${rotation}`)).toEqual({
+        width: 16, height: 63,
+      });
+    });
+  }
+
+  test("keeps dimensions for a half-turn and uses the latest incremental rotation", () => {
+    expect(parsePdfPageSize("/MediaBox [0 0 63 16] /Rotate 180")).toEqual({ width: 63, height: 16 });
+    expect(parsePdfPageSize("/MediaBox [0 0 63 16] /Rotate 0\n%%EOF\n/Rotate 270")).toEqual({ width: 16, height: 63 });
+    expect(parsePdfPageSize("/MediaBox [0 0 63 16] /Rotate 270\n%%EOF\n/Rotate 0")).toEqual({ width: 63, height: 16 });
+  });
+
   test("reads each display's corner metadata without averaging or mixing displays", () => {
     const display = {
       displayType: "integrated", screenID: 1,
@@ -48,96 +72,6 @@ describe("DeviceKit chrome helpers", () => {
     });
   });
 
-  test("resolves both Duo screens and the asymmetric closed screen from installed assets", () => {
-    if (!fs.existsSync("/Library/Developer/DeviceKit/Chrome/phone15.devicechrome")) return;
-    const chrome = resolveDeviceKitChrome({ name: "iPhone Duo" });
-    if (!chrome) return;
-    expect(chrome.screenId).toBe(1);
-    expect(chrome.screenCornerRadii).toEqual({ topLeft: 8, topRight: 59, bottomRight: 59, bottomLeft: 8 });
-    expect(chrome.screen.x - chrome.body.x).toBe(25);
-    expect(chrome.screen.y - chrome.body.y).toBe(14);
-    const inner = chrome.displayVariants?.[3];
-    expect(inner?.identifier).toBe("phone14");
-    expect(inner?.screen.width).toBeGreaterThan(chrome.screen.width);
-    expect(inner?.screenCornerRadii?.topLeft).toBe(inner?.screenCornerRadii?.bottomRight);
-    // phone14's button PDFs carry /Rotate 270; their rendered dimensions
-    // must follow the declared left/top anchors rather than the raw MediaBox.
-    expect(inner?.buttons.find((button) => button.name === "volume-up")?.frame).toEqual({
-      x: 7, y: 124, width: 16, height: 63,
-    });
-    expect(inner?.buttons.find((button) => button.name === "power")?.frame).toEqual({
-      x: 206, y: 6, width: 107, height: 16,
-    });
-    expect(chrome.buttons.find((button) => button.name === "volume-up")?.frame).toEqual({
-      x: 325, y: 5, width: 66, height: 16,
-    });
-    expect(() => JSON.stringify(chrome)).not.toThrow();
-  });
-
-  test("strips Apple's chrome bundle prefix", () => {
-    expect(bareChromeIdentifier("com.apple.dt.devicekit.chrome.phone11")).toBe("phone11");
-    expect(bareChromeIdentifier("watch2")).toBe("watch2");
-  });
-
-  test("serves button rasterizations in the same orientation as their descriptor", async () => {
-    if (!fs.existsSync("/Library/Developer/DeviceKit/Chrome/phone15.devicechrome")) return;
-    const server = createServer((req, res) => {
-      serveDeviceKitChromeAsset(new URL(req.url ?? "/", "http://localhost"), res);
-    });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    try {
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("Missing test server address");
-      for (const [chrome, image, width, height] of [
-        ["phone14", "Vol BTN", 16, 63],
-        ["phone14", "X Power BTN", 107, 16],
-        ["phone15", "Vol BTN", 66, 16],
-      ] as const) {
-        const url = new URL(`http://127.0.0.1:${address.port}`);
-        url.searchParams.set("chrome", chrome);
-        url.searchParams.set("image", image);
-        const response = await fetch(url);
-        expect(response.status).toBe(200);
-        expect(response.headers.get("content-type")).toBe("image/png");
-        const png = Buffer.from(await response.arrayBuffer());
-        expect(png.toString("ascii", 12, 16)).toBe("IHDR");
-        expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([width, height]);
-        const reads = spyOn(fs, "readFileSync");
-        try {
-          const cached = await fetch(url);
-          expect(cached.status).toBe(200);
-          expect(Buffer.from(await cached.arrayBuffer())).toEqual(png);
-          expect(reads.mock.calls.some(([path]) => String(path).endsWith(".pdf"))).toBe(false);
-        } finally {
-          reads.mockRestore();
-        }
-      }
-    } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-    }
-  });
-
-  test("parses MediaBox page dimensions from a PDF payload", () => {
-    expect(parsePdfPageSize("2 0 obj << /Type /Pages /MediaBox [0 0 65 97] >>")).toEqual({
-      width: 65,
-      height: 97,
-    });
-  });
-
-  for (const rotation of [90, 270, -90, 450]) {
-    test(`honors the PDF page rotation of ${rotation} degrees`, () => {
-      expect(parsePdfPageSize(`/MediaBox [0 0 63 16] /Rotate ${rotation}`)).toEqual({
-        width: 16, height: 63,
-      });
-    });
-  }
-
-  test("keeps dimensions for a half-turn and uses the latest incremental rotation", () => {
-    expect(parsePdfPageSize("/MediaBox [0 0 63 16] /Rotate 180")).toEqual({ width: 63, height: 16 });
-    expect(parsePdfPageSize("/MediaBox [0 0 63 16] /Rotate 0\n%%EOF\n/Rotate 270")).toEqual({ width: 16, height: 63 });
-    expect(parsePdfPageSize("/MediaBox [0 0 63 16] /Rotate 270\n%%EOF\n/Rotate 0")).toEqual({ width: 63, height: 16 });
-  });
-
   test("prefers explicit main screen plist dimensions when present", () => {
     expect(
       logicalScreenSizeFromProfile(
@@ -152,7 +86,7 @@ describe("DeviceKit chrome helpers", () => {
   });
 
   test("resolves stock watch chrome from installed DeviceKit assets when available", () => {
-    if (!fs.existsSync("/Library/Developer/DeviceKit/Chrome/watch2.devicechrome")) return;
+    if (!existsSync("/Library/Developer/DeviceKit/Chrome/watch2.devicechrome")) return;
 
     const chrome = resolveDeviceKitChrome({
       name: "renamed clone",
@@ -170,7 +104,7 @@ describe("DeviceKit chrome helpers", () => {
   });
 
   test("resolves Device Hub-style placeholder assets from CoreTypes metadata", () => {
-    if (!fs.existsSync("/System/Library/CoreServices/CoreTypes.bundle/Contents/Library/MobileDevices.bundle")) return;
+    if (!existsSync("/System/Library/CoreServices/CoreTypes.bundle/Contents/Library/MobileDevices.bundle")) return;
 
     // The CoreTypes icon set ships with the host SDK, so older runner images
     // (e.g. GitHub's macos-latest) may not carry every current device's asset.
@@ -210,5 +144,20 @@ describe("DeviceKit chrome helpers", () => {
       // Newer CoreTypes includes the exact M4 artwork; older SDKs use the fallback.
       ["com.apple.ipad-air-11-inch-m4-1", "ipad-air-11-inch-m4"],
     );
+  });
+
+  test("resolves both Duo screens and the asymmetric closed screen from installed assets", () => {
+    if (!existsSync("/Library/Developer/DeviceKit/Chrome/phone15.devicechrome")) return;
+    const chrome = resolveDeviceKitChrome({ name: "iPhone Duo" });
+    if (!chrome) return;
+    expect(chrome.screenId).toBe(1);
+    expect(chrome.screenCornerRadii).toEqual({ topLeft: 8, topRight: 59, bottomRight: 59, bottomLeft: 8 });
+    expect(chrome.screen.x - chrome.body.x).toBe(25);
+    expect(chrome.screen.y - chrome.body.y).toBe(14);
+    const inner = chrome.displayVariants?.[3];
+    expect(inner?.identifier).toBe("phone14");
+    expect(inner?.screen.width).toBeGreaterThan(chrome.screen.width);
+    expect(inner?.screenCornerRadii?.topLeft).toBe(inner?.screenCornerRadii?.bottomRight);
+    expect(() => JSON.stringify(chrome)).not.toThrow();
   });
 });

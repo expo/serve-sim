@@ -3,11 +3,14 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   DeviceKitChrome,
+  DuoFoldChrome,
   deviceKitChromeForScreen,
   deviceKitChromeGeometry,
+  deviceKitScreenIdForStream,
   deviceKitScreenRadius,
   snapChromeRect,
 } from "../client/components/device-chrome-frame";
+import { INNER_BOOK_HALF_DEG } from "../hinge-angle";
 import type { DeviceKitChromeDescriptor } from "../client/utils/grid";
 import type { SimulatorOrientation } from "../client/types";
 
@@ -144,6 +147,19 @@ describe("deviceKitChromeForScreen", () => {
   });
 });
 
+describe("deviceKitScreenIdForStream", () => {
+  test("picks the inner display for the larger Duo framebuffer", () => {
+    const cover = { ...chromeFixture(), identifier: "cover", screenId: 1, screen: { x: 0, y: 0, width: 466, height: 678 } };
+    const inner = { ...chromeFixture(), identifier: "inner", screenId: 3, screen: { x: 0, y: 0, width: 669, height: 951 } };
+    const chrome = {
+      ...cover,
+      displayVariants: { 1: cover, 3: inner },
+    };
+    expect(deviceKitScreenIdForStream(chrome, { width: 1398, height: 2034 })).toBe(1);
+    expect(deviceKitScreenIdForStream(chrome, { width: 2007, height: 2853 })).toBe(3);
+  });
+});
+
 describe("deviceKitScreenRadius", () => {
   test("rotates asymmetric corners and their percentage axes with the display", () => {
     const chrome = {
@@ -234,5 +250,59 @@ describe("snapChromeRect", () => {
 
     expect(empty.width).toBe(0);
     expect(empty.height).toBe(0);
+  });
+});
+
+describe("DuoFoldChrome", () => {
+  const chrome = chromeFixture();
+
+  test("Device Hub book recedes at the spine (outer edges toward the camera)", () => {
+    // CSS Y rotation sends negative X toward the viewer at a positive angle.
+    for (const [side, outerX] of [["left", -240], ["right", 240]] as const) {
+      const yaw = (side === "left" ? INNER_BOOK_HALF_DEG : -INNER_BOOK_HALF_DEG) * Math.PI / 180;
+      const outerZ = -outerX * Math.sin(yaw);
+      expect(1400 / (1400 - outerZ)).toBeGreaterThan(1.02);
+    }
+  });
+
+  test("keeps both screen subtrees mounted with only the cover visible when closed", () => {
+    const markup = renderToStaticMarkup(createElement(DuoFoldChrome, {
+      chrome,
+      hingeAngle: 0,
+      renderScreen: () => "screen",
+    }));
+    expect(markup).toContain('data-fold-layout="cover"');
+    expect(markup).toContain("visibility:hidden");
+    expect(markup.match(/data-fold-leaf=/g)).toHaveLength(2);
+    expect(markup).toContain("screen");
+  });
+
+  test("splits the inner display into two leaves that open around the hinge", () => {
+    const markup = renderToStaticMarkup(createElement(DuoFoldChrome, {
+      chrome,
+      hingeAngle: 90,
+      containerSize: { width: 400, height: 600 },
+      renderScreen: () => "screen",
+    }));
+    expect(markup).toContain('data-fold-layout="book"');
+    expect(markup).toContain('data-fold-leaf="left"');
+    expect(markup).toContain('data-fold-leaf="right"');
+    expect(markup).toContain('data-fold-door-back=""');
+    expect(markup).toContain("rotateY(180deg)");
+    expect(markup).toContain("transform-style:preserve-3d");
+    expect(markup).toContain(`rotateY(-${INNER_BOOK_HALF_DEG}deg)`);
+    expect(markup).toContain(`rotateY(${INNER_BOOK_HALF_DEG}deg)`);
+  });
+
+  test("lays the inner leaves flat when unfolded", () => {
+    const markup = renderToStaticMarkup(createElement(DuoFoldChrome, {
+      chrome,
+      hingeAngle: 180,
+      renderScreen: () => "screen",
+    }));
+    expect(markup).toContain("transform:none");
+    expect(markup).toContain("left:-100%");
+    expect(markup).toContain("width:100%");
+    expect(markup).not.toContain('data-fold-crease=""');
   });
 });

@@ -15,7 +15,7 @@ import { useCoarsePointer } from "../hooks/use-coarse-pointer.js";
 import { runHostAction, type ExecResult } from "../utils/exec";
 import type { SimulatorOrientation } from "../types.js";
 import { getDeviceType, type DeviceType } from "./deviceFrames.js";
-import { createRotationCursor } from "./rotation-cursor.js";
+import { ROTATE_LEFT_CYCLE } from "./orientation.js";
 
 type RotateFn = (orientation: SimulatorOrientation) => void | Promise<void>;
 
@@ -234,6 +234,8 @@ export interface ToolbarButtonProps extends ButtonHTMLAttributes<HTMLButtonEleme
   forceDisabled?: boolean;
   /** Override the hover/focus tooltip label. Defaults to title or aria-label. */
   tooltip?: ReactNode;
+  /** Highlight as the active Device Hub control (fold pose, etc). */
+  selected?: boolean;
 }
 
 const buttonStyle: CSSProperties = {
@@ -269,6 +271,7 @@ const ToolbarButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function
     onBlur,
     onClick,
     children,
+    selected = false,
     "aria-label": ariaLabel,
     ...rest
   },
@@ -291,6 +294,7 @@ const ToolbarButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function
       type="button"
       disabled={effectiveDisabled}
       aria-label={ariaLabel}
+      aria-pressed={selected || undefined}
       aria-describedby={tooltipLabel ? tooltipId : undefined}
       onPointerDown={(e) => {
         pointerFocusedRef.current = true;
@@ -339,7 +343,7 @@ const ToolbarButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function
         background:
           effectiveDisabled
             ? "transparent"
-            : pressed
+            : pressed || selected
               ? "rgba(255,255,255,0.14)"
               : hover
                 ? "rgba(255,255,255,0.1)"
@@ -498,15 +502,9 @@ const RotateButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function 
 ) {
   const ctx = useToolbar("RotateButton");
   const cantRotate = ctx.deviceType === "watch" || ctx.deviceType === "vision";
-  const rotationCursor = useRef(createRotationCursor(ctx.orientation ?? "portrait"));
-  const rotationDevice = useRef(ctx.deviceUdid);
+  const [orientation, setOrientation] = useState<SimulatorOrientation>(ctx.orientation ?? "portrait");
   useEffect(() => {
-    if (rotationDevice.current !== ctx.deviceUdid) {
-      rotationDevice.current = ctx.deviceUdid;
-      rotationCursor.current = createRotationCursor(ctx.orientation ?? "portrait");
-    } else {
-      rotationCursor.current.updateReadback(ctx.orientation);
-    }
+    setOrientation(ctx.orientation ?? "portrait");
   }, [ctx.deviceUdid, ctx.orientation]);
 
   return (
@@ -518,9 +516,8 @@ const RotateButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function 
         onClick?.(e);
         if (e.defaultPrevented) return;
         if (!ctx.deviceUdid || cantRotate) return;
-        // An app may decline an orientation. Keep cycling from the last
-        // request so the button can move past that pose on the next click.
-        const next = rotationCursor.current.requestNext();
+        const next = ROTATE_LEFT_CYCLE[orientation];
+        setOrientation(next);
         if (ctx.onRotate) {
           void ctx.onRotate(next);
         } else {

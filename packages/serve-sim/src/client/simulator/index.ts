@@ -26,6 +26,7 @@ export {
   rawEdgeForDisplayEdge,
   rawPointForDisplayPoint,
   rotationDegreesForOrientation,
+  shortestRotationDelta,
   streamDisplayGeometry,
   ROTATE_LEFT_CYCLE,
   ROTATE_RIGHT_CYCLE,

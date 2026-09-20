@@ -112,6 +112,17 @@ export function rotationDegreesForOrientation(
   }
 }
 
+/** Signed shortest turn from one simulator orientation to another, in degrees. */
+export function shortestRotationDelta(
+  from?: SimulatorOrientation | null,
+  to?: SimulatorOrientation | null,
+): number {
+  let delta = rotationDegreesForOrientation(to) - rotationDegreesForOrientation(from);
+  while (delta > 180) delta -= 360;
+  while (delta < -180) delta += 360;
+  return delta;
+}
+
 export function rawPointForDisplayPoint(
   orientation: SimulatorOrientation | null | undefined,
   x: number,

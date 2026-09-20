@@ -45,6 +45,7 @@ export const SIMULATOR_SCREENS: Record<string, { width: number; height: number }
   "iPhone 17 Pro": { width: 1206, height: 2622 },
   "iPhone 17": { width: 1206, height: 2622 },
   "iPhone Air": { width: 1260, height: 2736 },
+  "iPhone Duo": { width: 1398, height: 2034 },
   // iPhone 16 series
   "iPhone 16 Pro Max": { width: 1320, height: 2868 },
   "iPhone 16 Pro": { width: 1206, height: 2622 },
@@ -105,11 +106,32 @@ export function fallbackScreenSize(
   };
 }
 
+function simulatorPortraitMaxWidth(type: DeviceType): number {
+  switch (type) {
+    case "ipad":
+      return 400;
+    case "watch":
+      return 200;
+    case "vision":
+      return 580;
+    default:
+      return 320;
+  }
+}
+
 export function simulatorMaxWidth(
   type: DeviceType = "iphone",
   config?: Pick<StreamConfig, "width" | "height" | "orientation"> | null,
+  options?: { keepShortSide?: boolean },
 ): number {
+  const portraitMax = simulatorPortraitMaxWidth(type);
   if (isLandscapeConfig(config)) {
+    if (options?.keepShortSide) {
+      const display = displayStreamConfig(config);
+      if (display && display.height > 0) {
+        return Math.round(portraitMax * (display.width / display.height));
+      }
+    }
     switch (type) {
       case "ipad":
         return 720;
@@ -121,16 +143,7 @@ export function simulatorMaxWidth(
         return 620;
     }
   }
-  switch (type) {
-    case "ipad":
-      return 400;
-    case "watch":
-      return 200;
-    case "vision":
-      return 580;
-    default:
-      return 320;
-  }
+  return portraitMax;
 }
 
 /** Returns the screen area inset as percentages of the frame, suitable for CSS positioning. */

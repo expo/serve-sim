@@ -1,3 +1,4 @@
+import { matchesPanelFrame } from "./panel-frame";
 import { useEffect, useRef } from "react";
 import {
   AvccDemuxer,
@@ -15,6 +16,8 @@ export interface UseAvccStreamOptions {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   /** Called the first time any frame (seed or decoded) is painted. */
   onFirstFrame?: () => void;
+  /** Keep the last image of this physical panel while the other LCD streams. */
+  frameAspectRatio?: number;
   /** Called on every painted frame — drives the FPS counter / staleness check. */
   onFrame?: () => void;
   /** Called once after the first decoded H.264 frame is painted (never for the JPEG seed). */
@@ -50,23 +53,82 @@ export function useAvccStream({
   enabled,
   canvasRef,
   onFirstFrame,
+  frameAspectRatio,
   onFrame,
   onDecodedFrame,
   onError,
   onDecoderError,
 }: UseAvccStreamOptions): void {
   // Latest-callback ref: keeps the decode effect off the callback identities.
-  const callbacks = useRef({ onFirstFrame, onFrame, onDecodedFrame, onError, onDecoderError });
-  callbacks.current = { onFirstFrame, onFrame, onDecodedFrame, onError, onDecoderError };
+  const callbacks = useRef({ onFirstFrame, onFrame, onDecodedFrame, onError, onDecoderError, frameAspectRatio });
+  callbacks.current = { onFirstFrame, onFrame, onDecodedFrame, onError, onDecoderError, frameAspectRatio };
 
   useEffect(() => {
     if (!enabled || !url || !isAvccSupported()) return;
+    const subscriber: Subscriber = { canvasRef, callbacks, painted: false, decoded: false };
+    let stream = streams.get(url);
+    if (!stream) {
+      stream = startStream(url);
+      streams.set(url, stream);
+    }
+    stream.subscribers.add(subscriber);
+    if (stream.latest.width > 0 && stream.hasFrame) paintSubscriber(subscriber, stream.latest, false);
+    return () => {
+      stream.subscribers.delete(subscriber);
+      if (stream.subscribers.size === 0) {
+        stream.stop();
+        streams.delete(url);
+      }
+    };
+  }, [url, enabled, canvasRef]);
+}
 
+type Callbacks = Pick<UseAvccStreamOptions, "onFirstFrame" | "onFrame" | "onDecodedFrame" | "onError" | "onDecoderError" | "frameAspectRatio">;
+type Subscriber = {
+  canvasRef: UseAvccStreamOptions["canvasRef"];
+  callbacks: { current: Callbacks };
+  painted: boolean;
+  decoded: boolean;
+};
+type SharedStream = {
+  subscribers: Set<Subscriber>;
+  latest: HTMLCanvasElement;
+  hasFrame: boolean;
+  stop: () => void;
+};
+const streams = new Map<string, SharedStream>();
+
+function paintSubscriber(subscriber: Subscriber, source: HTMLCanvasElement, decoded: boolean) {
+  const canvas = subscriber.canvasRef.current;
+  if (!canvas) return;
+  const aspect = subscriber.callbacks.current.frameAspectRatio;
+  const matchesPanel = matchesPanelFrame(source.width, source.height, aspect);
+  if (matchesPanel && (canvas.width !== source.width || canvas.height !== source.height)) {
+    canvas.width = source.width;
+    canvas.height = source.height;
+  }
+  if (matchesPanel) canvas.getContext("2d")?.drawImage(source, 0, 0);
+  subscriber.callbacks.current.onFrame?.();
+  if (decoded && !subscriber.decoded) {
+    subscriber.decoded = true;
+    subscriber.callbacks.current.onDecodedFrame?.();
+  }
+  if (!subscriber.painted) {
+    subscriber.painted = true;
+    subscriber.callbacks.current.onFirstFrame?.();
+  }
+}
+
+// One transport and decoder per URL. All leaves paint the same decoded frame
+// synchronously, before the browser can composite either half.
+function startStream(url: string): SharedStream {
+    const subscribers = new Set<Subscriber>();
+    const latest = document.createElement("canvas");
+    const stream: SharedStream = { subscribers, latest, hasFrame: false, stop: () => {} };
     const controller = new AbortController();
     const demuxer = new AvccDemuxer();
     let stopped = false;
-    let painted = false;
-    let decodedFramePainted = false;
+    let frameRevision = 0;
     let timestamp = 0;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let decoder: VideoDecoder | null = null;
@@ -77,66 +139,65 @@ export function useAvccStream({
     // a handler is wired, else surfaces as a user-facing error. Routing to both
     // would flash a red overlay over the stream the parent is about to recover.
     const reportDecodeFailure = (message: string) => {
-      if (callbacks.current.onDecoderError) callbacks.current.onDecoderError();
-      else callbacks.current.onError?.(message);
+      for (const { callbacks } of subscribers) {
+        if (callbacks.current.onDecoderError) callbacks.current.onDecoderError();
+        else callbacks.current.onError?.(message);
+      }
     };
 
     const paint = (source: CanvasImageSource, width: number, height: number, decoded: boolean) => {
       if (!isLive()) return;
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
+      if (latest.width !== width || latest.height !== height) {
+        latest.width = width; latest.height = height;
       }
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-      ctx.drawImage(source, 0, 0, width, height);
-      callbacks.current.onFrame?.();
-      if (decoded && !decodedFramePainted) {
-        decodedFramePainted = true;
-        callbacks.current.onDecodedFrame?.();
-      }
-      if (!painted) {
-        painted = true;
-        callbacks.current.onFirstFrame?.();
-      }
+      latest.getContext("2d")?.drawImage(source, 0, 0, width, height);
+      stream.hasFrame = true;
+      frameRevision++;
+      for (const subscriber of subscribers) paintSubscriber(subscriber, latest, decoded);
     };
 
-    const makeDecoder = () =>
-      new VideoDecoder({
+    const makeDecoder = () => {
+      const next = new VideoDecoder({
         output: (frame) => {
           try {
-            if (isLive()) paint(frame, frame.displayWidth, frame.displayHeight, true);
+            if (isLive() && decoder === next) paint(frame, frame.displayWidth, frame.displayHeight, true);
           } finally {
             frame.close();
           }
         },
-        error: (err) => reportDecodeFailure(`decoder: ${err.message}`),
+        error: (err) => {
+          if (isLive() && decoder === next) reportDecodeFailure(`decoder: ${err.message}`);
+        },
       });
+      return next;
+    };
 
     const paintSeed = async (jpeg: Uint8Array) => {
-      // JPEG seed — paint immediately for an instant first frame.
+      const revision = frameRevision;
+      // A seed decode must not overwrite a newer H.264 frame.
       const bitmap = await createImageBitmap(
         new Blob([jpeg as BlobPart], { type: "image/jpeg" }),
       );
       try {
-        if (isLive()) paint(bitmap, bitmap.width, bitmap.height, false);
+        if (isLive() && revision === frameRevision) paint(bitmap, bitmap.width, bitmap.height, false);
       } finally {
         bitmap.close();
       }
     };
 
     const configureDecoder = (description: Uint8Array) => {
-      if (!decoder || decoder.state === "closed") decoder = makeDecoder();
+      // A display switch can change H.264 dimensions while old frames are
+      // still queued. Retire that decoder, retaining its last painted frame
+      // until the new display produces one; late callbacks cannot force MJPEG.
+      if (decoder && decoder.state !== "closed") decoder.close();
+      decoder = makeDecoder();
       try {
         decoder.configure({
           codec: avcCodecString(description),
           description,
-          // `optimizeFor` is a valid runtime hint not yet in lib.dom's types.
-          optimizeFor: "latency",
+          optimizeForLatency: true,
           hardwareAcceleration: "prefer-hardware",
-        } as VideoDecoderConfig & { optimizeFor: "latency" });
+        });
       } catch (err) {
         reportDecodeFailure(`config: ${(err as Error).message}`);
       }
@@ -208,7 +269,7 @@ export function useAvccStream({
 
     void read();
 
-    return () => {
+    stream.stop = () => {
       stopped = true;
       if (retryTimer) clearTimeout(retryTimer);
       controller.abort();
@@ -222,5 +283,5 @@ export function useAvccStream({
       }
       decoder = null;
     };
-  }, [url, enabled, canvasRef]);
+    return stream;
 }

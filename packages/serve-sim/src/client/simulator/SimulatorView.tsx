@@ -1,3 +1,5 @@
+import { useDuoVideo, type DuoFramePolicy } from "./use-duo-video";
+import { matchesPanelFrame } from "./panel-frame";
 import {
   useCallback,
   useEffect,
@@ -22,6 +24,7 @@ import {
   type ScreenConfigSource,
 } from "./screen-config-state.js";
 import { resolveSimulatorStreamRouting } from "./simulator-stream-routing.js";
+import { useSharedMjpeg } from "./use-shared-mjpeg";
 import { useAvccStream } from "./use-avcc-stream.js";
 import { roundToDevicePixel, snapContainBox } from "../utils/simulator-resize";
 import { observeVideoDimensions } from "./video-dimensions.js";
@@ -83,6 +86,9 @@ export interface SimulatorViewProps {
   connectionQuality?: "good" | "degraded" | "poor" | null;
   /** Video render mode. "avcc" falls back to MJPEG when WebCodecs is unavailable. */
   streamMode?: "mjpeg" | "avcc" | "webrtc";
+  frameAspectRatio?: number;
+  /** Retain the outgoing Duo LCD while its physical door turns. */
+  duoFramePolicy?: DuoFramePolicy;
   /** WebRTC media stream when `streamMode="webrtc"`. */
   webRtcStream?: MediaStream | null;
   /** Called when the WebRTC <video> has decoded its first frame. */
@@ -129,6 +135,8 @@ export function SimulatorView({
   onStreamingChange,
   connectionQuality,
   streamMode = "avcc",
+  frameAspectRatio,
+  duoFramePolicy,
   webRtcStream,
   onWebRtcFrame,
   streamError,
@@ -151,7 +159,6 @@ export function SimulatorView({
   const imgRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const relayImgRef = useRef<HTMLImageElement | null>(null);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const inputLayerRef = useRef<HTMLDivElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -230,10 +237,20 @@ export function SimulatorView({
     };
   }, [connectionQuality]);
 
+  const projectDuoVideo = useWebRtc && frameAspectRatio !== undefined;
+  useDuoVideo(projectDuoVideo ? webRtcStream : null, canvasRef, frameAspectRatio,
+    Math.ceil(Math.max(viewportSize?.width ?? 0, viewportSize?.height ?? 0, 1) * (window.devicePixelRatio || 1)),
+    (width, height) => {
+      updateScreenConfig({ width, height }, "media");
+      lastFrameAtRef.current = Date.now();
+      frameCountRef.current++;
+      if (!connectedRef.current) { setConnected(true); setError(null); onWebRtcFrame?.(); }
+    }, duoFramePolicy);
+
   const streamUrl = `${url}/stream.mjpeg`;
 
   useEffect(() => {
-    if (!useWebRtc) return;
+    if (!useWebRtc || projectDuoVideo) return;
     const video = videoRef.current;
     if (!video) return;
     let settled = false;
@@ -267,6 +284,7 @@ export function SimulatorView({
     video.srcObject = webRtcStream ?? null;
     if (webRtcStream) {
       dimensionObserver = observeVideoDimensions(video, (dimensions) => {
+        video.style.visibility = matchesPanelFrame(dimensions.width, dimensions.height, frameAspectRatio) ? "visible" : "hidden";
         updateScreenConfig(dimensions, "media");
       });
       setConnected(false);
@@ -295,7 +313,7 @@ export function SimulatorView({
       }
       video.srcObject = null;
     };
-  }, [useWebRtc, webRtcStream, onWebRtcFrame, updateScreenConfig]);
+  }, [useWebRtc, webRtcStream, onWebRtcFrame, updateScreenConfig, frameAspectRatio, projectDuoVideo]);
 
   useEffect(() => {
     hasAuthoritativeScreenConfigRef.current = false;
@@ -320,72 +338,26 @@ export function SimulatorView({
   // Paint externally supplied MJPEG frames directly, bypassing React.
   const connectedRef = useRef(false);
   connectedRef.current = connected;
-  // Latest received-but-not-yet-painted frame, and the one currently shown.
-  // Painting is drained on requestAnimationFrame (latest wins; stale frames
-  // are dropped and their blob URLs released) so a browser that can't keep up
-  // never queues an img.src assignment + JPEG decode for every received frame.
-  // That per-frame work on the main thread is what freezes weak browsers — the
-  // ones without WebCodecs that fall back to this MJPEG path — under the high
-  // frame rate of heavy interaction. Mirrors the AVCC canvas single-frame queue.
-  const pendingBlobUrlRef = useRef<string | null>(null);
-  const paintedBlobUrlRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!externalMjpeg || !subscribeFrame) return;
-    // Startup watchdog: flag the stream as broken if no frame arrives within
-    // the window. Catches the silent-failure mode where the helper accepts
-    // the MJPEG connection but its underlying simulator was shut down —
-    // /stream.mjpeg keeps the socket open forever without emitting bytes.
-    const STARTUP_MS = 6000;
-    const watchdog = setTimeout(() => {
-      if (!connectedRef.current) {
-        setError("Stream is not producing frames. The simulator may have stopped — try reconnecting.");
-      }
-    }, STARTUP_MS);
-
-    let rafId = requestAnimationFrame(function paint() {
-      const next = pendingBlobUrlRef.current;
-      if (next) {
-        pendingBlobUrlRef.current = null;
-        const img = relayImgRef.current;
-        if (img) {
-          // Release the frame we're replacing; its decode is now moot.
-          if (paintedBlobUrlRef.current) URL.revokeObjectURL(paintedBlobUrlRef.current);
-          paintedBlobUrlRef.current = next;
-          img.src = next;
-          frameCountRef.current++;
-        } else {
-          URL.revokeObjectURL(next);
-        }
-      }
-      rafId = requestAnimationFrame(paint);
-    });
-
-    const unsubscribe = subscribeFrame((blobUrl) => {
-      lastFrameAtRef.current = Date.now();
-      // Latest-wins: a frame that arrived since the last paint is now stale —
-      // release it so blob URLs don't accumulate between animation frames.
-      if (pendingBlobUrlRef.current) URL.revokeObjectURL(pendingBlobUrlRef.current);
-      pendingBlobUrlRef.current = blobUrl;
-      if (!connectedRef.current) {
-        clearTimeout(watchdog);
-        setConnected(true);
-        setError(null);
-      }
-    });
-    return () => {
-      clearTimeout(watchdog);
-      cancelAnimationFrame(rafId);
-      unsubscribe?.();
-      if (pendingBlobUrlRef.current) {
-        URL.revokeObjectURL(pendingBlobUrlRef.current);
-        pendingBlobUrlRef.current = null;
-      }
-      if (paintedBlobUrlRef.current) {
-        URL.revokeObjectURL(paintedBlobUrlRef.current);
-        paintedBlobUrlRef.current = null;
-      }
-    };
-  }, [externalMjpeg, subscribeFrame]);
+    if (!projectDuoVideo) return;
+    // A replacement track needs its own first-decoded-frame acknowledgement.
+    connectedRef.current = false;
+    setConnected(false);
+    lastFrameAtRef.current = 0;
+  }, [projectDuoVideo, webRtcStream]);
+  useSharedMjpeg(subscribeFrame, externalMjpeg, (source) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const matchesPanel = matchesPanelFrame(source.width, source.height, frameAspectRatio);
+    if (matchesPanel && (canvas.width !== source.width || canvas.height !== source.height)) {
+      canvas.width = source.width; canvas.height = source.height;
+      updateScreenConfig({ width: source.width, height: source.height }, "media");
+    }
+    if (matchesPanel) canvas.getContext("2d")?.drawImage(source, 0, 0);
+    lastFrameAtRef.current = Date.now();
+    frameCountRef.current++;
+    if (!connectedRef.current) { setConnected(true); setError(null); }
+  });
 
   // AVCC (H.264) decode → canvas. Inert unless `useAvcc`. Works in both
   // direct and relay mode (it only needs `url`).
@@ -410,6 +382,7 @@ export function SimulatorView({
     url,
     enabled: useAvcc,
     canvasRef,
+    frameAspectRatio,
     onFirstFrame: onAvccFirstFrame,
     onFrame: onAvccFrame,
     onDecodedFrame: onAvccDecodedFrame,
@@ -656,9 +629,15 @@ export function SimulatorView({
   const lastFrameAtRef = useRef(0);
   useEffect(() => {
     if (!externalMjpeg) return;
+    const startedAt = Date.now();
     const STALE_MS = 2000;
     const checkStaleness = () => {
       const last = lastFrameAtRef.current;
+      if (last < startedAt && Date.now() - startedAt > 6000) {
+        setError("No simulator frames arrived. Reconnect to the simulator and try again.");
+        setConnected(false);
+        return;
+      }
       if (!last || !connectedRef.current) return;
       if (Date.now() - last > STALE_MS) setConnected(false);
     };
@@ -679,10 +658,11 @@ export function SimulatorView({
   }, [externalMjpeg]);
 
   const getViewElement = useCallback(() => {
+    if (projectDuoVideo) return canvasRef.current;
     if (useWebRtc) return videoRef.current;
     if (useAvcc) return canvasRef.current;
-    return externalMjpeg ? relayImgRef.current : imgRef.current;
-  }, [externalMjpeg, useAvcc, useWebRtc]);
+    return externalMjpeg ? canvasRef.current : imgRef.current;
+  }, [externalMjpeg, useAvcc, useWebRtc, projectDuoVideo]);
 
   const getInputRect = useCallback(() => {
     return surfaceRef.current?.getBoundingClientRect()
@@ -978,16 +958,19 @@ export function SimulatorView({
             cornerShape: clipStyle?.cornerShape,
           } as CSSProperties}
         >
-        {useWebRtc ? (
+        {projectDuoVideo ? (
+          <canvas ref={canvasRef} data-stream-codec="webrtc" style={canvasStyle} />
+        ) : useWebRtc ? (
           <video
             ref={videoRef}
+            data-stream-codec="webrtc"
             muted
             playsInline
             autoPlay
             style={streamImageStyle}
           />
-        ) : useAvcc ? (
-          <canvas ref={canvasRef} style={canvasStyle} />
+        ) : useAvcc || externalMjpeg ? (
+          <canvas ref={canvasRef} data-stream-codec={useAvcc ? "avcc" : "mjpeg"} style={canvasStyle} />
         ) : (
           <img
             ref={imgRef}
@@ -1002,22 +985,11 @@ export function SimulatorView({
             style={externalMjpeg ? { display: "none" } : streamImageStyle}
           />
         )}
-        {externalMjpeg && (
-          <img
-            ref={relayImgRef}
-            draggable={false}
-            onLoad={(e) => {
-              const el = e.currentTarget;
-              if (el.naturalWidth > 0 && el.naturalHeight > 0) {
-                updateScreenConfig({ width: el.naturalWidth, height: el.naturalHeight }, "media");
-              }
-            }}
-            style={streamImageStyle}
-          />
-        )}
         {/* Interactive overlay — captures all pointer events */}
         <div
           ref={inputLayerRef}
+          data-simulator-input=""
+          onPointerDown={(event) => event.currentTarget.setPointerCapture(event.pointerId)}
           style={{
             position: "absolute",
             inset: 0,
@@ -1307,7 +1279,7 @@ export function SimulatorView({
           </>
         )}
         {!connected && !error && (
-          <div style={{...overlayStyle, ...(imageStyle || {})}}>
+          <div style={{...overlayStyle, ...(imageStyle || {}), pointerEvents: "none"}}>
             <span style={{ color: "#888", fontSize: 14 }}>Connecting...</span>
           </div>
         )}

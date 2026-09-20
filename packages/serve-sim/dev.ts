@@ -45,13 +45,14 @@ const EXEC_TOKEN = randomBytes(32).toString("base64url");
 // endpoints we inject into the dev HTML shell below.
 // The dev server owns its HTTP server and forwards upgrades (below), so it
 // proxies helper/DevTools sockets through the single port like production.
-const middleware = simMiddleware({ basePath: "/", execToken: EXEC_TOKEN, proxyHelpers: true });
+const DEV_STREAM_SETTINGS = { transport: "webrtc", codec: "h264" } as const;
+const middleware = simMiddleware({ basePath: "/", execToken: EXEC_TOKEN, proxyHelpers: true, streamSettings: DEV_STREAM_SETTINGS });
 
 // The dev server serves at the root (empty base), so endpoints look like
 // `/logs`, `/grid/api`, etc. We point the advertised CLI binary at our local
 // source so the sidebar's `serve-sim …` calls run from this checkout.
 function devPreviewConfig(state: ServeSimState) {
-  return previewConfigForState(state, "", EXEC_TOKEN, undefined, true);
+  return previewConfigForState(state, "", EXEC_TOKEN, DEV_STREAM_SETTINGS, true);
 }
 
 // ─── Client bundler with watch ───
@@ -261,6 +262,19 @@ async function devMiddleware(request: Request): Promise<Response | undefined> {
   const path = url.pathname;
 
   if (path === "/__dev/reload") return handleDevReload();
+  if (path === "/__dev/duo-e2e") {
+    const build = await Bun.build({
+      entrypoints: [resolve(import.meta.dir, "src/__tests__/duo-browser.ts")],
+      target: "browser",
+    });
+    if (!build.success) throw new Error(build.logs.join("\n"));
+    return new Response(`<!doctype html><html><head><title>Duo browser E2E</title></head>
+      <body><h1>Duo browser E2E</h1><button id="run">Run Duo regressions</button>
+      <pre id="results">Ready</pre><iframe style="width:100%;height:850px;border:0"></iframe>
+      <script type="module">${(await build.outputs[0]!.text()).replace(/<\/script>/gi, "<\\/script>")}</script></body></html>`,
+      { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+  }
+
   if (path === "/" || path === "") {
     const device = url.searchParams.get("device");
     return new Response(await buildHtml(device), {

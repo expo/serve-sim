@@ -15,7 +15,11 @@ import type {
 import type { SimulatorOrientation } from "../types";
 import { rotationDegreesForOrientation } from "../simulator/orientation";
 import { simEndpoint } from "../utils/sim-endpoint";
-import { currentDevicePixelRatio, roundToDevicePixel } from "../utils/simulator-resize";
+import {
+  currentDevicePixelRatio,
+  roundToDevicePixel,
+} from "../utils/simulator-resize";
+import { useDuoPresentation } from "../hooks/use-duo-presentation";
 
 // Shared DeviceKit chrome renderer. Positions the bezel, screen, and hardware
 // buttons in the chrome's own frame coordinate space. Live views pass a
@@ -136,6 +140,91 @@ export function DeviceKitChrome({
   );
 }
 
+const INNER_BOOK_PERSPECTIVE_WIDTHS = 7.5;
+type FoldScreenOpts = { overlay?: boolean; cover?: boolean; framePolicy?: "live" | "hold" | "handoff" };
+
+type DuoFoldChromeProps = {
+  chrome: DeviceKitChromeDescriptor;
+  coverChrome?: DeviceKitChromeDescriptor;
+  hingeAngle?: number;
+  hingePending?: boolean;
+  motion?: "animate" | "direct";
+  renderScreen: (opts?: FoldScreenOpts) => ReactNode;
+  interactive?: boolean;
+  onButton?: (press: ChromeButtonPress) => void;
+  onCrownWheel?: (deltaY: number, deltaMode: number) => void;
+  containerSize?: { width: number; height: number };
+  orientation?: SimulatorOrientation;
+};
+
+export function DuoFoldChrome({
+  chrome, coverChrome, hingeAngle = 0, hingePending = false, motion = "animate", renderScreen, interactive = false,
+  onButton, onCrownWheel, containerSize, orientation = "landscape_left",
+}: DuoFoldChromeProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const { pose, holding, phase, display } = useDuoPresentation(hingeAngle, hingePending, rootRef, motion);
+  const { angle, leftYaw, rightYaw } = pose;
+  const coverActive = display === "cover";
+  const framePolicy = (panel: "cover" | "inner") => {
+    if (holding === panel || (phase === "idle" && panel !== (coverActive ? "cover" : "inner"))) return "hold";
+    if (hingePending && panel === (coverActive ? "cover" : "inner")) return "handoff";
+    return phase === "idle" ? "live" : "handoff";
+  };
+  const width = containerSize?.width ?? 480;
+  const height = containerSize?.height ?? width * chrome.frame.width / chrome.frame.height;
+  const cover = coverChrome ?? chrome;
+  const coverWidth = coverChrome ? height * coverChrome.frame.width / coverChrome.frame.height : width / 2;
+  const center = coverWidth / 2 * pose.offset;
+  const backVisible = leftYaw > 90;
+  const closed = angle < 1 || backVisible;
+  const flat = angle > 0 && Math.abs(leftYaw) < 0.01 && Math.abs(rightYaw) < 0.01;
+  const opening = motion === "animate" && phase === "moving" && display === "inner";
+  const closing = motion === "animate" && phase === "moving" && display === "cover";
+  const innerDark = opening ? Math.min(1, Math.max(0, (leftYaw - 55) / 15)) : 0;
+  const coverDark = closing ? Math.min(1, Math.max(0, (160 - leftYaw) / 10)) : 0;
+  const common = { chrome, orientation, interactive, onButton, onCrownWheel, containerSize };
+  return (
+    <div ref={rootRef} className="absolute inset-0" data-fold-stage="" data-duo-phase={phase}>
+      <div className="absolute inset-0" data-fold-layout={closed ? "cover" : "book"} data-fold-angle={angle}
+        style={{ perspective: width * INNER_BOOK_PERSPECTIVE_WIDTHS, perspectiveOrigin: "50% 50%", transform: `translateX(${-center}px)` }}>
+        {(["left", "right"] as const).map((side) => {
+          const left = side === "left";
+          const yaw = left ? leftYaw : rightYaw;
+          return <div key={side} data-fold-leaf={side} className="absolute top-0 bottom-0"
+            style={{ width: "calc(50% + 0.5px)", left: left ? 0 : "calc(50% - 0.5px)", transformOrigin: left ? "right center" : "left center", transform: Math.abs(yaw) < 0.01 ? "none" : `rotateY(${yaw}deg)`, transformStyle: "preserve-3d", zIndex: left ? 2 : 1, pointerEvents: flat && left ? "none" : undefined }}>
+            <div data-fold-front="" className="absolute inset-0" style={{ left: flat && !left ? "-100%" : undefined, right: flat && !left ? "auto" : undefined, width: flat && !left ? "200%" : undefined, overflow: "hidden", backfaceVisibility: "hidden", visibility: left ? backVisible || flat ? "hidden" : "visible" : leftYaw > 100 ? "hidden" : "visible" }}>
+              <div className="absolute top-0 bottom-0" style={{ width: flat && !left ? "100%" : "200%", [left ? "left" : "right"]: 0 }}>
+                <DeviceKitChrome {...common} screen={<div className="absolute inset-0" data-duo-panel="inner">
+                  <div data-fold-inner-content="" className="absolute inset-0">
+                    {renderScreen({ overlay: !left, framePolicy: framePolicy("inner") })}
+                  </div>
+                  <div data-fold-inner-dark="" className="absolute inset-0 bg-black pointer-events-none" style={{ opacity: innerDark }} />
+                </div>} />
+              </div>
+            </div>
+            {left && <div data-fold-door-back="" className="absolute inset-0" style={{ left: width / 2 - coverWidth, width: coverWidth, transform: "rotateY(180deg) translateZ(0.1px)", backfaceVisibility: "hidden", visibility: backVisible ? "visible" : "hidden", pointerEvents: closed ? "auto" : "none" }}>
+              <div data-fold-cover-shell="" className="absolute" style={{
+                left: 0, right: pct(cover.frame.width - cover.body.x - cover.body.width, cover.frame.width),
+                top: pct(cover.body.y, cover.frame.height),
+                height: pct(cover.body.height, cover.frame.height),
+                background: "#171717", borderRadius: deviceKitScreenRadius(cover), pointerEvents: "auto",
+              }} />
+              <DeviceKitChrome chrome={cover} interactive={interactive} onButton={onButton}
+                containerSize={{ width: coverWidth, height }}
+                screen={<div className="absolute inset-0" data-duo-panel="cover">
+                  <div data-fold-cover-content="" className="absolute inset-0">
+                    {renderScreen({ cover: true, overlay: true, framePolicy: framePolicy("cover") })}
+                  </div>
+                  <div data-fold-cover-dark="" className="absolute inset-0 bg-black pointer-events-none" style={{ opacity: coverDark }} />
+                </div>} />
+            </div>}
+          </div>;
+        })}
+      </div>
+    </div>
+  );
+}
+
 /** Oriented frame and axis-aligned screen bounds, in DeviceKit coordinates. */
 export function deviceKitChromeGeometry(
   chrome: DeviceKitChromeDescriptor,
@@ -170,6 +259,31 @@ export function deviceKitChromeForScreen(
   screenId?: number,
 ): DeviceKitChromeDescriptor {
   return (screenId === undefined ? undefined : chrome.displayVariants?.[screenId]) ?? chrome;
+}
+
+/** Infer the active Duo LCD from the live framebuffer when the helper omits screenId. */
+export function deviceKitScreenIdForStream(
+  chrome: DeviceKitChromeDescriptor,
+  stream: { width: number; height: number } | null | undefined,
+): number | undefined {
+  if (!stream || stream.width <= 0 || stream.height <= 0) return chrome.screenId;
+  const variants = chrome.displayVariants;
+  if (!variants) return chrome.screenId;
+  const streamArea = stream.width * stream.height;
+  let bestId: number | undefined;
+  let bestDelta = Infinity;
+  for (const [id, variant] of Object.entries(variants)) {
+    const width = variant.screen.width;
+    const height = variant.screen.height;
+    if (width <= 0 || height <= 0) continue;
+    const scale = Math.max(1, Math.round(Math.max(stream.width, stream.height) / Math.max(width, height)));
+    const delta = Math.abs(width * scale * height * scale - streamArea);
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      bestId = Number(id);
+    }
+  }
+  return bestId ?? chrome.screenId;
 }
 
 /** CSS border-radius for the screen cutout, matched to its measured corners. */

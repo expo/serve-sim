@@ -19,10 +19,23 @@ const CHROME_ROOT = "/Library/Developer/DeviceKit/Chrome";
 const CHROME_PREFIX = "com.apple.dt.devicekit.chrome.";
 const PNG_CACHE_ROOT = join(tmpdir(), "serve-sim-devicekit-chrome");
 const PLACEHOLDER_ASSET_CACHE_ROOT = join(tmpdir(), "serve-sim-device-placeholder-assets");
-const MOBILE_DEVICE_RESOURCES_ROOT =
-  "/System/Library/CoreServices/CoreTypes.bundle/Contents/Library/MobileDevices.bundle/Contents/Resources";
-const LEGACY_CORE_TYPES_RESOURCES_ROOT =
-  "/System/Library/CoreServices/CoreTypes.bundle/Contents/Library/CoreTypes-0006.bundle/Contents/Resources";
+const CORE_TYPES_LIBRARY = "/System/Library/CoreServices/CoreTypes.bundle/Contents/Library";
+const MOBILE_DEVICE_RESOURCES_ROOT = join(
+  CORE_TYPES_LIBRARY,
+  "MobileDevices.bundle/Contents/Resources",
+);
+const MOBILE_DEVICES_0001_RESOURCES_ROOT = join(
+  CORE_TYPES_LIBRARY,
+  "MobileDevices-0001.bundle/Contents/Resources",
+);
+const MOBILE_DEVICE_RESOURCE_ROOTS = [
+  MOBILE_DEVICE_RESOURCES_ROOT,
+  MOBILE_DEVICES_0001_RESOURCES_ROOT,
+] as const;
+const LEGACY_CORE_TYPES_RESOURCES_ROOT = join(
+  CORE_TYPES_LIBRARY,
+  "CoreTypes-0006.bundle/Contents/Resources",
+);
 
 type JsonRecord = Record<string, unknown>;
 type PlaceholderAssetInfo = { sourcePath: string; pngPath: string; width: number; height: number };
@@ -48,6 +61,7 @@ type CoreTypesIconEntry = {
   description: string;
   iconFile: string;
   iconName: string;
+  iconPath: string;
   modelCodes: string[];
 };
 
@@ -326,9 +340,15 @@ function placeholderAssetSourcePath(name: string): string | null {
   const fallbackPath = fallback?.paths.find((path) => existsSync(path));
   if (fallbackPath) return fallbackPath;
 
-  if (!coreTypesIconEntries().some((entry) => entry.iconName === name)) return null;
-  const path = join(MOBILE_DEVICE_RESOURCES_ROOT, `${name}.icns`);
-  return existsSync(path) ? path : null;
+  const fromCatalog = coreTypesIconEntries().find((entry) => entry.iconName === name)?.iconPath;
+  if (fromCatalog && existsSync(fromCatalog)) return fromCatalog;
+
+  const fileName = name.endsWith(".icns") ? name : `${name}.icns`;
+  for (const root of MOBILE_DEVICE_RESOURCE_ROOTS) {
+    const path = join(root, fileName);
+    if (existsSync(path)) return path;
+  }
+  return null;
 }
 
 function fallbackPlaceholderAsset(name: string): PlaceholderAssetDefinition | null {
@@ -582,17 +602,18 @@ function iconNameForProfile(profile: DeviceProfileMetadata | null): string | nul
   }
   if (candidates.size === 0) return null;
 
-  for (const entry of coreTypesIconEntries()) {
-    if (entry.modelCodes.some((code) => candidates.has(code))) {
-      return entry.iconName;
-    }
-  }
-  return null;
+  const matches = coreTypesIconEntries().filter((entry) =>
+    entry.modelCodes.some((code) => candidates.has(code)),
+  );
+  const preferred = matches.find((entry) => entry.iconName.endsWith("-2"));
+  return (preferred ?? matches[0])?.iconName ?? null;
 }
 
 function fallbackIconNameForDeviceName(name: string): string | null {
   const normalized = name.toLowerCase();
   if (normalized.includes("vision")) return "vision-pro";
+  if (/iphone\s+18\s+pro\s+max\b/.test(normalized)) return "com.apple.iphone-18-pro-max-2";
+  if (/iphone\s+18\s+pro\b/.test(normalized)) return "com.apple.iphone-18-pro-2";
   if (/iphone\s+17e\b/.test(normalized)) return "iphone-17e";
   if (/ipad\s+air\s+11-inch\s+\(m4\)/.test(normalized)) return "ipad-air-11-inch-m4";
   if (/ipad\s+air\s+13-inch\s+\(m4\)/.test(normalized)) return "ipad-air-13-inch-m4";
@@ -601,9 +622,18 @@ function fallbackIconNameForDeviceName(name: string): string | null {
 
 function coreTypesIconEntries(): CoreTypesIconEntry[] {
   if (coreTypesIconEntriesCache) return coreTypesIconEntriesCache;
+  const entries: CoreTypesIconEntry[] = [];
+  for (const resourcesRoot of MOBILE_DEVICE_RESOURCE_ROOTS) {
+    entries.push(...coreTypesIconEntriesInBundle(resourcesRoot));
+  }
+  coreTypesIconEntriesCache = entries;
+  return entries;
+}
+
+function coreTypesIconEntriesInBundle(resourcesRoot: string): CoreTypesIconEntry[] {
   const info =
-    readPlist(join(MOBILE_DEVICE_RESOURCES_ROOT, "MobileDevices-Info.plist")) ??
-    readPlist(join(dirname(MOBILE_DEVICE_RESOURCES_ROOT), "Info.plist"));
+    readPlist(join(resourcesRoot, "MobileDevices-Info.plist")) ??
+    readPlist(join(dirname(resourcesRoot), "Info.plist"));
   const declarations = Array.isArray(info?.UTExportedTypeDeclarations)
     ? info.UTExportedTypeDeclarations
     : [];
@@ -612,7 +642,7 @@ function coreTypesIconEntries(): CoreTypesIconEntry[] {
     const recordValue = record(declaration);
     const iconFile = stringValue(recordValue.UTTypeIconFile);
     if (!iconFile || !iconFile.endsWith(".icns")) continue;
-    const iconPath = join(MOBILE_DEVICE_RESOURCES_ROOT, iconFile);
+    const iconPath = join(resourcesRoot, iconFile);
     if (!existsSync(iconPath)) continue;
     const tags = record(recordValue.UTTypeTagSpecification);
     const rawCodes = tags["com.apple.device-model-code"];
@@ -624,10 +654,10 @@ function coreTypesIconEntries(): CoreTypesIconEntry[] {
       description: stringValue(recordValue.UTTypeDescription) ?? "",
       iconFile,
       iconName: basename(iconFile, ".icns"),
+      iconPath,
       modelCodes,
     });
   }
-  coreTypesIconEntriesCache = entries;
   return entries;
 }
 
@@ -841,6 +871,7 @@ function chromeAssetPath(identifier: string, imageName: string): string {
 function cachedPngPath(identifier: string, imageName: string, pdfPath: string): string {
   mkdirSync(PNG_CACHE_ROOT, { recursive: true });
   const stat = statSync(pdfPath);
+  const rotation = pdfPageRotation(readFileSync(pdfPath));
   const key = createHash("sha1")
     .update(identifier)
     .update("\0")
@@ -849,13 +880,11 @@ function cachedPngPath(identifier: string, imageName: string, pdfPath: string): 
     .update(String(stat.mtimeMs))
     .update("\0")
     .update(String(stat.size))
-    // Invalidate older rasterizations that did not apply the PDF page rotation.
-    .update("\0page-rotation-v1")
+    .update(`\0page-rotation:${rotation}`)
     .digest("hex");
   const outPath = join(PNG_CACHE_ROOT, `${identifier}-${key}.png`);
   if (existsSync(outPath)) return outPath;
 
-  const rotation = pdfPageRotation(readFileSync(pdfPath));
   const tmpPath = `${outPath}.${process.pid}.tmp`;
   // sips rasterizes DeviceKit's unrotated PDF content even when its page has
   // /Rotate (phone14 button sprites use 270). Apply that page transform so the

@@ -129,16 +129,16 @@ function previewConfigKey(config: PreviewConfig | null): string {
 }
 
 function App() {
+  const [injectedConfig] = useState(() => streamConfigFrom(window.__SIM_PREVIEW__));
   const [config, setConfig] = useState<PreviewConfig | null>(() =>
-    proxyPreviewConfigForBrowser(streamConfigFrom(window.__SIM_PREVIEW__), window.location)
+    proxyPreviewConfigForBrowser(injectedConfig, window.location)
   );
   const [streaming, setStreaming] = useState(false);
   // The device the user wants to view. Selecting a row in the sidebar updates
   // this and re-subscribes the SSE below — the main view swaps streams instantly
   // (or shows a Start placeholder) without a full page reload.
   const [selectedUdid, setSelectedUdid] = useState<string | null>(() => {
-    const c = streamConfigFrom(window.__SIM_PREVIEW__);
-    if (c) return c.device;
+    if (injectedConfig) return injectedConfig.device;
     return new URLSearchParams(window.location.search).get("device");
   });
   const [axOverlayEnabled, setAxOverlayEnabled] = useState(false);
@@ -457,8 +457,8 @@ function App() {
   // The catalog is a fetch behind the inlined config, so until it lands the
   // device would lay out at the bare screen aspect and then reflow into its bezel.
   const inlineChrome =
-    window.__SIM_PREVIEW__?.device === effectiveUdid
-      ? window.__SIM_PREVIEW__?.chrome ?? null
+    injectedConfig?.device === effectiveUdid
+      ? injectedConfig.chrome ?? null
       : null;
   const isStreaming = !!config && config.device === effectiveUdid;
 
@@ -469,7 +469,7 @@ function App() {
         config={config}
         deviceName={selectedDevice?.name ?? null}
         deviceRuntime={selectedDevice?.runtime ?? null}
-        chrome={selectedDevice?.chrome ?? inlineChrome}
+        chrome={inlineChrome ?? selectedDevice?.chrome ?? null}
         axOverlayEnabled={axOverlayEnabled}
         setAxOverlayEnabled={setAxOverlayEnabled}
         devtoolsOpen={devtoolsOpen}
@@ -1703,7 +1703,7 @@ function AppWithConfig({
                 title="Screenshot"
                 onClick={(e) => { e.preventDefault(); void screenshot.capture(); }}
               />
-              <SimulatorToolbar.RotateButton title="Rotate device" />
+              <SimulatorToolbar.RotateButton title="Rotate device" direction={isDuo ? "right" : "left"} />
             </SimulatorToolbar.Actions>
           </SimulatorToolbar>
           <SimulatorToolbar

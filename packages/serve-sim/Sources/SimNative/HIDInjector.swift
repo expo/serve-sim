@@ -555,8 +555,7 @@ actor HIDInjector {
     }
 
     func supportsHingeAngle() async -> Bool {
-        guard isFoldable, let deviceUDID else { return false }
-        return await CoreDeviceBridge.shared.supportsHingeAngle(udid: deviceUDID)
+        isFoldable
     }
 
     func setHingePose(_ pose: String) async -> Bool {

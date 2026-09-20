@@ -18,7 +18,13 @@ export function duoIntendedScreen(
   if (angle === undefined) return nativeScreenId === 1 ? 1 : 3;
   if (angle <= 0) return 1;
   if (angle >= 180) return 3;
-  return physicalPose === "tent" ? 1 : 3;
+  if (physicalPose === "tent") return 1;
+  // CoreSimulator keeps the cover active through 54° and activates the inner
+  // display at 55°. Keep fractional angles between those boundaries on the
+  // current panel, matching native display ownership during slider motion.
+  if (angle <= 54) return 1;
+  if (angle >= 55) return 3;
+  return nativeScreenId === 3 ? 3 : 1;
 }
 
 export function duoPose(

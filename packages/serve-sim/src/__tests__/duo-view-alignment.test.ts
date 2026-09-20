@@ -190,16 +190,32 @@ describe("iPhone Duo intended display during native handoff", () => {
     expect(duoIntendedScreen(0, "open", 3)).toBe(1);
   });
 
-  test("unfolding preserves the cover cache while waiting for the inner panel", () => {
-    for (const angle of [1, 45, 102, 150, 180]) {
-      expect(duoIntendedScreen(angle, null, 1)).toBe(3);
-      expect(duoIntendedScreen(angle, "closed", 1)).toBe(3);
+  test("the cover owns angles through 54 degrees and the inner panel owns angles from 55 despite stale metadata", () => {
+    for (const nativeScreen of [1, 3, undefined]) {
+      for (const angle of [0, 1, 45, 54]) {
+        expect(duoIntendedScreen(angle, null, nativeScreen)).toBe(1);
+        expect(duoIntendedScreen(angle, "open", nativeScreen)).toBe(1);
+      }
+      for (const angle of [55, 90, 102, 150, 180]) {
+        expect(duoIntendedScreen(angle, null, nativeScreen)).toBe(3);
+        expect(duoIntendedScreen(angle, "closed", nativeScreen)).toBe(3);
+      }
+    }
+  });
+
+  test("fractional angles between the native boundaries retain the current panel", () => {
+    for (const angle of [54.01, 54.5, 54.99]) {
+      expect(duoIntendedScreen(angle, null, 1)).toBe(1);
+      expect(duoIntendedScreen(angle, null, 3)).toBe(3);
+      expect(duoIntendedScreen(angle, null)).toBe(1);
     }
   });
 
   test("Tent targets the outward cover but retained tabletop poses respect slider endpoints", () => {
     for (const nativeScreen of [1, 3]) {
       expect(duoIntendedScreen(80, "tent", nativeScreen)).toBe(1);
+      expect(duoIntendedScreen(55, "tent", nativeScreen)).toBe(1);
+      expect(duoIntendedScreen(179, "tent", nativeScreen)).toBe(1);
       expect(duoIntendedScreen(90, "laptop", nativeScreen)).toBe(3);
       for (const pose of ["tent", "laptop"] as const) {
         expect(duoIntendedScreen(0, pose, nativeScreen)).toBe(1);

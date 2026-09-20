@@ -1,7 +1,7 @@
 import { GUEST_PATH, shellEscape, type TartGuest } from "./guest";
 import { parseSimctlDevices, pickAvailableNamed, pickBootedIphone, pickBootedNamed } from "./simctl";
 
-const DEVICE_NAME = "iPhone 17";
+const DEVICE_NAME = process.env.TART_DEVICE_NAME ?? "iPhone 17";
 
 async function simctlList(guest: TartGuest, extra: "booted" | "available"): Promise<string> {
   return guest.ssh(`${GUEST_PATH}\nxcrun simctl list devices ${extra} -j`);

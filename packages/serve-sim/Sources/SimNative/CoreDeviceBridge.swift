@@ -80,7 +80,7 @@ actor CoreDeviceBridge {
     }
 
     func setHingeAngle(udid: String, angle: Double) async -> Bool {
-        guard angle.isFinite, (0...180).contains(angle), await supportsHingeAngle(udid: udid) else { return false }
+        guard angle.isFinite, (0...180).contains(angle) else { return false }
         guard let rawData = SSCoreDeviceHingeData(angle) else { return false }
         let data = Unmanaged<NSData>.fromOpaque(rawData).takeRetainedValue() as Data
         return await sendControl(udid: udid, data: data)
@@ -100,7 +100,6 @@ actor CoreDeviceBridge {
         case "tent": (angle, orientation, tableMode) = (80, "facedown", true)
         default: return false
         }
-        guard await supportsHingeAngle(udid: udid) else { return false }
         // Match Device Hub's ordering: release the table sensor before leaving
         // a tabletop pose; enter Tent only after angle and orientation are set.
         if !tableMode, !(await setTableMode(udid: udid, enabled: false)) { return false }
@@ -111,7 +110,6 @@ actor CoreDeviceBridge {
     }
 
     func setTableMode(udid: String, enabled: Bool) async -> Bool {
-        guard await supportsHingeAngle(udid: udid) else { return false }
         do {
             let metadataSymbol = "$s10CoreDevice29UniversalHIDServiceCapabilityVN"
             let capability = try await capability(

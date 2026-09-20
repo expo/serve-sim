@@ -164,6 +164,38 @@ test("the single-stream fallback still requires matching active display metadata
   } finally { test.dispose(); }
 });
 
+test("panel caching follows the native 54/55 boundary before display metadata catches up", () => {
+  const test = setup(true, true);
+  try {
+    test.tick();
+    test.setState({ angle: 54, pose: "open" });
+    test.cover.pixel = 100;
+    test.inner.pixel = 180;
+    test.tick();
+    expect(test.host.dataset.screenId).toBe("1");
+    expect(test.coverTexture.pixel).toBe(100);
+    expect(test.innerTexture.draws).toBe(0);
+
+    test.setState({ angle: 55 });
+    test.cover.pixel = 0;
+    test.tick();
+    expect(test.host.dataset.screenId).toBe("3");
+    expect(test.host.dataset.screenReady).toBe("true");
+    expect(test.innerTexture.pixel).toBe(180);
+    expect(test.coverTexture.pixel).toBe(100);
+
+    // Folding back below the boundary returns to the cover even if the main
+    // stream has only just acknowledged the earlier switch to the inner panel.
+    test.setState({ angle: 54, streamConfig: { screenId: 3, width: 2007, height: 2853, orientation: "portrait" } });
+    test.cover.pixel = 120;
+    test.inner.pixel = 0;
+    test.tick();
+    expect(test.host.dataset.screenId).toBe("1");
+    expect(test.coverTexture.pixel).toBe(120);
+    expect(test.innerTexture.pixel).toBe(180);
+  } finally { test.dispose(); }
+});
+
 test("rapid reopening retains its cached screen while matching metadata belongs to the previous activation", () => {
   const test = setup(true, true);
   const innerConfig = { screenId: 3, width: 2007, height: 2853, orientation: "landscape_left" as const };

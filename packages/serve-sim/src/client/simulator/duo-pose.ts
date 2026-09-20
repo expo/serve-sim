@@ -40,12 +40,13 @@ export function duoPose(
   presentation.premultiply(new Quaternion(0, 0, Math.sin(roll / 2), Math.cos(roll / 2)));
 
   if (pose === "laptop" || pose === "tent") {
-    // A level laptop base viewed from 20° elevation. With no yaw, the hinge
-    // and the front edge stay horizontal. Tent turns the cover side outward
-    // and looks down from 10° above its level ridge.
+    // A small world-Y turn reveals the right-side depth while retaining the
+    // level table geometry. Laptop keeps its 20° viewing elevation; Tent turns
+    // the cover outward and looks down from 10° above its level ridge.
+    const tabletopYaw = -Math.PI / 9;
     const physical = new Quaternion().setFromEuler(pose === "laptop"
-      ? new Euler(-fold + Math.PI / 9, 0, Math.PI / 2, "YXZ")
-      : new Euler(Math.PI / 2 + Math.PI / 18, 0, -Math.PI / 2, "YXZ"));
+      ? new Euler(-fold + Math.PI / 9, tabletopYaw, Math.PI / 2, "YXZ")
+      : new Euler(Math.PI / 2 + Math.PI / 18, tabletopYaw, -Math.PI / 2, "YXZ"));
     // Slider edits retain their physical pose, but both endpoints must show
     // their display straight-on. Blend the last 30° instead of snapping there.
     const amount = Math.min(1, degrees / 30, (180 - degrees) / 30);

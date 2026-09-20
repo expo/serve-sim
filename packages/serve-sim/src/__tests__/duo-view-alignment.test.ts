@@ -54,38 +54,44 @@ describe("iPhone Duo view alignment", () => {
     }
   });
 
-  test("Laptop has a level lower panel and an upright back joined by a horizontal hinge", () => {
+  test("Laptop shows its front and right-side depth above a level lower panel", () => {
     const laptop = duoPose(90, "laptop", 3);
-    const baseNormal = panelDirection(new Vector3(0, 0, 1), "left", laptop);
-    const backNormal = panelDirection(new Vector3(0, 0, 1), "right", laptop);
-    // A shared small viewing elevation may be baked into the presentation.
-    // Removing it must reveal a level base and a vertical back, with no yaw.
+    const ridge = panelDirection(hingeAxis, "left", laptop);
+    const azimuth = Math.atan2(ridge.z, -ridge.x);
+    expect(azimuth).toBeLessThan(-Math.PI / 18);
+    expect(azimuth).toBeGreaterThan(-Math.PI / 6);
+    expect(ridge.y).toBeCloseTo(0, 8);
+    const baseNormal = panelDirection(new Vector3(0, 0, 1), "left", laptop).applyAxisAngle(hingeAxis, -azimuth);
+    const backNormal = panelDirection(new Vector3(0, 0, 1), "right", laptop).applyAxisAngle(hingeAxis, -azimuth);
+    // Removing the viewing azimuth and elevation reveals a level base and a
+    // vertical back. The shared view transform must not twist their geometry.
     const elevation = Math.atan2(-backNormal.y, backNormal.z);
-    expect(elevation).toBeGreaterThanOrEqual(-1e-8);
-    expect(elevation).toBeLessThanOrEqual(Math.PI / 6);
+    expect(elevation).toBeCloseTo(Math.PI / 9, 8);
     const cameraRight = new Vector3(1, 0, 0);
     expectDirection(baseNormal.clone().applyAxisAngle(cameraRight, -elevation), new Vector3(0, 1, 0));
     expectDirection(backNormal.clone().applyAxisAngle(cameraRight, -elevation), new Vector3(0, 0, 1));
-    const ridge = panelDirection(hingeAxis, "left", laptop);
-    expect(Math.abs(ridge.x)).toBeCloseTo(1, 8);
-    expect(ridge.y).toBeCloseTo(0, 8);
-    expect(ridge.z).toBeCloseTo(0, 8);
     // The lower panel extends forward from the hinge instead of below it.
     const lowerEdge = panelDirection(new Vector3(-1, 0, 0), "left", laptop)
+      .applyAxisAngle(hingeAxis, -azimuth)
       .applyAxisAngle(cameraRight, -elevation);
     expect(lowerEdge.y).toBeCloseTo(0, 8);
     expect(lowerEdge.z).toBeGreaterThan(0);
   });
 
-  test("Tent exposes the cover exterior with both panels descending from a horizontal ridge", () => {
+  test("Tent shows the cover and right-side depth with both feet on a level table", () => {
     const tent = duoPose(80, "tent", 3);
     const coverNormal = panelDirection(new Vector3(0, 0, -1), "left", tent);
     const innerCounterpart = panelDirection(new Vector3(0, 0, 1), "left", tent);
     expect(coverNormal.z).toBeGreaterThan(0.5);
+    expect(coverNormal.x).toBeLessThan(-0.15);
     expect(coverNormal.y).toBeGreaterThan(0);
     expect(innerCounterpart.z).toBeLessThan(-0.5);
     expectDirection(coverNormal.clone().negate(), innerCounterpart);
-    expectDirection(panelDirection(hingeAxis, "left", tent), new Vector3(1, 0, 0));
+    const ridge = panelDirection(hingeAxis, "left", tent);
+    const azimuth = Math.atan2(-ridge.z, ridge.x);
+    expect(azimuth).toBeLessThan(-Math.PI / 18);
+    expect(azimuth).toBeGreaterThan(-Math.PI / 6);
+    expect(ridge.y).toBeCloseTo(0, 8);
 
     const frontFoot = panelDirection(new Vector3(-1, 0, 0), "left", tent);
     const rearFoot = panelDirection(new Vector3(1, 0, 0), "right", tent);
@@ -93,6 +99,10 @@ describe("iPhone Duo view alignment", () => {
     expect(rearFoot.y).toBeLessThan(0);
     expect(frontFoot.z).toBeGreaterThan(0);
     expect(rearFoot.z).toBeLessThan(0);
+    const removeView = (point: Vector3) => point.clone()
+      .applyAxisAngle(hingeAxis, -azimuth)
+      .applyAxisAngle(new Vector3(1, 0, 0), -Math.PI / 18);
+    expect(removeView(frontFoot).y).toBeCloseTo(removeView(rearFoot).y, 8);
   });
 
   test("slider endpoints show readable front-facing displays while retaining Laptop or Tent", () => {

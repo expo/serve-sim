@@ -87,7 +87,6 @@ export interface SimulatorViewProps {
   /** Video render mode. "avcc" falls back to MJPEG when WebCodecs is unavailable. */
   streamMode?: "mjpeg" | "avcc" | "webrtc";
   frameAspectRatio?: number;
-  /** Retain the outgoing Duo LCD while its physical door turns. */
   duoFramePolicy?: DuoFramePolicy;
   /** WebRTC media stream when `streamMode="webrtc"`. */
   webRtcStream?: MediaStream | null;
@@ -322,11 +321,9 @@ export function SimulatorView({
   }, [url, wsUrlProp]);
 
   // Notify parent when streaming state changes
-  const onStreamingChangeRef = useRef(onStreamingChange);
-  onStreamingChangeRef.current = onStreamingChange;
   useEffect(() => {
-    onStreamingChangeRef.current?.(connected);
-  }, [connected]);
+    onStreamingChange?.(connected);
+  }, [connected, onStreamingChange]);
 
   // Parent-supplied configuration is authoritative regardless of video mode.
   useEffect(() => {
@@ -340,7 +337,6 @@ export function SimulatorView({
   connectedRef.current = connected;
   useEffect(() => {
     if (!projectDuoVideo) return;
-    // A replacement track needs its own first-decoded-frame acknowledgement.
     connectedRef.current = false;
     setConnected(false);
     lastFrameAtRef.current = 0;

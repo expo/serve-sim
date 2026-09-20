@@ -48,8 +48,6 @@ export function useMjpegStream(streamUrl: string | null) {
       // Blob copies the bytes, so handing it a subarray view is safe even as
       // the underlying accumulation buffer is reused/compacted.
       const blob = new Blob([jpeg as BlobPart], { type: "image/jpeg" });
-      // Each subscriber owns its URL; releasing a dropped frame in one view
-      // must not invalidate a frame another view is still decoding.
       for (const cb of subscribersRef.current) cb(URL.createObjectURL(blob));
     };
 

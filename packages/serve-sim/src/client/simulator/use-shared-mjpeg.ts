@@ -5,8 +5,6 @@ type Sink = { current: (source: HTMLCanvasElement) => void };
 type Feed = { sinks: Set<Sink>; stop: () => void };
 const feeds = new Map<Subscribe, Feed>();
 
-/** Decode once, then paint every projection synchronously. A JPEG URL has one
- * owner and is released only after decoding, including on unmount/errors. */
 export function useSharedMjpeg(subscribe: Subscribe | undefined, enabled: boolean,
   onFrame: (source: HTMLCanvasElement) => void) {
   const sink = useRef(onFrame);

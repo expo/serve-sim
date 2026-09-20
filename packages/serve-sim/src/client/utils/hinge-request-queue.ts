@@ -1,6 +1,5 @@
 import { isHingeAngle, type HingeAngleResult } from "../../hinge-angle";
 
-/** Serial native commands with a single latest-wins waiting value. */
 export class HingeRequestQueue {
   private pending: number | null = null;
   private latest: number | null = null;

@@ -16,7 +16,6 @@ export interface UseAvccStreamOptions {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   /** Called the first time any frame (seed or decoded) is painted. */
   onFirstFrame?: () => void;
-  /** Keep the last image of this physical panel while the other LCD streams. */
   frameAspectRatio?: number;
   /** Called on every painted frame — drives the FPS counter / staleness check. */
   onFrame?: () => void;
@@ -119,8 +118,6 @@ function paintSubscriber(subscriber: Subscriber, source: HTMLCanvasElement, deco
   }
 }
 
-// One transport and decoder per URL. All leaves paint the same decoded frame
-// synchronously, before the browser can composite either half.
 function startStream(url: string): SharedStream {
     const subscribers = new Set<Subscriber>();
     const latest = document.createElement("canvas");
@@ -174,7 +171,6 @@ function startStream(url: string): SharedStream {
 
     const paintSeed = async (jpeg: Uint8Array) => {
       const revision = frameRevision;
-      // A seed decode must not overwrite a newer H.264 frame.
       const bitmap = await createImageBitmap(
         new Blob([jpeg as BlobPart], { type: "image/jpeg" }),
       );
@@ -186,9 +182,6 @@ function startStream(url: string): SharedStream {
     };
 
     const configureDecoder = (description: Uint8Array) => {
-      // A display switch can change H.264 dimensions while old frames are
-      // still queued. Retire that decoder, retaining its last painted frame
-      // until the new display produces one; late callbacks cannot force MJPEG.
       if (decoder && decoder.state !== "closed") decoder.close();
       decoder = makeDecoder();
       try {

@@ -1,7 +1,5 @@
 import UIKit
 
-// A real simulator fixture: both halves change together, and taps/drag produce
-// visible counters. No serve-sim state or browser telemetry drives this scene.
 final class TestView: UIView {
   var tick = 0
   var left = 0
@@ -24,8 +22,6 @@ final class TestView: UIView {
       let x = CGFloat(side) * bounds.width / 2
       let text = "\(side == 0 ? "LEFT" : "RIGHT")\nFRAME \(tick)\nTAPS \(side == 0 ? left : right)\nDRAG \(moves)"
       (text as NSString).draw(in: CGRect(x: x + 30, y: bounds.height * 0.35, width: bounds.width / 2 - 40, height: 250), withAttributes: [.font: UIFont.monospacedSystemFont(ofSize: 27, weight: .bold), .foregroundColor: UIColor.white])
-      // A binary counter at the same relative position in each half allows
-      // video assertions without OCR, even after lossy H.264/JPEG encoding.
       for (row, value) in [tick, side == 0 ? left : right, moves].enumerated() {
         for bit in 0..<8 {
           ((value >> bit) & 1 == 1 ? UIColor.white : UIColor.black).setFill()

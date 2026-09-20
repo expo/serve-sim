@@ -552,8 +552,7 @@ actor HIDInjector {
     }
 
     func supportsHingeAngle() async -> Bool {
-        guard isFoldable, let deviceUDID else { return false }
-        return await CoreDeviceBridge.shared.supportsHingeAngle(udid: deviceUDID)
+        isFoldable
     }
 
     /// Toggle a CoreAnimation render debug flag on the simulator. Names are the

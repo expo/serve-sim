@@ -2,6 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { createRotationCursor } from "../client/simulator/rotation-cursor";
 
 describe("rotation request cursor", () => {
+  test("cycles right for Device Hub controls", () => {
+    const cursor = createRotationCursor("portrait");
+    expect(cursor.requestNext("right")).toBe("landscape_right");
+    expect(cursor.requestNext("right")).toBe("portrait_upside_down");
+  });
+
   test("accepts external rotation after an app never acknowledges a requested pose", () => {
     let now = 0;
     const cursor = createRotationCursor("landscape_left", () => now);

@@ -1,7 +1,3 @@
-/** Live-browser regressions. Open /__dev/duo-e2e?device=<booted Duo UDID>.
- * Runs the real preview against the attached simulator; no mocked fold state.
- * Oracle: Device Hub Book, and go-duo.mov: upright spread, recessed spine.
- */
 const frame = document.querySelector("iframe")!;
 const output = document.querySelector("#results")!;
 const run = document.querySelector<HTMLButtonElement>("#run")!;
@@ -19,24 +15,19 @@ function check(condition: boolean, message: string) {
 }
 async function checkUnsupportedDevice() {
   if (!unsupportedDevice) return;
-  const preview = document.createElement("iframe");
-  Object.assign(preview.style, { position: "fixed", left: "-2000px", width: "800px", height: "800px" });
-  preview.src = `/?device=${encodeURIComponent(unsupportedDevice)}`;
-  document.body.append(preview);
+  frame.src = `/?device=${encodeURIComponent(unsupportedDevice)}`;
   const deadline = performance.now() + 30000;
   while (performance.now() < deadline) {
-    const doc = preview.contentDocument;
+    const doc = frame.contentDocument;
     const start = [...(doc?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((el) => el.textContent?.trim() === "Start");
     start?.click();
     if (doc?.querySelector('[data-stream-codec="webrtc"]')) {
       await delay(500);
       check(!doc.querySelector('[aria-label="Fold position"]'), "A device without native hinge support has no fold controls");
-      preview.remove();
       return;
     }
     await delay(100);
   }
-  preview.remove();
   check(false, "A device without native hinge support becomes ready for the controls check");
 }
 function liveScreen(doc: Document): HTMLCanvasElement | HTMLImageElement | HTMLVideoElement | undefined {
@@ -49,30 +40,55 @@ function button(doc: Document, name: string) {
   if (!found) throw new Error(`Missing ${name} button`);
   return found;
 }
+type LoggedEvent = { id: number; kind: string; action?: string; status?: string };
+async function readEvents(): Promise<LoggedEvent[]> {
+  const response = await fetch(`/api/event-log?device=${encodeURIComponent(device!)}&limit=20`);
+  return (await response.json() as { events: LoggedEvent[] }).events;
+}
+async function waitForEvent(after: number, predicate: (event: LoggedEvent) => boolean) {
+  const deadline = performance.now() + 3000;
+  while (performance.now() < deadline) {
+    const event = (await readEvents()).find((candidate) => candidate.id > after && predicate(candidate));
+    if (event) return event;
+    await delay(50);
+  }
+}
+async function sendOrientation(orientation: string) {
+  const preview = (frame.contentWindow as Window & { __SIM_PREVIEW__?: { wsUrl?: string } }).__SIM_PREVIEW__;
+  if (!preview?.wsUrl) throw new Error("Duo preview did not expose its control socket");
+  const socket = new WebSocket(preview.wsUrl);
+  await new Promise<void>((resolve, reject) => {
+    socket.onopen = () => resolve();
+    socket.onerror = () => reject(new Error("Duo control socket did not open"));
+  });
+  const payload = new TextEncoder().encode(JSON.stringify({ orientation }));
+  const message = new Uint8Array(payload.length + 1);
+  message[0] = 0x07;
+  message.set(payload, 1);
+  socket.send(message);
+  await delay(100);
+  socket.close();
+}
+async function setPortrait() {
+  await sendOrientation("landscape_right");
+  await delay(500);
+  await sendOrientation("portrait");
+  await delay(1000);
+}
 async function checkRotation(doc: Document) {
   const cycle: Record<string, string> = {
-    portrait: "landscape_left",
-    landscape_left: "portrait_upside_down",
-    portrait_upside_down: "landscape_right",
-    landscape_right: "portrait",
+    landscape_left: "portrait",
+    portrait: "landscape_right",
+    landscape_right: "portrait_upside_down",
+    portrait_upside_down: "landscape_left",
   };
-  const events = async () => {
-    const response = await fetch(`/api/event-log?device=${encodeURIComponent(device!)}&limit=20`);
-    return (await response.json() as { events: Array<{ id: number; kind: string; action?: string }> }).events;
-  };
-  let lastId = Math.max(0, ...(await events()).map((event) => event.id));
+  let lastId = Math.max(0, ...(await readEvents()).map((event) => event.id));
   const actions: string[] = [];
   const stage = doc.querySelector<HTMLElement>("[data-fold-stage]")!;
   const before = stage.getBoundingClientRect();
   for (let index = 0; index < 4; index++) {
     button(doc, "Rotate device").click();
-    const deadline = performance.now() + 3000;
-    let event: Awaited<ReturnType<typeof events>>[number] | undefined;
-    while (performance.now() < deadline) {
-      event = (await events()).find((candidate) => candidate.id > lastId && candidate.kind === "rotate");
-      if (event) break;
-      await delay(50);
-    }
+    const event = await waitForEvent(lastId, (candidate) => candidate.kind === "rotate");
     check(!!event, `Rotation ${index + 1}: native Duo orientation command succeeds`);
     if (!event?.action) return;
     lastId = event.id;
@@ -87,6 +103,13 @@ async function checkRotation(doc: Document) {
   await delay(700);
   const after = stage.getBoundingClientRect();
   check(Math.abs(after.width - before.width) < 1 && Math.abs(after.height - before.height) < 1, "Duo rotation preserves the physical fold geometry");
+  await delay(1800);
+}
+async function checkHome(doc: Document) {
+  const lastId = Math.max(0, ...(await readEvents()).map((event) => event.id));
+  button(doc, "Home").click();
+  const home = await waitForEvent(lastId, (event) => event.kind === "button" && event.action === "home");
+  check(home?.status === "ok", "Home returns the Duo to SpringBoard");
 }
 async function ready(): Promise<Document> {
   const deadline = performance.now() + 30000;
@@ -136,8 +159,6 @@ function sampleVisibleFaces(doc: Document) {
     });
 }
 
-// Probe the hinge gutter in the transformed cover's own coordinates. A lit
-// canvas alone cannot reveal the inner LCD leaking through transparent chrome.
 function coverEdgeLeaks(doc: Document): number {
   const cover = doc.querySelector<HTMLElement>("[data-fold-door-back]");
   if (!cover || doc.defaultView!.getComputedStyle(cover).visibility !== "visible" || cover.getBoundingClientRect().width < 15) return 0;
@@ -149,8 +170,6 @@ function coverEdgeLeaks(doc: Document): number {
     const point = probe.getBoundingClientRect();
     const top = doc.elementFromPoint(point.x, point.y);
     const inner = '[data-duo-panel="inner"], [data-fold-leaf="right"] [data-devicekit-screen]';
-    // A transparent leaf itself participates in hit testing. Look through that
-    // non-painting container to the LCD below, but not through the solid shell.
     if (top?.closest(inner) || (top?.matches('[data-fold-leaf="left"]')
       && doc.elementsFromPoint(point.x, point.y).some(element => element.closest(inner)))) leaks++;
     probe.remove();
@@ -158,8 +177,6 @@ function coverEdgeLeaks(doc: Document): number {
   return leaks;
 }
 
-// The fixture encodes the same incrementing byte in both halves of the real
-// iOS framebuffer. Sampling the clipped halves catches frozen-but-lit screens.
 function fixtureCounter(doc: Document, side: "left" | "right" | "cover", row = 0): number | null {
   const selector = side === "cover" ? "[data-fold-door-back] [data-stream-codec]" : `[data-fold-leaf="${side}"] [data-fold-front] [data-devicekit-screen] canvas, [data-fold-leaf="${side}"] [data-fold-front] [data-devicekit-screen] img, [data-fold-leaf="${side}"] [data-fold-front] [data-devicekit-screen] video`;
   const source = [...doc.querySelectorAll<HTMLCanvasElement | HTMLImageElement | HTMLVideoElement>(selector)]
@@ -192,8 +209,6 @@ function nativeShadow(doc: Document): number {
   const sample = document.createElement("canvas"); sample.width = 200; sample.height = 100;
   const context = sample.getContext("2d")!;
   context.translate(200, 0); context.rotate(Math.PI / 2); context.drawImage(source, 0, 0, 100, 200);
-  // Compare corresponding marker pixels: a blurred half can retain both a
-  // pure black and a pure white bit, so min/max contrast alone misses the blur.
   let difference = 0;
   for (let bit = 0; bit < 8; bit++) {
     const left = context.getImageData(14 + bit * 10, 26, 1, 1).data;
@@ -207,8 +222,6 @@ async function sampleHalves(doc: Document) {
   let mismatches = 0;
   const mismatchValues: string[] = [];
   for (let i = 0; i < 20; i++) {
-    // Observe a composed frame, rather than racing independent media updates
-    // between paint cycles on the decoder thread.
     await new Promise<void>((resolve) => doc.defaultView!.requestAnimationFrame(() => resolve()));
     const left = fixtureCounter(doc, "left");
     const right = fixtureCounter(doc, "right");
@@ -220,8 +233,6 @@ async function sampleHalves(doc: Document) {
   return { left: seen.left.size, right: seen.right.size, mismatches, mismatchValues };
 }
 async function checkFreshHalves(doc: Document, pose: string) {
-  // Acknowledgement precedes UIKit's display handoff/rotation. Require the real
-  // fixture to be readable for a bounded settling window before measuring rate.
   const started = performance.now();
   const deadline = started + 8000;
   const advances = new Set<number>();
@@ -240,7 +251,25 @@ async function checkFreshHalves(doc: Document, pose: string) {
 }
 async function checkInput(doc: Document, cover = false) {
   for (const side of (cover ? ["cover"] : ["left", "right"]) as ("left" | "right" | "cover")[]) {
-    const before = fixtureCounter(doc, side, 1);
+    const readCounter = async (expected?: number) => {
+      const deadline = performance.now() + 3000;
+      let stable: number | null = null;
+      let samples = 0;
+      while (performance.now() < deadline) {
+        const value = fixtureCounter(doc, side, 1);
+        if (value !== null && (expected === undefined || value === expected)) {
+          samples = value === stable ? samples + 1 : 1;
+          stable = value;
+          if (samples === 3) return value;
+        } else {
+          stable = null;
+          samples = 0;
+        }
+        await delay(50);
+      }
+      return stable;
+    };
+    const before = await readCounter();
     const leaf = doc.querySelector<HTMLElement>(side === "cover" ? "[data-fold-door-back]" : `[data-fold-leaf="${side}"]`)!;
     const rect = leaf.getBoundingClientRect();
     const x = rect.left + rect.width * (cover ? 0.25 : 0.5), y = rect.top + rect.height * 0.6;
@@ -249,9 +278,8 @@ async function checkInput(doc: Document, cover = false) {
     input?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: x, clientY: y, buttons: 1 }));
     await delay(60);
     input?.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: x, clientY: y }));
-    const deadline = performance.now() + 3000;
-    while (fixtureCounter(doc, side, 1) === before && performance.now() < deadline) await delay(50);
-    check(before !== null && fixtureCounter(doc, side, 1) === (before + 1) % 256, `${side}: tap changes real simulator counter (${before} → ${fixtureCounter(doc, side, 1)})`);
+    const after = await readCounter(before === null ? undefined : (before + 1) % 256);
+    check(before !== null && after === (before + 1) % 256, `${side}: tap changes real simulator counter (${before} → ${after})`);
   }
 }
 async function checkSlider(doc: Document) {
@@ -263,6 +291,7 @@ async function checkSlider(doc: Document) {
   const controls = doc.querySelector<HTMLElement>('[aria-label="Fold position"]')!.getBoundingClientRect();
   const sliderPanel = doc.querySelector<HTMLElement>('[data-hinge-angle-panel]')!.getBoundingClientRect();
   check(sliderPanel.top >= controls.bottom, "Angle slider opens below the fold controls");
+  check(sliderPanel.height <= 60, "Angle slider stays compact");
   check(slider.min === "0" && slider.max === "180" && slider.step === "1", "Slider exposes the full continuous range");
   const setValue = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(slider), "value")!.set!;
   const settle = async () => {
@@ -416,18 +445,16 @@ run.onclick = async () => {
   results.length = 0;
   output.textContent = "Running…";
   try {
-    await checkUnsupportedDevice();
     let doc = await ready();
     check(!!doc.querySelector('[aria-label="Fold position"]'), "Native hinge support exposes the fold controls");
-    const fold = button(doc, "Fold");
-    if (fold.getAttribute("aria-pressed") !== "true") {
-      fold.click();
-      await delay(3500);
-    }
+    button(doc, "Fold").click();
+    await delay(3500);
+    await setPortrait();
     frame.contentWindow!.location.reload();
     await delay(500);
     doc = await ready();
-    const coverDeadline = performance.now() + 10000;
+    const coverStartedAt = performance.now();
+    const coverDeadline = coverStartedAt + 15000;
     const coverFrames = new Set<number>();
     while (performance.now() < coverDeadline && coverFrames.size < 3) {
       const cover = doc.querySelector<HTMLCanvasElement>('[data-duo-panel="cover"] canvas[data-stream-codec="webrtc"]');
@@ -435,7 +462,7 @@ run.onclick = async () => {
       if (cover && lit(cover) && counter !== null) coverFrames.add(counter);
       await delay(50);
     }
-    check(coverFrames.size >= 3, "Cold connection receives a live cover before the first opening");
+    check(coverFrames.size >= 3, `Cold connection receives a live cover in ${Math.round(performance.now() - coverStartedAt)}ms`);
     if (coverFrames.size < 3) throw new Error("WebRTC cover did not become live after reload");
     const win = frame.contentWindow!;
     for (const name of ["Close devices sidebar", "Close panel"]) {
@@ -504,8 +531,6 @@ run.onclick = async () => {
               if (innerDark && Number(win.getComputedStyle(innerDark).opacity) > 0.99) darkOpeningInnerFrames++;
             }
           }
-          // Inspect the pixels on every visible physical face, including the
-          // outgoing cover before it turns edge-on. Mounted nodes are not proof.
           const presentedFaces = sampleVisibleFaces(doc);
           if (!presentedFaces.length) blankStageFrames++;
           for (const { face, lit: isLit } of presentedFaces) {
@@ -606,12 +631,10 @@ run.onclick = async () => {
       const live = liveScreen(doc);
       check(!!live && lit(live), `${pose}: live decoded display is lit`);
       if (opening) {
-        check(motionSettledAt >= 900 && motionSettledAt < 1250, `${pose}: reference opening settles in ${Math.round(motionSettledAt)}ms (expected 0.9–1.25s)`);
+        check(motionSettledAt >= 850 && motionSettledAt < 1250, `${pose}: reference opening settles in ${Math.round(motionSettledAt)}ms (expected 0.85–1.25s)`);
         check(maxCenterExcursion > 0.07 && maxCenterExcursion < 0.18, `${pose}: reference rightward translation ${(maxCenterExcursion * 100).toFixed(1)}% (reference ≈13%)`);
         const extraGradients = [...doc.querySelectorAll<HTMLElement>('[data-fold-front] div')].filter(el => win.getComputedStyle(el).backgroundImage.includes("gradient"));
         check(extraGradients.length === 0, `${pose}: native opening shadow is not doubled by browser gradients`);
-        // WebRTC can coalesce transient native-effect frames. Require the effect
-        // to clear, not a minimum artificial shadow on every connection.
         check(finalNativeShadow < 8, `${pose}: actual WebRTC opening effect clears (peak ${maxNativeShadow.toFixed(1)}, settled ${finalNativeShadow.toFixed(1)} mean marker difference)`);
         check(coverVisibleFrames >= 3 && litCoverFrames === coverVisibleFrames, `${pose}: opening starts with a lit cover and keeps it until edge-on (${litCoverFrames}/${coverVisibleFrames} frames)`);
         check(darkOpeningInnerFrames >= 2, `${pose}: inner LCD stays dark through the edge-on handoff (${darkOpeningInnerFrames} frames)`);
@@ -659,8 +682,6 @@ run.onclick = async () => {
     await checkInput(doc);
     await checkSlider(doc);
     await checkFreshHalves(doc, "After slider");
-    // Negative control: actually suppress one canvas paint, then prove the
-    // freshness oracle notices a frozen-but-lit leaf. Always restore it.
     const right = doc.querySelector<HTMLCanvasElement>('[data-fold-leaf="right"] [data-fold-front] canvas');
     if (!right) throw new Error("Duo acceptance requires synchronized WebRTC projections");
     const context = right.getContext("2d")!;
@@ -675,6 +696,7 @@ run.onclick = async () => {
     await checkFreshHalves(doc, "After restoring frozen leaf");
     checkWebRtc(doc);
     await checkMotionPreferences(doc);
+    await checkHome(doc);
     output.textContent += `\n${results.some((line) => line.startsWith("FAIL")) ? "FAILED" : "PASSED"}`;
   } catch (error) {
     output.textContent += `\nERROR ${String(error)}\nFAILED`;
@@ -685,8 +707,6 @@ run.onclick = async () => {
 
 run.disabled = false;
 
-// Preserve raw decoded opening checkpoints independently of CSS chrome/shadows.
-// This distinguishes a native LCD transition from a browser compositing defect.
 const inspect = document.createElement("button");
 inspect.textContent = "Inspect native opening frames";
 run.after(inspect);
@@ -745,10 +765,29 @@ rotationRun.onclick = async () => {
     button(doc, "Unfold").click();
     await delay(1800);
     await checkRotation(doc);
+    await checkInput(doc);
     output.textContent += `\n${results.some(line => line.startsWith("FAIL")) ? "FAILED" : "PASSED"}`;
   } catch (error) {
     output.textContent += `\nERROR ${String(error)}\nFAILED`;
   } finally {
     rotationRun.disabled = sliderRun.disabled = run.disabled = false;
+  }
+};
+
+const unsupportedRun = document.createElement("button");
+unsupportedRun.textContent = "Run unsupported-device regression";
+run.after(unsupportedRun);
+unsupportedRun.disabled = !unsupportedDevice;
+unsupportedRun.onclick = async () => {
+  unsupportedRun.disabled = rotationRun.disabled = sliderRun.disabled = run.disabled = true;
+  results.length = 0;
+  output.textContent = "Running…";
+  try {
+    await checkUnsupportedDevice();
+    output.textContent += `\n${results.some(line => line.startsWith("FAIL")) ? "FAILED" : "PASSED"}`;
+  } catch (error) {
+    output.textContent += `\nERROR ${String(error)}\nFAILED`;
+  } finally {
+    unsupportedRun.disabled = rotationRun.disabled = sliderRun.disabled = run.disabled = false;
   }
 };

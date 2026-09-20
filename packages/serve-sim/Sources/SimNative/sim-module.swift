@@ -84,11 +84,13 @@ private func u32(_ v: Int) -> UInt32 {
     }
 
     @NodeMethod func setHingeAngle(_ angle: Double) async -> Bool {
-        await injector.setHingeAngle(angle)
+        guard (try? await setup.value) != nil else { return false }
+        return await injector.setHingeAngle(angle)
     }
 
     @NodeMethod func supportsHingeAngle() async -> Bool {
-        await injector.supportsHingeAngle()
+        guard (try? await setup.value) != nil else { return false }
+        return await injector.supportsHingeAngle()
     }
 
     @NodeMethod func memoryWarning() async {

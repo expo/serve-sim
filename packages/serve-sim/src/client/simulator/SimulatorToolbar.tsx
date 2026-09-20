@@ -15,7 +15,7 @@ import { useCoarsePointer } from "../hooks/use-coarse-pointer.js";
 import { runHostAction, type ExecResult } from "../utils/exec";
 import type { SimulatorOrientation } from "../types.js";
 import { getDeviceType, type DeviceType } from "./deviceFrames.js";
-import { ROTATE_LEFT_CYCLE } from "./orientation.js";
+import { createRotationCursor } from "./rotation-cursor.js";
 
 type RotateFn = (orientation: SimulatorOrientation) => void | Promise<void>;
 
@@ -234,7 +234,6 @@ export interface ToolbarButtonProps extends ButtonHTMLAttributes<HTMLButtonEleme
   forceDisabled?: boolean;
   /** Override the hover/focus tooltip label. Defaults to title or aria-label. */
   tooltip?: ReactNode;
-  /** Highlight as the active Device Hub control (fold pose, etc). */
   selected?: boolean;
 }
 
@@ -496,15 +495,21 @@ const ScreenshotButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(funct
   );
 });
 
-const RotateButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function RotateButton(
-  { onClick, forceDisabled, ...rest },
+const RotateButton = forwardRef<HTMLButtonElement, ToolbarButtonProps & { direction?: "left" | "right" }>(function RotateButton(
+  { onClick, forceDisabled, direction = "left", ...rest },
   ref,
 ) {
   const ctx = useToolbar("RotateButton");
   const cantRotate = ctx.deviceType === "watch" || ctx.deviceType === "vision";
-  const [orientation, setOrientation] = useState<SimulatorOrientation>(ctx.orientation ?? "portrait");
+  const rotationCursor = useRef(createRotationCursor(ctx.orientation ?? "portrait"));
+  const rotationDevice = useRef(ctx.deviceUdid);
   useEffect(() => {
-    setOrientation(ctx.orientation ?? "portrait");
+    if (rotationDevice.current !== ctx.deviceUdid) {
+      rotationDevice.current = ctx.deviceUdid;
+      rotationCursor.current = createRotationCursor(ctx.orientation ?? "portrait");
+    } else {
+      rotationCursor.current.updateReadback(ctx.orientation);
+    }
   }, [ctx.deviceUdid, ctx.orientation]);
 
   return (
@@ -516,8 +521,7 @@ const RotateButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function 
         onClick?.(e);
         if (e.defaultPrevented) return;
         if (!ctx.deviceUdid || cantRotate) return;
-        const next = ROTATE_LEFT_CYCLE[orientation];
-        setOrientation(next);
+        const next = rotationCursor.current.requestNext(direction);
         if (ctx.onRotate) {
           void ctx.onRotate(next);
         } else {

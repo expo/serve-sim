@@ -90,11 +90,11 @@ export function HingeControls({
         </svg>
       </SimulatorToolbar.Button>
       {expanded && (
-        <div id={sliderId} data-hinge-angle-panel="" style={{ position: "absolute", top: "calc(100% + 10px)", left: "50%", transform: "translateX(-50%)", width: 240, padding: 14, borderRadius: 14, background: "var(--serve-sim-panel-bg, #181818)", border: "1px solid rgba(255,255,255,0.15)", zIndex: 20 }}
+        <div id={sliderId} data-hinge-angle-panel="" style={{ position: "absolute", top: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)", width: 220, padding: "6px 12px", borderRadius: 12, background: "var(--serve-sim-panel-bg, #181818)", border: "1px solid rgba(255,255,255,0.15)", zIndex: 20 }}
           onKeyDown={(event) => { if (event.key === "Escape") { setExpanded(false); angleButton.current?.focus(); } }}>
           <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }} htmlFor={`${sliderId}-range`}>Hinge angle <output>{Math.round(angle ?? 0)}°</output></label>
           <input autoFocus id={`${sliderId}-range`} aria-label="Hinge angle" type="range" min={0} max={180} step={1} value={angle ?? 0}
-            onChange={(event) => onChange(Number(event.currentTarget.value), "direct")} style={{ width: "100%", marginTop: 12 }} />
+            onChange={(event) => onChange(Number(event.currentTarget.value), "direct")} style={{ width: "100%", marginTop: 4 }} />
         </div>
       )}
       {error && (

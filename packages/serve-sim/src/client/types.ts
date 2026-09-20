@@ -9,13 +9,9 @@ export type SimulatorOrientation =
 export interface StreamConfig {
   width: number;
   height: number;
-  /** Last orientation requested through serve-sim, when known. */
   orientation?: SimulatorOrientation;
-  /** Active Duo LCD (cover = 1, inner = 3). */
   screenId?: number;
-  /** Last confirmed hinge angle in degrees, when the sim reports one. */
   hingeAngle?: number;
-  /** True when the device accepts hinge HID (Duo and later foldables). */
   supportsHingeAngle?: boolean;
 }
 

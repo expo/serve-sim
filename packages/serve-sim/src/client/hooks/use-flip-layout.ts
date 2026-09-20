@@ -27,7 +27,6 @@ function isQuarterOrHalfTurn(degrees: number): boolean {
   return Math.abs(abs - 90) < 1 || Math.abs(abs - 180) < 1;
 }
 
-/** Invert transform that keeps `prev` on screen until the layout transition plays. */
 export function flipLayoutInvert(
   prev: FlipRect,
   next: FlipRect,

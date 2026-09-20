@@ -27,10 +27,6 @@ export function parseHingeAngle(value: string): number | undefined {
   return isHingeAngle(angle) ? angle : undefined;
 }
 
-/**
- * The inner framebuffer is mounted at 270°. Rendering it clockwise keeps
- * the same physical portrait orientation as the cover.
- */
 export function orientationForHingeAngle(
   angle: number,
   current: "portrait" | "landscape_left" = "portrait",
@@ -40,13 +36,6 @@ export function orientationForHingeAngle(
     : "landscape_left";
 }
 
-/**
- * How far each inner leaf yaws around the crease.
- * Closed is edge-on (90), Device Hub's half-fold is a book (35),
- * open is flat (0). Cover chrome is a separate rest pose below 55°.
- */
-// Device Hub Book is ≈85% of the flat spread width, with outer/spine height
-// ≈1.04. Together these constrain leaf yaw and perspective (7.5× spread width).
 export const INNER_BOOK_HALF_DEG = 35;
 
 export function foldLeafYaw(angle?: number): number {

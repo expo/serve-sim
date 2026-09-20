@@ -10,10 +10,6 @@ type Sink = {
 type Feed = { sinks: Set<Sink>; stop: () => void };
 const feeds = new Map<MediaStream, Feed>();
 
-/** One WebRTC presentation clock for the three Duo faces. Canvas blits stay at
- * display resolution; capture, transport, and the single video decoder remain
- * WebRTC. Inactive LCDs retain their last image instead of displaying the other
- * panel. No pixel readback or per-frame React state is needed to fan out pixels. */
 export function useDuoVideo(stream: MediaStream | null | undefined, canvas: RefObject<HTMLCanvasElement | null>,
   aspect: number | undefined, maxDimension: number, onFrame: (width: number, height: number) => void, policy: DuoFramePolicy = "live") {
   const sink = useRef<Sink>({ canvas, current: { aspect: aspect ?? 0, maxDimension, onFrame, policy } });
@@ -27,7 +23,6 @@ export function useDuoVideo(stream: MediaStream | null | undefined, canvas: RefO
       video.muted = true; video.playsInline = true;
       video.dataset.duoWebrtcSource = "";
       video.setAttribute("aria-hidden", "true");
-      // Keep a composited source so WebKit continues its video-frame callbacks.
       Object.assign(video.style, { position: "fixed", left: "0", bottom: "0", width: "1px", height: "1px", opacity: "0.001", pointerEvents: "none" });
       document.body.append(video);
       const image = document.createElement("canvas");
@@ -44,9 +39,6 @@ export function useDuoVideo(stream: MediaStream | null | undefined, canvas: RefO
           const w = Math.max(1, Math.round(width * scale)), h = Math.max(1, Math.round(height * scale));
           if (image.width !== w || image.height !== h) { image.width = w; image.height = h; }
           image.getContext("2d")!.drawImage(video, 0, 0, w, h);
-          // During an LCD handoff only, retain the last destination texture
-          // until the decoder has pixels for the new panel. Steady-state black
-          // apps are never filtered and no steady-state pixel readback is done.
           let lit = true;
           if ([...sinks].some(s => s.current.policy === "handoff" && matchesPanelFrame(width, height, s.current.aspect))) {
             probeContext.drawImage(image, 0, 0, 8, 8);

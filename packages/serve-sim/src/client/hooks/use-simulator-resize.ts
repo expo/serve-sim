@@ -95,8 +95,6 @@ export function useSimulatorResize({
   );
   const minWidth = Math.min(SIMULATOR_RESIZE_MIN_WIDTH, maxWidth);
 
-  // A new device/panel default must use its restored scale in the same render.
-  // Waiting for the persistence effect exposes one frame at the old width.
   const width = restoredDefaultWidthRef.current !== defaultWidth
     ? initialWidth
     : frameWidth ?? defaultWidth;

@@ -80,7 +80,7 @@ actor CoreDeviceBridge {
     }
 
     func setHingeAngle(udid: String, angle: Double) async -> Bool {
-        guard angle.isFinite, (0...180).contains(angle), await supportsHingeAngle(udid: udid) else { return false }
+        guard angle.isFinite, (0...180).contains(angle) else { return false }
         guard let rawData = SSCoreDeviceHingeData(angle) else { return false }
         let data = Unmanaged<NSData>.fromOpaque(rawData).takeRetainedValue() as Data
         return await sendControl(udid: udid, data: data)

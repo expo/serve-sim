@@ -112,7 +112,6 @@ export function rotationDegreesForOrientation(
   }
 }
 
-/** Signed shortest turn from one simulator orientation to another, in degrees. */
 export function shortestRotationDelta(
   from?: SimulatorOrientation | null,
   to?: SimulatorOrientation | null,

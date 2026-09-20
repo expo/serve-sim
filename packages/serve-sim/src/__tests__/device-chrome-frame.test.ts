@@ -257,7 +257,6 @@ describe("DuoFoldChrome", () => {
   const chrome = chromeFixture();
 
   test("Device Hub book recedes at the spine (outer edges toward the camera)", () => {
-    // CSS Y rotation sends negative X toward the viewer at a positive angle.
     for (const [side, outerX] of [["left", -240], ["right", 240]] as const) {
       const yaw = (side === "left" ? INNER_BOOK_HALF_DEG : -INNER_BOOK_HALF_DEG) * Math.PI / 180;
       const outerZ = -outerX * Math.sin(yaw);

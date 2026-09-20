@@ -261,7 +261,6 @@ export function deviceKitChromeForScreen(
   return (screenId === undefined ? undefined : chrome.displayVariants?.[screenId]) ?? chrome;
 }
 
-/** Infer the active Duo LCD from the live framebuffer when the helper omits screenId. */
 export function deviceKitScreenIdForStream(
   chrome: DeviceKitChromeDescriptor,
   stream: { width: number; height: number } | null | undefined,

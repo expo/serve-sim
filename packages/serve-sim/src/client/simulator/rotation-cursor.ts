@@ -1,5 +1,5 @@
 import type { SimulatorOrientation } from "../types";
-import { ROTATE_LEFT_CYCLE } from "./orientation";
+import { ROTATE_LEFT_CYCLE, ROTATE_RIGHT_CYCLE } from "./orientation";
 
 const READBACK_GRACE_MS = 1500;
 
@@ -12,8 +12,8 @@ export function createRotationCursor(
   let pending: SimulatorOrientation | null = null;
   let pendingUntil = 0;
   return {
-    requestNext(): SimulatorOrientation {
-      orientation = ROTATE_LEFT_CYCLE[orientation];
+    requestNext(direction: "left" | "right" = "left"): SimulatorOrientation {
+      orientation = (direction === "left" ? ROTATE_LEFT_CYCLE : ROTATE_RIGHT_CYCLE)[orientation];
       pending = orientation;
       pendingUntil = now() + READBACK_GRACE_MS;
       return orientation;

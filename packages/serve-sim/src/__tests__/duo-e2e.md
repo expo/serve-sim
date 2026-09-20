@@ -29,7 +29,9 @@ Its bundle ID is `dev.expo.serve-sim.duo-fixture`.
 ## Browser motion, display, input, and controls
 
 Open `http://localhost:3200/__dev/duo-e2e?device=<Duo-UDID>&unsupportedDevice=<regular-iPhone-UDID>` in the in-app browser
-and press **Run Duo regressions**. The dev preview explicitly uses locked
+and press **Run Duo regressions**. Run **Run unsupported-device regression**
+separately after restarting the preview so each real simulator owns its WebRTC
+capture session for the duration of its check. The dev preview explicitly uses locked
 WebRTC/H.264, matching the optimized product path. Acceptance fails unless all
 three faces use one live WebRTC video track; HTTP fallback is not accepted.
 Do not edit client code during a run; development auto-reload replaces the

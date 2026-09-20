@@ -22,6 +22,12 @@ describe("foldable simulator toolbar", () => {
     expect(html).not.toContain("Fine hinge adjustment");
   });
 
+  test("uses the landscape icon for Partially open", () => {
+    const html = renderToStaticMarkup(<HingeControls supported onChange={onChange} />);
+    expect(html).toContain(encodeURIComponent("Half Fold — Landscape"));
+    expect(html).not.toContain(encodeURIComponent("Half Fold — Portrait"));
+  });
+
   test("hides unsupported controls even if old media retains an angle", () => {
     expect(renderToStaticMarkup(<HingeControls supported={false} angle={90} onChange={onChange} />)).toBe("");
   });

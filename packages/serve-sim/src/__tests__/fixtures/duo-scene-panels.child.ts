@@ -11,12 +11,14 @@ class TestCanvas extends EventTarget {
   style = { cssText: "", width: "", height: "" };
   remove() {}
   getContext() {
-    return {
+    const context = {
       fillStyle: "",
-      fillRect() {}, save() {}, restore() {}, translate() {}, rotate() {},
+      fillRect: () => { this.pixel = parseInt(context.fillStyle.slice(1, 3), 16) || 0; },
+      save() {}, restore() {}, translate() {}, rotate() {},
       drawImage: (source: TestCanvas) => { this.pixel = source.pixel; this.draws++; },
       getImageData: () => ({ data: new Uint8ClampedArray(8 * 8 * 4).fill(this.pixel) }),
     };
+    return context;
   }
 }
 class TestHost extends EventTarget {
@@ -81,7 +83,7 @@ mock.module("three/addons/loaders/GLTFLoader.js", () => ({
 }));
 const { createDuoScene } = await import("../../client/simulator/duo-scene");
 
-function setup(dual: boolean) {
+function setup(dual: boolean, cacheScreenOnFold?: boolean) {
   const host = new TestHost();
   const sourceHost = new TestHost();
   const cover = Object.assign(new TestCanvas(), { width: 1398, height: 2034, pixel: 70 });
@@ -92,6 +94,7 @@ function setup(dual: boolean) {
   } else sourceHost.source = cover;
   let state: DuoSceneState = {
     angle: 0, pose: "closed",
+    cacheScreenOnFold,
     streamConfig: { screenId: 1, width: 1398, height: 2034, orientation: "portrait" },
   };
   const previous = canvases.length;
@@ -100,7 +103,7 @@ function setup(dual: boolean) {
   const [innerTexture, coverTexture] = canvases.slice(previous);
   let now = 0;
   return {
-    host, cover, inner, innerTexture: innerTexture!, coverTexture: coverTexture!,
+    host, sourceHost, cover, inner, innerTexture: innerTexture!, coverTexture: coverTexture!,
     setState: (next: Partial<DuoSceneState>) => { state = { ...state, ...next }; },
     tick: (milliseconds = 16) => renderers.at(-1)!.loop!(now += milliseconds),
     dispose: () => scene.dispose(),
@@ -108,7 +111,7 @@ function setup(dual: boolean) {
 }
 
 test("inner frames appear before active metadata and provisional black cannot overwrite either panel", () => {
-  const test = setup(true);
+  const test = setup(true, true);
   try {
     test.tick();
     expect(test.coverTexture.pixel).toBe(70);
@@ -150,7 +153,7 @@ test("inner frames appear before active metadata and provisional black cannot ov
 });
 
 test("the single-stream fallback still requires matching active display metadata", () => {
-  const test = setup(false);
+  const test = setup(false, true);
   try {
     test.tick();
     expect(test.coverTexture.pixel).toBe(70);
@@ -162,7 +165,7 @@ test("the single-stream fallback still requires matching active display metadata
 });
 
 test("rapid reopening retains its cached screen while matching metadata belongs to the previous activation", () => {
-  const test = setup(true);
+  const test = setup(true, true);
   const innerConfig = { screenId: 3, width: 2007, height: 2853, orientation: "landscape_left" as const };
   try {
     test.tick();
@@ -210,5 +213,65 @@ test("rapid reopening retains its cached screen while matching metadata belongs 
     test.setState({ streamConfig: innerConfig });
     test.tick();
     expect(test.innerTexture.pixel).toBe(0);
+  } finally { test.dispose(); }
+});
+
+test("panel caching defaults off and both panels show their live frames including black during a fold", () => {
+  const test = setup(true);
+  try {
+    test.inner.pixel = 180;
+    test.tick();
+    expect(test.coverTexture.pixel).toBe(70);
+    expect(test.innerTexture.pixel).toBe(180);
+
+    test.setState({ angle: 180, pose: "open" });
+    test.cover.pixel = 0;
+    test.inner.pixel = 0;
+    test.tick();
+    expect(test.coverTexture.pixel).toBe(0);
+    expect(test.innerTexture.pixel).toBe(0);
+
+    test.inner.pixel = 210;
+    test.tick();
+    expect(test.innerTexture.pixel).toBe(210);
+    expect(test.host.dataset.screenId).toBe("3");
+
+    test.setState({ angle: 0, pose: "closed" });
+    test.inner.pixel = 0;
+    test.cover.pixel = 100;
+    test.tick();
+    expect(test.innerTexture.pixel).toBe(0);
+    expect(test.coverTexture.pixel).toBe(100);
+  } finally { test.dispose(); }
+});
+
+test("turning caching off clears a retained hidden panel even before its source resumes", () => {
+  const test = setup(true, true);
+  try {
+    test.tick();
+    test.inner.pixel = 180;
+    test.setState({ angle: 180, pose: "open", streamConfig: { screenId: 3, width: 2007, height: 2853, orientation: "landscape_left" } });
+    test.tick();
+    test.inner.pixel = 0;
+    test.setState({ angle: 0, pose: "closed", streamConfig: { screenId: 1, width: 1398, height: 2034, orientation: "portrait" } });
+    test.tick();
+    expect(test.innerTexture.pixel).toBe(180);
+
+    test.sourceHost.panels.get(3)!.source = null;
+    test.setState({ cacheScreenOnFold: false });
+    test.tick();
+    expect(test.innerTexture.pixel).toBe(0);
+    expect(test.coverTexture.pixel).toBe(70);
+
+    test.sourceHost.panels.get(3)!.source = test.inner;
+    test.tick();
+    expect(test.innerTexture.pixel).toBe(0);
+    test.setState({ cacheScreenOnFold: true });
+    test.cover.pixel = 100;
+    test.tick();
+    test.setState({ angle: 180, pose: "open" });
+    test.cover.pixel = 0;
+    test.tick();
+    expect(test.coverTexture.pixel).toBe(100);
   } finally { test.dispose(); }
 });

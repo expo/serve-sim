@@ -15,7 +15,7 @@ describe("foldable simulator sidebar controls", () => {
     expect(html).not.toContain("<details");
     expect(html).not.toContain("<summary");
     expect(Array.from(html.matchAll(/data-setting-row="([^"]+)"/g), ([, label]) => label)).toEqual([
-      "Fold pose", "Hinge angle", "Table Mode",
+      "Fold pose", "Hinge angle", "Table Mode", "Cache screen on fold", "Preview size",
     ]);
     expect(html).toMatch(/<button[^>]*aria-label="Fold pose"/);
     expect(html).toContain('aria-haspopup="listbox"');
@@ -68,7 +68,7 @@ describe("foldable simulator sidebar controls", () => {
   });
 
   test("keeps controls enabled while a previous update is pending", () => {
-    const html = renderToStaticMarkup(<HingeSettings angle={90} pose="laptop" tableModeAvailable pending onChange={onChange} />);
+    const html = renderToStaticMarkup(<HingeSettings angle={90} pose="laptop" tableModeAvailable pending onChange={onChange} onCacheScreenOnFoldChange={() => {}} onSizeModeChange={() => {}} />);
     expect(html).toContain('aria-busy="true"');
     expect(html).not.toMatch(/<(input|button)[^>]* disabled=""/);
   });
@@ -85,13 +85,33 @@ describe("foldable simulator sidebar controls", () => {
     expect(unavailable).toMatch(/role="switch"[^>]*aria-label="Table Mode"[^>]* disabled=""/);
     const available = renderToStaticMarkup(<HingeSettings angle={80} pose="tent" tableMode tableModeAvailable onChange={onChange} />);
     expect(available).toMatch(/role="switch"[^>]*aria-checked="true"[^>]*aria-label="Table Mode"/);
-    expect(available).not.toMatch(/<button[^>]* disabled=""/);
+    expect(available).not.toMatch(/role="switch"[^>]*aria-label="Table Mode"[^>]* disabled=""/);
   });
 
   test("allows turning Table Mode off after rotating into an ineligible pose", () => {
     const html = renderToStaticMarkup(<HingeSettings supported tableMode tableModeAvailable={false} onChange={onChange} />);
     expect(html).toMatch(/role="switch"[^>]*aria-checked="true"[^>]*aria-label="Table Mode"/);
-    expect(html).not.toMatch(/<button[^>]* disabled=""/);
+    expect(html).not.toMatch(/role="switch"[^>]*aria-label="Table Mode"[^>]* disabled=""/);
     expect(html).not.toContain("Table Mode is not available");
+  });
+
+  test("defaults to uncached screens and keeping the same physical size", () => {
+    const html = renderToStaticMarkup(<HingeSettings supported onChange={onChange} onCacheScreenOnFoldChange={() => {}} onSizeModeChange={() => {}} />);
+    expect(html).toMatch(/role="switch"[^>]*aria-checked="false"[^>]*aria-label="Cache screen on fold"/);
+    expect(html).toMatch(/<button[^>]*aria-label="Preview size"/);
+    expect(html).toContain(">Keep same size<");
+  });
+
+  test("reflects enabled caching and filling the available space", () => {
+    const html = renderToStaticMarkup(<HingeSettings supported cacheScreenOnFold sizeMode="fill" onChange={onChange} onCacheScreenOnFoldChange={() => {}} onSizeModeChange={() => {}} />);
+    expect(html).toMatch(/role="switch"[^>]*aria-checked="true"[^>]*aria-label="Cache screen on fold"/);
+    expect(html).toContain(">Fill available space<");
+  });
+
+  test("explains Table Mode as an iOS state and how it is reset", () => {
+    const html = renderToStaticMarkup(<HingeSettings supported tableModeAvailable onChange={onChange} />);
+    expect(html).toContain("Tells iOS the device is resting on a table.");
+    expect(html).toContain("Tent turns it on; rotation or hinge edits turn it off.");
+    expect(html).toMatch(/<p[^>]*>Tells iOS the device is resting on a table\./);
   });
 });

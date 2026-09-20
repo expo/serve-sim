@@ -1,7 +1,7 @@
 import { HINGE_POSES, type HingeControlCommand, type HingePose } from "../../hinge-control";
 import { SimulatorToolbar } from "../simulator";
 import closedIcon from "../assets/hinge-closed.svg" with { type: "text" };
-import bookIcon from "../assets/hinge-half-open-portrait.svg" with { type: "text" };
+import bookIcon from "../assets/hinge-half-open.svg" with { type: "text" };
 import openIcon from "../assets/hinge-open.svg" with { type: "text" };
 
 export const FOLD_POSE_OPTIONS: Array<{ value: HingePose; label: string }> = [
@@ -23,6 +23,10 @@ export interface HingeControlsProps {
   supported?: boolean;
   tableMode?: boolean;
   tableModeAvailable?: boolean;
+  cacheScreenOnFold?: boolean;
+  onCacheScreenOnFoldChange?: (enabled: boolean) => void;
+  sizeMode?: "physical" | "fill";
+  onSizeModeChange?: (mode: "physical" | "fill") => void;
   pending?: boolean;
   error?: string | null;
   onChange: (command: HingeControlCommand) => void;

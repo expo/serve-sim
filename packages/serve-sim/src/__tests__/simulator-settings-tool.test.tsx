@@ -35,8 +35,8 @@ describe("SimulatorSettingsTool fold controls", () => {
       />,
     );
     const rows = Array.from(html.matchAll(/data-setting-row="([^"]+)"/g), ([, label]) => label);
-    expect(rows.slice(0, 4)).toEqual([
-      "Fold pose", "Hinge angle", "Table Mode", "Appearance",
+    expect(rows.slice(0, 6)).toEqual([
+      "Fold pose", "Hinge angle", "Table Mode", "Cache screen on fold", "Preview size", "Appearance",
     ]);
     expect(html.match(/<details\b/g)).toHaveLength(1);
     expect(html.match(/<summary\b/g)).toHaveLength(1);
@@ -57,5 +57,7 @@ describe("SimulatorSettingsTool fold controls", () => {
     expect(rows).not.toContain("Fold pose");
     expect(rows).not.toContain("Hinge angle");
     expect(rows).not.toContain("Table Mode");
+    expect(rows).not.toContain("Cache screen on fold");
+    expect(rows).not.toContain("Preview size");
   });
 });

@@ -4,6 +4,7 @@ import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import type { DuoModelViewProps } from "../components/duo-model-view";
 import type { StreamConfig } from "../types";
 import { duoPose, duoIntendedScreen, duoScreenRoll, duoFrameMatchesDisplay, duoScreenMapping, duoScreenPoint, stepDuoSpring, type DuoScreenMapping } from "./duo-pose";
+import { duoFitScale, duoPanelEdgeAnchor, duoProjectAnchor, duoHingeDragAngle, type DuoScreenPoint as ProjectedPoint } from "./duo-layout";
 import { HID_EDGE_BOTTOM, HID_EDGE_LEFT, HID_EDGE_RIGHT, HID_EDGE_TOP, HOME_INDICATOR_BAND_NORM, rawEdgeForDisplayEdge, streamDisplayGeometry } from "./orientation";
 import modelData from "../assets/iphone-duo/model.glb.gz.txt" with { type: "text" };
 
@@ -40,6 +41,7 @@ export function createDuoScene(
   sourceHost: HTMLElement,
   state: () => DuoSceneState,
   callbacks: { ready: () => void; error: () => void },
+  hingeHandle?: HTMLElement,
 ) {
   let disposed = false;
   let failed = false;
@@ -107,6 +109,10 @@ export function createDuoScene(
   let viewportWidth = 0;
   let viewportHeight = 0;
   let stageHeight = 0;
+  let stageWidth = 0;
+  let fitScale = 1;
+  let fitVelocity = 0;
+  let hingeAnchor: THREE.Vector3 | null = null;
   let resizePending = false;
   let projectionPending = false;
   const resizeViewport = () => {
@@ -127,7 +133,8 @@ export function createDuoScene(
     // contentRect excludes presentation transforms, as do the canvas CSS
     // dimensions. The handle changes model zoom inside that fixed canvas.
     const { width, height } = entry.contentRect;
-    if (!width || !height || height === stageHeight) return;
+    if (!width || !height || (height === stageHeight && width === stageWidth)) return;
+    stageWidth = width;
     stageHeight = height;
     projectionPending = true;
   });
@@ -164,6 +171,7 @@ export function createDuoScene(
     left = model.getObjectByName("left-half");
     right = model.getObjectByName("right-half");
     if (!left || !right) throw new Error("Missing iPhone Duo hinge groups");
+    hingeAnchor = duoPanelEdgeAnchor(left, "left");
     const displays: THREE.Mesh[] = [];
     model.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
@@ -231,20 +239,18 @@ export function createDuoScene(
     return false;
   }
 
-  function uploadScreen(source: FrameSource, config: StreamConfig, inputConfig?: StreamConfig | null, provisional = false) {
+  function uploadScreen(source: FrameSource, config: StreamConfig, inputConfig?: StreamConfig | null, cacheScreenOnFold = false) {
     const surface = config.screenId === 1 ? cover : inner;
     const active = inputConfig?.screenId === config.screenId;
     if (surface.handoff && active && surface.sawOtherActiveScreen) surface.handoff = undefined;
-    // An inactive panel emits black frames until iOS lights it. Keep a prior
-    // correct image through that handoff. On a rapid round trip, a matching
-    // active ID can still describe the previous activation: wait for metadata
-    // to cycle or for the panel itself to change from black back to content.
-    if (provisional || surface.handoff) {
+    // Track activation separately from optional image retention: a matching
+    // active ID can describe the previous activation on a rapid round trip.
+    // Input waits for metadata to cycle or for black to change back to content.
+    if ((cacheScreenOnFold && !active) || surface.handoff) {
       if (!hasVisiblePixels(source)) {
         if (surface.handoff) surface.handoff.sawBlack = true;
-        return;
-      }
-      if (surface.handoff?.sawBlack && active) surface.handoff = undefined;
+        if (cacheScreenOnFold) return;
+      } else if (surface.handoff?.sawBlack && active) surface.handoff = undefined;
     }
     const binding = inputConfig && inputConfig.screenId === config.screenId && duoFrameMatchesDisplay(config.width, config.height, inputConfig)
       ? inputConfigKey(inputConfig) : undefined;
@@ -274,9 +280,30 @@ export function createDuoScene(
   }
 
   let previousIntendedScreen: 1 | 3 | undefined;
+  let previousCacheScreenOnFold = false;
+  function clearRetainedImage(surface: Surface) {
+    surface.context.fillStyle = "#000";
+    surface.context.fillRect(0, 0, surface.canvas.width, surface.canvas.height);
+    surface.texture.needsUpdate = true;
+    surface.ready = false;
+    surface.mapping = undefined;
+    surface.mappingConfigKey = undefined;
+    surface.lastFrameKey = undefined;
+    surface.lastImage = undefined;
+    surface.lastVideoTime = undefined;
+  }
+
   function updateScreen() {
     const current = state();
     const config = current.streamConfig;
+    const cacheScreenOnFold = current.cacheScreenOnFold === true;
+    if (previousCacheScreenOnFold && !cacheScreenOnFold) {
+      // Disabling retention also clears hidden panels whose feed is currently
+      // unavailable. Ready sources repaint during this same render.
+      clearRetainedImage(cover);
+      clearRetainedImage(inner);
+    }
+    previousCacheScreenOnFold = cacheScreenOnFold;
     const physicalPose = current.physicalPose === undefined ? current.pose : current.physicalPose;
     const intended = duoIntendedScreen(current.angle, physicalPose, config?.screenId);
     const coverHost = sourceHost.querySelector<HTMLElement>('[data-duo-panel="1"]');
@@ -291,15 +318,18 @@ export function createDuoScene(
       previousIntendedScreen = intended;
       if (config?.screenId === 1) inner.sawOtherActiveScreen = true;
       if (config?.screenId === 3) cover.sawOtherActiveScreen = true;
-      // The route identifies the physical panel. Its stream can paint before
-      // the independent active-display metadata catches up. Only update the
-      // intended panel so departing shutdown frames cannot erase its cache.
-      const panelHost = intended === 1 ? coverHost : innerHost;
-      const source = panelHost ? currentSource(panelHost) : null;
-      if (source) {
-        const size = sourceSize(source);
-        if (size.width > 0 && size.height > 0) {
-          uploadScreen(source, { ...size, screenId: intended }, config, config?.screenId !== intended);
+      // The route identifies each physical panel independently of active
+      // metadata. Both textures follow their live streams by default; opting
+      // into caching freezes the departing panel instead.
+      for (const screenId of [1, 3] as const) {
+        if (cacheScreenOnFold && screenId !== intended) continue;
+        const panelHost = screenId === 1 ? coverHost : innerHost;
+        const source = panelHost ? currentSource(panelHost) : null;
+        if (source) {
+          const size = sourceSize(source);
+          if (size.width > 0 && size.height > 0) {
+            uploadScreen(source, { ...size, screenId }, config, cacheScreenOnFold);
+          }
         }
       }
       const surface = intended === 1 ? cover : inner;
@@ -309,12 +339,12 @@ export function createDuoScene(
     }
     // Keep the single-stream fallback tied to its authoritative panel and
     // matching frame geometry; it cannot identify an incoming panel itself.
-    if (!config || config.screenId !== intended || (config.screenId !== 1 && config.screenId !== 3)) return;
+    if (!config || (cacheScreenOnFold && config.screenId !== intended) || (config.screenId !== 1 && config.screenId !== 3)) return;
     const source = currentSource();
     if (!source) return;
     const { width, height } = sourceSize(source);
     if (!duoFrameMatchesDisplay(width, height, config)) return;
-    uploadScreen(source, config, config);
+    uploadScreen(source, config, config, cacheScreenOnFold);
     host.dataset.screenId = String(config.screenId);
     host.dataset.screenReady = "true";
   }
@@ -434,7 +464,7 @@ export function createDuoScene(
       if (renderer.domElement.hasPointerCapture(id)) renderer.domElement.releasePointerCapture(id);
     }
   }
-  cancelInput = endGesture;
+  cancelInput = () => { endGesture(); endHingeDrag(); };
   function validateGesture() {
     if (gesture && (gesture.configKey !== inputConfigKey() ||
       (gesture.screenId === 1 ? cover : inner).handoff ||
@@ -442,7 +472,7 @@ export function createDuoScene(
   }
   const down = (event: PointerEvent) => {
     validateGesture();
-    if (event.button !== 0 || failed || disposed) return;
+    if (event.button !== 0 || failed || disposed || hingeDrag) return;
     const hit = screenHit(event.clientX, event.clientY);
     if (!hit) return;
     const point = boundedPoint(hit.point);
@@ -499,6 +529,7 @@ export function createDuoScene(
     endGesture();
   };
   const wheel = (event: WheelEvent) => {
+    if (hingeDrag) return;
     if (gesture) return;
     const hit = screenHit(event.clientX, event.clientY);
     const send = state().onScroll;
@@ -516,7 +547,106 @@ export function createDuoScene(
     event.stopPropagation();
     send({ ...hit.point, dx, dy });
   };
-  const onVisibilityChange = () => { if (document.hidden) endGesture(); };
+  function projectedHandle(): (ProjectedPoint & { rotation: number }) | null {
+    if (!left || !hingeAnchor) return null;
+    const rect = renderer.domElement.getBoundingClientRect();
+    const edge = duoProjectAnchor(hingeAnchor, left, camera, rect);
+    const middle = duoProjectAnchor(hingeAnchor.clone().multiply(new THREE.Vector3(0.5, 1, 1)), left, camera, rect);
+    if (!edge || !middle) return null;
+    const rotation = Math.atan2(edge.y - middle.y, edge.x - middle.x);
+    const hostRect = host.getBoundingClientRect();
+    const offset = 16 * (stageHeight > 0 ? hostRect.height / stageHeight : 1);
+    return { x: edge.x + Math.cos(rotation) * offset, y: edge.y + Math.sin(rotation) * offset, rotation };
+  }
+
+  function hingeEndpoint(angle: number): ProjectedPoint | null {
+    if (!model || !left || !right) return null;
+    const current = state();
+    const physicalPose = current.physicalPose === undefined ? current.pose : current.physicalPose;
+    const pose = duoPose(angle, physicalPose, current.streamConfig?.screenId, current.streamConfig, presentationRoll);
+    const savedPosition = root.position.clone();
+    const savedRotation = root.quaternion.clone();
+    const savedLeft = left.rotation.y;
+    const savedRight = right.rotation.y;
+    const savedZoom = camera.zoom;
+    try {
+      left.rotation.y = pose.fold;
+      right.rotation.y = -pose.fold;
+      root.quaternion.setFromEuler(new THREE.Euler(...pose.rotation, "YXZ"));
+      root.position.set(0, 0, -4.05 * Math.sin(pose.fold)).applyQuaternion(root.quaternion);
+      const scale = current.sizeMode === "fill"
+        ? duoFitScale(model, camera, { width: viewportWidth, height: viewportHeight }, { width: stageWidth, height: stageHeight }, 32)
+        : 1;
+      camera.zoom = stageHeight / viewportHeight * scale;
+      camera.updateProjectionMatrix();
+      return projectedHandle();
+    } finally {
+      root.position.copy(savedPosition);
+      root.quaternion.copy(savedRotation);
+      left.rotation.y = savedLeft;
+      right.rotation.y = savedRight;
+      camera.zoom = savedZoom;
+      camera.updateProjectionMatrix();
+      root.updateMatrixWorld(true);
+    }
+  }
+
+  let hingeDrag: {
+    pointerId: number;
+    pointer: ProjectedPoint;
+    start: ProjectedPoint;
+    closed: ProjectedPoint;
+    open: ProjectedPoint;
+    angle: number;
+    lastAngle: number;
+  } | null = null;
+  function endHingeDrag() {
+    if (!hingeDrag) return;
+    const id = hingeDrag.pointerId;
+    hingeDrag = null;
+    if (hingeHandle?.hasPointerCapture(id)) hingeHandle.releasePointerCapture(id);
+  }
+  const hingeDown = (event: PointerEvent) => {
+    if (event.button !== 0 || hingeDrag || !state().onHingeAngleChange || !stageHeight || failed || disposed) return;
+    const start = projectedHandle();
+    const closed = hingeEndpoint(0);
+    const open = hingeEndpoint(180);
+    if (!start || !closed || !open) return;
+    event.preventDefault();
+    event.stopPropagation();
+    endGesture();
+    const angle = Math.max(0, Math.min(180, 180 - fold * 360 / Math.PI));
+    hingeDrag = { pointerId: event.pointerId, pointer: { x: event.clientX, y: event.clientY }, start, closed, open, angle, lastAngle: Math.round(angle) };
+    hingeHandle?.setPointerCapture(event.pointerId);
+    hingeHandle?.focus({ preventScroll: true });
+  };
+  const hingeMove = (event: PointerEvent) => {
+    if (!hingeDrag || event.pointerId !== hingeDrag.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const send = state().onHingeAngleChange;
+    if (!send) { endHingeDrag(); return; }
+    const next = Math.round(duoHingeDragAngle(hingeDrag.angle, hingeDrag.start, hingeDrag.closed, hingeDrag.open,
+      { x: event.clientX - hingeDrag.pointer.x, y: event.clientY - hingeDrag.pointer.y }));
+    if (next === hingeDrag.lastAngle) return;
+    hingeDrag.lastAngle = next;
+    send(next);
+  };
+  const hingeUp = (event: PointerEvent) => {
+    if (!hingeDrag || event.pointerId !== hingeDrag.pointerId) return;
+    if (event.type === "pointerup") hingeMove(event);
+    event.preventDefault();
+    event.stopPropagation();
+    endHingeDrag();
+  };
+  const blur = () => { endGesture(); endHingeDrag(); };
+  const onVisibilityChange = () => { if (document.hidden) blur(); };
+  hingeHandle?.addEventListener("pointerdown", hingeDown);
+  hingeHandle?.addEventListener("pointermove", hingeMove);
+  hingeHandle?.addEventListener("pointerup", hingeUp);
+  hingeHandle?.addEventListener("pointercancel", hingeUp);
+  hingeHandle?.addEventListener("lostpointercapture", hingeUp);
+  if (hingeHandle) hingeHandle.style.display = "none";
   const canvas = renderer.domElement;
   canvas.addEventListener("pointerdown", down);
   canvas.addEventListener("pointermove", move);
@@ -524,7 +654,7 @@ export function createDuoScene(
   canvas.addEventListener("pointercancel", up);
   canvas.addEventListener("lostpointercapture", up);
   canvas.addEventListener("wheel", wheel, { passive: false });
-  window.addEventListener("blur", endGesture);
+  window.addEventListener("blur", blur);
   document.addEventListener("visibilitychange", onVisibilityChange);
   let previous = performance.now();
   renderer.setAnimationLoop((now) => {
@@ -532,6 +662,7 @@ export function createDuoScene(
     const dt = Math.min((now - previous) / 1000, 0.05);
     previous = now;
     const current = state();
+    if (!current.onHingeAngleChange) endHingeDrag();
     validateGesture();
     try { updateScreen(); } catch { fail(); return; }
     const config = current.streamConfig;
@@ -574,11 +705,31 @@ export function createDuoScene(
       }
       if (projectionPending) {
         camera.aspect = viewportWidth / viewportHeight;
-        camera.zoom = stageHeight > 0 ? stageHeight / viewportHeight : 1;
         camera.updateProjectionMatrix();
         projectionPending = false;
       }
+      const targetScale = current.sizeMode === "fill" && model && stageHeight > 0
+        ? duoFitScale(model, camera, { width: viewportWidth, height: viewportHeight }, { width: stageWidth, height: stageHeight }, 32)
+        : 1;
+      const fit = stepDuoSpring(fitScale, fitVelocity, targetScale, dt);
+      fitScale = reducedMotion.matches ? targetScale : fit.value;
+      fitVelocity = reducedMotion.matches ? 0 : fit.velocity;
+      const zoom = (stageHeight > 0 ? stageHeight / viewportHeight : 1) * fitScale;
+      if (camera.zoom !== zoom) {
+        camera.zoom = zoom;
+        camera.updateProjectionMatrix();
+      }
       renderer.render(scene, camera);
+      if (hingeHandle) {
+        const position = current.onHingeAngleChange ? projectedHandle() : null;
+        const rect = host.getBoundingClientRect();
+        hingeHandle.style.display = position && rect.width && rect.height ? "" : "none";
+        if (position && rect.width && rect.height) {
+          hingeHandle.style.left = `${(position.x - rect.left) * stageWidth / rect.width}px`;
+          hingeHandle.style.top = `${(position.y - rect.top) * stageHeight / rect.height}px`;
+          hingeHandle.style.transform = `translate(-50%, -50%) rotate(${position.rotation}rad)`;
+        }
+      }
     } catch { fail(); }
     host.dataset.hingeAngle = (180 - fold * 360 / Math.PI).toFixed(2);
     host.dataset.pose = current.pose ?? "custom";
@@ -588,6 +739,7 @@ export function createDuoScene(
     dispose() {
       disposed = true;
       endGesture();
+      endHingeDrag();
       renderer.setAnimationLoop(null);
       resize.disconnect();
       canvas.removeEventListener("webglcontextlost", fail);
@@ -597,7 +749,13 @@ export function createDuoScene(
       canvas.removeEventListener("pointercancel", up);
       canvas.removeEventListener("lostpointercapture", up);
       canvas.removeEventListener("wheel", wheel);
-      window.removeEventListener("blur", endGesture);
+      hingeHandle?.removeEventListener("pointerdown", hingeDown);
+      hingeHandle?.removeEventListener("pointermove", hingeMove);
+      hingeHandle?.removeEventListener("pointerup", hingeUp);
+      hingeHandle?.removeEventListener("pointercancel", hingeUp);
+      hingeHandle?.removeEventListener("lostpointercapture", hingeUp);
+      if (hingeHandle) hingeHandle.style.display = "none";
+      window.removeEventListener("blur", blur);
       window.removeEventListener("resize", resizeViewport);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       if (model) disposeModel(model);

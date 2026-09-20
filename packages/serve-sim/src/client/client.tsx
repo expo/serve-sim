@@ -629,6 +629,20 @@ function AppWithConfig({
     /\biphone\s+duo\b/i.test(deviceName ?? "") ||
     defaultChrome?.identifier === "phone14" || defaultChrome?.identifier === "phone15";
   const useDuoModel = isDuo && chromeEnabled && !axOverlayEnabled;
+  const [cacheScreenOnFold, setCacheScreenOnFoldState] = useState(() => {
+    try { return localStorage.getItem("serve-sim:duo-cache-screen-on-fold") === "true"; } catch { return false; }
+  });
+  const [duoSizeMode, setDuoSizeModeState] = useState<"physical" | "fill">(() => {
+    try { return localStorage.getItem("serve-sim:duo-preview-size") === "fill" ? "fill" : "physical"; } catch { return "physical"; }
+  });
+  const setCacheScreenOnFold = useCallback((enabled: boolean) => {
+    setCacheScreenOnFoldState(enabled);
+    try { localStorage.setItem("serve-sim:duo-cache-screen-on-fold", String(enabled)); } catch { /* Viewer storage is optional. */ }
+  }, []);
+  const setDuoSizeMode = useCallback((mode: "physical" | "fill") => {
+    setDuoSizeModeState(mode);
+    try { localStorage.setItem("serve-sim:duo-preview-size", mode); } catch { /* Viewer storage is optional. */ }
+  }, []);
   const [duoModelUnavailable, setDuoModelUnavailable] = useState(false);
   const [duoPanelPeer, setDuoPanelPeer] = useState<DuoPanelPeer | null>(null);
   const [duoPanelError, setDuoPanelError] = useState<string | null>(null);
@@ -955,6 +969,9 @@ function AppWithConfig({
     }));
     hingeQueueRef.current?.enqueue(command, { key: command.control, replaceQueued: command.control === "pose" });
   }, [streamConfig]);
+  const setHingeAngleFromHandle = useCallback((value: number) => {
+    setHingeControl({ control: "angle", value });
+  }, [setHingeControl]);
   const rotateDevice = useCallback((orientation: SimulatorOrientation) => {
     setHingePreview(null);
     setPhysicalPose(null);
@@ -1554,6 +1571,9 @@ function AppWithConfig({
                 streamConfig={activeStreamConfig}
                 onUnavailable={onDuoUnavailable}
                 streamError={useDuoPanelFeeds ? duoPanelError : null}
+                cacheScreenOnFold={cacheScreenOnFold}
+                sizeMode={duoSizeMode}
+                onHingeAngleChange={showHingeControls && !resizing ? setHingeAngleFromHandle : undefined}
                 onTouch={resizing ? undefined : onStreamTouch}
                 onMultiTouch={resizing ? undefined : onStreamMultiTouch}
                 onScroll={resizing ? undefined : onStreamScroll}
@@ -1799,6 +1819,10 @@ function AppWithConfig({
           pending: hingePending,
           error: hingeError,
           onChange: setHingeControl,
+          cacheScreenOnFold,
+          onCacheScreenOnFoldChange: setCacheScreenOnFold,
+          sizeMode: duoSizeMode,
+          onSizeModeChange: setDuoSizeMode,
         } : undefined}
       />
       <ResizeHandle

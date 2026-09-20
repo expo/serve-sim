@@ -7,7 +7,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { FoldHorizontal, Laptop, SlidersHorizontal } from "lucide-react";
+import { FoldHorizontal, Image, Laptop, Maximize, SlidersHorizontal } from "lucide-react";
 import { hostUiRequest } from "../utils/exec";
 import { parseRuntime } from "../utils/grid";
 import { CollapsibleSection } from "./collapsible-section";
@@ -240,6 +240,7 @@ export function SettingSelect({
 /** Fold rows use the same controls and spacing as the other simulator options. */
 export function HingeSettings({
   angle, pose, supported, tableMode, tableModeAvailable = false, pending = false, error, onChange,
+  cacheScreenOnFold = false, onCacheScreenOnFoldChange, sizeMode = "physical", onSizeModeChange,
 }: HingeControlsProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -340,6 +341,29 @@ export function HingeSettings({
             onChange={(value) => onChange({ control: "table", value })}
           />
         </span>
+      </SettingRow>
+      <p className="m-0 mb-1 pl-[26px] text-[11px] leading-relaxed text-white/60">
+        Tells iOS the device is resting on a table. Tent turns it on; rotation or hinge edits turn it off.
+      </p>
+      <SettingRow icon={<Image size={14} strokeWidth={2} />} label="Cache screen on fold">
+        <SettingSwitch
+          label="Cache screen on fold"
+          checked={cacheScreenOnFold}
+          disabled={!onCacheScreenOnFoldChange}
+          onChange={(enabled) => onCacheScreenOnFoldChange?.(enabled)}
+        />
+      </SettingRow>
+      <SettingRow icon={<Maximize size={14} strokeWidth={2} />} label="Preview size">
+        <SettingSelect
+          label="Preview size"
+          value={sizeMode}
+          options={[
+            { value: "physical", label: "Keep same size" },
+            { value: "fill", label: "Fill available space" },
+          ]}
+          disabled={!onSizeModeChange}
+          onChange={(value) => { if (value === "physical" || value === "fill") onSizeModeChange?.(value); }}
+        />
       </SettingRow>
       {error && <span role="alert" className="text-[11px] text-danger-soft">{error}</span>}
     </div>

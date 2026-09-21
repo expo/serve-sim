@@ -95,17 +95,17 @@ describe("foldable simulator sidebar controls", () => {
     expect(html).not.toContain("Table Mode is not available");
   });
 
-  test("defaults to uncached screens and keeping the same physical size", () => {
+  test("defaults to uncached screens and filling the available space", () => {
     const html = renderToStaticMarkup(<HingeSettings supported onChange={onChange} onCacheScreenOnFoldChange={() => {}} onSizeModeChange={() => {}} />);
     expect(html).toMatch(/role="switch"[^>]*aria-checked="false"[^>]*aria-label="Cache screen on fold"/);
     expect(html).toMatch(/<button[^>]*aria-label="Preview size"/);
-    expect(html).toContain(">Keep same size<");
+    expect(html).toContain(">Fill available space<");
   });
 
-  test("reflects enabled caching and filling the available space", () => {
-    const html = renderToStaticMarkup(<HingeSettings supported cacheScreenOnFold sizeMode="fill" onChange={onChange} onCacheScreenOnFoldChange={() => {}} onSizeModeChange={() => {}} />);
+  test("reflects enabled caching and a selected physical size", () => {
+    const html = renderToStaticMarkup(<HingeSettings supported cacheScreenOnFold sizeMode="physical" onChange={onChange} onCacheScreenOnFoldChange={() => {}} onSizeModeChange={() => {}} />);
     expect(html).toMatch(/role="switch"[^>]*aria-checked="true"[^>]*aria-label="Cache screen on fold"/);
-    expect(html).toContain(">Fill available space<");
+    expect(html).toContain(">Keep same size<");
   });
 
   test("explains Table Mode and how it is reset in a native hover tooltip", () => {

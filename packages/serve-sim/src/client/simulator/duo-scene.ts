@@ -601,7 +601,7 @@ export function createDuoScene(
       right.rotation.y = -pose.fold;
       root.quaternion.setFromEuler(new THREE.Euler(...pose.rotation, "YXZ"));
       root.position.set(0, 0, -4.05 * Math.sin(pose.fold)).applyQuaternion(root.quaternion);
-      const scale = current.sizeMode === "fill"
+      const scale = current.sizeMode !== "physical"
         ? duoFitScale(model, camera, { width: viewportWidth, height: viewportHeight }, { width: stageWidth, height: stageHeight }, 32)
         : 1;
       camera.zoom = stageHeight / viewportHeight * scale;
@@ -735,7 +735,7 @@ export function createDuoScene(
         camera.updateProjectionMatrix();
         projectionPending = false;
       }
-      const targetScale = current.sizeMode === "fill" && model && stageHeight > 0
+      const targetScale = current.sizeMode !== "physical" && model && stageHeight > 0
         ? duoFitScale(model, camera, { width: viewportWidth, height: viewportHeight }, { width: stageWidth, height: stageHeight }, 32)
         : 1;
       const fit = stepDuoSpring(fitScale, fitVelocity, targetScale, dt);

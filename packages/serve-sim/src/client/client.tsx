@@ -634,7 +634,7 @@ function AppWithConfig({
     try { return localStorage.getItem("serve-sim:duo-cache-screen-on-fold") === "true"; } catch { return false; }
   });
   const [duoSizeMode, setDuoSizeModeState] = useState<"physical" | "fill">(() => {
-    try { return localStorage.getItem("serve-sim:duo-preview-size") === "fill" ? "fill" : "physical"; } catch { return "physical"; }
+    try { return localStorage.getItem("serve-sim:duo-preview-size") === "physical" ? "physical" : "fill"; } catch { return "fill"; }
   });
   const setCacheScreenOnFold = useCallback((enabled: boolean) => {
     setCacheScreenOnFoldState(enabled);

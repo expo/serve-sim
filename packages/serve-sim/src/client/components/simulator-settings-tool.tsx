@@ -242,7 +242,7 @@ export function SettingSelect({
 /** Fold rows use the same controls and spacing as the other simulator options. */
 export function HingeSettings({
   angle, pose, supported, tableMode, tableModeAvailable = false, pending = false, error, onChange,
-  cacheScreenOnFold = false, onCacheScreenOnFoldChange, sizeMode = "physical", onSizeModeChange,
+  cacheScreenOnFold = false, onCacheScreenOnFoldChange, sizeMode = "fill", onSizeModeChange,
 }: HingeControlsProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");

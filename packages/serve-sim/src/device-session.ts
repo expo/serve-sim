@@ -29,7 +29,7 @@ import {
 import { isSoftwareKeyboardVisible } from "./ax";
 import { debugKeyboard } from "./debug";
 import { isHingeAngle, type HingeAngleResult } from "./hinge-angle";
-import { panelRouteError } from "./panel-route";
+import { validatePanelRoute } from "./panel-route";
 import { isHingeControlCommand, hingeControlState, hingePoseOrientation, isTableModeAvailable, type HingeControlCommand, type HingePose, type HingePhysicalOrientation } from "./hinge-control";
 import { clearDeviceOptionState, setUiOption } from "./ui-settings";
 import { eventLogEventForHidMessage, formatEventLogPoint, recordEventLogEvent, updateEventLogEvent } from "./event-log";
@@ -354,8 +354,8 @@ export class DeviceSession {
   async handlePanel(req: IncomingMessage, res: ServerResponse, screenId: number, endpoint: string): Promise<void> {
     const isStream = endpoint === "stream.mjpeg" || endpoint === "stream.avcc";
     const createsCapture = isStream || endpoint === "webrtc/offer";
-    const invalid = panelRouteError(screenId, endpoint, req.method);
-    if (invalid) { this.sendJson(res, invalid.status, { error: invalid.error }); return; }
+    const route = validatePanelRoute(screenId, endpoint, req.method);
+    if ("error" in route) { this.sendJson(res, route.status, { error: route.error }); return; }
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
     if (isStream && this.transport === "webrtc") { this.sendTransportLocked(res); return; }
     // Install body listeners before capture startup yields: Fetch requests may
@@ -393,7 +393,7 @@ export class DeviceSession {
       panel = this.panels.get(screenId);
       if (!panel && createsCapture) {
         const capture = new NativeCapture(this.udid, this.encoderSettings, screenId);
-        panel = { screenId, capture, start: capture.start(), responses: new Set(), sessions: new Set(), stopped: false };
+        panel = { screenId: route.screenId, capture, start: capture.start(), responses: new Set(), sessions: new Set(), stopped: false };
         this.panels.set(screenId, panel);
       }
       if (!panel) {

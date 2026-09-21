@@ -40,7 +40,7 @@ import {
   type DeviceKitChromeDescriptor,
 } from "./devicekit-chrome";
 import { serveDeviceKitModelAsset } from "./devicekit-model";
-import { panelRouteError } from "./panel-route";
+import { validatePanelRoute } from "./panel-route";
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
 import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware-utils";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
@@ -802,10 +802,10 @@ function serveHelperInProcess(
   const endpoint = upstreamPath.split("?")[0];
   const panelRoute = /^\/panel\/([^/]+)\/(.+)$/.exec(endpoint ?? "");
   if (panelRoute) {
-    const invalid = panelRouteError(panelRoute[1]!, panelRoute[2]!, req.method);
-    if (invalid) {
-      res.writeHead(invalid.status, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: invalid.error }));
+    const route = validatePanelRoute(panelRoute[1]!, panelRoute[2]!, req.method);
+    if ("error" in route) {
+      res.writeHead(route.status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: route.error }));
       return true;
     }
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return true; }

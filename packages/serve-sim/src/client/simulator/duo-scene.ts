@@ -343,11 +343,10 @@ export function createDuoScene(
       if (config?.screenId === 3) cover.sawOtherActiveScreen = true;
       const intendedSurface = intended === 1 ? cover : inner;
       if (intendedSurface.handoff && commands && !commands.pending &&
-        intendedSurface.nativeDeparture === (intended === 1 ? commands.coverDepartures : commands.innerDepartures) &&
-        config?.screenId === intended && current.angle !== undefined && config.hingeAngle === current.angle) {
-        // The queue discarded the away preview: native never left this panel.
-        // A confirmed return (or a failed preview reverting to native state)
-        // needs no black frame or display election cycle to restore input.
+        config?.screenId === intended) {
+        // Once commands settle on the native input panel, a coalesced or
+        // failed departure needs no black frame, exact angle, or display
+        // election cycle to restore input.
         intendedSurface.handoff = undefined;
       }
       // The route identifies each physical panel independently of active

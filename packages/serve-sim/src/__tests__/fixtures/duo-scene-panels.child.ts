@@ -299,7 +299,7 @@ test("coalesced panel previews release input after the native return is acknowle
   }
 });
 
-test("an actually submitted away command retains the input guard after its same-angle return acknowledgement", async () => {
+test("an actually submitted away command retains the input guard while its return is pending", async () => {
   const test = setup(true);
   const config = { screenId: 1, width: 1398, height: 2034, orientation: "portrait" as const, hingeAngle: 0 };
   const commands = { pending: false, coverDepartures: 0, innerDepartures: 0 };
@@ -310,9 +310,9 @@ test("an actually submitted away command retains the input guard after its same-
     expect(test.tap(1)).toBe(1);
     test.setState({ angle: 55, hingeCommands: { ...commands, pending: true, coverDepartures: 1 } });
     test.tick();
-    test.setState({ angle: 0, hingeCommands: { ...commands, coverDepartures: 1, innerDepartures: 1 } });
+    test.setState({ angle: 0, hingeCommands: { ...commands, pending: true, coverDepartures: 1, innerDepartures: 1 } });
     test.tick();
-    // An acknowledgement is not proof that iOS completed a real panel switch.
+    // A matching ID alone cannot release input during an outstanding command.
     expect(test.tap(1)).toBe(0);
     test.cover.pixel = 0;
     test.tick();
@@ -346,7 +346,28 @@ test("a discarded preview restores input after the queue fails without submittin
   } finally { test.dispose(); }
 });
 
-test("native away and return submissions keep input guarded even when React batches away the intermediate preview", async () => {
+test.each([undefined, 80])("a failed pose restores matching-panel input with native angle %s", async (hingeAngle) => {
+  const rig = setup(true);
+  const commands = { pending: false, coverDepartures: 0, innerDepartures: 0 };
+  const config = { screenId: 3, width: 2007, height: 2853, orientation: "portrait" as const };
+  try {
+    await rig.loaded;
+    rig.inner.pixel = 180;
+    rig.setState({ angle: 180, pose: "open", streamConfig: { ...config, hingeAngle: 180 }, hingeCommands: commands });
+    rig.tick();
+    expect(rig.tap(3)).toBe(1);
+    // Tent previews the cover, but native fails after moving to 80 degrees
+    // while the inner display keeps streaming. No black frame or ID cycle.
+    const submitted = { ...commands, innerDepartures: 1 };
+    rig.setState({ angle: 80, pose: "tent", hingeCommands: { ...submitted, pending: true } });
+    rig.tick();
+    rig.setState({ angle: 90, pose: null, streamConfig: { ...config, hingeAngle }, hingeCommands: submitted });
+    rig.tick();
+    expect(rig.tap(3)).toBe(1);
+  } finally { rig.dispose(); }
+});
+
+test("batched away and return submissions release input once the queue is idle on the matching panel", async () => {
   const test = setup(true);
   try {
     await test.loaded;
@@ -354,12 +375,10 @@ test("native away and return submissions keep input guarded even when React batc
       streamConfig: { screenId: 1, width: 1398, height: 2034, orientation: "portrait", hingeAngle: 0 } });
     test.tick();
     expect(test.tap(1)).toBe(1);
-    test.setState({ hingeCommands: { pending: false, coverDepartures: 1, innerDepartures: 1 } });
+    test.setState({ hingeCommands: { pending: true, coverDepartures: 1, innerDepartures: 1 } });
     test.tick();
     expect(test.tap(1)).toBe(0);
-    test.cover.pixel = 0;
-    test.tick();
-    test.cover.pixel = 80;
+    test.setState({ hingeCommands: { pending: false, coverDepartures: 1, innerDepartures: 1 } });
     test.tick();
     expect(test.tap(1)).toBe(1);
   } finally { test.dispose(); }

@@ -16,6 +16,7 @@ import {
   type StreamEncoderSettings,
 } from "./stream-settings";
 import { readSenderStats, type SenderStats } from "./webrtc-sender-stats";
+import type { HingePhysicalOrientation } from "./hinge-control";
 
 const require = createRequire(import.meta.url);
 
@@ -26,7 +27,10 @@ const require = createRequire(import.meta.url);
 interface SimHIDHandle {
   setScreen(screenId: number): Promise<void>;
   supportsHingeAngle(): Promise<boolean>;
+  hingeState(): Promise<NativeHingeState>;
   setHingeAngle(angle: number): Promise<boolean>;
+  setHingePose(pose: string): Promise<boolean>;
+  setTableMode(enabled: boolean): Promise<boolean>;
   touch(type: TouchType, x: number, y: number, w: number, hh: number, edge: number): Promise<void>;
   multiTouch(type: TouchType, x1: number, y1: number, x2: number, y2: number, w: number, hh: number): Promise<void>;
   button(button: string): Promise<void>;
@@ -53,6 +57,7 @@ interface SimCaptureHandle {
   closeWebRTCSession(sessionId: string): Promise<void>;
   webRTCSenderStats(sessionId: string): Promise<string>;
   screenSize(): Promise<NativeScreenInfo>;
+  subscribeScreenChanges(onChange: () => Promise<void>): Promise<NativeUnsubscribe>;
   stop(): Promise<void>;
   subscribe(codec: number, onFrame: RawFrameCallback): Promise<NativeUnsubscribe>;
 }
@@ -66,6 +71,7 @@ interface NativeAddon {
     maxDimension: number,
     h264Fps: number,
     h264Bitrate: number,
+    screenId?: number,
   ) => SimCaptureHandle;
   axDescribe(udid: string): Promise<string>;
   axFrontmost(udid: string): Promise<string>;
@@ -100,6 +106,12 @@ export type AvccFrame = {
 };
 
 export type NativeCaptureOptions = StreamEncoderSettings;
+
+export type NativeHingeState = {
+  hingeAngle?: number;
+  tableMode?: boolean;
+  physicalOrientation?: HingePhysicalOrientation;
+};
 
 export type NativeScreenInfo = {
   width: number;
@@ -199,8 +211,20 @@ export class NativeHid {
     return this.guard("setHingeAngle", () => this.handle.setHingeAngle(angle), false);
   }
 
+  setHingePose(pose: string): Promise<boolean> {
+    return this.guard("setHingePose", () => this.handle.setHingePose(pose), false);
+  }
+
+  setTableMode(enabled: boolean): Promise<boolean> {
+    return this.guard("setTableMode", () => this.handle.setTableMode(enabled), false);
+  }
+
   supportsHingeAngle(): Promise<boolean> {
     return this.guard("supportsHingeAngle", () => this.handle.supportsHingeAngle(), false);
+  }
+
+  hingeState(): Promise<NativeHingeState> {
+    return this.guard("hingeState", () => this.handle.hingeState(), {});
   }
 
   multiTouch(type: TouchType, x1: number, y1: number, x2: number, y2: number, w: number, h: number): Promise<void> {
@@ -254,7 +278,11 @@ export class NativeHid {
 export class NativeCapture {
   private readonly handle: SimCaptureHandle;
 
-  constructor(udid: string, options: NativeCaptureOptions = DEFAULT_STREAM_ENCODER_SETTINGS) {
+  /** A fixed screen ID captures that panel independently of active-display/input routing. */
+  constructor(udid: string, options: NativeCaptureOptions = DEFAULT_STREAM_ENCODER_SETTINGS, screenId?: number) {
+    if (screenId !== undefined && (!Number.isInteger(screenId) || screenId < 0 || screenId > 0xffff_ffff)) {
+      throw new RangeError("Screen ID must be an unsigned 32-bit integer.");
+    }
     this.handle = new (load().SimCapture)(
       udid,
       options.mjpegFps,
@@ -262,6 +290,7 @@ export class NativeCapture {
       options.maxDimension,
       options.h264Fps,
       options.h264Bitrate,
+      screenId ?? 0,
     );
   }
 
@@ -317,6 +346,10 @@ export class NativeCapture {
 
   screenSize(): Promise<NativeScreenInfo> {
     return this.handle.screenSize();
+  }
+
+  subscribeScreenChanges(onChange: () => Promise<void>): Promise<NativeUnsubscribe> {
+    return this.handle.subscribeScreenChanges(onChange);
   }
 
   /** Halt frame production. Full teardown happens when this object is GC'd. */

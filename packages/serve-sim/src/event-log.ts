@@ -1,4 +1,5 @@
 import { HINGE_POSITIONS, isHingeAngle } from "./hinge-angle";
+import { HINGE_POSES, isHingeControlCommand } from "./hinge-control";
 
 export type EventLogSource = "hid" | "exec" | "ui";
 export type EventLogStatus = "ok" | "error";
@@ -329,6 +330,13 @@ export function eventLogEventForHidMessage(
         action: visible ? "show" : "hide",
         summary: `Software keyboard ${visible ? "shown" : "hidden"}`,
       };
+    }
+    case 0x10: {
+      if (!isHingeControlCommand(details)) return null;
+      const summary = details.control === "pose" ? HINGE_POSES.find((pose) => pose.id === details.value)!.label
+        : details.control === "table" ? `Table Mode ${details.value ? "on" : "off"}`
+        : `Hinge ${details.value}°`;
+      return { device, source: "hid", kind: "hinge", action: `set-${details.control}`, summary, details: { control: details.control, value: details.value } };
     }
     case 0x0f: {
       const angle = details.angle;

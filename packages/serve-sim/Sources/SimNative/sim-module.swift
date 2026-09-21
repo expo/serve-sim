@@ -95,6 +95,23 @@ private func u32(_ v: Int) -> UInt32 {
         try await setup.run { await injector.supportsHingeAngle() }
     }
 
+    @NodeMethod func hingeState() async -> [String: any NodePropertyConvertible] {
+        let state = await CoreDeviceBridge.shared.hingeState(udid: udid)
+        var result: [String: any NodePropertyConvertible] = [:]
+        if let angle = state.angle { result["hingeAngle"] = angle }
+        if let tableMode = state.tableMode { result["tableMode"] = tableMode }
+        if let orientation = state.orientation { result["physicalOrientation"] = orientation }
+        return result
+    }
+
+    @NodeMethod func setHingePose(_ pose: String) async throws -> Bool {
+        try await setup.run { await injector.setHingePose(pose) }
+    }
+
+    @NodeMethod func setTableMode(_ enabled: Bool) async throws -> Bool {
+        try await setup.run { await injector.setTableMode(enabled) }
+    }
+
     @NodeMethod func memoryWarning() async throws {
         try await setup.run { await injector.simulateMemoryWarning() }
     }
@@ -124,8 +141,14 @@ private func u32(_ v: Int) -> UInt32 {
         _ mjpegQuality: Double,
         _ maxDimension: Int,
         _ h264Fps: Int,
-        _ h264Bitrate: Int
+        _ h264Bitrate: Int,
+        _ screenID: Int?
     ) throws {
+        // Omitted/zero preserves active-display capture for existing callers.
+        // Each positive ID owns an independent exact-panel capture pipeline.
+        guard let requestedScreenID = UInt32(exactly: screenID ?? 0) else {
+            throw Errors.invalidScreenID
+        }
         // unref'd by NodeAsyncQueue's init, so the frame pipeline alone won't
         // keep the event loop alive. Bounded queue + blocking AVCC preserves
         // inter-frame ordering; MJPEG is nonblocking and drops under backpressure.
@@ -139,7 +162,8 @@ private func u32(_ v: Int) -> UInt32 {
                 maxDimension: maxDimension,
                 h264Fps: h264Fps,
                 h264Bitrate: h264Bitrate
-            )
+            ),
+            screenID: requestedScreenID == 0 ? nil : requestedScreenID
         )
     }
 
@@ -231,12 +255,25 @@ private func u32(_ v: Int) -> UInt32 {
         return result
     }
 
+    @NodeMethod func subscribeScreenChanges(_ onChange: NodeFunction) async throws -> NodeFunction {
+        let unsubscribe = await engine.subscribeScreenChanges { [weak self] in
+            guard let self else { return }
+            Task {
+                try? await self.queue.run {
+                    _ = try? await onChange.call([]).as(NodePromise.self)?.value
+                }
+            }
+        }
+        return try NodeFunction { await unsubscribe() }
+    }
+
     deinit {
         Task { [engine] in await engine.stop() }
     }
 
     enum Errors: Error {
         case invalidCodec
+        case invalidScreenID
     }
 }
 

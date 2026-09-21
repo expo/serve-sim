@@ -14,6 +14,21 @@ actor CoreDeviceBridge {
     private let managerReadiness = SharedReadiness()
     private var capabilities: [String: CoreDeviceCapabilityObject] = [:]
     private var hingeSupport: [String: Bool] = [:]
+    struct HingeState {
+        var angle: Double?
+        var orientation: String?
+        var tableMode: Bool?
+    }
+    private var hingeStates: [String: HingeState] = [:]
+
+    func hingeState(udid: String) async -> HingeState {
+        if let angle = await readHingeAngle(udid: udid) {
+            hingeStates[udid, default: HingeState()].angle = angle
+        }
+        // If readback is unavailable, retain the last individually successful
+        // sends, including the portion of a preset applied before its failure.
+        return hingeStates[udid] ?? HingeState()
+    }
 
     func remoteDevice(udid: String) async throws -> CoreDeviceRemoteDevice {
         guard SSCoreDeviceInitialize() else { throw BridgeError.unavailable }
@@ -80,19 +95,90 @@ actor CoreDeviceBridge {
     }
 
     func setHingeAngle(udid: String, angle: Double) async -> Bool {
-        guard angle.isFinite, (0...180).contains(angle), await supportsHingeAngle(udid: udid) else { return false }
+        guard angle.isFinite, (0...180).contains(angle) else { return false }
         guard let rawData = SSCoreDeviceHingeData(angle) else { return false }
         let data = Unmanaged<NSData>.fromOpaque(rawData).takeRetainedValue() as Data
-        return await sendControl(udid: udid, data: data)
+        let sent = await sendControl(udid: udid, data: data)
+        if sent { hingeStates[udid, default: HingeState()].angle = angle }
+        return sent
+    }
+
+    func setHingePose(udid: String, pose: String) async -> Bool {
+        await HingePoseControl.apply(
+            pose,
+            tableModeAvailable: { await self.tableModeAvailable(udid: udid) },
+            setAngle: { await self.setHingeAngle(udid: udid, angle: $0) },
+            setTableMode: { await self.setTableMode(udid: udid, enabled: $0) },
+            setOrientation: { await self.setPhysicalOrientation(udid: udid, value: $0) },
+            waitForLandscapeCover: {
+                let clock = ContinuousClock()
+                let deadline = clock.now.advanced(by: .milliseconds(1500))
+                while clock.now < deadline {
+                    if let displays = try? await CoreDeviceDisplayInfo.read(udid: udid),
+                       displays.contains(where: { $0.screenID == 1 && $0.isActive && $0.orientation == "landscape_left" }) { break }
+                    do { try await Task.sleep(for: .milliseconds(50)) }
+                    catch { return false }
+                }
+                // Apps that lock portrait and missing optional display metadata
+                // must still allow Tent after this best-effort readback.
+                return true
+            }
+        )
+    }
+
+    private func tableModeAvailable(udid: String) async -> Bool {
+        guard SSCoreDeviceTableModeAvailable() else { return false }
+        // Check the per-device capability as well as the exported symbols,
+        // without sending a sensor event or moving the hinge.
+        return (try? await capability(
+            udid: udid,
+            metadataSymbol: "$s10CoreDevice29UniversalHIDServiceCapabilityVN",
+            witnessSymbol: "$s10CoreDevice29UniversalHIDServiceCapabilityVAA0bE0AAWP"
+        )) != nil
+    }
+
+    func setTableMode(udid: String, enabled: Bool) async -> Bool {
+        // Older Xcodes can provide hinge/rotation controls without the table
+        // sensor. Releasing an unavailable sensor is a no-op; enabling it must
+        // still fail, and a real send failure must not be reported as success.
+        guard SSCoreDeviceTableModeAvailable() else {
+            fputs("[hid] CoreDevice Table Mode unavailable in this Xcode\n", stderr)
+            if !enabled { hingeStates[udid, default: HingeState()].tableMode = false }
+            return !enabled
+        }
+        do {
+            let metadataSymbol = "$s10CoreDevice29UniversalHIDServiceCapabilityVN"
+            let capability = try await capability(
+                udid: udid, metadataSymbol: metadataSymbol,
+                witnessSymbol: "$s10CoreDevice29UniversalHIDServiceCapabilityVAA0bE0AAWP"
+            )
+            let sent = SSCoreDeviceSendTableMode(capability.storage, enabled)
+            if sent { hingeStates[udid, default: HingeState()].tableMode = enabled }
+            if !sent { capabilities.removeValue(forKey: "\(udid):\(metadataSymbol)") }
+            return sent
+        } catch BridgeError.unavailable {
+            fputs("[hid] CoreDevice Table Mode capability unavailable\n", stderr)
+            if !enabled { hingeStates[udid, default: HingeState()].tableMode = false }
+            return !enabled
+        } catch {
+            fputs("[hid] CoreDevice Table Mode failed: \(error)\n", stderr)
+            return false
+        }
+    }
+
+    private func setPhysicalOrientation(udid: String, value: String) async -> Bool {
+        guard let rawData = value.withCString({ SSCoreDeviceOrientationData($0) }) else { return false }
+        let data = Unmanaged<NSData>.fromOpaque(rawData).takeRetainedValue() as Data
+        let sent = await sendControl(udid: udid, data: data)
+        if sent { hingeStates[udid, default: HingeState()].orientation = value }
+        return sent
     }
 
     func setOrientation(udid: String, deviceOrientation: UInt32, nativeRotation: Int = 0) async -> Bool {
         guard let value = SimulatorScreenOrientation.vendorControlValue(
                   forDeviceOrientation: deviceOrientation, nativeRotation: nativeRotation
-              ),
-              let rawData = value.withCString({ SSCoreDeviceOrientationData($0) }) else { return false }
-        let data = Unmanaged<NSData>.fromOpaque(rawData).takeRetainedValue() as Data
-        return await sendControl(udid: udid, data: data)
+              ) else { return false }
+        return await setPhysicalOrientation(udid: udid, value: value)
     }
 
     private func sendControl(udid: String, data: Data) async -> Bool {
@@ -117,36 +203,8 @@ actor CoreDeviceBridge {
     func supportsHingeAngle(udid: String) async -> Bool {
         guard #available(macOS 15.0, *) else { return false }
         if let supported = hingeSupport[udid] { return supported }
-        guard SSCoreDeviceMotionAvailable(),
-              let managerMetadata = SSCoreDeviceMotionManagerMetadata(),
-              let errorMetadata = SSCoreDeviceErrorMetadata(),
-              let callPointer = SSCoreDeviceMotionManagerPointer()
-        else { return false }
         do {
-            let capability = try await capability(
-                udid: udid,
-                metadataSymbol: "$s10CoreDevice23MonitorMotionCapabilityVN",
-                witnessSymbol: "$s10CoreDevice23MonitorMotionCapabilityVAA0bE0AAWP"
-            )
-            let result = UnsafeMutableRawPointer.allocate(byteCount: Int(SSCoreDeviceValueSize(managerMetadata)), alignment: 16)
-            let errorBuffer = UnsafeMutableRawPointer.allocate(byteCount: Int(SSCoreDeviceValueSize(errorMetadata)), alignment: 16)
-            defer { result.deallocate(); errorBuffer.deallocate() }
-            // The real resilient error is written into `error`. An empty
-            // typed error preserves the async failure flag without interpreting
-            // Apple's private CoreDeviceError layout in Swift.
-            typealias MotionCall = @convention(thin) (UnsafeMutableRawPointer, UnsafeMutableRawPointer, UnsafeRawPointer, UnsafeRawPointer, UnsafeRawPointer) async throws(CoreDeviceCallFailed) -> Void
-            let call = unsafeBitCast(callPointer, to: MotionCall.self)
-            do {
-                try await call(result, errorBuffer,
-                               capability.storage.load(fromByteOffset: 24, as: UnsafeRawPointer.self),
-                               capability.storage.load(fromByteOffset: 32, as: UnsafeRawPointer.self),
-                               capability.storage)
-            } catch {
-                SSCoreDeviceDestroyValue(errorBuffer, errorMetadata)
-                return false
-            }
-            defer { SSCoreDeviceDestroyValue(result, managerMetadata) }
-            let supported = SSCoreDeviceMotionSupportsHinge(result)
+            let supported = try await withMotionManager(udid: udid) { SSCoreDeviceMotionSupportsHinge($0) }
             hingeSupport[udid] = supported
             return supported
         } catch {
@@ -154,6 +212,42 @@ actor CoreDeviceBridge {
             return false
         }
     }
+
+    @available(macOS 15.0, *)
+    func withMotionManager<Result>(
+        udid: String, body: (UnsafeMutableRawPointer) async throws -> Result
+    ) async throws -> Result {
+        guard SSCoreDeviceMotionAvailable(),
+              let managerMetadata = SSCoreDeviceMotionManagerMetadata(),
+              let errorMetadata = SSCoreDeviceErrorMetadata(),
+              let callPointer = SSCoreDeviceMotionManagerPointer()
+        else { throw BridgeError.unavailable }
+        let capability = try await capability(
+            udid: udid,
+            metadataSymbol: "$s10CoreDevice23MonitorMotionCapabilityVN",
+            witnessSymbol: "$s10CoreDevice23MonitorMotionCapabilityVAA0bE0AAWP"
+        )
+        let result = UnsafeMutableRawPointer.allocate(byteCount: Int(SSCoreDeviceValueSize(managerMetadata)), alignment: 16)
+        let errorBuffer = UnsafeMutableRawPointer.allocate(byteCount: Int(SSCoreDeviceValueSize(errorMetadata)), alignment: 16)
+        defer { result.deallocate(); errorBuffer.deallocate() }
+        // The real resilient error is written into `error`. An empty
+        // typed error preserves the async failure flag without interpreting
+        // Apple's private CoreDeviceError layout in Swift.
+        typealias MotionCall = @convention(thin) (UnsafeMutableRawPointer, UnsafeMutableRawPointer, UnsafeRawPointer, UnsafeRawPointer, UnsafeRawPointer) async throws(CoreDeviceCallFailed) -> Void
+        let call = unsafeBitCast(callPointer, to: MotionCall.self)
+        do {
+            try await call(result, errorBuffer,
+                           capability.storage.load(fromByteOffset: 24, as: UnsafeRawPointer.self),
+                           capability.storage.load(fromByteOffset: 32, as: UnsafeRawPointer.self),
+                           capability.storage)
+        } catch {
+            SSCoreDeviceDestroyValue(errorBuffer, errorMetadata)
+            throw error
+        }
+        defer { SSCoreDeviceDestroyValue(result, managerMetadata) }
+        return try await body(result)
+    }
+
 }
 
 private struct CoreDeviceCallFailed: Error {}

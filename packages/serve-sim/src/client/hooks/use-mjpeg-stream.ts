@@ -44,11 +44,12 @@ export function useMjpegStream(streamUrl: string | null) {
     };
 
     const emit = (jpeg: Uint8Array) => {
-      if (subscribersRef.current.size === 0) return;
+      if (stopped || controller.signal.aborted || subscribersRef.current.size === 0) return;
       // Blob copies the bytes, so handing it a subarray view is safe even as
       // the underlying accumulation buffer is reused/compacted.
-      const blobUrl = URL.createObjectURL(new Blob([jpeg as BlobPart], { type: "image/jpeg" }));
-      for (const cb of subscribersRef.current) cb(blobUrl);
+      const blob = new Blob([jpeg as BlobPart], { type: "image/jpeg" });
+      // Each subscriber releases its own frame independently.
+      for (const cb of subscribersRef.current) cb(URL.createObjectURL(blob));
     };
 
     const readStream = async () => {
@@ -63,7 +64,7 @@ export function useMjpegStream(streamUrl: string | null) {
         const parser = createMjpegFrameParser(emit);
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done || stopped || controller.signal.aborted) break;
           if (value && value.length) parser.push(value);
         }
       } catch {

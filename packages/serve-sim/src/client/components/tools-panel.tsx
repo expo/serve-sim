@@ -9,6 +9,7 @@ import { AppPermissionsTool } from "./app-permissions-tool";
 import { AxTreeTool } from "./ax-tree-tool";
 import { CameraTool } from "./camera-tool";
 import { EventLogTool } from "./event-log-tool";
+import type { HingeControlsProps } from "./hinge-controls";
 import { MetricsTool } from "./metrics-tool";
 import { PANEL_BACKGROUND } from "./panel-colors";
 import { SimulatorSettingsTool } from "./simulator-settings-tool";
@@ -44,6 +45,7 @@ export function ToolsPanel({
   chromeEnabled,
   onChromeEnabledChange,
   hasChrome = false,
+  hingeControls,
 }: {
   open: boolean;
   onClose: () => void;
@@ -69,6 +71,7 @@ export function ToolsPanel({
   chromeEnabled?: boolean;
   onChromeEnabledChange?: (enabled: boolean) => void;
   hasChrome?: boolean;
+  hingeControls?: HingeControlsProps;
 }) {
   return (
     <Panel open={open} width={width} style={{ backgroundColor: PANEL_BACKGROUND }}>
@@ -86,7 +89,7 @@ export function ToolsPanel({
             metricsEndpoint={metricsEndpoint}
           />
           <EventLogTool udid={udid} eventsEndpoint={eventLogEventsEndpoint} />
-          <SimulatorSettingsTool udid={udid} runtime={deviceRuntime} />
+          <SimulatorSettingsTool udid={udid} runtime={deviceRuntime} hingeControls={hingeControls} />
           <AxTreeTool
             overlayEnabled={axOverlayEnabled}
             onToggleOverlay={onToggleAxOverlay}

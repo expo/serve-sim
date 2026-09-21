@@ -39,6 +39,8 @@ import {
   serveDevicePlaceholderAsset,
   type DeviceKitChromeDescriptor,
 } from "./devicekit-chrome";
+import { serveDeviceKitModelAsset } from "./devicekit-model";
+import { validatePanelRoute } from "./panel-route";
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
 import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware-utils";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
@@ -552,6 +554,7 @@ function helperProxyTarget(rawUrl: string, prefix: string): { device: string | n
     "config",
     "foreground",
     "health",
+    "panel",
     "stream.avcc",
     "stream.mjpeg",
     "webrtc",
@@ -797,6 +800,16 @@ function serveHelperInProcess(
 ): boolean {
   if (!device) return false;
   const endpoint = upstreamPath.split("?")[0];
+  const panelRoute = /^\/panel\/([^/]+)\/(.+)$/.exec(endpoint ?? "");
+  if (panelRoute) {
+    const route = validatePanelRoute(panelRoute[1]!, panelRoute[2]!, req.method);
+    if ("error" in route) {
+      res.writeHead(route.status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: route.error }));
+      return true;
+    }
+    if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return true; }
+  }
   if (endpoint === "/camera/status") {
     void handleCameraStatus(req, res, device);
     return true;
@@ -810,10 +823,24 @@ function serveHelperInProcess(
     return true;
   }
   let session;
+  if (panelRoute && (panelRoute[2] === "webrtc/stats" || panelRoute[2] === "webrtc/close")) {
+    const live = peekDeviceSession(device);
+    if (!live) {
+      res.writeHead(panelRoute[2] === "webrtc/close" ? 204 : 404);
+      res.end();
+      return true;
+    }
+    void live.handlePanel(req, res, Number(panelRoute[1]), panelRoute[2]!);
+    return true;
+  }
   try {
     session = getDeviceSession(device, initialStreamSettings);
   } catch {
     return false; // not booted / capture unavailable → 404
+  }
+  if (panelRoute) {
+    void session.handlePanel(req, res, Number(panelRoute[1]), panelRoute[2]!);
+    return true;
   }
   switch (endpoint) {
     case "/stream.mjpeg": session.handleMjpeg(req, res); return true;
@@ -1777,6 +1804,11 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     if (url === base + "/grid/api/device-placeholder-asset") {
       serveDevicePlaceholderAsset(new URL(rawUrl || "/", "http://serve-sim.local"), res);
+      return;
+    }
+
+    if (url === base + "/grid/api/devicekit-model") {
+      serveDeviceKitModelAsset(req, res);
       return;
     }
 

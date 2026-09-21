@@ -3,14 +3,17 @@ import {
   useEffect,
   useRef,
   useState,
+  type ComponentProps,
   type CSSProperties,
   type ReactNode,
 } from "react";
+import { Box, FoldHorizontal, Image, Laptop, Maximize, SlidersHorizontal } from "lucide-react";
 import { hostUiRequest } from "../utils/exec";
 import { parseRuntime } from "../utils/grid";
 import { CollapsibleSection } from "./collapsible-section";
 import { Select } from "./select";
 import { SettingSwitch } from "./setting-switch";
+import { FOLD_POSE_OPTIONS, type HingeControlsProps } from "./hinge-controls";
 
 // Simulator-wide UI options, mirroring the Xcode Devices app sidebar. Every
 // control drives `serve-sim ui <option> <value>`, which handles the simctl-
@@ -80,14 +83,16 @@ const TOGGLE_OPTIONS = [
 export function SettingRow({
   icon,
   label,
+  title,
   children,
 }: {
   icon: ReactNode;
   label: string;
+  title?: string;
   children: ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2 min-h-[30px]" data-setting-row={label}>
+    <div className="flex items-center justify-between gap-2 min-h-[30px]" data-setting-row={label} title={title}>
       <span className="flex shrink-0 items-center gap-2 text-[12px] text-white/90 whitespace-nowrap">
         <span className="flex size-[18px] items-center justify-center text-white">{icon}</span>
         {label}
@@ -144,9 +149,32 @@ function TextSizeSlider({
     lastSent.current = null;
   }, [send]);
 
-  const max = TEXT_SIZE_CATEGORIES.length - 1;
-  const shown = drag ?? value;
-  const fill = `${(shown / max) * 100}%`;
+  return (
+    <SettingSlider
+      label="Text Size"
+      max={TEXT_SIZE_CATEGORIES.length - 1}
+      value={drag ?? value}
+      disabled={disabled}
+      ticks={TEXT_SIZE_CATEGORIES}
+      onChange={(event) => handleInput(event.currentTarget.valueAsNumber)}
+      onPointerUp={flush}
+      onKeyUp={flush}
+      onBlur={flush}
+    />
+  );
+}
+
+/** Shared simulator slider presentation; each setting owns its update policy. */
+export function SettingSlider({
+  label, min = 0, max, step = 1, value, disabled = false, ticks, ...inputProps
+}: Omit<ComponentProps<"input">, "type" | "className" | "style" | "min" | "max" | "value"> & {
+  label: string;
+  min?: number;
+  max: number;
+  value: number;
+  ticks?: readonly string[];
+}) {
+  const fill = `${Math.max(0, Math.min(1, (value - min) / (max - min))) * 100}%`;
   // Filled portion goes gray while disabled so the control doesn't read as
   // live during hydration.
   const fillColor = disabled ? "rgba(255,255,255,0.3)" : "#0a84ff";
@@ -166,25 +194,22 @@ function TextSizeSlider({
   return (
     <span className="flex w-[120px] min-w-0 flex-col">
       <input
+        {...inputProps}
         type="range"
-        aria-label="Text Size"
-        min={0}
+        aria-label={label}
+        min={min}
         max={max}
-        step={1}
-        value={shown}
+        step={step}
+        value={value}
         disabled={disabled}
-        onChange={(e) => handleInput(Number((e.target as HTMLInputElement).value))}
-        onPointerUp={flush}
-        onKeyUp={flush}
-        onBlur={flush}
         style={{ "--slider-fill": fill, "--slider-fill-color": fillColor } as CSSProperties}
         className={`h-[13px] w-full appearance-none rounded-full bg-transparent outline-none focus-visible:[outline:1.5px_solid_rgba(10,132,255,0.55)] focus-visible:outline-offset-4 ${disabled ? "cursor-default" : "cursor-pointer"} ${trackClasses} ${thumbClasses}`}
       />
-      <span aria-hidden className="pointer-events-none mt-[3px] flex justify-between px-[5.5px]">
-        {TEXT_SIZE_CATEGORIES.map((category) => (
+      {ticks && <span aria-hidden className="pointer-events-none mt-[3px] flex justify-between px-[5.5px]">
+        {ticks.map((category) => (
           <span key={category} className="size-[2px] rounded-full bg-white/40" />
         ))}
-      </span>
+      </span>}
     </span>
   );
 }
@@ -211,6 +236,150 @@ export function SettingSelect({
       onChange={onChange}
       className="bg-white/[0.06] border border-white/10 rounded-md text-white/90 text-[12px] py-0.5 px-2 min-w-0 max-w-[150px] disabled:text-white/40"
     />
+  );
+}
+
+/** Fold rows use the same controls and spacing as the other simulator options. */
+export function HingeSettings({
+  angle, pose, supported, tableMode, tableModeAvailable = false, pending = false, error, onChange,
+  viewMode = "3d", onViewModeChange, viewError,
+  cacheScreenOnFold = false, onCacheScreenOnFoldChange, sizeMode = "fill", onSizeModeChange,
+}: HingeControlsProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [angleDraft, setAngleDraft] = useState<number | null>(null);
+  const [adjusting, setAdjusting] = useState(false);
+
+  useEffect(() => {
+    if (error || (!pending && !adjusting)) setAngleDraft(null);
+  }, [pending, adjusting, error]);
+  useEffect(() => {
+    if (error) {
+      setEditing(false);
+      setAdjusting(false);
+    }
+  }, [error]);
+
+  if (!(supported ?? angle !== undefined)) return null;
+  const displayedAngle = angleDraft ?? angle;
+  const selectedPose = angleDraft !== null ? null
+    : pose !== undefined ? pose
+      : angle === 0 ? "closed" : angle === 180 ? "open" : null;
+  const canChangeTableMode = tableModeAvailable || tableMode === true;
+  const changeAngle = (value: number) => {
+    setAngleDraft(value);
+    onChange({ control: "angle", value });
+  };
+
+  return (
+    <div role="group" aria-label="Fold settings" aria-busy={pending} className="flex flex-col gap-1.5">
+      <SettingRow icon={<FoldHorizontal size={14} strokeWidth={2} />} label="Fold pose">
+        <SettingSelect
+          label="Fold pose"
+          value={selectedPose ?? (displayedAngle === undefined ? "Unknown" : "Custom")}
+          options={FOLD_POSE_OPTIONS}
+          disabled={false}
+          onChange={(value) => {
+            const position = FOLD_POSE_OPTIONS.find((option) => option.value === value);
+            if (!position) return;
+            setAngleDraft(null);
+            setAdjusting(false);
+            setEditing(false);
+            onChange({ control: "pose", value: position.value });
+          }}
+        />
+      </SettingRow>
+      <SettingRow icon={<SlidersHorizontal size={14} strokeWidth={2} />} label="Hinge angle">
+        <span className="flex min-w-0 items-center gap-2">
+          <SettingSlider
+            label="Hinge angle"
+            aria-valuetext={displayedAngle === undefined ? "Unknown" : `${displayedAngle} degrees`}
+            max={180}
+            value={displayedAngle ?? 90}
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId);
+              setAdjusting(true);
+            }}
+            onPointerUp={() => setAdjusting(false)}
+            onPointerCancel={() => setAdjusting(false)}
+            onKeyDown={(event) => {
+              if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) setAdjusting(true);
+            }}
+            onKeyUp={() => setAdjusting(false)}
+            onBlur={() => setAdjusting(false)}
+            onChange={(event) => changeAngle(event.currentTarget.valueAsNumber)}
+          />
+          <label className="flex shrink-0 items-center text-[12px] text-white/90">
+            <input
+              type="number"
+              aria-label="Hinge angle in degrees"
+              min={0}
+              max={180}
+              step="any"
+              placeholder="—"
+              value={editing ? draft : displayedAngle ?? ""}
+              onFocus={() => {
+                setDraft(displayedAngle === undefined ? "" : String(displayedAngle));
+                setEditing(true);
+              }}
+              onChange={(event) => {
+                const { value, valueAsNumber } = event.currentTarget;
+                setDraft(value);
+                if (Number.isFinite(valueAsNumber) && valueAsNumber >= 0 && valueAsNumber <= 180) changeAngle(valueAsNumber);
+              }}
+              onBlur={() => setEditing(false)}
+              onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
+              className="w-[48px] min-w-0 bg-white/[0.06] border border-white/10 rounded-md text-white/90 text-[12px] py-0.5 px-1 text-right"
+            />
+          </label>
+        </span>
+      </SettingRow>
+      <SettingRow
+        icon={<Laptop size={14} strokeWidth={2} />}
+        label="Table Mode"
+        title={`Tells iOS the device is resting on a table. Tent turns it on; rotation or hinge edits turn it off.${canChangeTableMode ? "" : " Table Mode is not available in the current pose."}`}
+      >
+        <SettingSwitch
+          label="Table Mode"
+          checked={tableMode ?? false}
+          disabled={!canChangeTableMode}
+          onChange={(value) => onChange({ control: "table", value })}
+        />
+      </SettingRow>
+      <SettingRow icon={<Box size={14} strokeWidth={2} />} label="Preview mode">
+        <SettingSelect
+          label="Preview mode"
+          value={viewMode}
+          options={[{ value: "3d", label: "3D" }, { value: "2d", label: "2D" }]}
+          disabled={!onViewModeChange}
+          onChange={(value) => { if (value === "2d" || value === "3d") onViewModeChange?.(value); }}
+        />
+      </SettingRow>
+      {viewError && <span role="status" className="text-[11px] text-white/70">{viewError}</span>}
+      {viewMode === "3d" && <>
+        <SettingRow icon={<Image size={14} strokeWidth={2} />} label="Cache screen on fold">
+          <SettingSwitch
+            label="Cache screen on fold"
+            checked={cacheScreenOnFold}
+            disabled={!onCacheScreenOnFoldChange}
+            onChange={(enabled) => onCacheScreenOnFoldChange?.(enabled)}
+          />
+        </SettingRow>
+        <SettingRow icon={<Maximize size={14} strokeWidth={2} />} label="Preview size">
+          <SettingSelect
+            label="Preview size"
+            value={sizeMode}
+            options={[
+              { value: "physical", label: "Keep same size" },
+              { value: "fill", label: "Fill available space" },
+            ]}
+            disabled={!onSizeModeChange}
+            onChange={(value) => { if (value === "physical" || value === "fill") onSizeModeChange?.(value); }}
+          />
+        </SettingRow>
+      </>}
+      {error && <span role="alert" className="text-[11px] text-danger-soft">{error}</span>}
+    </div>
   );
 }
 
@@ -296,15 +465,21 @@ export function isIosRuntime(runtime: string | null): boolean {
 export function SimulatorSettingsTool({
   udid,
   runtime,
+  hingeControls,
 }: {
   udid: string;
   runtime: string | null;
+  hingeControls?: HingeControlsProps;
 }) {
   const [open, setOpen] = useState(true);
   const [state, setState] = useState<SettingsState | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const supported = isIosRuntime(runtime);
+
+  useEffect(() => {
+    if (hingeControls?.error) setOpen(true);
+  }, [hingeControls?.error]);
 
   // Hydration can fail outright (server restarted under the tab, control
   // socket unreachable) or stall — both must land in the error state with a
@@ -430,6 +605,7 @@ export function SimulatorSettingsTool({
       )}
 
       <div className="flex flex-col gap-1.5 pb-1.5">
+          {hingeControls && <HingeSettings key={udid} {...hingeControls} />}
           <SettingRow icon={I.appearance} label="Appearance">
             <SettingSelect
               label="Appearance"

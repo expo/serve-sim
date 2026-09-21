@@ -8,7 +8,7 @@ const USAGE = `bun run tart <command>
 
   setup   create the guest user and copy bun (once per VM)
   up      start the VM and check this checkout is mounted
-  boot    boot an iPhone 17 on the guest
+  boot    boot TART_DEVICE_NAME on the guest (default iPhone 17)
   stage   pack host src onto the guest
   test    run bun test on the guest
   dev     run serve-sim on the guest, print http://localhost:3200

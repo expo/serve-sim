@@ -17,7 +17,7 @@ import type { SimulatorOrientation } from "../types.js";
 import { getDeviceType, type DeviceType } from "./deviceFrames.js";
 import { createRotationCursor } from "./rotation-cursor.js";
 
-type RotateFn = (orientation: SimulatorOrientation) => void | Promise<void>;
+type RotateFn = (orientation: SimulatorOrientation, direction?: "left" | "right") => void | Promise<void>;
 
 interface ToolbarContextValue {
   onRotate?: RotateFn;
@@ -492,8 +492,8 @@ const ScreenshotButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(funct
   );
 });
 
-const RotateButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function RotateButton(
-  { onClick, forceDisabled, ...rest },
+const RotateButton = forwardRef<HTMLButtonElement, ToolbarButtonProps & { direction?: "left" | "right" }>(function RotateButton(
+  { onClick, forceDisabled, direction = "left", ...rest },
   ref,
 ) {
   const ctx = useToolbar("RotateButton");
@@ -520,9 +520,9 @@ const RotateButton = forwardRef<HTMLButtonElement, ToolbarButtonProps>(function 
         if (!ctx.deviceUdid || cantRotate) return;
         // An app may decline an orientation. Keep cycling from the last
         // request so the button can move past that pose on the next click.
-        const next = rotationCursor.current.requestNext();
+        const next = rotationCursor.current.requestNext(direction);
         if (ctx.onRotate) {
-          void ctx.onRotate(next);
+          void ctx.onRotate(next, direction);
         } else {
           void runHostAction("rotate", { value: next, udid: ctx.deviceUdid });
         }

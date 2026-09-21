@@ -13,3 +13,5 @@ void SSCoreDeviceRetainBridgeObject(void *object);
 void *SSCoreDeviceHingeData(double angle);
 void *SSCoreDeviceOrientationData(const char *value);
 bool SSCoreDeviceSendControl(void *capability, uint64_t data0, uint64_t data1);
+bool SSCoreDeviceTableModeAvailable(void);
+bool SSCoreDeviceSendTableMode(void *capability, bool enabled);

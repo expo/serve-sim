@@ -40,6 +40,24 @@ The bundled native addon, simulator tools, and host helpers are arm64-only.
 
 The iPhone Duo simulator supports touch input, scrolling, and touch gestures on both the folded cover screen and the half-open or fully open inner screen. Frames and input follow the active display and its orientation; an app can still restrict its supported orientations.
 
+Three shortcuts below the phone select Fully folded, Partially open, and Fully open.
+At the top of Simulator settings in the Tools sidebar, the Fold pose dropdown
+adds Laptop and Tent. The next rows provide a live 0–180° hinge slider with
+decimal angle input and Table Mode, using the same controls as other settings.
+Partially open uses Book: it and Laptop use a 90° hinge angle with different
+physical orientations; Tent uses 80°.
+Duo defaults to 3D using Apple's model from the host's Xcode installation,
+with live displays and smooth folding, unfolding, and pose transitions.
+Display pixels stay attached to their
+physical panels as the model moves. Closed and Open face the viewer directly,
+with the open model following the screen's portrait or landscape layout. Laptop
+rests level and Tent presents the outside cover screen. The original `V68.usdz`
+is loaded locally, without bundling Apple's model or downloading it. The view
+respects the browser's reduced-motion preference. **Simulator → Preview mode**
+switches between 2D and 3D; AX inspection also uses the flat view. See [hinge controls and display
+selection](packages/serve-sim/docs/hinge-controls.md) for Device Hub's hidden
+controls and the simulator APIs behind them.
+
 ## CLI
 
 ```

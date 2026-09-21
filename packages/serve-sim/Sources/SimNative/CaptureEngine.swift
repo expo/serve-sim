@@ -77,6 +77,7 @@ actor CaptureEngine {
     }
 
     private let deviceUDID: String
+    private let screenID: UInt32?
     private let frameCapture = FrameCapture()
     private var phase = Phase.unstarted
 
@@ -92,8 +93,9 @@ actor CaptureEngine {
     private var cancelledWebRTCSessionIds = Set<String>()
     private var cancelledWebRTCSessionIdOrder: [String] = []
 
-    init(deviceUDID: String, options: CaptureEngineOptions) {
+    init(deviceUDID: String, options: CaptureEngineOptions, screenID: UInt32? = nil) {
         self.deviceUDID = deviceUDID
+        self.screenID = screenID
         self.options = options
         self.mjpegEncoder = MJPEGEncoder(
             fps: options.mjpegFps,
@@ -115,7 +117,7 @@ actor CaptureEngine {
         self.frameContinuation = frameContinuation
         do {
             await frameCapture.setSnapshotMaxDimension(options.maxDimension)
-            try await frameCapture.start(deviceUDID: deviceUDID) { pixelBuffer, timestamp in
+            try await frameCapture.start(deviceUDID: deviceUDID, screenID: screenID) { pixelBuffer, timestamp in
                 frameContinuation.yield(Frame(pixelBuffer: pixelBuffer, timestamp: timestamp))
             }
         } catch {
@@ -316,6 +318,10 @@ actor CaptureEngine {
     func currentScreenSize() async -> CapturedScreenInfo {
         await frameCapture.getScreenSize()
             ?? CapturedScreenInfo(width: screenSize.width, height: screenSize.height)
+    }
+
+    func subscribeScreenChanges(_ callback: @escaping @Sendable () -> Void) async -> @Sendable () async -> Void {
+        await frameCapture.subscribeScreenChanges(callback)
     }
 
     func stop() async {

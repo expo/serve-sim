@@ -43,3 +43,7 @@ _SSCDDisplayInfoTu:
 _SSCDMotionManagerDescriptor:
 .long _SSCDMotionManager - _SSCDMotionManagerDescriptor
 .long 0
+.globl _SSCDHingeReadbackDescriptor
+_SSCDHingeReadbackDescriptor:
+.long _SSCDHingeReadback - _SSCDHingeReadbackDescriptor
+.long 0

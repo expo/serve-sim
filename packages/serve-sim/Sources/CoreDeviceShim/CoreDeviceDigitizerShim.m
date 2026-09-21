@@ -33,6 +33,7 @@ static SetContact setContact;
 static SetIdentity setIdentity;
 static SetTime setTime;
 static SetSwipe setSwipe[5];
+static SetSwipe setSwipeLocked;
 static Send sendReport;
 static void *coreDeviceErrorMetadata;
 
@@ -65,6 +66,9 @@ bool SSCoreDeviceDigitizerAvailable(void) {
         RESOLVE(setSwipe[4], "$s12UniversalHID15DigitizerReportV19setContactSwipeLeft_7atIndexySb_SitF");
         RESOLVE(sendReport, "$s10CoreDevice19UniversalHIDServiceP4send6report2toy0C3HID9HIDReportV_AA0D2IDVtAA0aB5ErrorVYKFTj");
 #undef RESOLVE
+        // swipeLocked improves system edge gestures on newer runtimes, but
+        // its absence must not disable the base digitizer and all touch input.
+        setSwipeLocked = (SetSwipe)dlsym(RTLD_DEFAULT, "$s12UniversalHID15DigitizerReportV21setContactSwipeLocked_7atIndexySb_SitF");
         Metadata errorMetadata;
         errorMetadata = (Metadata)SSCoreDeviceSymbol("$s10CoreDevice0aB5ErrorVMa");
         if (errorMetadata) coreDeviceErrorMetadata = errorMetadata(0).metadata;
@@ -104,7 +108,13 @@ bool SSCoreDeviceSendTouches(void *capability, uint32_t serviceID,
         setContact(contact.first, contact.second, i, &report);
         SSCoreDeviceDestroyValue(&contact, contactMetadata);
         setIdentity(i + 1, i, &report);
-        if (edge) setSwipe[edge](touching, i, &report);
+        if (edge) {
+            // Device Hub combines the inward direction with swipeLocked.
+            // Direction alone remains an ordinary app drag. Keep both flags
+            // on lift as well so SpringBoard can finish Home/app-switcher swipes.
+            if (setSwipeLocked) setSwipeLocked(true, i, &report);
+            setSwipe[edge](true, i, &report);
+        }
     }
     setTime(mach_absolute_time(), false, &report);
     // HIDServiceID is resilient: pass its address, not its integer value.

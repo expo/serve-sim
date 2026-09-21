@@ -547,13 +547,25 @@ actor HIDInjector {
     // MARK: - SimDevice private control
 
     func setHingeAngle(_ angle: Double) async -> Bool {
-        guard isFoldable, let deviceUDID else { return false }
+        guard isFoldable, let deviceUDID, angle.isFinite, (0...180).contains(angle) else { return false }
+        // Device Hub releases the table sensor when a manual slider edit
+        // begins, including edits that remain within a tabletop-capable pose.
+        guard await CoreDeviceBridge.shared.setTableMode(udid: deviceUDID, enabled: false) else { return false }
         return await CoreDeviceBridge.shared.setHingeAngle(udid: deviceUDID, angle: angle)
     }
 
     func supportsHingeAngle() async -> Bool {
+        isFoldable
+    }
+
+    func setHingePose(_ pose: String) async -> Bool {
         guard isFoldable, let deviceUDID else { return false }
-        return await CoreDeviceBridge.shared.supportsHingeAngle(udid: deviceUDID)
+        return await CoreDeviceBridge.shared.setHingePose(udid: deviceUDID, pose: pose)
+    }
+
+    func setTableMode(_ enabled: Bool) async -> Bool {
+        guard isFoldable, let deviceUDID else { return false }
+        return await CoreDeviceBridge.shared.setTableMode(udid: deviceUDID, enabled: enabled)
     }
 
     /// Toggle a CoreAnimation render debug flag on the simulator. Names are the
@@ -670,9 +682,12 @@ actor HIDInjector {
             // without changing orientation. Use the same vendor channel as
             // Device Hub and report its failure without a legacy fallback.
             let nativeRotation = selectedScreenID.flatMap { nativeScreenRotations[$0] } ?? 0
-            return await CoreDeviceBridge.shared.setOrientation(
+            guard await CoreDeviceBridge.shared.setOrientation(
                 udid: deviceUDID, deviceOrientation: orientation, nativeRotation: nativeRotation
-            )
+            ) else { return false }
+            // A user rotation exits Table Mode, matching Device Hub's rotate
+            // control. Preset physical rotations bypass this screen API.
+            return await CoreDeviceBridge.shared.setTableMode(udid: deviceUDID, enabled: false)
         }
         guard let device = simDevice else {
             fputs("[hid] sendOrientation: no SimDevice (setup not called?)\n", stderr)

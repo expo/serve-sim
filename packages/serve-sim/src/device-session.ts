@@ -29,6 +29,8 @@ import {
 import { isSoftwareKeyboardVisible } from "./ax";
 import { debugKeyboard } from "./debug";
 import { isHingeAngle, type HingeAngleResult } from "./hinge-angle";
+import { validatePanelRoute } from "./panel-route";
+import { isHingeControlCommand, hingeControlState, hingePoseOrientation, isTableModeAvailable, type HingeControlCommand, type HingePose, type HingePhysicalOrientation } from "./hinge-control";
 import { clearDeviceOptionState, setUiOption } from "./ui-settings";
 import { eventLogEventForHidMessage, formatEventLogPoint, recordEventLogEvent, updateEventLogEvent } from "./event-log";
 import {
@@ -214,8 +216,19 @@ function parseJsonBody(body: Buffer, code: string): unknown {
   }
 }
 
+type PanelCapture = {
+  screenId: 1 | 3;
+  capture: NativeCapture;
+  start: Promise<void>;
+  responses: Set<ServerResponse>;
+  sessions: Set<string>;
+  stopped: boolean;
+};
+
 export class DeviceSession {
   private readonly capture: NativeCapture;
+  private readonly panels = new Map<number, PanelCapture>();
+  private readonly panelRequests = new Set<ServerResponse>();
   private readonly hid: NativeHid;
   private captureStart?: Promise<void>;
   private phase: "unstarted" | "running" | "stopped" = "unstarted";
@@ -225,8 +238,14 @@ export class DeviceSession {
   private orientation = "portrait";
   private supportsHingeAngle?: boolean;
   private hingeAngle?: number;
+  private hingePose: HingePose | null = null;
+  private tableMode?: boolean;
+  private hingePhysicalOrientation?: HingePhysicalOrientation;
+  private hingeControlUpdate: Promise<void> = Promise.resolve();
   private nativeScreen?: NativeScreenInfo;
   private screenRefresh?: Promise<boolean>;
+  private screenRefreshRequested = false;
+  private unsubscribeScreenChanges?: NativeUnsubscribe;
   private screenRefreshTimer?: ReturnType<typeof setTimeout>;
 
   private latestJpegBuffer: Buffer | null = null;
@@ -256,6 +275,14 @@ export class DeviceSession {
     if (this.phase === "stopped") return Promise.reject(new Error("Capture session is stopped"));
     this.phase = "running";
     this.captureStart = this.capture.start().then(async () => {
+      const unsubscribe = await this.capture.subscribeScreenChanges(async () => {
+        if (this.phase !== "running") return;
+        try {
+          if (await this.refreshScreenSizeFromNative()) this.broadcastConfig();
+        } catch { /* The periodic refresh retries transient read failures. */ }
+      });
+      if (this.phase !== "running") { await unsubscribe(); return; }
+      this.unsubscribeScreenChanges = unsubscribe;
       if (await this.refreshScreenSizeFromNative()) this.broadcastConfig();
       this.scheduleScreenRefresh();
       // Discover fold controls without delaying the first frame or inventing
@@ -274,8 +301,12 @@ export class DeviceSession {
     this.phase = "stopped";
     clearTimeout(this.screenRefreshTimer);
     this.screenRefreshTimer = undefined;
+    void this.unsubscribeScreenChanges?.().catch(() => {});
+    this.unsubscribeScreenChanges = undefined;
     for (const ws of this.hidSockets) ws.close();
     this.hidSockets.clear();
+    for (const res of this.panelRequests) res.destroy();
+    for (const panel of this.panels.values()) this.stopPanel(panel);
     void this.capture.stop().catch(() => {});
   }
 
@@ -331,7 +362,91 @@ export class DeviceSession {
 
   // ── HTTP handlers ────────────────────────────────────────────────────────
 
-  handleMjpeg(req: IncomingMessage, res: ServerResponse): void {
+  /** Fixed-panel feeds share the existing transport implementation, never HID state. */
+  async handlePanel(req: IncomingMessage, res: ServerResponse, screenId: number, endpoint: string): Promise<void> {
+    const isStream = endpoint === "stream.mjpeg" || endpoint === "stream.avcc";
+    const createsCapture = isStream || endpoint === "webrtc/offer";
+    const route = validatePanelRoute(screenId, endpoint, req.method);
+    if ("error" in route) { this.sendJson(res, route.status, { error: route.error }); return; }
+    if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+    if (isStream && this.transport === "webrtc") { this.sendTransportLocked(res); return; }
+    // Install body listeners before capture startup yields: Fetch requests may
+    // deliver their entire body while the native panel is still opening.
+    const body = createsCapture && !isStream
+      ? readRequestBody(req, MAX_WEBRTC_SIGNALING_BODY_BYTES)
+      : endpoint === "webrtc/close" ? readRequestBody(req, 4 * 1024) : undefined;
+    void body?.catch(() => {});
+    let panel: PanelCapture | undefined;
+    let closed = false;
+    const release = () => {
+      if (closed) return;
+      closed = true;
+      this.panelRequests.delete(res);
+      panel?.responses.delete(res);
+      if (panel) this.releasePanelIfIdle(panel);
+    };
+    this.panelRequests.add(res);
+    req.once("aborted", () => { release(); res.destroy(); });
+    res.once("close", release);
+    res.once("finish", release);
+    res.once("error", release);
+    try {
+      await this.waitForCapture();
+      if (!(this.supportsHingeAngle ?? await this.hid.supportsHingeAngle())) {
+        this.sendJson(res, 409, { error: "panel_streams_unsupported" }); return;
+      }
+      // New panel captures must see the latest completed encoder-settings transaction.
+      for (;;) {
+        const pending = this.streamSettingsUpdate;
+        await pending;
+        if (pending === this.streamSettingsUpdate) break;
+      }
+      if (closed || this.phase !== "running") return;
+      panel = this.panels.get(screenId);
+      if (!panel && createsCapture) {
+        const capture = new NativeCapture(this.udid, this.encoderSettings, screenId);
+        panel = { screenId: route.screenId, capture, start: capture.start(), responses: new Set(), sessions: new Set(), stopped: false };
+        this.panels.set(screenId, panel);
+      }
+      if (!panel) {
+        if (endpoint === "webrtc/close") { res.writeHead(204); res.end(); }
+        else this.sendJson(res, 404, { error: "panel_stream_not_running" });
+        return;
+      }
+      panel.responses.add(res);
+      await panel.start;
+      if (closed || panel.stopped) return;
+      if (endpoint === "stream.mjpeg") this.handleMjpeg(req, res, panel);
+      else if (endpoint === "stream.avcc") this.handleAvcc(req, res, panel);
+      else if (endpoint === "webrtc/offer") await this.handleWebRTCOffer(req, res, panel, body);
+      else if (endpoint === "webrtc/close") await this.handleWebRTCClose(req, res, panel, body);
+      else await this.handleWebRTCStats(req, res, panel);
+    } catch {
+      release();
+      if (!res.headersSent && !res.destroyed) this.sendJson(res, 503, { error: "panel_stream_unavailable" });
+      else res.destroy();
+    }
+  }
+
+  private releasePanelIfIdle(panel: PanelCapture): void {
+    if (!panel.responses.size && !panel.sessions.size) this.stopPanel(panel);
+  }
+
+  private stopPanel(panel: PanelCapture): void {
+    if (panel.stopped) return;
+    panel.stopped = true;
+    if (this.panels.get(panel.screenId) === panel) this.panels.delete(panel.screenId);
+    for (const res of panel.responses) res.destroy();
+    panel.responses.clear();
+    void panel.start.catch(() => {}).then(async () => {
+      await Promise.allSettled([...panel.sessions].map((id) => panel.capture.closeWebRTCSession(id)));
+      panel.sessions.clear();
+      await panel.capture.stop();
+    }).catch(() => {});
+  }
+
+  handleMjpeg(req: IncomingMessage, res: ServerResponse, panel?: PanelCapture): void {
+    const capture = panel?.capture ?? this.capture;
     if (this.transport === "webrtc") {
       this.sendTransportLocked(res);
       return;
@@ -341,6 +456,7 @@ export class DeviceSession {
       "Content-Type": raw ? "application/octet-stream" : "multipart/x-mixed-replace; boundary=frame",
       "Cache-Control": "no-cache, no-store",
       Connection: "keep-alive",
+      ...(panel ? { "X-Screen-Id": String(panel.screenId) } : {}),
     });
 
     void (async () => {
@@ -356,7 +472,7 @@ export class DeviceSession {
       try {
         await this.waitForCapture();
         if (closed || res.writableEnded || res.destroyed) return;
-        const latestJpeg = this.latestJpeg();
+        const latestJpeg = panel ? null : this.latestJpeg();
         if (latestJpeg) {
           // `latestJpeg` is a view into the shared latest-frame cache, which the
           // native callback overwrites in place. writeMjpegFrame copies it into
@@ -364,8 +480,8 @@ export class DeviceSession {
           // view can't be mutated mid-flush — no snapshot copy needed here.
           await this.writeMjpegFrame(res, latestJpeg);
         }
-        const unsubscribe = await this.capture.subscribeMjpeg(async (frame) => {
-          this.onSharedMjpegFrame(frame);
+        const unsubscribe = await capture.subscribeMjpeg(async (frame) => {
+          if (!panel) this.onSharedMjpegFrame(frame);
           await waitForDrain(res);
           if (!res.writableEnded && !res.destroyed) {
             await this.writeMjpegFrame(res, frame.data);
@@ -385,7 +501,8 @@ export class DeviceSession {
     })();
   }
 
-  handleAvcc(req: IncomingMessage, res: ServerResponse): void {
+  handleAvcc(req: IncomingMessage, res: ServerResponse, panel?: PanelCapture): void {
+    const capture = panel?.capture ?? this.capture;
     if (this.transport === "webrtc") {
       this.sendTransportLocked(res);
       return;
@@ -394,6 +511,7 @@ export class DeviceSession {
       "Content-Type": "application/octet-stream",
       "Cache-Control": "no-cache, no-store",
       Connection: "keep-alive",
+      ...(panel ? { "X-Screen-Id": String(panel.screenId) } : {}),
     });
 
     void (async () => {
@@ -425,17 +543,17 @@ export class DeviceSession {
         // endpoint responsive on hosts where VideoToolbox cannot encode H.264.
         // The JPEG subscription is cancelled as soon as either seed or AVCC
         // data arrives, so it adds no steady-state encoding cost.
-        const latestJpeg = this.latestJpeg();
+        const latestJpeg = panel ? null : this.latestJpeg();
         if (latestJpeg) {
           streamStarted = true;
           res.write(avccSeed(latestJpeg));
         } else {
-          unsubscribeSeed = await this.capture.subscribeMjpeg(async (frame) => {
+          unsubscribeSeed = await capture.subscribeMjpeg(async (frame) => {
             if (streamStarted || res.writableEnded || res.destroyed) {
               stopSeed();
               return;
             }
-            this.onSharedMjpegFrame(frame);
+            if (!panel) this.onSharedMjpegFrame(frame);
             streamStarted = true;
             res.write(avccSeed(frame.data));
             stopSeed();
@@ -448,8 +566,8 @@ export class DeviceSession {
           return;
         }
 
-        const unsubscribeAvcc = await this.capture.subscribeAvcc(async (frame) => {
-          this.updateScreenSize(frame.width, frame.height);
+        const unsubscribeAvcc = await capture.subscribeAvcc(async (frame) => {
+          if (!panel) this.updateScreenSize(frame.width, frame.height);
           if (!streamStarted) {
             streamStarted = true;
             stopSeed();
@@ -545,6 +663,10 @@ export class DeviceSession {
         this.encoderSettings,
       );
       await this.capture.updateStreamSettings(next);
+      await Promise.all([...this.panels.values()].map(async (panel) => {
+        await panel.start;
+        if (!panel.stopped) await panel.capture.updateStreamSettings(next);
+      }));
       this.encoderSettings = next;
       return next;
     });
@@ -552,13 +674,17 @@ export class DeviceSession {
     return update;
   }
 
-  async handleWebRTCOffer(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async handleWebRTCOffer(req: IncomingMessage, res: ServerResponse, panel?: PanelCapture, pendingBody?: Promise<Buffer>): Promise<void> {
+    const capture = panel?.capture ?? this.capture;
     let sessionId: string | undefined;
     let sessionEstablished = false;
     let cancellation: Promise<void> | undefined;
     const cancelSession = (): Promise<void> => {
       if (!sessionId) return Promise.resolve();
-      cancellation ??= this.capture.closeWebRTCSession(sessionId);
+      cancellation ??= capture.closeWebRTCSession(sessionId).finally(() => {
+        panel?.sessions.delete(sessionId!);
+        if (panel) this.releasePanelIfIdle(panel);
+      });
       return cancellation;
     };
     const handleResponseClose = () => {
@@ -575,14 +701,19 @@ export class DeviceSession {
       if (!isJsonRequest(req)) {
         throw new WebRtcSignalingError("WebRTC offers require application/json", 415, "unsupported_media_type");
       }
-      const body = await readRequestBody(req, MAX_WEBRTC_SIGNALING_BODY_BYTES);
+      const body = await (pendingBody ?? readRequestBody(req, MAX_WEBRTC_SIGNALING_BODY_BYTES));
       const offer = parseWebRtcOffer(parseJsonBody(body, "invalid_offer"));
       sessionId = offer.sessionId;
       await this.waitForCapture();
-      if (await this.refreshScreenSizeFromNative()) this.broadcastConfig();
-      const answer = await this.capture.handleWebRTCOffer(offer);
+      if (!panel && await this.refreshScreenSizeFromNative()) this.broadcastConfig();
+      const answer = await capture.handleWebRTCOffer(offer);
+      panel?.sessions.add(sessionId);
       sessionEstablished = true;
       if (res.writableEnded || res.destroyed) {
+        // A disconnect can cancel before native signaling resolves. Close
+        // again after the answer so a late-created native session cannot leak.
+        await cancellation;
+        cancellation = undefined;
         await cancelSession();
         return;
       }
@@ -607,14 +738,16 @@ export class DeviceSession {
     }
   }
 
-  async handleWebRTCClose(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async handleWebRTCClose(req: IncomingMessage, res: ServerResponse, panel?: PanelCapture, pendingBody?: Promise<Buffer>): Promise<void> {
     try {
       if (req.method !== "POST") {
         throw new WebRtcSignalingError("WebRTC close requires POST", 405, "method_not_allowed");
       }
-      const body = await readRequestBody(req, 4 * 1024);
+      const body = await (pendingBody ?? readRequestBody(req, 4 * 1024));
       const request = parseWebRtcCloseRequest(parseJsonBody(body, "invalid_close_request"));
-      await this.capture.closeWebRTCSession(request.sessionId);
+      await (panel?.capture ?? this.capture).closeWebRTCSession(request.sessionId);
+      panel?.sessions.delete(request.sessionId);
+      if (panel) this.releasePanelIfIdle(panel);
       if (res.writableEnded || res.destroyed) return;
       res.writeHead(204);
       res.end();
@@ -629,7 +762,7 @@ export class DeviceSession {
     }
   }
 
-  async handleWebRTCStats(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async handleWebRTCStats(req: IncomingMessage, res: ServerResponse, panel?: PanelCapture): Promise<void> {
     if (req.method !== "GET") {
       this.sendJson(res, 405, { error: "method_not_allowed" });
       return;
@@ -638,7 +771,7 @@ export class DeviceSession {
       const sessionId = parseWebRtcStatsSessionId(
         new URL(req.url ?? "", "http://x").searchParams.get("sessionId"),
       );
-      const stats = await this.capture.webRTCSenderStats(sessionId);
+      const stats = await (panel?.capture ?? this.capture).webRTCSenderStats(sessionId);
       if (res.writableEnded || res.destroyed) return;
       this.sendJson(res, 200, stats);
     } catch (err) {
@@ -764,18 +897,26 @@ export class DeviceSession {
       case 0x07: {
         const m = json<{ orientation: string }>();
         if (!m) break;
-        const value = ORIENTATION_BY_NAME[m.orientation];
-        if (value != null && await this.hid.orientation(value)) {
+        const operation = this.hingeControlUpdate.then(async () => {
+          const value = ORIENTATION_BY_NAME[m.orientation];
+          if (this.phase !== "running" || value == null || !await this.hid.orientation(value)) return;
           this.recordHidEvent(tag, m);
           if (this.supportsHingeAngle) {
-            // Device Hub changes physical pose; the active app may keep its
-            // interface locked. Rotate the stream only after native readback.
-            if (await this.refreshScreenSizeFromNative()) this.broadcastConfig();
+            // Rotation is panel-relative; only a named pose establishes the
+            // physical orientation needed to determine Table Mode eligibility.
+            this.hingePose = null;
+            this.hingePhysicalOrientation = undefined;
+            this.tableMode = false;
+            // Apps may lock their interface. Keep native readback authoritative.
+            await this.refreshScreenSizeFromNative();
+            this.broadcastConfig();
           } else if (m.orientation !== this.orientation) {
             this.orientation = m.orientation;
             this.broadcastConfig();
           }
-        }
+        });
+        this.hingeControlUpdate = operation.catch(() => {});
+        await operation;
         break;
       }
       case 0x08: {
@@ -836,13 +977,8 @@ export class DeviceSession {
           result = { ok: false, error: "Hinge angle must be a number from 0 to 180 degrees." };
         } else {
           const angle = m.angle;
-          const ok = await this.hid.setHingeAngle(angle);
-          if (ok) {
-            this.supportsHingeAngle = true;
-            this.hingeAngle = angle;
-            this.recordHidEvent(tag, { angle });
-            this.broadcastConfig();
-          }
+          const ok = await this.queueHingeControl({ control: "angle", value: angle });
+          if (ok) this.recordHidEvent(tag, { angle });
           result = ok
             ? { ok: true, angle }
             : { ok: false, angle, error: "Simulator could not change the hinge angle." };
@@ -854,7 +990,60 @@ export class DeviceSession {
         }
         break;
       }
+      case 0x10: {
+        const message = json<{ requestId?: unknown; command?: unknown }>();
+        const requestId = message?.requestId;
+        const command = message?.command;
+        let ok = false;
+        let error: string | undefined;
+        if (typeof requestId !== "number" || !Number.isSafeInteger(requestId) || requestId <= 0 || !isHingeControlCommand(command)) {
+          error = "Invalid hinge control request.";
+        } else {
+          ok = await this.queueHingeControl(command);
+          if (ok) this.recordHidEvent(tag, command);
+          else error = "Simulator could not change the device pose.";
+        }
+        try { ws.send(Buffer.concat([Buffer.from([0x90]), Buffer.from(JSON.stringify({ requestId, ok, ...(error ? { error } : {}) }))])); }
+        catch { /* The requester may disconnect during the native operation. */ }
+        break;
+      }
     }
+  }
+
+  /** Keep pose sequences ordered across sliders, presets, and legacy CLI clients. */
+  private queueHingeControl(command: HingeControlCommand): Promise<boolean> {
+    const operation = this.hingeControlUpdate.then(async () => {
+      if (this.phase !== "running") return false;
+      if (command.control === "table" && command.value && !isTableModeAvailable(this.hingeAngle, this.hingePhysicalOrientation)) return false;
+      const ok = command.control === "pose" ? await this.hid.setHingePose(command.value)
+        : command.control === "table" ? await this.hid.setTableMode(command.value)
+        : await this.hid.setHingeAngle(command.value);
+      if (ok) {
+        const state = hingeControlState(command);
+        this.supportsHingeAngle = true;
+        if (state.hingeAngle !== undefined) this.hingeAngle = state.hingeAngle;
+        this.hingePose = state.hingePose ?? null;
+        if (state.tableMode !== undefined) this.tableMode = state.tableMode;
+        if (command.control === "pose") this.hingePhysicalOrientation = hingePoseOrientation(command.value);
+        this.broadcastConfig();
+      } else {
+        // A failed sequence can still move the hinge or change the active
+        // panel. Recover actual state before the failure ack permits a retry.
+        this.hingePose = null;
+        const recovered = await this.hid.hingeState();
+        if (this.phase !== "running") return false;
+        this.hingeAngle = recovered.hingeAngle ?? this.hingeAngle;
+        this.tableMode = recovered.tableMode;
+        this.hingePhysicalOrientation = recovered.physicalOrientation ?? this.hingePhysicalOrientation;
+        try { await this.refreshScreenSizeFromNative(); }
+        catch { /* Preserve the last readable screen through a transient failure. */ }
+        if (this.phase !== "running") return false;
+        this.broadcastConfig();
+      }
+      return ok;
+    });
+    this.hingeControlUpdate = operation.then(() => {}, () => {});
+    return operation;
   }
 
   private queueSoftwareKeyboardSync(visible: boolean): void {
@@ -1023,6 +1212,9 @@ export class DeviceSession {
     screenId?: number;
     supportsHingeAngle?: boolean;
     hingeAngle?: number;
+    hingePose?: HingePose | null;
+    tableMode?: boolean;
+    tableModeAvailable?: boolean;
   } {
     return {
       width: this.width,
@@ -1031,6 +1223,8 @@ export class DeviceSession {
       ...(this.nativeScreen?.screenId !== undefined ? { screenId: this.nativeScreen.screenId } : {}),
       ...(this.supportsHingeAngle !== undefined ? { supportsHingeAngle: this.supportsHingeAngle } : {}),
       ...(this.hingeAngle !== undefined ? { hingeAngle: this.hingeAngle } : {}),
+      ...(this.supportsHingeAngle ? { hingePose: this.hingePose, tableModeAvailable: isTableModeAvailable(this.hingeAngle, this.hingePhysicalOrientation) } : {}),
+      ...(this.tableMode !== undefined ? { tableMode: this.tableMode } : {}),
     };
   }
 
@@ -1040,8 +1234,16 @@ export class DeviceSession {
   }
 
   private refreshScreenSizeFromNative(): Promise<boolean> {
+    this.screenRefreshRequested = true;
     if (this.screenRefresh) return this.screenRefresh;
-    this.screenRefresh = this.readScreenFromNative().finally(() => {
+    this.screenRefresh = (async () => {
+      let changed = false;
+      do {
+        this.screenRefreshRequested = false;
+        changed = await this.readScreenFromNative() || changed;
+      } while (this.phase === "running" && this.screenRefreshRequested);
+      return changed;
+    })().finally(() => {
       this.screenRefresh = undefined;
     });
     return this.screenRefresh;
@@ -1075,8 +1277,8 @@ export class DeviceSession {
 
   private scheduleScreenRefresh(): void {
     if (this.phase !== "running") return;
-    // Metadata changes when Simulator rotates/folds a device even while its
-    // framebuffer is idle. Keep one non-overlapping poll per running session.
+    // Native notifications drive routing; retain a non-overlapping fallback
+    // for runtimes that miss properties/surface notifications while idle.
     this.screenRefreshTimer = setTimeout(async () => {
       try {
         if (await this.refreshScreenSizeFromNative()) this.broadcastConfig();

@@ -67,6 +67,7 @@ export function useAvccStream({
     let stopped = false;
     let painted = false;
     let decodedFramePainted = false;
+    let frameRevision = 0;
     let timestamp = 0;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let decoder: VideoDecoder | null = null;
@@ -77,6 +78,7 @@ export function useAvccStream({
     // a handler is wired, else surfaces as a user-facing error. Routing to both
     // would flash a red overlay over the stream the parent is about to recover.
     const reportDecodeFailure = (message: string) => {
+      if (!isLive()) return;
       if (callbacks.current.onDecoderError) callbacks.current.onDecoderError();
       else callbacks.current.onError?.(message);
     };
@@ -92,6 +94,7 @@ export function useAvccStream({
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       ctx.drawImage(source, 0, 0, width, height);
+      frameRevision++;
       callbacks.current.onFrame?.();
       if (decoded && !decodedFramePainted) {
         decodedFramePainted = true;
@@ -103,40 +106,48 @@ export function useAvccStream({
       }
     };
 
-    const makeDecoder = () =>
-      new VideoDecoder({
+    const makeDecoder = () => {
+      const next = new VideoDecoder({
         output: (frame) => {
           try {
-            if (isLive()) paint(frame, frame.displayWidth, frame.displayHeight, true);
+            if (isLive() && decoder === next) paint(frame, frame.displayWidth, frame.displayHeight, true);
           } finally {
             frame.close();
           }
         },
-        error: (err) => reportDecodeFailure(`decoder: ${err.message}`),
+        error: (err) => {
+          if (decoder === next) reportDecodeFailure(`decoder: ${err.message}`);
+        },
       });
+      return next;
+    };
 
     const paintSeed = async (jpeg: Uint8Array) => {
       // JPEG seed — paint immediately for an instant first frame.
+      // Bitmap decoding can finish after a newer H.264 frame has arrived.
+      const revision = frameRevision;
       const bitmap = await createImageBitmap(
         new Blob([jpeg as BlobPart], { type: "image/jpeg" }),
       );
       try {
-        if (isLive()) paint(bitmap, bitmap.width, bitmap.height, false);
+        if (isLive() && revision === frameRevision) paint(bitmap, bitmap.width, bitmap.height, false);
       } finally {
         bitmap.close();
       }
     };
 
     const configureDecoder = (description: Uint8Array) => {
-      if (!decoder || decoder.state === "closed") decoder = makeDecoder();
+      // A new description can change dimensions or start a fresh response.
+      // Retire queued output before configuring the next decode generation.
+      if (decoder && decoder.state !== "closed") decoder.close();
+      decoder = makeDecoder();
       try {
         decoder.configure({
           codec: avcCodecString(description),
           description,
-          // `optimizeFor` is a valid runtime hint not yet in lib.dom's types.
-          optimizeFor: "latency",
+          optimizeForLatency: true,
           hardwareAcceleration: "prefer-hardware",
-        } as VideoDecoderConfig & { optimizeFor: "latency" });
+        });
       } catch (err) {
         reportDecodeFailure(`config: ${(err as Error).message}`);
       }
@@ -193,7 +204,7 @@ export function useAvccStream({
         if (!reader) return;
         for (;;) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done || !isLive()) break;
           if (!value) continue;
           for (const chunk of demuxer.push(value)) {
             handleChunk(chunk.type, chunk.payload);

@@ -632,6 +632,9 @@ function AppWithConfig({
   const streamConfig = wsStreamConfig;
   const hingeAngle = streamConfig?.hingeAngle;
   const supportsHingeAngle = streamConfig?.supportsHingeAngle;
+  // Before native capability metadata arrives, recognize Duo's Xcode DeviceKit
+  // chrome identifiers: phone15 is the cover profile and phone14 the inner
+  // display variant. These are asset identifiers, not iPhone model numbers.
   const isDuo = supportsHingeAngle === true ||
     /\biphone\s+duo\b/i.test(deviceName ?? "") ||
     defaultChrome?.identifier === "phone14" || defaultChrome?.identifier === "phone15";

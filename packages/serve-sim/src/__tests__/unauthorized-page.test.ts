@@ -57,12 +57,20 @@ describe("token form script", () => {
         handlers.push(handler);
       },
     };
+    const replaced: string[] = [];
     const document = { forms: [form] };
-    const window = { location: { href, assign: (to: string) => assigned.push(to) } };
+    const window = {
+      location: {
+        href,
+        assign: (to: string) => assigned.push(to),
+        replace: (to: string) => replaced.push(to),
+      },
+    };
     new Function("document", "window", TOKEN_FORM_SCRIPT)(document, window);
 
     return {
       assigned,
+      replaced,
       input,
       get reportedValidity() {
         return reportedValidity;
@@ -102,5 +110,37 @@ describe("token form script", () => {
     expect(page.assigned).toEqual([]);
     expect(page.reportedValidity).toBe(true);
     expect(page.input.value).toBe("");
+  });
+
+  test("converts a token in the fragment into the query the gate reads", () => {
+    const page = load("http://host:3477/preview?device=ABC#token=tok-1");
+
+    expect(page.replaced).toEqual(["http://host:3477/preview?device=ABC&token=tok-1"]);
+    expect(page.assigned).toEqual([]);
+  });
+
+  test("leaves no fragment behind, so a rejected token cannot bounce back here", () => {
+    const page = load("http://host:3477/#token=wrong-one");
+
+    expect(page.replaced[0]).not.toContain("#");
+  });
+
+  test("keeps the rest of the fragment out of the query", () => {
+    const page = load("http://host:3477/#token=tok-1&tab=logs");
+
+    expect(page.replaced).toEqual(["http://host:3477/?token=tok-1"]);
+  });
+
+  test("replaces a stale query token with the one from the fragment", () => {
+    const page = load("http://host:3477/?token=stale#token=tok-1");
+
+    expect(page.replaced).toEqual(["http://host:3477/?token=tok-1"]);
+  });
+
+  test("still shows the form when the fragment carries no token", () => {
+    for (const href of ["http://host:3477/", "http://host:3477/#", "http://host:3477/#token="]) {
+      const page = load(href);
+      expect(page.replaced).toEqual([]);
+    }
   });
 });

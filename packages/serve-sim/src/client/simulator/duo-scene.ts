@@ -6,7 +6,6 @@ import { duoPose, duoIntendedScreen, duoScreenRoll, duoFrameMatchesDisplay, duoS
 import { duoFitScale, duoPanelEdgeAnchor, duoProjectAnchor, duoHingeDragAngle, type DuoScreenPoint as ProjectedPoint } from "./duo-layout";
 import { HID_EDGE_BOTTOM, HID_EDGE_LEFT, HID_EDGE_RIGHT, HID_EDGE_TOP, HOME_INDICATOR_BAND_NORM, rawEdgeForDisplayEdge, streamDisplayGeometry } from "./orientation";
 import { loadDuoModel } from "./duo-model";
-import { duoDeviceControlAnchors, type DuoDeviceControl } from "./duo-device-controls";
 
 export type DuoSceneState = Omit<DuoModelViewProps, "children">;
 type FrameSource = HTMLVideoElement | HTMLCanvasElement | HTMLImageElement;
@@ -35,7 +34,6 @@ export function createDuoScene(
   state: () => DuoSceneState,
   callbacks: { ready: () => void; error: () => void },
   hingeElements: Partial<Record<"left" | "right", HTMLElement>> = {},
-  deviceControlElements: Partial<Record<DuoDeviceControl, HTMLElement>> = {},
 ) {
   let disposed = false;
   let failed = false;
@@ -113,10 +111,6 @@ export function createDuoScene(
     const element = hingeElements[side];
     return element ? [{ element, side, anchor: null }] : [];
   });
-  const deviceControls = (Object.keys(deviceControlElements) as DuoDeviceControl[]).map((name) => ({ name, element: deviceControlElements[name]! }));
-  const controlBounds = new THREE.Box3();
-  let controlAnchors: ReturnType<typeof duoDeviceControlAnchors> | undefined;
-  let controlChrome: DuoSceneState["controlChrome"];
   let resizePending = false;
   let projectionPending = false;
   const resizeViewport = () => {
@@ -190,7 +184,6 @@ export function createDuoScene(
         bounds.union(mesh.geometry.boundingBox!);
       }
       const size = bounds.getSize(new THREE.Vector3());
-      if (surface === inner) controlBounds.copy(bounds);
       for (const mesh of surface.meshes) {
         const position = mesh.geometry.getAttribute("position");
         const uv = new Float32Array(position.count * 2);
@@ -582,17 +575,13 @@ export function createDuoScene(
     const panel = handle.side === "left" ? left : right;
     const anchor = handle.anchor;
     if (!panel || !anchor) return null;
-    return projectedEdge(anchor, anchor.clone().multiply(new THREE.Vector3(0.5, 1, 1)), panel, 16);
-  }
-
-  function projectedEdge(anchor: THREE.Vector3, inward: THREE.Vector3, panel: THREE.Object3D, padding: number): (ProjectedPoint & { rotation: number }) | null {
     const rect = renderer.domElement.getBoundingClientRect();
     const edge = duoProjectAnchor(anchor, panel, camera, rect);
-    const middle = duoProjectAnchor(inward, panel, camera, rect);
+    const middle = duoProjectAnchor(anchor.clone().multiply(new THREE.Vector3(0.5, 1, 1)), panel, camera, rect);
     if (!edge || !middle) return null;
     const rotation = Math.atan2(edge.y - middle.y, edge.x - middle.x);
     const hostRect = host.getBoundingClientRect();
-    const offset = padding * (stageHeight > 0 ? hostRect.height / stageHeight : 1);
+    const offset = 16 * (stageHeight > 0 ? hostRect.height / stageHeight : 1);
     return { x: edge.x + Math.cos(rotation) * offset, y: edge.y + Math.sin(rotation) * offset, rotation };
   }
 
@@ -689,7 +678,6 @@ export function createDuoScene(
     element.addEventListener("lostpointercapture", hingeUp);
     element.style.display = "none";
   }
-  for (const { element } of deviceControls) element.style.display = "none";
   const canvas = renderer.domElement;
   canvas.addEventListener("pointerdown", down);
   canvas.addEventListener("pointermove", move);
@@ -784,40 +772,6 @@ export function createDuoScene(
           element.style.transform = `translate(-50%, -50%) rotate(${position.rotation}rad)`;
         }
       }
-      if (deviceControls.length && !controlBounds.isEmpty() && (!controlAnchors || controlChrome !== current.controlChrome)) {
-        controlChrome = current.controlChrome;
-        controlAnchors = duoDeviceControlAnchors(controlBounds, controlChrome);
-      }
-      for (const { name, element } of deviceControls) {
-        const anchor = controlAnchors?.[name];
-        const position = current.onButton && right && anchor
-          ? projectedEdge(anchor.point, anchor.point.clone().sub(anchor.normal), right, 24) : null;
-        const rect = host.getBoundingClientRect();
-        if (position && name === "power") {
-          // Keep the 44px button and rotated 48×60px hinge targets separate,
-          // including when a small stage brings their physical anchors close.
-          const clearance = 72 * (stageHeight > 0 ? rect.height / stageHeight : 1);
-          for (const handle of hingeHandles) {
-            if (!current.onHingeAngleChange || (handle.side === "right" && Math.round(renderedAngle) <= 30)) continue;
-            const hinge = projectedHandle(handle);
-            if (!hinge) continue;
-            const dx = position.x - hinge.x;
-            const dy = position.y - hinge.y;
-            const distance = Math.hypot(dx, dy);
-            if (distance >= clearance) continue;
-            position.x = hinge.x + (distance > 0 ? dx / distance : Math.sin(position.rotation)) * clearance;
-            position.y = hinge.y + (distance > 0 ? dy / distance : -Math.cos(position.rotation)) * clearance;
-          }
-        }
-        element.style.display = position && rect.width && rect.height ? "flex" : "none";
-        if (position && rect.width && rect.height) {
-          const rotation = position.rotation + Math.PI / 2;
-          element.style.left = `${(position.x - rect.left) * stageWidth / rect.width}px`;
-          element.style.top = `${(position.y - rect.top) * stageHeight / rect.height}px`;
-          element.style.transform = `translate(-50%, -50%) rotate(${rotation}rad)`;
-          element.style.setProperty("--duo-control-rotation", `${rotation}rad`);
-        }
-      }
     } catch { fail(); }
     host.dataset.hingeAngle = renderedAngle.toFixed(2);
     host.dataset.pose = current.pose ?? "custom";
@@ -845,7 +799,6 @@ export function createDuoScene(
         element.removeEventListener("lostpointercapture", hingeUp);
         element.style.display = "none";
       }
-      for (const { element } of deviceControls) element.style.display = "none";
       window.removeEventListener("blur", blur);
       window.removeEventListener("resize", resizeViewport);
       document.removeEventListener("visibilitychange", onVisibilityChange);

@@ -2,8 +2,9 @@ import { useState, type RefObject } from "react";
 import { RESIZE_MAIN_STROKE, RESIZE_MAIN_STROKE_W } from "../utils/simulator-resize";
 
 /** The scene places this control at the moving panel's projected outer edge. */
-export function DuoHingeHandle({ handleRef, angle, onChange }: {
+export function DuoHingeHandle({ handleRef, side, angle, onChange }: {
   handleRef: RefObject<HTMLDivElement | null>;
+  side: "left" | "right";
   angle?: number;
   onChange?: (angle: number) => void;
 }) {
@@ -14,9 +15,9 @@ export function DuoHingeHandle({ handleRef, angle, onChange }: {
   return (
     <div
       ref={handleRef}
-      data-duo-hinge-handle
+      data-duo-hinge-handle={side}
       role="slider"
-      aria-label="Fold device"
+      aria-label={side === "left" ? "Fold device" : "Fold device from opposite edge"}
       aria-description="Drag the edge to fold or unfold. Use arrow keys for 5 degrees, Shift for 15 degrees, Home to close, or End to open."
       aria-valuemin={0}
       aria-valuemax={180}

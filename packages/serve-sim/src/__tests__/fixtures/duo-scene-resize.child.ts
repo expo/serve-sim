@@ -1,5 +1,6 @@
 import { expect, mock, test } from "bun:test";
 import type { Camera } from "three";
+import type { DuoSceneState } from "../../client/simulator/duo-scene";
 
 // Drive the real scene's render/resize lifecycle. The renderer models the
 // WebGL guarantee that changing canvas dimensions clears its drawing buffer.
@@ -8,14 +9,30 @@ class TestCanvas extends EventTarget {
   height = 150;
   style = { cssText: "", width: "", height: "" };
   remove() {}
+  getBoundingClientRect() { return { left: (480 - this.width) / 2, top: (540 - this.height) / 2, width: this.width, height: this.height }; }
   getContext() { return { fillStyle: "", fillRect() {} }; }
+}
+class TestHandle extends EventTarget {
+  style: Record<string, string> = {};
+  captured = new Set<number>();
+  setPointerCapture(id: number) { this.captured.add(id); }
+  hasPointerCapture(id: number) { return this.captured.has(id); }
+  releasePointerCapture(id: number) {
+    this.captured.delete(id);
+    this.dispatchEvent(Object.assign(new Event("lostpointercapture"), { pointerId: id }));
+  }
+  focus() {}
+  point() { return { x: parseFloat(this.style.left!), y: parseFloat(this.style.top!) }; }
+  pointer(type: string, x: number, y: number) {
+    this.dispatchEvent(Object.assign(new Event(type), { button: 0, pointerId: 1, clientX: x, clientY: y }));
+  }
 }
 class TestHost extends EventTarget {
   width = 480;
   height = 540;
   dataset: Record<string, string> = {};
   appendChild() {}
-  getBoundingClientRect() { return { width: this.width, height: this.height }; }
+  getBoundingClientRect() { return { left: 0, top: 0, width: this.width, height: this.height }; }
   querySelector() { return null; }
   querySelectorAll() { return []; }
 }
@@ -81,6 +98,9 @@ mock.module("../../client/simulator/duo-model", () => ({
     for (const name of ["left-half", "right-half"]) {
       const half = new three.Group();
       half.name = name;
+      const body = new three.Mesh(new three.BoxGeometry(8, 12, 0.5), new three.MeshBasicMaterial());
+      body.position.x = name === "left-half" ? -4 : 4;
+      half.add(body);
       scene.add(half);
     }
     return scene;
@@ -93,7 +113,7 @@ test("the resize handle changes projected model size inside a fixed, continuousl
   const scene = createDuoScene(
     host as unknown as HTMLElement,
     new TestHost() as unknown as HTMLElement,
-    () => ({ angle: 180, pose: "open" }),
+    () => ({ angle: 180, pose: "open", sizeMode: "physical" }),
     { ready() {}, error: () => { throw new Error("Scene failed"); } },
   );
   const renderer = renderers.at(-1)!;
@@ -149,5 +169,83 @@ test("the resize handle changes projected model size inside a fixed, continuousl
     testWindow.innerHeight = 1100;
     testWindow.dispatchEvent(new Event("resize"));
     expect(renderer.domElement.style.width).toBe("1440px");
+  }
+});
+
+async function hingeRig() {
+  const host = new TestHost();
+  const left = new TestHandle();
+  const right = new TestHandle();
+  const changes: number[] = [];
+  const state: DuoSceneState = {
+    angle: 180, pose: "open", sizeMode: "fill",
+    onHingeAngleChange: (angle) => { changes.push(angle); state.angle = angle; },
+  };
+  let ready!: () => void;
+  const loaded = new Promise<void>((resolve) => { ready = resolve; });
+  const scene = createDuoScene(host as unknown as HTMLElement, new TestHost() as unknown as HTMLElement,
+    () => state, { ready, error: () => { throw new Error("Scene failed"); } },
+    { left: left as unknown as HTMLElement, right: right as unknown as HTMLElement });
+  await loaded;
+  const renderer = renderers.at(-1)!;
+  observers.at(-1)!.callback([{ contentRect: host.getBoundingClientRect() }]);
+  let now = 0;
+  const settle = () => { for (let frame = 0; frame < 180; frame++) renderer.loop!(now += 16); };
+  settle();
+  return { left, right, state, changes, settle, dispose: () => scene.dispose() };
+}
+
+test("hinge handles follow both outer edges and only the original remains near closed", async () => {
+  const rig = await hingeRig();
+  try {
+    expect(rig.left.style.display).toBe("");
+    expect(rig.right.style.display).toBe("");
+    expect(rig.left.point().x).toBeLessThan(240);
+    expect(rig.right.point().x).toBeGreaterThan(240);
+    expect(rig.left.point().y).toBeCloseTo(rig.right.point().y, 6);
+    for (const angle of [90, 31, 30, 29, 10, 0, 90, 180]) {
+      rig.state.angle = angle;
+      rig.settle();
+      expect(rig.left.style.display).toBe("");
+      expect(rig.right.style.display).toBe(angle > 30 ? "" : "none");
+    }
+    rig.state.onHingeAngleChange = undefined;
+    rig.settle();
+    expect(rig.left.style.display).toBe("none");
+    expect(rig.right.style.display).toBe("none");
+  } finally { rig.dispose(); }
+});
+
+test("either hinge handle folds and unfolds, and a hidden handle retains its active drag", async () => {
+  for (const side of ["left", "right"] as const) {
+    const rig = await hingeRig();
+    const handle = rig[side];
+    try {
+      const open = handle.point();
+      const direction = side === "left" ? 1 : -1;
+      handle.pointer("pointerdown", open.x, open.y);
+      expect(handle.hasPointerCapture(1)).toBe(true);
+      handle.pointer("pointermove", open.x + direction * 10, open.y);
+      expect(rig.state.angle).toBeLessThan(180);
+      expect(rig.state.angle).toBeGreaterThan(0);
+      handle.pointer("pointermove", open.x + direction * 1500, open.y);
+      rig.settle();
+      expect(rig.state.angle).toBe(0);
+      expect(rig.right.style.display).toBe("none");
+      expect(handle.hasPointerCapture(1)).toBe(true);
+      // Reversing the same drag still works after the added handle disappears.
+      handle.pointer("pointermove", open.x, open.y);
+      rig.settle();
+      expect(rig.state.angle).toBe(180);
+      expect(rig.right.style.display).toBe("");
+      handle.pointer("pointerup", open.x, open.y);
+      expect(handle.hasPointerCapture(1)).toBe(false);
+      handle.pointer("pointerdown", open.x, open.y);
+      expect(handle.hasPointerCapture(1)).toBe(true);
+    } finally { rig.dispose(); }
+    expect(handle.hasPointerCapture(1)).toBe(false);
+    const count = rig.changes.length;
+    handle.pointer("pointermove", 1000, 500);
+    expect(rig.changes.length).toBe(count);
   }
 });

@@ -50,6 +50,10 @@ screen with both halves descending from a horizontal ridge. Slider adjustments
 preserve the device's physical orientation through the closed and open endpoints.
 The browser's reduced-motion preference applies pose changes immediately.
 
+Drag either outer-edge handle to fold or unfold the 3D preview. Near closed
+(30° or less), only the original handle remains visible. Both handles also
+support arrow keys, Home to close, and End to open.
+
 Raw framebuffer pixels use a fixed mapping to each physical panel: no rotation
 for the cover, and a clockwise 90° rotation in canvas coordinates for the inner
 display. This matches the inner panel's native 270° mounting in Y-up coordinates.

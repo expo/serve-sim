@@ -9,6 +9,7 @@ import { loadDuoModel } from "./duo-model";
 
 export type DuoSceneState = Omit<DuoModelViewProps, "children">;
 type FrameSource = HTMLVideoElement | HTMLCanvasElement | HTMLImageElement;
+type HingeHandle = { element: HTMLElement; side: "left" | "right"; anchor: THREE.Vector3 | null };
 type Surface = {
   canvas: HTMLCanvasElement;
   context: CanvasRenderingContext2D;
@@ -32,7 +33,7 @@ export function createDuoScene(
   sourceHost: HTMLElement,
   state: () => DuoSceneState,
   callbacks: { ready: () => void; error: () => void },
-  hingeHandle?: HTMLElement,
+  hingeElements: Partial<Record<"left" | "right", HTMLElement>> = {},
 ) {
   let disposed = false;
   let failed = false;
@@ -106,7 +107,10 @@ export function createDuoScene(
   let stageWidth = 0;
   let fitScale = 1;
   let fitVelocity = 0;
-  let hingeAnchor: THREE.Vector3 | null = null;
+  const hingeHandles: HingeHandle[] = (["left", "right"] as const).flatMap((side) => {
+    const element = hingeElements[side];
+    return element ? [{ element, side, anchor: null }] : [];
+  });
   let resizePending = false;
   let projectionPending = false;
   const resizeViewport = () => {
@@ -165,7 +169,7 @@ export function createDuoScene(
     left = model.getObjectByName("left-half");
     right = model.getObjectByName("right-half");
     if (!left || !right) throw new Error("Missing iPhone Duo hinge groups");
-    hingeAnchor = duoPanelEdgeAnchor(left, "left");
+    for (const handle of hingeHandles) handle.anchor = duoPanelEdgeAnchor(handle.side === "left" ? left : right, handle.side);
     const displays: THREE.Mesh[] = [];
     model.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
@@ -567,11 +571,13 @@ export function createDuoScene(
     event.stopPropagation();
     send({ ...hit.point, dx, dy });
   };
-  function projectedHandle(): (ProjectedPoint & { rotation: number }) | null {
-    if (!left || !hingeAnchor) return null;
+  function projectedHandle(handle: HingeHandle): (ProjectedPoint & { rotation: number }) | null {
+    const panel = handle.side === "left" ? left : right;
+    const anchor = handle.anchor;
+    if (!panel || !anchor) return null;
     const rect = renderer.domElement.getBoundingClientRect();
-    const edge = duoProjectAnchor(hingeAnchor, left, camera, rect);
-    const middle = duoProjectAnchor(hingeAnchor.clone().multiply(new THREE.Vector3(0.5, 1, 1)), left, camera, rect);
+    const edge = duoProjectAnchor(anchor, panel, camera, rect);
+    const middle = duoProjectAnchor(anchor.clone().multiply(new THREE.Vector3(0.5, 1, 1)), panel, camera, rect);
     if (!edge || !middle) return null;
     const rotation = Math.atan2(edge.y - middle.y, edge.x - middle.x);
     const hostRect = host.getBoundingClientRect();
@@ -579,7 +585,7 @@ export function createDuoScene(
     return { x: edge.x + Math.cos(rotation) * offset, y: edge.y + Math.sin(rotation) * offset, rotation };
   }
 
-  function hingeEndpoint(angle: number): ProjectedPoint | null {
+  function hingeEndpoint(angle: number, handle: HingeHandle): ProjectedPoint | null {
     if (!model || !left || !right) return null;
     const current = state();
     const physicalPose = current.physicalPose === undefined ? current.pose : current.physicalPose;
@@ -599,7 +605,7 @@ export function createDuoScene(
         : 1;
       camera.zoom = stageHeight / viewportHeight * scale;
       camera.updateProjectionMatrix();
-      return projectedHandle();
+      return projectedHandle(handle);
     } finally {
       root.position.copy(savedPosition);
       root.quaternion.copy(savedRotation);
@@ -612,6 +618,7 @@ export function createDuoScene(
   }
 
   let hingeDrag: {
+    handle: HingeHandle;
     pointerId: number;
     pointer: ProjectedPoint;
     start: ProjectedPoint;
@@ -622,23 +629,25 @@ export function createDuoScene(
   } | null = null;
   function endHingeDrag() {
     if (!hingeDrag) return;
-    const id = hingeDrag.pointerId;
+    const { pointerId, handle } = hingeDrag;
     hingeDrag = null;
-    if (hingeHandle?.hasPointerCapture(id)) hingeHandle.releasePointerCapture(id);
+    if (handle.element.hasPointerCapture(pointerId)) handle.element.releasePointerCapture(pointerId);
   }
   const hingeDown = (event: PointerEvent) => {
     if (event.button !== 0 || hingeDrag || !state().onHingeAngleChange || !stageHeight || failed || disposed) return;
-    const start = projectedHandle();
-    const closed = hingeEndpoint(0);
-    const open = hingeEndpoint(180);
+    const handle = hingeHandles.find(({ element }) => element === event.currentTarget);
+    if (!handle || handle.element.style.display === "none") return;
+    const start = projectedHandle(handle);
+    const closed = hingeEndpoint(0, handle);
+    const open = hingeEndpoint(180, handle);
     if (!start || !closed || !open) return;
     event.preventDefault();
     event.stopPropagation();
     endGesture();
     const angle = Math.max(0, Math.min(180, 180 - fold * 360 / Math.PI));
-    hingeDrag = { pointerId: event.pointerId, pointer: { x: event.clientX, y: event.clientY }, start, closed, open, angle, lastAngle: Math.round(angle) };
-    hingeHandle?.setPointerCapture(event.pointerId);
-    hingeHandle?.focus({ preventScroll: true });
+    hingeDrag = { handle, pointerId: event.pointerId, pointer: { x: event.clientX, y: event.clientY }, start, closed, open, angle, lastAngle: Math.round(angle) };
+    handle.element.setPointerCapture(event.pointerId);
+    handle.element.focus({ preventScroll: true });
   };
   const hingeMove = (event: PointerEvent) => {
     if (!hingeDrag || event.pointerId !== hingeDrag.pointerId) return;
@@ -661,12 +670,14 @@ export function createDuoScene(
   };
   const blur = () => { endGesture(); endHingeDrag(); };
   const onVisibilityChange = () => { if (document.hidden) blur(); };
-  hingeHandle?.addEventListener("pointerdown", hingeDown);
-  hingeHandle?.addEventListener("pointermove", hingeMove);
-  hingeHandle?.addEventListener("pointerup", hingeUp);
-  hingeHandle?.addEventListener("pointercancel", hingeUp);
-  hingeHandle?.addEventListener("lostpointercapture", hingeUp);
-  if (hingeHandle) hingeHandle.style.display = "none";
+  for (const { element } of hingeHandles) {
+    element.addEventListener("pointerdown", hingeDown);
+    element.addEventListener("pointermove", hingeMove);
+    element.addEventListener("pointerup", hingeUp);
+    element.addEventListener("pointercancel", hingeUp);
+    element.addEventListener("lostpointercapture", hingeUp);
+    element.style.display = "none";
+  }
   const canvas = renderer.domElement;
   canvas.addEventListener("pointerdown", down);
   canvas.addEventListener("pointermove", move);
@@ -723,6 +734,7 @@ export function createDuoScene(
       center.set(0, 0, 4.05 * Math.sin(fold)).applyQuaternion(root.quaternion);
       root.position.copy(center).multiplyScalar(-1);
     }
+    const renderedAngle = 180 - fold * 360 / Math.PI;
     try {
       // Only a window resize reallocates the buffer. Apply it with rendering
       // because changing canvas dimensions clears the previously drawn frame.
@@ -747,18 +759,21 @@ export function createDuoScene(
         camera.updateProjectionMatrix();
       }
       renderer.render(scene, camera);
-      if (hingeHandle) {
-        const position = current.onHingeAngleChange ? projectedHandle() : null;
+      for (const handle of hingeHandles) {
+        // Near closed, the two outer edges meet. Keep the original handle.
+        const visible = handle.side === "left" || Math.round(renderedAngle) > 30;
+        const position = current.onHingeAngleChange && visible ? projectedHandle(handle) : null;
+        const element = handle.element;
         const rect = host.getBoundingClientRect();
-        hingeHandle.style.display = position && rect.width && rect.height ? "" : "none";
+        element.style.display = position && rect.width && rect.height ? "" : "none";
         if (position && rect.width && rect.height) {
-          hingeHandle.style.left = `${(position.x - rect.left) * stageWidth / rect.width}px`;
-          hingeHandle.style.top = `${(position.y - rect.top) * stageHeight / rect.height}px`;
-          hingeHandle.style.transform = `translate(-50%, -50%) rotate(${position.rotation}rad)`;
+          element.style.left = `${(position.x - rect.left) * stageWidth / rect.width}px`;
+          element.style.top = `${(position.y - rect.top) * stageHeight / rect.height}px`;
+          element.style.transform = `translate(-50%, -50%) rotate(${position.rotation}rad)`;
         }
       }
     } catch { fail(); }
-    host.dataset.hingeAngle = (180 - fold * 360 / Math.PI).toFixed(2);
+    host.dataset.hingeAngle = renderedAngle.toFixed(2);
     host.dataset.pose = current.pose ?? "custom";
   });
 
@@ -776,12 +791,14 @@ export function createDuoScene(
       canvas.removeEventListener("pointercancel", up);
       canvas.removeEventListener("lostpointercapture", up);
       canvas.removeEventListener("wheel", wheel);
-      hingeHandle?.removeEventListener("pointerdown", hingeDown);
-      hingeHandle?.removeEventListener("pointermove", hingeMove);
-      hingeHandle?.removeEventListener("pointerup", hingeUp);
-      hingeHandle?.removeEventListener("pointercancel", hingeUp);
-      hingeHandle?.removeEventListener("lostpointercapture", hingeUp);
-      if (hingeHandle) hingeHandle.style.display = "none";
+      for (const { element } of hingeHandles) {
+        element.removeEventListener("pointerdown", hingeDown);
+        element.removeEventListener("pointermove", hingeMove);
+        element.removeEventListener("pointerup", hingeUp);
+        element.removeEventListener("pointercancel", hingeUp);
+        element.removeEventListener("lostpointercapture", hingeUp);
+        element.style.display = "none";
+      }
       window.removeEventListener("blur", blur);
       window.removeEventListener("resize", resizeViewport);
       document.removeEventListener("visibilitychange", onVisibilityChange);

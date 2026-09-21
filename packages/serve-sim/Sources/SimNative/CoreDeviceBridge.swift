@@ -87,40 +87,37 @@ actor CoreDeviceBridge {
     }
 
     func setHingePose(udid: String, pose: String) async -> Bool {
-        let angle: Double
-        let orientation: String
-        let tableMode: Bool
-        // These are Device Hub's physical orientations. They must not use the
-        // active panel's nativeRotation conversion used by screen rotation.
-        switch pose {
-        case "closed": (angle, orientation, tableMode) = (0, "portrait", false)
-        case "open": (angle, orientation, tableMode) = (180, "portrait", false)
-        case "laptop": (angle, orientation, tableMode) = (90, "landscape-left", false)
-        case "book": (angle, orientation, tableMode) = (90, "portrait", false)
-        case "tent": (angle, orientation, tableMode) = (80, "facedown", true)
-        default: return false
-        }
-        // Release the table sensor before leaving a tabletop pose.
-        if !tableMode, !(await setTableMode(udid: udid, enabled: false)) { return false }
-        guard await setHingeAngle(udid: udid, angle: angle) else { return false }
-        if tableMode {
-            // Face down preserves the last interface orientation. Activate the
-            // cover with Table Mode while holding landscape, so iOS can rotate
-            // that display before the final face-down event replaces gravity.
-            guard await setPhysicalOrientation(udid: udid, value: "landscape-left"),
-                  await setTableMode(udid: udid, enabled: true) else { return false }
-            let clock = ContinuousClock()
-            let deadline = clock.now.advanced(by: .milliseconds(1500))
-            while clock.now < deadline {
-                if let displays = try? await CoreDeviceDisplayInfo.read(udid: udid),
-                   displays.contains(where: { $0.screenID == 1 && $0.isActive && $0.orientation == "landscape_left" }) { break }
-                do { try await Task.sleep(for: .milliseconds(50)) }
-                catch { return false }
+        await HingePoseControl.apply(
+            pose,
+            tableModeAvailable: { await self.tableModeAvailable(udid: udid) },
+            setAngle: { await self.setHingeAngle(udid: udid, angle: $0) },
+            setTableMode: { await self.setTableMode(udid: udid, enabled: $0) },
+            setOrientation: { await self.setPhysicalOrientation(udid: udid, value: $0) },
+            waitForLandscapeCover: {
+                let clock = ContinuousClock()
+                let deadline = clock.now.advanced(by: .milliseconds(1500))
+                while clock.now < deadline {
+                    if let displays = try? await CoreDeviceDisplayInfo.read(udid: udid),
+                       displays.contains(where: { $0.screenID == 1 && $0.isActive && $0.orientation == "landscape_left" }) { break }
+                    do { try await Task.sleep(for: .milliseconds(50)) }
+                    catch { return false }
+                }
+                // Apps that lock portrait and missing optional display metadata
+                // must still allow Tent after this best-effort readback.
+                return true
             }
-            // Readback is best effort: apps that lock portrait must still be
-            // able to enter Tent, and optional display metadata can be absent.
-        }
-        return await setPhysicalOrientation(udid: udid, value: orientation)
+        )
+    }
+
+    private func tableModeAvailable(udid: String) async -> Bool {
+        guard SSCoreDeviceTableModeAvailable() else { return false }
+        // Check the per-device capability as well as the exported symbols,
+        // without sending a sensor event or moving the hinge.
+        return (try? await capability(
+            udid: udid,
+            metadataSymbol: "$s10CoreDevice29UniversalHIDServiceCapabilityVN",
+            witnessSymbol: "$s10CoreDevice29UniversalHIDServiceCapabilityVAA0bE0AAWP"
+        )) != nil
     }
 
     func setTableMode(udid: String, enabled: Bool) async -> Bool {

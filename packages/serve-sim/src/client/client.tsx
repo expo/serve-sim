@@ -14,7 +14,6 @@ import {
   digitalCrownDeltaFromWheel,
   displayStreamConfig,
   fallbackScreenSize,
-  isLandscapeConfig,
   screenBorderRadius,
   SimulatorToolbar,
   getDeviceType,
@@ -39,7 +38,7 @@ import {
   KeyboardCapture,
   KeyboardToggleButton,
 } from "./components/keyboard-capture";
-import { DeviceKitChrome, type ChromeButtonPress } from "./components/device-chrome-frame";
+import { DeviceKitChrome, deviceKitChromeForScreen, deviceKitChromeGeometry, deviceKitScreenRadius, type ChromeButtonPress } from "./components/device-chrome-frame";
 import { createPacedKeySender } from "./utils/paced-key-sender";
 import { GridPanel } from "./components/grid-panel";
 import { IconButton } from "./components/icon-button";
@@ -49,6 +48,10 @@ import { ServeSimToaster } from "./components/app-toasts";
 import { ShareSessionButton } from "./components/share-session-button";
 import { SimulatorResizeSizeBadge } from "./components/simulator-resize-size-badge";
 import { StreamStatusPill } from "./components/stream-status-pill";
+import { HingeControls } from "./components/hinge-controls";
+import { screenConfigsEqual } from "./simulator/screen-config-state";
+import type { HingeAngleResult } from "../hinge-angle";
+import { completeHingeRequest, type PendingHingeRequest } from "./utils/hinge-request";
 import { ToolsPanel } from "./components/tools-panel";
 import { WebKitDevtoolsPanel } from "./components/webkit-devtools-panel";
 import { useMediaDrop } from "./hooks/use-media-drop";
@@ -103,6 +106,7 @@ import {
 import {
   flushWsMessageQueue,
   sendOrQueueWsMessage,
+  trySendWsMessage,
   type QueuedWsMessage,
 } from "./utils/ws-send-queue";
 import {
@@ -587,7 +591,7 @@ function AppWithConfig({
   config,
   deviceName,
   deviceRuntime,
-  chrome,
+  chrome: defaultChrome,
   axOverlayEnabled,
   setAxOverlayEnabled,
   devtoolsOpen,
@@ -728,9 +732,21 @@ function AppWithConfig({
   // Screen config now arrives over the input WebSocket (pushed by the helper on
   // connect + on every dimension/orientation change) instead of a 1s /config poll.
   const [wsStreamConfig, setWsStreamConfig] = useState<StreamConfig | null>(null);
+  const [hingePending, setHingePending] = useState(false);
+  const [hingeError, setHingeError] = useState<string | null>(null);
+  const hingeRequestRef = useRef<PendingHingeRequest | null>(null);
   const streamConfig = wsStreamConfig;
-  const activeStreamConfig = liveStreamConfig ?? streamConfig ?? fallbackScreenSize(deviceType, deviceName);
-  const imgBorderRadius = screenBorderRadius(deviceType, activeStreamConfig);
+  const activeStreamConfig: StreamConfig = liveStreamConfig ?? streamConfig ?? fallbackScreenSize(deviceType, deviceName);
+  const activeScreenId = liveStreamConfig?.screenId ?? streamConfig?.screenId;
+  const chrome = defaultChrome ? deviceKitChromeForScreen(defaultChrome, activeScreenId) : null;
+  const hingeAngle = liveStreamConfig?.hingeAngle ?? streamConfig?.hingeAngle;
+  const supportsHingeAngle = liveStreamConfig?.supportsHingeAngle ?? streamConfig?.supportsHingeAngle;
+  const showHingeControls = !presentation && (supportsHingeAngle ?? hingeAngle !== undefined);
+  const clipOrientation = activeStreamConfig.orientation ?? (activeStreamConfig.width > activeStreamConfig.height ? "landscape_left" : "portrait");
+  const hasDisplayRadii = !!chrome?.screenCornerRadii;
+  const imgBorderRadius = chrome && hasDisplayRadii
+    ? deviceKitScreenRadius(chrome, clipOrientation)
+    : screenBorderRadius(deviceType, activeStreamConfig);
   const frameMaxWidth = simulatorMaxWidth(deviceType, activeStreamConfig);
   const frameAspectRatio = simulatorAspectRatio(activeStreamConfig);
   const frameDisplayConfig = displayStreamConfig(activeStreamConfig);
@@ -739,21 +755,21 @@ function AppWithConfig({
     : 1;
 
   // DeviceKit chrome wraps the live stream in the real device bezel (with
-  // working hardware buttons). It's authored portrait, so in landscape we drop
-  // back to the bare rounded screen. When chromed, the on-screen container is
-  // the full frame (bezel + screen): `chromeScale` is how much bigger the frame
+  // working hardware buttons), rotating its artwork around the active screen.
+  // When chromed, the on-screen container is the full frame (bezel + screen):
+  // `chromeScale` is how much bigger the frame
   // is than the screen, so we scale the container up by it while keeping the
   // *screen* at the same comfortable size — and resize / panel-collision math
   // all operate on the frame dimensions.
-  const isLandscape = isLandscapeConfig(activeStreamConfig);
-  const useChrome = !!chrome && !isLandscape && chromeEnabled;
-  const chromeScale = useChrome ? chrome!.frame.width / chrome!.screen.width : 1;
+  const chromeGeometry = chrome ? deviceKitChromeGeometry(chrome, clipOrientation) : null;
+  const useChrome = !!chromeGeometry && chromeEnabled;
+  const chromeScale = useChrome ? chromeGeometry!.frame.width / chromeGeometry!.screen.width : 1;
   const containerDefaultWidth = frameMaxWidth * chromeScale;
   const containerAspectRatioValue = useChrome
-    ? chrome!.frame.width / chrome!.frame.height
+    ? chromeGeometry!.frame.width / chromeGeometry!.frame.height
     : frameAspectRatioValue;
   const containerAspectRatio = useChrome
-    ? `${chrome!.frame.width} / ${chrome!.frame.height}`
+    ? `${chromeGeometry!.frame.width} / ${chromeGeometry!.frame.height}`
     : frameAspectRatio;
 
   // Touch/button relay via direct WebSocket
@@ -796,25 +812,42 @@ function AppWithConfig({
         }
       };
       ws.onmessage = (ev) => {
+        if (stopped) return;
         // Server -> client screen-config push (tag 0x82): [tag][JSON].
         if (!(ev.data instanceof ArrayBuffer)) return;
         const bytes = new Uint8Array(ev.data);
-        if (bytes.length < 1 || bytes[0] !== 0x82) return;
+        if (bytes.length < 1) return;
+        if (bytes[0] === 0x8f) {
+          try {
+            const result = JSON.parse(new TextDecoder().decode(bytes.subarray(1))) as HingeAngleResult;
+            const completed = completeHingeRequest(hingeRequestRef.current, result);
+            if (!completed) return;
+            hingeRequestRef.current = null;
+            setHingePending(false);
+            setHingeError(completed.error);
+            if (completed.angle !== undefined) {
+              setWsStreamConfig((prev) => prev ? { ...prev, hingeAngle: completed.angle } : prev);
+            }
+          } catch {}
+          return;
+        }
+        if (bytes[0] !== 0x82) return;
         try {
           const cfg = JSON.parse(new TextDecoder().decode(bytes.subarray(1))) as StreamConfig;
           if (cfg.width <= 0 || cfg.height <= 0) return;
           setWsStreamConfig((prev) =>
-            prev &&
-            prev.width === cfg.width &&
-            prev.height === cfg.height &&
-            prev.orientation === cfg.orientation
-              ? prev
-              : cfg,
+            screenConfigsEqual(prev, cfg) ? prev : cfg,
           );
         } catch {}
       };
       ws.onclose = () => {
         if (wsRef.current === ws) wsRef.current = null;
+        if (!stopped && hingeRequestRef.current) {
+          clearTimeout(hingeRequestRef.current.timer);
+          hingeRequestRef.current = null;
+          setHingePending(false);
+          setHingeError("Connection lost while changing the hinge angle.");
+        }
         scheduleReconnect();
       };
       ws.onerror = () => {
@@ -828,6 +861,8 @@ function AppWithConfig({
       stopped = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (wsRef.current === currentWs) wsRef.current = null;
+      if (hingeRequestRef.current) clearTimeout(hingeRequestRef.current.timer);
+      hingeRequestRef.current = null;
       currentWs?.close();
     };
   }, [config.wsUrl]);
@@ -875,13 +910,25 @@ function AppWithConfig({
   const onStreamScroll = useCallback((data: { dx: number; dy: number; x: number; y: number }) => sendWs(0x0b, data), [sendWs]);
   const onScreenConfigChange = useCallback((next: StreamConfig) => {
     setLiveStreamConfig((prev) =>
-      prev &&
-      prev.width === next.width &&
-      prev.height === next.height &&
-      prev.orientation === next.orientation
-        ? prev
-        : next,
+      screenConfigsEqual(prev, next) ? prev : next,
     );
+  }, []);
+  const setHingeAngle = useCallback((angle: number) => {
+    if (hingeRequestRef.current) return;
+    setHingePending(true);
+    setHingeError(null);
+    const timer = setTimeout(() => {
+      hingeRequestRef.current = null;
+      setHingePending(false);
+      setHingeError("The simulator did not confirm the hinge angle change.");
+    }, 5000);
+    hingeRequestRef.current = { angle, timer };
+    if (!trySendWsMessage(wsRef.current, 0x0f, { angle })) {
+      clearTimeout(timer);
+      hingeRequestRef.current = null;
+      setHingePending(false);
+      setHingeError("Connect to the simulator before changing its fold position.");
+    }
   }, []);
   const rotateDevice = useCallback((orientation: SimulatorOrientation) => {
     sendWs(0x07, { orientation });
@@ -901,20 +948,17 @@ function AppWithConfig({
   useEffect(() => {
     setLiveStreamConfig(null);
     setWsStreamConfig(null);
+    setHingePending(false);
+    setHingeError(null);
   }, [config.streamUrl]);
 
   useEffect(() => {
     const confirmedConfig = streamConfig;
     if (!confirmedConfig) return;
     setLiveStreamConfig((prev) =>
-      prev &&
-      prev.width === confirmedConfig.width &&
-      prev.height === confirmedConfig.height &&
-      prev.orientation === confirmedConfig.orientation
-        ? prev
-        : null,
+      screenConfigsEqual(prev, confirmedConfig) ? prev : null,
     );
-  }, [streamConfig, streamConfig?.width, streamConfig?.height, streamConfig?.orientation]);
+  }, [streamConfig, streamConfig?.width, streamConfig?.height, streamConfig?.orientation, streamConfig?.screenId, streamConfig?.hingeAngle, streamConfig?.supportsHingeAngle]);
 
   const sendKey = useCallback((type: "down" | "up", usage: number) => {
     sendWs(0x06, { type, usage });
@@ -1410,7 +1454,7 @@ function AppWithConfig({
                   // semi-transparent white against the black page as a visible
                   // outline. An inset shadow paints over the (opaque) video edge.
                   borderRadius: useChrome ? 0 : imgBorderRadius,
-                  cornerShape: useChrome ? undefined : "superellipse(1.3)",
+                  cornerShape: useChrome || hasDisplayRadii ? undefined : "superellipse(1.3)",
                   ...(useChrome
                     ? {}
                     : { boxShadow: "inset 0 0 0 1px rgba(255, 255, 255, 0.2)" }),
@@ -1450,6 +1494,7 @@ function AppWithConfig({
             return (
               <DeviceKitChrome
                 chrome={chrome!}
+                orientation={clipOrientation}
                 interactive
                 containerSize={
                   // Measured, not computed: pixel rects can't self-correct the
@@ -1507,6 +1552,15 @@ function AppWithConfig({
         </div>
         {!presentation && (
         <div className="inline-flex items-center justify-center gap-2 max-w-full pb-1 sm:pb-0">
+          {showHingeControls && (
+            <HingeControls
+              angle={hingeAngle}
+              supported={supportsHingeAngle}
+              pending={hingePending}
+              error={hingeError}
+              onChange={setHingeAngle}
+            />
+          )}
           <SimulatorToolbar
             onRotate={rotateDevice}
             orientation={(activeStreamConfig as { orientation?: SimulatorOrientation }).orientation ?? null}
@@ -1646,7 +1700,7 @@ function AppWithConfig({
         width={toolsPanelWidth}
         chromeEnabled={chromeEnabled}
         onChromeEnabledChange={setChromeEnabled}
-        hasChrome={!!chrome && !isLandscape}
+        hasChrome={!!chrome}
       />
       <ResizeHandle
         panelWidth={toolsPanelWidth}

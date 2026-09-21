@@ -38,6 +38,8 @@ Requires an Apple silicon (`arm64`) Mac with Xcode command line tools (`xcrun si
 
 The bundled native addon, simulator tools, and host helpers are arm64-only.
 
+The iPhone Duo simulator supports touch input, scrolling, and touch gestures on both the folded cover screen and the half-open or fully open inner screen. Frames and input follow the active display and its orientation; an app can still restrict its supported orientations.
+
 ## CLI
 
 ```
@@ -50,6 +52,8 @@ serve-sim type <text> [-d udid]       Type text via the simulator keyboard
 serve-sim rotate <orientation> [-d udid]
                                       portrait | portrait_upside_down |
                                       landscape_left | landscape_right
+serve-sim hinge <fold|half|unfold|degrees> [-d udid]
+                                      Set the hinge angle (0° folded, 180° unfolded)
 serve-sim ca-debug <option> <on|off> [-d udid]
                                       Toggle a CoreAnimation debug flag
                                       (blended|copies|misaligned|offscreen|slow-animations)

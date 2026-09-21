@@ -1,3 +1,5 @@
+import { HINGE_POSITIONS, isHingeAngle } from "./hinge-angle";
+
 export type EventLogSource = "hid" | "exec" | "ui";
 export type EventLogStatus = "ok" | "error";
 
@@ -328,6 +330,18 @@ export function eventLogEventForHidMessage(
         summary: `Software keyboard ${visible ? "shown" : "hidden"}`,
       };
     }
+    case 0x0f: {
+      const angle = details.angle;
+      if (!isHingeAngle(angle)) return null;
+      return {
+        device,
+        source: "hid",
+        kind: "hinge",
+        action: "set-angle",
+        summary: HINGE_POSITIONS.find((position) => position.angle === angle)?.label ?? `Hinge ${angle}°`,
+        details: { angle },
+      };
+    }
     default:
       return null;
   }
@@ -503,4 +517,3 @@ function statusFromExitCode(exitCode: number | undefined): EventLogStatus | unde
 function commandResultDetails(result: { exitCode?: number } | undefined): Record<string, unknown> {
   return statusFromExitCode(result?.exitCode) ? { exitCode: result?.exitCode } : {};
 }
-

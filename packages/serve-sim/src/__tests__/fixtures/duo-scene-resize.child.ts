@@ -274,6 +274,20 @@ test("fold handles reach both endpoints using the saved view, including rotated 
         expect(rig.state.angle).toBe(180);
         rig.left.pointer("pointerup", open.x, open.y);
         expect(rig.left.hasPointerCapture(1)).toBe(false);
+        // Starting a new opening gesture from fully closed must use the
+        // same facing path as the rendered model, including after Rotate.
+        rig.state.angle = 0;
+        rig.settle();
+        const start = rig.left.point();
+        rig.left.pointer("pointerdown", start.x, start.y);
+        rig.left.pointer("pointermove", start.x + (open.x - start.x) * 10, start.y + (open.y - start.y) * 10);
+        rig.settle();
+        expect(rig.state.angle).toBe(180);
+        rig.left.pointer("pointermove", start.x, start.y);
+        rig.settle();
+        expect(rig.state.angle).toBe(0);
+        rig.left.pointer("pointerup", start.x, start.y);
+        expect(rig.left.hasPointerCapture(1)).toBe(false);
       } finally { rig.dispose(); }
     }
   }

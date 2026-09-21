@@ -19,6 +19,11 @@ export function duoScreenRoll(config: StreamConfig) {
   return mount - streamDisplayGeometry(config).rotationDegrees * Math.PI / 180;
 }
 
+/** Turn the ordinary folding view from the cover toward the inner screens. */
+export function duoFacingYaw(fold: number): number {
+  return Math.PI / 2 * Math.pow(fold / (Math.PI / 2), 3);
+}
+
 /** Select the requested panel before native display metadata catches up. */
 export function duoIntendedScreen(
   angle: number | undefined,
@@ -53,7 +58,7 @@ export function duoPose(
   // Present the cover exactly front-on at 0°, and the inner screen exactly
   // front-on at 180°. Turn toward the cover gradually as the hinge closes.
   const presentation = new Quaternion().setFromEuler(new Euler(
-    0, Math.PI / 2 * Math.pow(1 - degrees / 180, 3), 0, "YXZ",
+    0, duoFacingYaw(fold), 0, "YXZ",
   ));
   presentation.premultiply(new Quaternion(0, 0, Math.sin(roll / 2), Math.cos(roll / 2)));
 

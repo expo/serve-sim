@@ -44,14 +44,15 @@ on its cover or inner display. Folding, unfolding, and
 switching poses animate continuously, including when a new preset interrupts a
 transition. Closed presents the cover straight toward the viewer, and Open
 presents the inner display straight toward the viewer. The view uses native
-orientation once when connecting. After that, only the browser's Rotate controls
-and pose presets change the model's viewing direction. Hinge edits preserve the
-complete view rotation, including across display switches and delayed orientation
-updates. They do not automatically turn the device toward the cover as it closes.
+orientation once when connecting. Rotate controls and pose presets choose the
+device's orientation. In Closed, Book (Partially open), and Open, hinge edits
+smoothly turn the cover or inner screens toward the viewer while retaining the
+chosen portrait/landscape orientation. Display switches and delayed orientation
+updates never rotate the model.
 Laptop has a level base and horizontal hinge; Tent presents the outer cover
-screen with both halves descending from a horizontal ridge. Slider adjustments
-preserve the view through the closed and open endpoints. Laptop folds around its
-stationary base; Tent folds symmetrically beneath its ridge.
+screen with both halves descending from a horizontal ridge. In these two tabletop
+modes, slider adjustments preserve the view through the closed and open endpoints.
+Laptop folds around its stationary base; Tent folds symmetrically beneath its ridge.
 The browser's reduced-motion preference applies pose changes immediately.
 
 Drag either outer-edge handle to fold or unfold the 3D preview. Near closed

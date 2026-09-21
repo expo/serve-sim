@@ -152,7 +152,7 @@ function setup(dual: boolean, cacheScreenOnFold?: boolean) {
   };
 }
 
-test("hinge motion preserves the full view rotation through every preset and delayed native orientation updates", async () => {
+test("hinge edits reveal ordinary displays while retaining tabletop views and ignoring delayed orientation", async () => {
   for (const { id: pose, angle: start } of HINGE_POSES) {
     const rig = setup(true);
     const configFor = (angle: number) => angle <= 54
@@ -164,13 +164,18 @@ test("hinge motion preserves the full view rotation through every preset and del
       rig.inner.pixel = 180;
       rig.setState({ angle: start, pose, physicalPose: pose, view: duoPresetView(pose), streamConfig: configFor(start) });
       settle();
-      const rotation = rig.rotation();
+      const initialRotation = rig.rotation();
+      const hingeDirection = new three.Vector3(0, 1, 0).applyQuaternion(initialRotation);
       for (const angle of [1, 54, 55, 90, 180, 55, 54, 0, 55, 180]) {
         rig.setState({ angle, pose: null });
         rig.tick();
-        expect(rig.rotation().angleTo(rotation)).toBeLessThan(1e-6);
+        if (pose === "laptop" || pose === "tent") expect(rig.rotation().angleTo(initialRotation)).toBeLessThan(1e-6);
         settle();
-        expect(rig.rotation().angleTo(rotation)).toBeLessThan(1e-6);
+        const rotation = rig.rotation();
+        expect(new three.Vector3(0, 1, 0).applyQuaternion(rotation).distanceTo(hingeDirection)).toBeLessThan(1e-6);
+        if (pose === "laptop" || pose === "tent") expect(rotation.angleTo(initialRotation)).toBeLessThan(1e-6);
+        else if (angle === 180) expect(new three.Vector3(0, 0, 1).applyQuaternion(rotation).z).toBeCloseTo(1, 6);
+        else if (angle === 0) expect(new three.Vector3(-1, 0, 0).applyQuaternion(rotation).z).toBeCloseTo(1, 6);
         for (const orientation of ["portrait", "landscape_left", "landscape_right", "portrait_upside_down", "portrait"] as const) {
           rig.setState({ streamConfig: { ...configFor(angle), orientation } });
           settle();

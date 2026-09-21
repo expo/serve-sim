@@ -3,7 +3,7 @@ import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import type { DuoModelViewProps } from "../components/duo-model-view";
 import type { StreamConfig } from "../types";
 import { duoIntendedScreen, duoFrameMatchesDisplay, duoScreenMapping, duoScreenPoint, stepDuoSpring, type DuoScreenMapping } from "./duo-pose";
-import { duoInitialView, duoViewFolds, type DuoView } from "./duo-view";
+import { duoInitialView, duoViewFolds, duoViewRotation, type DuoView } from "./duo-view";
 import { duoFitScale, duoPanelEdgeAnchor, duoProjectAnchor, duoHingeDragAngle, type DuoScreenPoint as ProjectedPoint } from "./duo-layout";
 import { HID_EDGE_BOTTOM, HID_EDGE_LEFT, HID_EDGE_RIGHT, HID_EDGE_TOP, HOME_INDICATOR_BAND_NORM, rawEdgeForDisplayEdge, streamDisplayGeometry } from "./orientation";
 import { loadDuoModel } from "./duo-model";
@@ -607,7 +607,9 @@ export function createDuoScene(
     const savedRight = right.rotation.y;
     const savedZoom = camera.zoom;
     try {
-      applyPanelFolds(duoViewFolds((180 - angle) * Math.PI / 360, view));
+      const endpointFold = (180 - angle) * Math.PI / 360;
+      if (view.facingYaw !== undefined) root.quaternion.copy(duoViewRotation(endpointFold, view));
+      applyPanelFolds(duoViewFolds(endpointFold, view));
       const scale = current.sizeMode !== "physical"
         ? duoFitScale(model, camera, { width: viewportWidth, height: viewportHeight }, { width: stageWidth, height: stageHeight }, 32)
         : 1;
@@ -707,25 +709,26 @@ export function createDuoScene(
     const view = viewFor(current);
     const angle = Math.max(0, Math.min(180, current.angle ?? (current.streamConfig?.screenId === 1 ? 0 : 180)));
     const targetFold = (180 - angle) * Math.PI / 360;
-    // View state changes only on initialization, Rotate, or a pose command.
-    // Neither the hinge angle nor delayed native orientation can rotate it.
-    targetQuaternion.fromArray(view.rotation);
     if (view.fixedLeftFold !== undefined) anchoredView = view;
     const targetAnchor = view.fixedLeftFold === undefined ? 0 : 1;
-    if (firstPose || reducedMotion.matches) {
+    const snap = firstPose || reducedMotion.matches;
+    if (snap) {
       fold = targetFold;
       velocity = 0;
       anchorWeight = targetAnchor;
-      root.quaternion.copy(targetQuaternion);
       firstPose = false;
     } else {
       const step = stepDuoSpring(fold, velocity, targetFold, dt);
       fold = step.value;
       velocity = step.velocity;
-      root.quaternion.slerp(targetQuaternion, 1 - Math.exp(-10 * dt));
       anchorWeight += (targetAnchor - anchorWeight) * (1 - Math.exp(-10 * dt));
       if (Math.abs(targetAnchor - anchorWeight) < 1e-6) anchorWeight = targetAnchor;
     }
+    // Ordinary folding turns toward the inside as the rendered hinge opens.
+    // Tabletop views and the user's roll stay independent of native metadata.
+    targetQuaternion.copy(duoViewRotation(fold, view));
+    if (snap) root.quaternion.copy(targetQuaternion);
+    else root.quaternion.slerp(targetQuaternion, 1 - Math.exp(-10 * dt));
     applyPanelFolds(duoViewFolds(fold, anchoredView ?? view, anchorWeight));
     const renderedAngle = 180 - fold * 360 / Math.PI;
     try {

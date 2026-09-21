@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { StreamStatsBody, describeFaults, statsToJson } from "../client/components/stream-stats-tool";
+import type { CaptureCounts } from "../webrtc-sender-stats";
+import type { CaptureWindow } from "../client/utils/capture-window";
 import type { StreamStats } from "../client/utils/webrtc-stats";
 
 function stats(overrides: Partial<StreamStats> = {}): StreamStats {
@@ -18,6 +20,12 @@ function stats(overrides: Partial<StreamStats> = {}): StreamStats {
     jitterBufferSeconds: 4,
     jitterBufferEmitted: 100,
     reportedFps: 60,
+    interFrameDelaySeconds: null,
+    interFrameDelaySquaredSeconds: null,
+    decodeSeconds: null,
+    pacingDeviationMs: null,
+    frameGapMs: null,
+    decodeMsPerFrame: null,
     width: 1280,
     height: 720,
     codec: "video/VP8",
@@ -38,10 +46,32 @@ function stats(overrides: Partial<StreamStats> = {}): StreamStats {
 function row(markup: string, label: string): string | null {
   const attribute = markup.indexOf(`data-stream-stat="${label}"`);
   if (attribute === -1) return null;
-  const start = markup.indexOf(">", attribute) + 1;
-  const cell = markup.slice(start, markup.indexOf("</div>", start));
-  const text = cell.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-  return text.startsWith(label) ? text.slice(label.length).trim() : text;
+  const value = markup.indexOf("data-stream-value", attribute);
+  if (value === -1) return null;
+  const start = markup.indexOf(">", value) + 1;
+  const cell = markup.slice(start, markup.indexOf("</span>", start));
+  return cell.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** The hover description for one labelled row, which carries the meaning and the scope. */
+function help(markup: string, label: string): string | null {
+  const attribute = markup.indexOf(`data-stream-stat="${label}"`);
+  if (attribute === -1) return null;
+  const tip = markup.indexOf('role="tooltip"', attribute);
+  if (tip === -1) return null;
+  const start = markup.indexOf(">", tip) + 1;
+  const body = markup.slice(start, markup.indexOf("</span></span>", start));
+  return body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** The last line of a tooltip, which states the window the number covers. */
+function scopeOf(markup: string, label: string): string {
+  const body = help(markup, label) ?? "";
+  const scopes = [
+    "Last second", "Now", "Average per frame, this session",
+    "Average per frame, last second", "Since the session started",
+  ];
+  return scopes.find((scope) => body.endsWith(scope)) ?? "";
 }
 
 const sender = {
@@ -133,6 +163,23 @@ describe("StreamStatsBody", () => {
     expect(markup).not.toContain("text-warning");
   });
 
+  test("files the all-clear behind the disclosure, since a quiet stream needs no line", () => {
+    const markup = renderToStaticMarkup(<StreamStatsBody stats={stats()} history={[stats()]} faults={[]} />);
+    const [before] = markup.split("Diagnostics");
+    expect(before).not.toContain("No drops");
+  });
+
+  test("puts a fault where the all-clear would be, so one slot carries the verdict", () => {
+    const dropping = stats({ droppedInWindow: 3 });
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody stats={dropping} history={[stats()]} faults={describeFaults(dropping)} />,
+    );
+    const [before, inside] = markup.split("Diagnostics");
+    expect(before).not.toContain("3 frames dropped");
+    expect(inside).toContain("3 frames dropped");
+    expect(markup).not.toContain("No drops");
+  });
+
   test("does not claim health for a window it could not measure", () => {
     const unmeasured = stats({
       fps: null, kbps: null, lossRatio: null, droppedInWindow: null,
@@ -217,7 +264,8 @@ describe("StreamStatsBody", () => {
     const markup = renderToStaticMarkup(
       <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} sender={sender} />,
     );
-    expect(row(markup, "Encode")).toBe("2.4 ms /frame");
+    expect(row(markup, "Encode")).toBe("2.4 ms");
+    expect(help(markup, "Encode")).toContain("Average per frame");
   });
 
   test("omits the encode cost without the sender half", () => {
@@ -239,10 +287,17 @@ describe("StreamStatsBody", () => {
   });
 });
 
-const capture = {
+/** The download keeps the raw lifetime counters; only the panel reads the window. */
+const captureCounts: CaptureCounts = {
+  pickCount: 5400, pickSumMs: 53, pickMaxMs: 0.8,
   screenFrames: 900, idleFrames: 12, offeredFrames: 880, forwardedFrames: 830,
-  pumpRestarts: 0, captureCpuCopies: 0,
-  pollTicks: 2400, pollLateSumMs: 600,
+  pumpRestarts: 0, cpuFallbacks: 0, attempts: 5400, stalls: 0, gapSumMs: 90_000,
+  stallSumMs: 0, pollTicks: 2400, pollLateSumMs: 600,
+};
+
+const capture: CaptureWindow = {
+  screenFps: 60, idleFps: 0, deliveredFps: 60, submittedFps: 60, intervalMs: 8.3, pickMs: 0.01,
+  stalls: 0, stallSumMs: 0, cpuFallbacks: 0, pumpRestarts: 0,
 };
 
 describe("stale samples", () => {
@@ -265,8 +320,8 @@ describe("stale samples", () => {
         stale
       />,
     );
-    expect(row(markup, "Encode")).toBe("2.4 ms /frame");
-    expect(row(markup, "Screen frames")).toBe("900");
+    expect(row(markup, "Encode")).toBe("2.4 ms");
+    expect(row(markup, "Screen frames")).toBe("60/s");
     expect(markup).toContain("opacity-50");
   });
 
@@ -285,15 +340,133 @@ describe("stale samples", () => {
   });
 });
 
+describe("diagnostics", () => {
+  test("keeps the detail behind a disclosure, so the default read stays short", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        sender={sender}
+        capture={capture}
+      />,
+    );
+    const [before, inside] = markup.split("Diagnostics");
+    expect(before).toContain("Frame gap");
+    expect(before).not.toContain("Screen frames");
+    expect(inside).toContain("No drops, freezes or loss in this window");
+    expect(inside).toContain("Screen frames");
+    expect(inside).toContain("Encode FPS");
+    expect(inside).toContain("Capture interval");
+  });
+
+  test("reports the interval per capture rather than as a raw sum", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        capture={{ ...capture, intervalMs: 16.5 }}
+      />,
+    );
+    expect(row(markup, "Capture interval")).toBe("16.5 ms");
+  });
+
+  test("surfaces pump restarts, so a watchdog that fires is visible", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        sender={sender}
+        capture={{ ...capture, pumpRestarts: 7 }}
+      />,
+    );
+    expect(row(markup, "Pump restarts")).toBe("7");
+    expect(help(markup, "Pump restarts")).toContain("WebRTC frame pump");
+  });
+
+  test("names the receiver cadence rows, which no other row reports", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats({ frameGapMs: 16.7, pacingDeviationMs: 1.62, decodeMsPerFrame: 0.44 })}
+        history={[stats()]}
+        faults={[]}
+      />,
+    );
+    expect(row(markup, "Frame gap")).toBe("16.7 ms ± 1.6");
+    expect(row(markup, "Decode")).toBe("0.4 ms");
+  });
+
+  test("shows the gap alone when its spread needed a second frame it did not get", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats({ frameGapMs: 16.7, pacingDeviationMs: null })}
+        history={[stats()]}
+        faults={[]}
+      />,
+    );
+    expect(row(markup, "Frame gap")).toBe("16.7 ms");
+  });
+
+  test("keeps the scope out of the value, so a blank cell stays blank", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} capture={capture} />,
+    );
+    expect(row(markup, "Frame gap")).toBe("—");
+    expect(row(markup, "Stalls")).toBe("0");
+    expect(help(markup, "Stalls")).toContain("Since the session started");
+    expect(markup).not.toContain("total<");
+  });
+
+  test("describes every labelled row, so a new metric cannot ship without its help text", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        sender={sender}
+        capture={capture}
+      />,
+    );
+    const labels = [...markup.matchAll(/data-stream-stat="([^"]+)"/g)].map(([, label]) => label ?? "");
+    expect(labels).toContain("Capture interval");
+    for (const label of labels) {
+      // The tooltip opens with the label, so the meaning and the scope are what is left.
+      const scope = scopeOf(markup, label);
+      expect(scope).not.toBe("");
+      const meaning = (help(markup, label) ?? "").slice(label.length, -scope.length).trim();
+      expect(meaning.length).toBeGreaterThan(20);
+    }
+  });
+
+  test("links a row to its description, so the help reaches a screen reader", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} capture={capture} />,
+    );
+    const described = markup.match(/aria-describedby="([^"]+)"/)?.[1];
+    expect(described).toBeString();
+    expect(markup).toContain(`id="${described}"`);
+  });
+
+  test("reads a long stall in seconds, where milliseconds stop being legible", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody stats={stats()} history={[stats()]} faults={[]}
+        capture={{ ...capture, stallSumMs: 2_936 }} />,
+    );
+    expect(row(markup, "Stall time")).toBe("2.9 s");
+  });
+});
+
 describe("capture rows", () => {
   test("shows all four counts, so a stalled capture is distinguishable from a static screen", () => {
     const markup = renderToStaticMarkup(
       <StreamStatsBody stats={stats()} history={[stats()]} faults={[]} capture={capture} />,
     );
-    expect(row(markup, "Screen frames")).toBe("900");
-    expect(row(markup, "Idle frames")).toBe("12");
-    expect(row(markup, "Capture deliveries")).toBe("880");
-    expect(row(markup, "Pacer submissions")).toBe("830");
+    expect(row(markup, "Screen frames")).toBe("60/s");
+    expect(row(markup, "Idle frames")).toBe("0.0/s");
+    expect(row(markup, "Capture deliveries")).toBe("60/s");
+    expect(row(markup, "Pacer submissions")).toBe("60/s");
   });
 
   test("shows a fractional encoder rate, so a limping encoder is not a dead one", () => {
@@ -309,27 +482,41 @@ describe("capture rows", () => {
     expect(row(markup, "Pacer FPS")).toBe("0.4 fps");
   });
 
-  test("shortens a lifetime counter so it fits its cell", () => {
+  test("separates a repeated frame from a captured one, which the frame rate cannot", () => {
     const markup = renderToStaticMarkup(
       <StreamStatsBody
         stats={stats()}
         history={[stats()]}
         faults={[]}
-        capture={{ ...capture, screenFrames: 1_621_585, idleFrames: 0, offeredFrames: 105_469,
-                   forwardedFrames: 4_414 }}
+        capture={{ ...capture, screenFps: 0, deliveredFps: 4.7, submittedFps: 60 }}
       />,
     );
-    expect(row(markup, "Screen frames")).toBe("1.62M");
-    expect(row(markup, "Capture deliveries")).toBe("105.5k");
-    expect(row(markup, "Pacer submissions")).toBe("4.4k");
-    expect(row(markup, "Idle frames")).toBe("0");
+    expect(row(markup, "Screen frames")).toBe("0.0/s");
+    expect(row(markup, "Capture deliveries")).toBe("4.7/s");
+    expect(row(markup, "Pacer submissions")).toBe("60/s");
+  });
+
+  test("blanks a rate it has no window for rather than reading it as a stall", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        capture={{ ...capture, screenFps: null, deliveredFps: null, submittedFps: null }}
+      />,
+    );
+    expect(row(markup, "Screen frames")).toBe("—");
+    expect(row(markup, "Capture deliveries")).toBe("—");
+    expect(row(markup, "Pacer submissions")).toBe("—");
   });
 });
 
 describe("statsToJson", () => {
   test("records the session context, so the file explains itself", () => {
     const parsed = JSON.parse(
-      statsToJson([stats()], { transport: "webrtc", codec: "video/VP8", sender, capture }),
+      statsToJson([stats()], {
+        transport: "webrtc", codec: "video/VP8", sender, capture: captureCounts,
+      }),
     );
     expect(parsed.sender.encodeMsPerFrame).toBe(2.4);
     expect(parsed.capture.forwardedFrames).toBe(830);

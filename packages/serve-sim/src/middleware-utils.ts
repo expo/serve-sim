@@ -164,7 +164,46 @@ export function isLoopbackHost(host: string): boolean {
   return bare === "localhost" || bare === "127.0.0.1" || bare === "::1";
 }
 
-// Echoes the request Origin (never a wildcard) when it's loopback or allowlisted.
+// A wildcard is only as narrow as the host the caller names: `*.github.io` and `*.co.uk` both
+// pass. Two labels after the star, so the rule stops a bare TLD like `*.com`, nothing more.
+const WILDCARD_HOST = /^\*\.[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i;
+
+/**
+ * Whether `configured` names `origin`, either exactly or through a leading `*.` wildcard.
+ * Accepts the same shapes the frame policy does, so `--cors-origin` and `--frame-ancestor`
+ * take the same values.
+ * Comparison is on canonical origins (default port dropped, no trailing slash, host lowercased),
+ * so a configured `https://expo.dev:443` or `https://expo.dev/` still matches a browser's Origin.
+ * A wildcard covers subdomains only, never the bare host, matching CSP's frame-ancestors.
+ */
+export function originMatches(configured: string, origin: URL): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(configured);
+  } catch {
+    return false;
+  }
+  // Ahead of the exact match, not just the wildcard: every opaque scheme serializes to the one
+  // string "null", so `chrome-extension://a` and `foo://evil` would otherwise compare equal.
+  if (!isWebOrigin(parsed)) return false;
+  if (parsed.origin === origin.origin) return true;
+  if (!WILDCARD_HOST.test(parsed.hostname)) return false;
+  const suffix = parsed.hostname.slice(1).toLowerCase();
+  const host = origin.hostname.toLowerCase();
+  return (
+    parsed.protocol === origin.protocol
+    && parsed.port === origin.port
+    && host.length > suffix.length
+    && host.endsWith(suffix)
+  );
+}
+
+/** The schemes a browser sends a CORS Origin for. Anything else serializes to "null". */
+function isWebOrigin(url: URL): boolean {
+  return url.protocol === "http:" || url.protocol === "https:";
+}
+
+/** Echoes the canonical request Origin (never a wildcard) when it's loopback or allowlisted. */
 export function corsAllowOriginHeaders(
   origin: string | null | undefined,
   allowedOrigins: readonly string[],
@@ -176,34 +215,30 @@ export function corsAllowOriginHeaders(
   } catch {
     return {};
   }
+  // `foo://localhost` is a loopback host on a scheme no browser sends, and it canonicalizes to
+  // "null" — the one value a sandboxed document would read back as its own.
+  if (!isWebOrigin(parsed)) return {};
   // URL() keeps IPv6 hosts bracketed ("[::1]"); strip them before comparing.
   const host = parsed.hostname.replace(/^\[|\]$/g, "");
-  const isLoopback = isLoopbackHost(host);
-  // Compare on canonical origins (default port dropped, no trailing slash, host lowercased) so a
-  // configured `https://expo.dev:443` or `https://expo.dev/` still matches the browser's Origin.
-  // Malformed configured values throw in URL() and are skipped.
-  const allowed = allowedOrigins.some((o) => {
-    try {
-      return new URL(o).origin === parsed.origin;
-    } catch {
-      return false;
-    }
-  });
-  if (isLoopback || allowed) {
-    return { "Access-Control-Allow-Origin": origin, Vary: "Origin" };
+  if (isLoopbackHost(host) || allowedOrigins.some((o) => originMatches(o, parsed))) {
+    return { "Access-Control-Allow-Origin": parsed.origin };
   }
   return {};
 }
 
+// Same wildcard rule as WILDCARD_HOST, plus the bare host and IPv6 shapes a frame source may use.
+const FRAMEABLE_ORIGIN = /^https?:\/\/(?:\[[0-9a-f:.]+\]|[a-z0-9.-]+|\*\.[a-z0-9-]+(?:\.[a-z0-9-]+)+)(?::\d+)?$/i;
+
 /**
  * Who may frame a gated preview. Browsers that ignore the Partitioned cookie attribute would
- * otherwise let any site embed one and drive it. Values that are not origins are dropped, so a
- * stray `*` or `;` cannot widen the policy.
+ * otherwise let any site embed one and drive it. The caller chooses the origins; this only
+ * refuses shapes that would widen the policy beyond what it names.
  */
 export function frameAncestorsPolicy(allowedOrigins: string[]): string {
-  const origins = allowedOrigins.flatMap((origin) => {
+  const origins = allowedOrigins.flatMap((allowed) => {
     try {
-      return [new URL(origin).origin];
+      const { origin } = new URL(allowed);
+      return FRAMEABLE_ORIGIN.test(origin) ? [origin] : [];
     } catch {
       return [];
     }

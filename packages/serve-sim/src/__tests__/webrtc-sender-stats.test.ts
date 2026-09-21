@@ -119,14 +119,18 @@ describe("GET /webrtc/stats", () => {
   // The browser panel fetches this, and on an embedded mount that is cross-origin, so it needs the
   // same preflight the offer route gets.
   test("answers the CORS preflight the way the offer route does", async () => {
-    const middleware = simMiddleware({ basePath: "/.sim", proxyHelpers: true });
+    const middleware = simMiddleware({
+      basePath: "/.sim",
+      proxyHelpers: true,
+      corsOrigins: ["https://expo.dev"],
+    });
     const response = await middleware(new Request(
       "http://localhost/.sim/helper/00000000-0000-4000-8000-000000000000/webrtc/stats",
-      { method: "OPTIONS" },
+      { method: "OPTIONS", headers: { origin: "https://expo.dev" } },
     ));
 
     expect(response?.status).toBe(204);
-    expect(response?.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response?.headers.get("access-control-allow-origin")).toBe("https://expo.dev");
   });
 
   test("answers the same preflight when the panel scopes the request to one session", async () => {
@@ -145,12 +149,19 @@ describe("capture counts", () => {
     const stats = readSenderStats({ sessions: [], capture: { screenFrames: 900, idleFrames: 40 } });
 
     expect(stats.capture).toEqual({
+      pickCount: null,
+      pickSumMs: null,
+      pickMaxMs: null,
       screenFrames: 900,
       idleFrames: 40,
       offeredFrames: null,
       forwardedFrames: null,
       pumpRestarts: null,
-      captureCpuCopies: null,
+      cpuFallbacks: null,
+      attempts: null,
+      stalls: null,
+      gapSumMs: null,
+      stallSumMs: null,
       pollTicks: null,
       pollLateSumMs: null,
     });

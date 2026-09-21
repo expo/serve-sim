@@ -29,6 +29,9 @@ const INBOUND = {
   jitter: 0.012,
   jitterBufferDelay: 4,
   jitterBufferEmittedCount: 100,
+  totalInterFrameDelay: 3.3,
+  totalSquaredInterFrameDelay: 0.111,
+  totalDecodeTime: 0.4,
 };
 
 const CODEC = { id: "c", type: "codec", mimeType: "video/VP8" };
@@ -38,6 +41,9 @@ function sampleAt(atMs: number, overrides: Partial<StreamStatsSample> = {}): Str
     atMs,
     framesDecoded: 0,
     framesDropped: 0,
+    interFrameDelaySeconds: null,
+    interFrameDelaySquaredSeconds: null,
+    decodeSeconds: null,
     freezeCount: 0,
     freezeMs: 0,
     bytesReceived: 0,
@@ -143,6 +149,63 @@ describe("readStreamStats", () => {
   test("falls back to the only codec when the entry carries no codecId", () => {
     const { codecId: _omitted, ...withoutCodecId } = INBOUND;
     expect(readStreamStats(report([CODEC, withoutCodecId]), 1_000).codec).toBe("video/VP8");
+  });
+});
+
+describe("frame pacing and decode", () => {
+  // Four frames 16ms apart: mean 16ms, no spread.
+  test("reads near zero when every frame arrives on cadence", () => {
+    const previous = sampleAt(1_000, {
+      framesDecoded: 100, interFrameDelaySeconds: 0, interFrameDelaySquaredSeconds: 0,
+    });
+    const current = sampleAt(3_000, {
+      framesDecoded: 104,
+      interFrameDelaySeconds: 0.064,
+      interFrameDelaySquaredSeconds: 4 * 0.016 * 0.016,
+    });
+    expect(describeStreamStats(previous, current).pacingDeviationMs).toBeCloseTo(0, 3);
+    expect(describeStreamStats(previous, current).frameGapMs).toBeCloseTo(16, 3);
+  });
+
+  // Same four frames and the same mean, but delivered 2ms/30ms/2ms/30ms.
+  test("separates a bursty stream from an even one at the same mean rate", () => {
+    const previous = sampleAt(1_000, {
+      framesDecoded: 100, interFrameDelaySeconds: 0, interFrameDelaySquaredSeconds: 0,
+    });
+    const current = sampleAt(3_000, {
+      framesDecoded: 104,
+      interFrameDelaySeconds: 0.064,
+      interFrameDelaySquaredSeconds: 2 * 0.002 * 0.002 + 2 * 0.03 * 0.03,
+    });
+    expect(describeStreamStats(previous, current).pacingDeviationMs).toBeCloseTo(14, 0);
+  });
+
+  test("reports neither gap nor spread from a one-frame window, which has no spread by construction", () => {
+    const previous = sampleAt(1_000, {
+      framesDecoded: 100, interFrameDelaySeconds: 1, interFrameDelaySquaredSeconds: 0.02,
+    });
+    const current = sampleAt(3_000, {
+      framesDecoded: 101, interFrameDelaySeconds: 1.4, interFrameDelaySquaredSeconds: 0.18,
+    });
+    const described = describeStreamStats(previous, current);
+    expect(described.pacingDeviationMs).toBeNull();
+    expect(described.frameGapMs).toBeNull();
+  });
+
+  test("reports nothing rather than a negative spread when the stream was replaced", () => {
+    const previous = sampleAt(1_000, {
+      framesDecoded: 100, interFrameDelaySeconds: 5, interFrameDelaySquaredSeconds: 0.4,
+    });
+    const current = sampleAt(3_000, {
+      framesDecoded: 160, interFrameDelaySeconds: 1, interFrameDelaySquaredSeconds: 0.1,
+    });
+    expect(describeStreamStats(previous, current).pacingDeviationMs).toBeNull();
+  });
+
+  test("averages decode time over the frames of the window", () => {
+    const previous = sampleAt(1_000, { framesDecoded: 100, decodeSeconds: 0.2 });
+    const current = sampleAt(3_000, { framesDecoded: 160, decodeSeconds: 0.32 });
+    expect(describeStreamStats(previous, current).decodeMsPerFrame).toBeCloseTo(2, 5);
   });
 });
 

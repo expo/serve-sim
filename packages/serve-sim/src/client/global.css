@@ -1,7 +1,6 @@
 @import "tailwindcss";
 
 @source "./";
-@source not "./assets/iphone-duo";
 
 @theme {
   /* Panel / surface palette */

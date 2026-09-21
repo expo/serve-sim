@@ -1,12 +1,11 @@
 import * as THREE from "three";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import type { DuoModelViewProps } from "../components/duo-model-view";
 import type { StreamConfig } from "../types";
 import { duoPose, duoIntendedScreen, duoScreenRoll, duoFrameMatchesDisplay, duoScreenMapping, duoScreenPoint, stepDuoSpring, type DuoScreenMapping } from "./duo-pose";
 import { duoFitScale, duoPanelEdgeAnchor, duoProjectAnchor, duoHingeDragAngle, type DuoScreenPoint as ProjectedPoint } from "./duo-layout";
 import { HID_EDGE_BOTTOM, HID_EDGE_LEFT, HID_EDGE_RIGHT, HID_EDGE_TOP, HOME_INDICATOR_BAND_NORM, rawEdgeForDisplayEdge, streamDisplayGeometry } from "./orientation";
-import modelData from "../assets/iphone-duo/model.glb.gz.txt" with { type: "text" };
+import { loadDuoModel } from "./duo-model";
 
 export type DuoSceneState = Omit<DuoModelViewProps, "children">;
 type FrameSource = HTMLVideoElement | HTMLCanvasElement | HTMLImageElement;
@@ -26,15 +25,6 @@ type Surface = {
   nativeDeparture?: number;
   handoff?: { sawBlack: boolean };
 };
-
-let modelBytes: Promise<ArrayBuffer> | undefined;
-function loadModel() {
-  modelBytes ??= (async () => {
-    const bytes = Uint8Array.from(atob(modelData.trim()), (char) => char.charCodeAt(0));
-    return new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
-  })();
-  return modelBytes.then((bytes) => new GLTFLoader().parseAsync(bytes, ""));
-}
 
 /** Owns GPU resources and the animation loop; React only supplies requested state. */
 export function createDuoScene(
@@ -169,9 +159,9 @@ export function createDuoScene(
     }
   }
 
-  void loadModel().then((gltf) => {
-    if (disposed || failed) { disposeModel(gltf.scene); return; }
-    model = gltf.scene;
+  void loadDuoModel().then((loaded) => {
+    if (disposed || failed) { disposeModel(loaded); return; }
+    model = loaded;
     left = model.getObjectByName("left-half");
     right = model.getObjectByName("right-half");
     if (!left || !right) throw new Error("Missing iPhone Duo hinge groups");

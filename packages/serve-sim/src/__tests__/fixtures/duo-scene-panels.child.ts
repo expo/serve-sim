@@ -92,20 +92,18 @@ mock.module("three", () => ({
     dispose() {}
   },
 }));
-mock.module("three/addons/loaders/GLTFLoader.js", () => ({
-  GLTFLoader: class {
-    parseAsync() {
-      const scene = new three.Group();
-      for (const name of ["left-half", "right-half"]) {
-        const half = new three.Group(); half.name = name; scene.add(half);
-        for (const display of name === "left-half" ? ["cover-display", "inner-display-left"] : ["inner-display-right"]) {
-          const mesh = new three.Mesh(new three.PlaneGeometry(4, 6), new three.MeshBasicMaterial());
-          mesh.name = display;
-          half.add(mesh);
-        }
+mock.module("../../client/simulator/duo-model", () => ({
+  async loadDuoModel() {
+    const scene = new three.Group();
+    for (const name of ["left-half", "right-half"]) {
+      const half = new three.Group(); half.name = name; scene.add(half);
+      for (const display of name === "left-half" ? ["cover-display", "inner-display-left"] : ["inner-display-right"]) {
+        const mesh = new three.Mesh(new three.PlaneGeometry(4, 6), new three.MeshBasicMaterial());
+        mesh.name = display;
+        half.add(mesh);
       }
-      return Promise.resolve({ scene });
     }
+    return scene;
   },
 }));
 const { createDuoScene } = await import("../../client/simulator/duo-scene");

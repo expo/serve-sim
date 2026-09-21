@@ -37,16 +37,17 @@ its screen orientation can differ from physical orientation. Choose a preset
 again to restore Table Mode eligibility after rotating. Angle adjustments keep
 the known physical orientation and update eligibility for the new angle.
 
-With the device frame enabled, the preview renders Apple's
-[Star White iPhone Duo 3D model](https://www.apple.com/105/media/us/iphone-duo/2026/9305e4b9-72d9-4c05-9381-b572adadd5e5/ar/iPhone_Duo_e-sim_Star-White_Variant.usdz)
-with the live stream on its cover or inner display. Folding, unfolding, and
+Duo defaults to **3D**. The **Preview mode** selector in Simulator settings
+switches between 2D and 3D and remembers the choice in the browser. The 3D view
+loads Apple's `V68.usdz` from a local Xcode installation, with the live stream
+on its cover or inner display. Folding, unfolding, and
 switching poses animate continuously, including when a new preset interrupts a
 transition. Closed presents the cover straight toward the viewer, and Open
 presents the inner display straight toward the viewer. The open model turns with
 the active screen's portrait or landscape layout so the UI stays readable.
 Laptop has a level base and horizontal hinge; Tent presents the outer cover
 screen with both halves descending from a horizontal ridge. Slider adjustments
-blend these views into the same straight-on closed and open endpoints.
+preserve the device's physical orientation through the closed and open endpoints.
 The browser's reduced-motion preference applies pose changes immediately.
 
 Raw framebuffer pixels use a fixed mapping to each physical panel: no rotation
@@ -62,12 +63,23 @@ keeps its last decoded frame while the simulator switches between cover and inne
 screens. As soon as a pose requests the other display, updates to the departing
 panel stop so its shutdown frames cannot replace that cached image.
 
-The converted model and textures are embedded in the client, so rendering needs
-no request to Apple or an external asset server. Source attribution and
-conversion details are in the [model README](../src/client/assets/iphone-duo/README.md).
-Turn off the device frame to use a flat live display. AX inspection uses the
-flat view to keep its overlays aligned; a WebGL or model-loading failure also
-falls back to the live display.
+Like the 2D DeviceKit artwork, the model and textures stay in the host's Xcode
+installation. No model, converted copy, or offline model-editing tools are
+bundled in the repository. The server serves the original USDZ at
+`grid/api/devicekit-model`; the browser loads its geometry and materials and
+binds the live displays and hinge in memory. No request to Apple is needed.
+The model is resolved relative to Xcode's `Contents` directory at:
+
+```text
+SharedFrameworks/DeviceKit.framework/Versions/A/PlugIns/CoreDevicePopDeviceKitExtension.devicekitplugin/Contents/Resources/V68.usdz
+```
+
+`DEVELOPER_DIR` or `xcode-select -p` takes priority. If that Xcode lacks the
+asset, serve-sim checks installed apps in `/Applications` and `~/Applications`.
+An absent/incompatible model or WebGL failure uses the 2D preview; selecting 3D
+retries loading. AX inspection also uses the flat view to align its overlays.
+Laptop and Tent still apply their native settings in 2D, while their folded
+device shapes are shown only in 3D.
 
 Each control waits for acknowledgement. While dragging, the latest queued
 angle replaces intermediate values; selecting a preset replaces queued slider

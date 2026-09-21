@@ -18,7 +18,7 @@ static PoseSend sendReport;
 static PoseBarrier sendBarrier;
 static void *buttonMetadata, *serviceMetadata, *reportMetadata, *usageMetadata, *errorMetadata;
 
-static bool tableModeAvailable(void) {
+bool SSCoreDeviceTableModeAvailable(void) {
     static dispatch_once_t once;
     static bool available;
     dispatch_once(&once, ^{
@@ -49,7 +49,7 @@ static bool tableModeAvailable(void) {
 }
 
 bool SSCoreDeviceSendTableMode(void *capability, bool enabled) {
-    if (!capability || !tableModeAvailable()) return false;
+    if (!capability || !SSCoreDeviceTableModeAvailable()) return false;
     void *metadata = ((void **)capability)[3], *witness = ((void **)capability)[4];
     if (!metadata || !witness) return false;
     void *button = calloc(1, SSCoreDeviceValueSize(buttonMetadata));

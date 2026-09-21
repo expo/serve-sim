@@ -110,6 +110,13 @@ actor CoreDeviceBridge {
     }
 
     func setTableMode(udid: String, enabled: Bool) async -> Bool {
+        // Older Xcodes can provide hinge/rotation controls without the table
+        // sensor. Releasing an unavailable sensor is a no-op; enabling it must
+        // still fail, and a real send failure must not be reported as success.
+        guard SSCoreDeviceTableModeAvailable() else {
+            fputs("[hid] CoreDevice Table Mode unavailable in this Xcode\n", stderr)
+            return !enabled
+        }
         do {
             let metadataSymbol = "$s10CoreDevice29UniversalHIDServiceCapabilityVN"
             let capability = try await capability(
@@ -119,8 +126,11 @@ actor CoreDeviceBridge {
             let sent = SSCoreDeviceSendTableMode(capability.storage, enabled)
             if !sent { capabilities.removeValue(forKey: "\(udid):\(metadataSymbol)") }
             return sent
+        } catch BridgeError.unavailable {
+            fputs("[hid] CoreDevice Table Mode capability unavailable\n", stderr)
+            return !enabled
         } catch {
-            fputs("[hid] CoreDevice Table Mode unavailable: \(error)\n", stderr)
+            fputs("[hid] CoreDevice Table Mode failed: \(error)\n", stderr)
             return false
         }
     }

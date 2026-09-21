@@ -7,7 +7,9 @@ import { simMiddleware } from "../middleware";
 // serve-sim web UI shells out over exec-ws instead). Restored after the
 // fetch-style middleware rewrite (bff5212) dropped the route.
 
-const middleware = simMiddleware({ basePath: "/preview" });
+const DASHBOARD = "https://expo.dev";
+
+const middleware = simMiddleware({ basePath: "/preview", corsOrigins: [DASHBOARD] });
 
 function firstBootedIosSim(): string | null {
   try {
@@ -28,20 +30,23 @@ function firstBootedIosSim(): string | null {
 describe("POST /api/screenshot", () => {
   test("rejects non-POST methods with CORS headers", async () => {
     const res = await middleware(
-      new Request("http://localhost:3200/preview/api/screenshot"),
+      new Request("http://localhost:3200/preview/api/screenshot", {
+        headers: { origin: DASHBOARD },
+      }),
     );
     expect(res?.status).toBe(405);
-    expect(res?.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res?.headers.get("access-control-allow-origin")).toBe(DASHBOARD);
   });
 
   test("rejects a malformed device udid with a specific error and CORS headers", async () => {
     const res = await middleware(
       new Request("http://localhost:3200/preview/api/screenshot?device=not-a-udid", {
         method: "POST",
+        headers: { origin: DASHBOARD },
       }),
     );
     expect(res?.status).toBe(400);
-    expect(res?.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res?.headers.get("access-control-allow-origin")).toBe(DASHBOARD);
     const body = (await res!.json()) as { ok: boolean; error: string };
     expect(body.ok).toBe(false);
     expect(body.error).toBe("Invalid simulator device ID");
@@ -52,11 +57,11 @@ describe("POST /api/screenshot", () => {
     const res = await middleware(
       new Request(
         `http://localhost:3200/preview/api/screenshot?device=${unavailableUdid}`,
-        { method: "POST" },
+        { method: "POST", headers: { origin: DASHBOARD } },
       ),
     );
     expect(res?.status).toBe(500);
-    expect(res?.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res?.headers.get("access-control-allow-origin")).toBe(DASHBOARD);
   });
 });
 
@@ -70,13 +75,13 @@ describeWithSim(`POST /api/screenshot (booted sim ${bootedUdid ?? "<skipped>"})`
     const res = await middleware(
       new Request(
         `http://localhost:3200/preview/api/screenshot?device=${encodeURIComponent(bootedUdid!)}`,
-        { method: "POST" },
+        { method: "POST", headers: { origin: DASHBOARD } },
       ),
     );
     expect(res?.status).toBe(200);
     expect(res?.headers.get("content-type")).toBe("image/png");
     expect(res?.headers.get("cache-control")).toBe("no-store");
-    expect(res?.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res?.headers.get("access-control-allow-origin")).toBe(DASHBOARD);
     const bytes = new Uint8Array(await res!.arrayBuffer());
     expect([...bytes.slice(0, 8)]).toEqual(PNG_MAGIC);
   }, 45_000);

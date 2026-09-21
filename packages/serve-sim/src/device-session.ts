@@ -60,17 +60,6 @@ export interface HidSocket {
   close(): void;
 }
 
-export const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
-
-export function sendCorsPreflight(res: ServerResponse): void {
-  res.writeHead(204, CORS);
-  res.end();
-}
-
 // AVCC seed tag (StreamFormat.AVCCEnvelope.seedTag). description/keyframe/delta
 // envelopes are framed natively; only the on-connect JPEG seed is built here.
 const AVCC_SEED_TAG = 0x04;
@@ -333,7 +322,6 @@ export class DeviceSession {
       "Content-Type": raw ? "application/octet-stream" : "multipart/x-mixed-replace; boundary=frame",
       "Cache-Control": "no-cache, no-store",
       Connection: "keep-alive",
-      ...CORS,
     });
 
     void (async () => {
@@ -387,7 +375,6 @@ export class DeviceSession {
       "Content-Type": "application/octet-stream",
       "Cache-Control": "no-cache, no-store",
       Connection: "keep-alive",
-      ...CORS,
     });
 
     void (async () => {
@@ -610,7 +597,7 @@ export class DeviceSession {
       const request = parseWebRtcCloseRequest(parseJsonBody(body, "invalid_close_request"));
       await this.capture.closeWebRTCSession(request.sessionId);
       if (res.writableEnded || res.destroyed) return;
-      res.writeHead(204, CORS);
+      res.writeHead(204);
       res.end();
     } catch (err) {
       if (res.writableEnded || res.destroyed) return;
@@ -651,10 +638,6 @@ export class DeviceSession {
       if (res.writableEnded || res.destroyed) return;
       this.sendJson(res, 503, { error: "webrtc_stats_unavailable" });
     }
-  }
-
-  handleOptions(_req: IncomingMessage, res: ServerResponse): void {
-    sendCorsPreflight(res);
   }
 
   handleAx(_req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -1025,7 +1008,6 @@ export class DeviceSession {
       "Content-Type": "application/json",
       "Cache-Control": "no-cache, no-store",
       "Content-Length": String(buf.length),
-      ...CORS,
     });
     res.end(buf);
   }

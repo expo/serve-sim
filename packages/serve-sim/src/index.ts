@@ -1633,7 +1633,7 @@ async function serve(
   host: string,
   options: {
     stream?: StreamRuntimeOptions;
-    metricsCorsOrigins?: string[];
+    corsOrigins?: string[];
     frameAncestors?: string[];
     shareUrl?: string;
     debugStreamPath?: string;
@@ -1673,7 +1673,7 @@ async function serve(
     device: targetDevice,
     streamSettings: options.stream,
     proxyHelpers: true,
-    metricsCorsOrigins: options.metricsCorsOrigins ?? [],
+    corsOrigins: options.corsOrigins ?? [],
     frameAncestors: options.frameAncestors ?? [],
     shareUrl: options.shareUrl,
     execToken: previewToken,
@@ -1898,8 +1898,9 @@ program
   )
   .option(
     "--frame-ancestor <origin>",
-    "Allow this origin to embed the preview in a frame (repeatable). Only applies with " +
-      "--require-token; an ungated preview sends no frame policy.",
+    "Allow this origin to embed the preview in a frame (repeatable). Accepts a subdomain " +
+      "wildcard, e.g. https://*.expo.dev. Only applies with --require-token; an ungated " +
+      "preview sends no frame policy.",
     (value: string, prev: string[]) => [...prev, value],
     [] as string[],
   )
@@ -1909,9 +1910,15 @@ program
     parseShareUrl,
   )
   .option(
+    "--cors-origin <origin>",
+    "Allow this origin to read the preview cross-origin (repeatable). Accepts a subdomain " +
+      "wildcard, e.g. https://*.expo.dev. Loopback origins are always allowed.",
+    (value: string, prev: string[]) => [...prev, value],
+    [] as string[],
+  )
+  .option(
     "--metrics-cors-origin <origin>",
-    "Allow this origin to read the /metrics stream cross-origin (repeatable). " +
-      "Loopback origins are always allowed.",
+    "Deprecated alias for --cors-origin.",
     (value: string, prev: string[]) => [...prev, value],
     [] as string[],
   )
@@ -2040,7 +2047,7 @@ Examples:
     } else {
       await serve(startPort ?? 3200, devices, startPort !== undefined, opts.host, {
         stream,
-        metricsCorsOrigins: opts.metricsCorsOrigin,
+        corsOrigins: [...opts.corsOrigin, ...opts.metricsCorsOrigin],
         frameAncestors: opts.frameAncestor,
         shareUrl: opts.shareUrl,
         debugStreamPath,

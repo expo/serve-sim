@@ -53,6 +53,9 @@ export function connectToFetch(
 
   let status = 200;
   let responseHeaders = new Headers();
+  // Set before the status is written, the way `ServerResponse.setHeader` allows. `writeHead`
+  // values win, matching Node.
+  const presetHeaders = new Headers();
   let headersSent = false;
   let writableEnded = false;
   let writableFinished = false;
@@ -96,6 +99,9 @@ export function connectToFetch(
   const ensureResponse = () => {
     if (headersSent) return;
     headersSent = true;
+    for (const [name, value] of presetHeaders) {
+      if (!responseHeaders.has(name)) responseHeaders.set(name, value);
+    }
     resolveOnce(new Response(statusAllowsBody() ? body : null, { status, headers: responseHeaders }));
   };
   const writeChunk = (chunk: Buffer | string | Uint8Array) => {
@@ -122,6 +128,9 @@ export function connectToFetch(
     get writableNeedDrain() { return writableNeedDrain; },
     get statusCode() { return status; },
     set statusCode(nextStatus: number) { status = nextStatus; },
+    setHeader(name: string, value: string) {
+      presetHeaders.set(name, value);
+    },
     writeHead(nextStatus: number, headers?: Record<string, string | number | string[]>) {
       status = nextStatus;
       if (headers) {

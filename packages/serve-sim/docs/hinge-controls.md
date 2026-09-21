@@ -95,7 +95,8 @@ angle replaces intermediate values; selecting a preset replaces queued slider
 changes. Disconnects, failures, and timeouts discard queued changes so they
 are not replayed on reconnect or on another device.
 
-With the simulator focused, ⌘1–⌘5 select Closed, Open, Laptop, Book, and Tent.
+With the simulator focused, Option+Shift+1–5 (⌥⇧1–⌥⇧5) select Closed, Open,
+Laptop, Book, and Tent. Command+1–5 remain available for browser tab switching.
 
 The existing CLI uses degrees and keeps its three angle aliases:
 

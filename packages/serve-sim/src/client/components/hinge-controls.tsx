@@ -59,7 +59,7 @@ export function HingeControls({ angle, pose, supported, pending = false, error, 
           <SimulatorToolbar.Button
             key={position.value}
             aria-label={position.label}
-            title={`${position.label} (⌘${shortcut})`}
+            title={`${position.label} (⌥⇧${shortcut})`}
             aria-pressed={selected}
             onClick={() => onChange({ control: "pose", value: position.value })}
             style={{ background: selected ? "#3b3b3b" : undefined, color: selected ? "#fff" : "#c6c6c6", opacity: 1 }}

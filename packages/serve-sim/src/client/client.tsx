@@ -1287,7 +1287,9 @@ function AppWithConfig({
       const simFocused = simFocusedRef.current;
       const keyboardOpen = keyboardOpenRef.current;
       if (simFocused && !keyboardOpen) {
-        if (supportsHingeAngle && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && /^Digit[1-5]$/.test(e.code)) {
+        // Leave Command+digits to browser tab switching. Use physical codes so
+        // Option+Shift's layout-specific characters do not affect pose lookup.
+        if (supportsHingeAngle && e.altKey && e.shiftKey && !e.metaKey && !e.ctrlKey && /^Digit[1-5]$/.test(e.code)) {
           e.preventDefault();
           if (type === "down" && !e.repeat) {
             const pose = HINGE_POSES[Number(e.code.slice(-1)) - 1];

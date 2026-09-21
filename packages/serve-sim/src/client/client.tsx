@@ -50,7 +50,8 @@ import { SimulatorResizeSizeBadge } from "./components/simulator-resize-size-bad
 import { StreamStatusPill } from "./components/stream-status-pill";
 import { HingeControls } from "./components/hinge-controls";
 import { screenConfigsEqual } from "./simulator/screen-config-state";
-import { isHingeAngle, type HingeAngleResult } from "../hinge-angle";
+import type { HingeAngleResult } from "../hinge-angle";
+import { completeHingeRequest, type PendingHingeRequest } from "./utils/hinge-request";
 import { ToolsPanel } from "./components/tools-panel";
 import { WebKitDevtoolsPanel } from "./components/webkit-devtools-panel";
 import { useMediaDrop } from "./hooks/use-media-drop";
@@ -733,7 +734,7 @@ function AppWithConfig({
   const [wsStreamConfig, setWsStreamConfig] = useState<StreamConfig | null>(null);
   const [hingePending, setHingePending] = useState(false);
   const [hingeError, setHingeError] = useState<string | null>(null);
-  const hingeRequestRef = useRef<{ angle: number; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const hingeRequestRef = useRef<PendingHingeRequest | null>(null);
   const streamConfig = wsStreamConfig;
   const activeStreamConfig: StreamConfig = liveStreamConfig ?? streamConfig ?? fallbackScreenSize(deviceType, deviceName);
   const activeScreenId = liveStreamConfig?.screenId ?? streamConfig?.screenId;
@@ -819,14 +820,13 @@ function AppWithConfig({
         if (bytes[0] === 0x8f) {
           try {
             const result = JSON.parse(new TextDecoder().decode(bytes.subarray(1))) as HingeAngleResult;
-            const request = hingeRequestRef.current;
-            if (!request || result.angle !== request.angle) return;
-            clearTimeout(request.timer);
+            const completed = completeHingeRequest(hingeRequestRef.current, result);
+            if (!completed) return;
             hingeRequestRef.current = null;
             setHingePending(false);
-            setHingeError(result.ok ? null : result.error ?? "Simulator could not change the hinge angle.");
-            if (result.ok && isHingeAngle(result.angle)) {
-              setWsStreamConfig((prev) => prev ? { ...prev, hingeAngle: result.angle } : prev);
+            setHingeError(completed.error);
+            if (completed.angle !== undefined) {
+              setWsStreamConfig((prev) => prev ? { ...prev, hingeAngle: completed.angle } : prev);
             }
           } catch {}
           return;

@@ -123,6 +123,9 @@ import {
 
 // ─── App ───
 
+// Default CSS-pixel width of the fixed 1:1 Duo stage, independent of either screen.
+const DUO_STAGE_DEFAULT_WIDTH = 580;
+
 type PreviewConfig = NonNullable<Window["__SIM_PREVIEW__"]>;
 
 function previewConfigKey(config: PreviewConfig | null): string {
@@ -813,7 +816,7 @@ function AppWithConfig({
   // The 3D stage keeps one footprint as the device folds and changes active
   // displays. Resizing it with each native screen configuration would apply a
   // second animation on top of the physical hinge motion and crop the model.
-  const containerDefaultWidth = useDuoModel ? 580 : frameMaxWidth * chromeScale;
+  const containerDefaultWidth = useDuoModel ? DUO_STAGE_DEFAULT_WIDTH : frameMaxWidth * chromeScale;
   const containerAspectRatioValue = useDuoModel ? 1 : useChrome
     ? chromeGeometry!.frame.width / chromeGeometry!.frame.height
     : frameAspectRatioValue;

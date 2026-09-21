@@ -42,7 +42,8 @@ test.skipIf(!device)("Tent makes the cover landscape regardless of the previous 
   for (const previous of ["closed", "open", "book", "laptop", "tent"] as const) {
     await selectPose(state, previous);
     await selectPose(state, "tent");
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + 8000;
+    let landscapeSince: number | undefined;
     let config;
     do {
       const response = await fetch(configUrl, {
@@ -51,11 +52,17 @@ test.skipIf(!device)("Tent makes the cover landscape regardless of the previous 
       });
       expect(response.ok).toBe(true);
       config = await response.json();
-      if (config.screenId === 1 && config.orientation === "landscape_left") break;
+      // The active panel can initially report the previous orientation while
+      // iOS finishes rotating. Require a stable readback, not its first match.
+      if (config.screenId === 1 && config.orientation === "landscape_left") {
+        landscapeSince ??= Date.now();
+        if (Date.now() - landscapeSince >= 2000) break;
+      } else landscapeSince = undefined;
       await Bun.sleep(100);
     } while (Date.now() < deadline);
     expect({ previous, ...config }).toMatchObject({
       previous, screenId: 1, orientation: "landscape_left", hingeAngle: 80, hingePose: "tent", tableMode: true,
     });
+    expect(landscapeSince !== undefined && Date.now() - landscapeSince >= 2000).toBe(true);
   }
 }, 60_000);

@@ -1,4 +1,5 @@
 import { expect, mock, test } from "bun:test";
+import type { Scene } from "three";
 import type { DuoSceneState } from "../../client/simulator/duo-scene";
 
 // The real scene chooses and uploads its textures. Only browser/GPU plumbing
@@ -60,12 +61,16 @@ let hitScreenId = 1;
 const renderers: TestRenderer[] = [];
 class TestRenderer {
   domElement = new TestCanvas();
+  bodyRotation = new three.Quaternion();
   loop: ((now: number) => void) | null = null;
   constructor() { renderers.push(this); }
   setPixelRatio() {}
   setSize() {}
   setAnimationLoop(loop: typeof this.loop) { this.loop = loop; }
-  render() {}
+  render(scene: Scene) {
+    const half = scene.getObjectByName("left-half");
+    half?.parent?.getWorldQuaternion(this.bodyRotation);
+  }
   dispose() {}
 }
 mock.module("three", () => ({
@@ -132,6 +137,7 @@ function setup(dual: boolean, cacheScreenOnFold?: boolean) {
   return {
     host, sourceHost, cover, inner, innerTexture: innerTexture!, coverTexture: coverTexture!,
     loaded,
+    rotation: () => renderer.bodyRotation.clone(),
     tap: (screenId: 1 | 3) => {
       hitScreenId = screenId;
       const before = touches.filter(({ type }) => type === "begin").length;
@@ -145,6 +151,64 @@ function setup(dual: boolean, cacheScreenOnFold?: boolean) {
     dispose: () => scene.dispose(),
   };
 }
+
+test("hinge motion preserves orientation across delayed display handoffs while explicit rotations and presets still work", async () => {
+  for (const start of [0, 180]) {
+    const rig = setup(true);
+    const configFor = (angle: number) => angle <= 54
+      ? { screenId: 1, width: 1398, height: 2034, orientation: "portrait" as const, hingeAngle: angle }
+      : { screenId: 3, width: 2007, height: 2853, orientation: "portrait" as const, hingeAngle: angle };
+    const settle = () => { for (let frame = 0; frame < 120; frame++) rig.tick(); };
+    const hingeDirection = () => new three.Vector3(0, 1, 0).applyQuaternion(rig.rotation());
+    try {
+      await rig.loaded;
+      rig.inner.pixel = 180;
+      const pose = start === 0 ? "closed" : "open";
+      rig.setState({ angle: start, pose, physicalPose: pose, streamConfig: configFor(start) });
+      settle();
+      const direction = hingeDirection();
+      for (const angle of start === 0 ? [1, 54, 55, 90, 180, 55, 54, 0, 55, 180] : [179, 55, 54, 0, 54, 55, 180, 54, 0]) {
+        rig.setState({ angle, pose: null });
+        settle();
+        const beforeFrame = rig.rotation();
+        rig.setState({ streamConfig: configFor(angle) });
+        settle();
+        expect(rig.rotation().angleTo(beforeFrame)).toBeLessThan(1e-6);
+        expect(hingeDirection().distanceTo(direction)).toBeLessThan(1e-6);
+      }
+      // Rotate acts relative to the retained view, even if opening previously
+      // switched to a display with a different physical pixel mounting.
+      rig.setState({ physicalPose: null, streamConfig: { ...configFor(180 - start), orientation: "landscape_left" } });
+      settle();
+      const rotated = direction.clone().applyAxisAngle(new three.Vector3(0, 0, 1), -Math.PI / 2);
+      expect(hingeDirection().distanceTo(rotated)).toBeLessThan(1e-6);
+
+      rig.setState({ angle: 180, pose: "open", physicalPose: "open", streamConfig: configFor(180) });
+      settle();
+      expect(hingeDirection().distanceTo(new three.Vector3(-1, 0, 0))).toBeLessThan(1e-6);
+    } finally { rig.dispose(); }
+  }
+});
+
+test("a manual hinge edit cancels an unfinished preset's pending orientation change", async () => {
+  const rig = setup(true);
+  const settle = () => { for (let frame = 0; frame < 120; frame++) rig.tick(); };
+  try {
+    await rig.loaded;
+    rig.inner.pixel = 180;
+    settle();
+    // Request Open while native capture still reports the cover, then take
+    // over with a manual angle before the new display's metadata arrives.
+    rig.setState({ angle: 180, pose: "open", physicalPose: "open" });
+    settle();
+    rig.setState({ angle: 120, pose: null });
+    settle();
+    const beforeFrame = rig.rotation();
+    rig.setState({ streamConfig: { screenId: 3, width: 2007, height: 2853, orientation: "portrait", hingeAngle: 120 } });
+    settle();
+    expect(rig.rotation().angleTo(beforeFrame)).toBeLessThan(1e-6);
+  } finally { rig.dispose(); }
+});
 
 test("inner frames appear before active metadata and provisional black cannot overwrite either panel", () => {
   const test = setup(true, true);

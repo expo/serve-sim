@@ -68,11 +68,9 @@ export function duoPose(
       ? new Euler(fold - Math.PI / 2, 0, Math.PI / 2, "YXZ")
       : new Euler(Math.PI / 2, 0, -Math.PI / 2, "YXZ"));
     physical.premultiply(new Quaternion().setFromEuler(new Euler(elevation, tabletopYaw, 0, "XYZ")));
-    // Slider edits retain their physical pose, but both endpoints must show
-    // their display straight-on. Blend the last 30° instead of snapping there.
-    const amount = Math.min(1, degrees / 30, (180 - degrees) / 30);
-    const weight = amount * amount * (3 - 2 * amount);
-    presentation.slerp(physical, weight);
+    // Hinge edits retain the table orientation through both endpoints.
+    // Only choosing Closed or Open explicitly returns to a front-on view.
+    presentation.copy(physical);
   }
   const oriented = new Euler().setFromQuaternion(presentation, "YXZ");
   const rotation: [number, number, number] = [oriented.x, oriented.y, oriented.z];

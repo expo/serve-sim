@@ -103,6 +103,9 @@ export function createDuoScene(
   let velocity = 0;
   let firstPose = true;
   let presentationRoll = 0;
+  let presentationFrame: { screenId: number; roll: number } | undefined;
+  let presentationPose: DuoSceneState["pose"];
+  let resetPresentation = false;
   const euler = new THREE.Euler(0, 0, 0, "YXZ");
   const targetQuaternion = new THREE.Quaternion();
   const center = new THREE.Vector3();
@@ -696,11 +699,18 @@ export function createDuoScene(
     const physicalPose = current.physicalPose === undefined ? current.pose : current.physicalPose;
     const visibleScreen = duoIntendedScreen(current.angle, physicalPose, config?.screenId);
     const surface = visibleScreen === 1 ? cover : inner;
-    // Native display changes can lag the slider. Retain the current view roll
-    // until the intended panel has a matching frame, rather than orienting the
-    // inner screen using stale cover metadata (or the other way around).
+    if (current.pose !== presentationPose) resetPresentation = !!current.pose;
+    presentationPose = current.pose;
+    // The cover and inner display have different pixel mounts. Switching
+    // between them changes the texture mapping, not the device orientation.
+    // Retain that orientation after the new frame arrives, and apply later
+    // Rotate commands relative to it. Named presets choose a fresh view.
     if (config?.screenId === visibleScreen && surface.mappingConfigKey === inputConfigKey(config)) {
-      presentationRoll = duoScreenRoll(config);
+      const roll = duoScreenRoll(config);
+      if (!presentationFrame || resetPresentation) presentationRoll = roll;
+      else if (presentationFrame.screenId === config.screenId) presentationRoll += roll - presentationFrame.roll;
+      presentationFrame = { screenId: config.screenId, roll };
+      resetPresentation = false;
     }
     const target = duoPose(current.angle, physicalPose, config?.screenId, config, presentationRoll);
     targetQuaternion.setFromEuler(euler.set(...target.rotation));

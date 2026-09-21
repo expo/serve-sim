@@ -104,8 +104,8 @@ describe("iPhone Duo view alignment", () => {
     expect(levelView(frontFoot).y).toBeCloseTo(levelView(rearFoot).y, 8);
   });
 
-  test("view controls orbit a level tabletop across hinge angles and viewing directions", () => {
-    for (const angle of [30, 55, 80, 90, 120, 150]) {
+  test("tabletop orientation stays level across hinge angles and viewing directions", () => {
+    for (const angle of [0, 1, 15, 30, 55, 80, 90, 120, 150, 165, 179, 180]) {
       for (const elevation of [0, 10, 20, 45, 90]) {
         const radians = elevation * Math.PI / 180;
         const tableNormal = new Vector3(0, Math.cos(radians), Math.sin(radians));
@@ -127,20 +127,16 @@ describe("iPhone Duo view alignment", () => {
     }
   });
 
-  test("slider endpoints show readable front-facing displays while retaining Laptop or Tent", () => {
+  test("manual hinge changes retain the tabletop viewing direction through both endpoints", () => {
     const coverConfig = { width: 1398, height: 2034, screenId: 1, orientation: "portrait" as const };
     const innerConfig = { width: 2007, height: 2853, screenId: 3, orientation: "portrait" as const };
     for (const pose of ["laptop", "tent"] as const) {
-      const closed = duoPose(0, pose, 1, coverConfig);
-      expectDirection(panelDirection(new Vector3(0, 0, -1), "left", closed), new Vector3(0, 0, 1));
-      expectDirection(panelDirection(hingeAxis, "left", closed), new Vector3(0, 1, 0));
-
-      const open = duoPose(180, pose, 3, innerConfig);
-      for (const side of ["left", "right"] as const) {
-        expectDirection(panelDirection(new Vector3(0, 0, 1), side, open), new Vector3(0, 0, 1));
+      const direction = panelDirection(hingeAxis, "left", duoPose(pose === "laptop" ? 90 : 80, pose));
+      for (let angle = 0; angle <= 180; angle++) {
+        const config = angle <= 54 ? coverConfig : innerConfig;
+        const physical = duoPose(angle, pose, config.screenId, config);
+        expectDirection(panelDirection(hingeAxis, "left", physical), direction);
       }
-      expectDirection(rawUiDirection(new Vector2(1, 0), innerConfig, open), new Vector3(1, 0, 0));
-      expectDirection(rawUiDirection(new Vector2(0, -1), innerConfig, open), new Vector3(0, 1, 0));
     }
   });
 

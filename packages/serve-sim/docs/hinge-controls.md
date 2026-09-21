@@ -32,8 +32,10 @@ its screen orientation can differ from physical orientation. Choose a preset
 again to restore Table Mode eligibility after rotating. Angle adjustments keep
 the known physical orientation and update eligibility for the new angle.
 
-The preview renders the active panel in 2D. It does not render Device Hub's 3D
-device model; the pose controls change the simulator's hinge and motion state.
+The preview uses [Apple's official 3D model](iphone-duo-model.md), with live
+simulator screens and smoothly animated folding, unfolding, and pose changes.
+New targets continue from the current animation position. Turning the frame
+off, opening accessibility inspection, or unavailable WebGL uses the flat view.
 
 Each control waits for acknowledgement. While dragging, the latest queued
 angle replaces intermediate values; selecting a preset replaces queued slider

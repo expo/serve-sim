@@ -1606,6 +1606,8 @@ function AppWithConfig({
                 cacheScreenOnFold={cacheScreenOnFold}
                 sizeMode={duoSizeMode}
                 onHingeAngleChange={showHingeControls && !resizing ? setHingeAngleFromHandle : undefined}
+                controlChrome={defaultChrome?.displayVariants?.[3]}
+                onButton={presentation || resizing ? undefined : handleChromeButton}
                 onTouch={resizing ? undefined : onStreamTouch}
                 onMultiTouch={resizing ? undefined : onStreamMultiTouch}
                 onScroll={resizing ? undefined : onStreamScroll}

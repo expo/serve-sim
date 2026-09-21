@@ -13,7 +13,7 @@ class TestCanvas extends EventTarget {
   getContext() { return { fillStyle: "", fillRect() {} }; }
 }
 class TestHandle extends EventTarget {
-  style: Record<string, string> = {};
+  style: Partial<CSSStyleDeclaration> = { setProperty() {} };
   captured = new Set<number>();
   setPointerCapture(id: number) { this.captured.add(id); }
   hasPointerCapture(id: number) { return this.captured.has(id); }
@@ -99,7 +99,8 @@ mock.module("../../client/simulator/duo-model", () => ({
       const half = new three.Group();
       half.name = name;
       const body = new three.Mesh(new three.BoxGeometry(8, 12, 0.5), new three.MeshBasicMaterial());
-      body.position.x = name === "left-half" ? -4 : 4;
+      body.name = name === "left-half" ? "inner-display-left" : "inner-display-right";
+      body.geometry.translate(name === "left-half" ? -4 : 4, 0, 0);
       half.add(body);
       scene.add(half);
     }
@@ -172,27 +173,32 @@ test("the resize handle changes projected model size inside a fixed, continuousl
   }
 });
 
-async function hingeRig() {
+async function hingeRig(size = 480) {
   const host = new TestHost();
+  host.width = host.height = size;
   const left = new TestHandle();
   const right = new TestHandle();
+  const volume = new TestHandle();
+  const power = new TestHandle();
   const changes: number[] = [];
   const state: DuoSceneState = {
     angle: 180, pose: "open", sizeMode: "fill",
     onHingeAngleChange: (angle) => { changes.push(angle); state.angle = angle; },
+    onButton() {},
   };
   let ready!: () => void;
   const loaded = new Promise<void>((resolve) => { ready = resolve; });
   const scene = createDuoScene(host as unknown as HTMLElement, new TestHost() as unknown as HTMLElement,
     () => state, { ready, error: () => { throw new Error("Scene failed"); } },
-    { left: left as unknown as HTMLElement, right: right as unknown as HTMLElement });
+    { left: left as unknown as HTMLElement, right: right as unknown as HTMLElement },
+    { volume: volume as unknown as HTMLElement, power: power as unknown as HTMLElement });
   await loaded;
   const renderer = renderers.at(-1)!;
   observers.at(-1)!.callback([{ contentRect: host.getBoundingClientRect() }]);
   let now = 0;
   const settle = () => { for (let frame = 0; frame < 180; frame++) renderer.loop!(now += 16); };
   settle();
-  return { left, right, state, changes, settle, dispose: () => scene.dispose() };
+  return { left, right, volume, power, state, changes, settle, dispose: () => scene.dispose() };
 }
 
 test("hinge handles follow both outer edges and only the original remains near closed", async () => {
@@ -214,6 +220,35 @@ test("hinge handles follow both outer edges and only the original remains near c
     expect(rig.left.style.display).toBe("none");
     expect(rig.right.style.display).toBe("none");
   } finally { rig.dispose(); }
+});
+
+test("volume and power follow folding and tabletop poses without covering a hinge target", async () => {
+  for (const size of [280, 580]) {
+    const rig = await hingeRig(size);
+    try {
+      const positions = new Set<string>();
+      for (const [angle, pose] of [[180, "open"], [90, "book"], [0, "closed"], [90, "laptop"], [80, "tent"]] as const) {
+        rig.state.angle = angle;
+        rig.state.pose = pose;
+        rig.settle();
+        expect(rig.volume.style.display).toBe("flex");
+        expect(rig.power.style.display).toBe("flex");
+        const power = rig.power.point();
+        positions.add(`${power.x},${power.y}`);
+        expect(Number.isFinite(power.x) && Number.isFinite(power.y)).toBe(true);
+        for (const handle of [rig.left, rig.right]) {
+          if (handle.style.display === "none") continue;
+          const hinge = handle.point();
+          expect(Math.hypot(power.x - hinge.x, power.y - hinge.y)).toBeGreaterThanOrEqual(72 - 1e-6);
+        }
+      }
+      expect(positions.size).toBe(5);
+      rig.state.onButton = undefined;
+      rig.settle();
+      expect(rig.volume.style.display).toBe("none");
+      expect(rig.power.style.display).toBe("none");
+    } finally { rig.dispose(); }
+  }
 });
 
 test("either hinge handle folds and unfolds, and a hidden handle retains its active drag", async () => {

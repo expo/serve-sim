@@ -95,12 +95,17 @@ function DuoPanelStream({
   const onDecodedFrame = useCallback(() => { decoded.current = true; }, []);
   useEffect(() => {
     decoded.current = false;
-    if (mode !== "avcc") return;
+  }, [url, mode]);
+  useEffect(() => {
+    // An inactive panel may stay silent until iOS wakes it. Only the intended
+    // display gets a startup deadline, and a previously decoded panel can idle
+    // without permanently downgrading a working session to MJPEG.
+    if (mode !== "avcc" || activeScreenId !== screenId || decoded.current) return;
     const timer = setTimeout(() => {
       if (!decoded.current) onAvccError();
     }, AVCC_FRAME_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [url, mode, onAvccError]);
+  }, [url, mode, activeScreenId, screenId, onAvccError]);
   return (
     <div data-duo-panel={screenId} style={{ position: "absolute", inset: 0, visibility: activeScreenId === screenId ? "visible" : "hidden" }}>
       <SimulatorView

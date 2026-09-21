@@ -11,6 +11,7 @@ function createWebRtcSession(): DeviceSession {
     transport: "webrtc",
     encoderSettings: { ...DEFAULT_STREAM_ENCODER_SETTINGS },
     streamSettingsUpdate: Promise.resolve(),
+    panels: new Map(),
     capture: {
       updateStreamSettings: async () => {},
     },

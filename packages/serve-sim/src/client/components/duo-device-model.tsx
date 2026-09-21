@@ -149,7 +149,7 @@ export function DuoDeviceModel(props: DuoDeviceModelProps) {
     let lastAttributeAt = 0;
     let lastSource: DecodedSurface | null = null;
     let previousSourceKey = "";
-    let previousDisplay: boolean | undefined;
+    let previousDisplayState = "";
     let displayChangedAt = 0;
     const transitionProbe = document.createElement("canvas");
     transitionProbe.width = transitionProbe.height = 8;
@@ -222,15 +222,16 @@ export function DuoDeviceModel(props: DuoDeviceModelProps) {
       const [sourceWidth, sourceHeight] = surfaceSize(source);
       if (sourceWidth < 4 || sourceHeight < 4) return;
       const config = latest.current.screenConfig;
-      // Active-display metadata can precede its first decoded image. Never
-      // paint the outgoing cover pixels onto the retained inner display.
-      if (!duoFrameMatchesConfig(sourceWidth, sourceHeight, config)) return;
       const isCover = config.screenId === 1 || (config.screenId == null && latest.current.angle < 1);
       const display = isCover ? cover : inner;
-      if (previousDisplay !== isCover) {
-        previousDisplay = isCover;
+      const displayState = `${isCover}:${latest.current.pose}:${latest.current.angle}:${latest.current.tableMode}`;
+      if (previousDisplayState !== displayState) {
+        previousDisplayState = displayState;
         displayChangedAt = now;
       }
+      // Metadata and decoded pixels can arrive in either order. Bound every
+      // shape check so stale metadata can never freeze an otherwise live feed.
+      if (now - displayChangedAt < 2000 && !duoFrameMatchesConfig(sourceWidth, sourceHeight, config)) return;
       // CoreSimulator briefly publishes an empty IOSurface when switching
       // displays. Keep the previous screen through that handoff; an app that
       // intentionally stays black is shown once the short handoff expires.
@@ -310,6 +311,9 @@ export function DuoDeviceModel(props: DuoDeviceModelProps) {
         canvas.dataset.currentAngle = hinge.value.toFixed(2);
         canvas.dataset.pose = current.pose ?? rememberedPose;
         canvas.dataset.animating = String(Math.abs(hinge.value - targetAngle) > 0.05 || rotation.some((value) => Math.abs(value.velocity) > 0.005));
+        canvas.dataset.screenId = String(current.screenConfig.screenId ?? "");
+        canvas.dataset.streamSize = `${current.screenConfig.width}x${current.screenConfig.height}`;
+        canvas.dataset.frameSize = lastSource ? surfaceSize(lastSource).join("x") : "";
       }
     };
     raf = requestAnimationFrame(tick);

@@ -3,6 +3,16 @@ import type { HingePose } from "../../hinge-control";
 import type { StreamConfig } from "../types";
 import { streamDisplayGeometry } from "./orientation";
 
+export interface DuoViewAngles {
+  elevation: number;
+  rotation: number;
+}
+
+export const DUO_DEFAULT_VIEW_ANGLES: Record<"laptop" | "tent", DuoViewAngles> = {
+  laptop: { elevation: 20, rotation: -20 },
+  tent: { elevation: 10, rotation: -20 },
+};
+
 /** Camera-axis roll that makes the active panel's native UI readable. */
 export function duoScreenRoll(config: StreamConfig) {
   const mount = config.screenId === 1 ? 0 : Math.PI / 2;
@@ -33,6 +43,7 @@ export function duoPose(
   screenId?: number,
   config?: StreamConfig | null,
   presentationRoll?: number,
+  viewAngles?: DuoViewAngles,
 ) {
   const degrees = Math.max(0, Math.min(180, angle ?? (screenId === 1 ? 0 : 180)));
   const fold = (180 - degrees) * Math.PI / 360;
@@ -46,13 +57,17 @@ export function duoPose(
   presentation.premultiply(new Quaternion(0, 0, Math.sin(roll / 2), Math.cos(roll / 2)));
 
   if (pose === "laptop" || pose === "tent") {
-    // A small world-Y turn reveals the right-side depth while retaining the
-    // level table geometry. Laptop keeps its 20° viewing elevation; Tent turns
-    // the cover outward and looks down from 10° above its level ridge.
-    const tabletopYaw = -Math.PI / 9;
+    // Place the device on a level table before applying the camera orbit.
+    // Laptop's base stays flat as the hinge changes; Tent's two feet share
+    // the same height. Azimuth turns around the table normal, then elevation
+    // looks down at it without introducing a sideways tilt.
+    const view = viewAngles ?? DUO_DEFAULT_VIEW_ANGLES[pose];
+    const elevation = view.elevation * Math.PI / 180;
+    const tabletopYaw = view.rotation * Math.PI / 180;
     const physical = new Quaternion().setFromEuler(pose === "laptop"
-      ? new Euler(-fold + Math.PI / 9, tabletopYaw, Math.PI / 2, "YXZ")
-      : new Euler(Math.PI / 2 + Math.PI / 18, tabletopYaw, -Math.PI / 2, "YXZ"));
+      ? new Euler(fold - Math.PI / 2, 0, Math.PI / 2, "YXZ")
+      : new Euler(Math.PI / 2, 0, -Math.PI / 2, "YXZ"));
+    physical.premultiply(new Quaternion().setFromEuler(new Euler(elevation, tabletopYaw, 0, "XYZ")));
     // Slider edits retain their physical pose, but both endpoints must show
     // their display straight-on. Blend the last 30° instead of snapping there.
     const amount = Math.min(1, degrees / 30, (180 - degrees) / 30);

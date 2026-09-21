@@ -5,11 +5,11 @@ import type { StreamConfig } from "../client/types";
 
 const hingeAxis = new Vector3(0, 1, 0);
 
-function expectDirection(actual: Vector3, expected: Vector3) {
+function expectDirection(actual: Vector3, expected: Vector3, precision = 8) {
   const direction = actual.clone().normalize();
-  expect(direction.x).toBeCloseTo(expected.x, 8);
-  expect(direction.y).toBeCloseTo(expected.y, 8);
-  expect(direction.z).toBeCloseTo(expected.z, 8);
+  expect(direction.x).toBeCloseTo(expected.x, precision);
+  expect(direction.y).toBeCloseTo(expected.y, precision);
+  expect(direction.z).toBeCloseTo(expected.z, precision);
 }
 
 function panelDirection(direction: Vector3, side: "left" | "right", physical: ReturnType<typeof duoPose>) {
@@ -56,24 +56,25 @@ describe("iPhone Duo view alignment", () => {
 
   test("Laptop shows its front and right-side depth above a level lower panel", () => {
     const laptop = duoPose(90, "laptop", 3);
-    const ridge = panelDirection(hingeAxis, "left", laptop);
+    const elevation = Math.PI / 9;
+    const cameraRight = new Vector3(1, 0, 0);
+    const levelView = (point: Vector3) => point.clone().applyAxisAngle(cameraRight, -elevation);
+    const ridge = levelView(panelDirection(hingeAxis, "left", laptop));
     const azimuth = Math.atan2(ridge.z, -ridge.x);
     expect(azimuth).toBeLessThan(-Math.PI / 18);
     expect(azimuth).toBeGreaterThan(-Math.PI / 6);
     expect(ridge.y).toBeCloseTo(0, 8);
-    const baseNormal = panelDirection(new Vector3(0, 0, 1), "left", laptop).applyAxisAngle(hingeAxis, -azimuth);
-    const backNormal = panelDirection(new Vector3(0, 0, 1), "right", laptop).applyAxisAngle(hingeAxis, -azimuth);
-    // Removing the viewing azimuth and elevation reveals a level base and a
-    // vertical back. The shared view transform must not twist their geometry.
-    const elevation = Math.atan2(-backNormal.y, backNormal.z);
-    expect(elevation).toBeCloseTo(Math.PI / 9, 8);
-    const cameraRight = new Vector3(1, 0, 0);
-    expectDirection(baseNormal.clone().applyAxisAngle(cameraRight, -elevation), new Vector3(0, 1, 0));
-    expectDirection(backNormal.clone().applyAxisAngle(cameraRight, -elevation), new Vector3(0, 0, 1));
+    const baseNormal = panelDirection(new Vector3(0, 0, 1), "left", laptop);
+    // Looking around the table must not tilt its normal sideways. Only the
+    // camera's elevation changes where world-up points in the image.
+    expectDirection(baseNormal, new Vector3(0, Math.cos(elevation), Math.sin(elevation)));
+    const backNormal = levelView(panelDirection(new Vector3(0, 0, 1), "right", laptop));
+    expect(backNormal.y).toBeCloseTo(0, 8);
+    expectDirection(backNormal.applyAxisAngle(hingeAxis, -azimuth), new Vector3(0, 0, 1));
     // The lower panel extends forward from the hinge instead of below it.
     const lowerEdge = panelDirection(new Vector3(-1, 0, 0), "left", laptop)
-      .applyAxisAngle(hingeAxis, -azimuth)
-      .applyAxisAngle(cameraRight, -elevation);
+      .applyAxisAngle(cameraRight, -elevation)
+      .applyAxisAngle(hingeAxis, -azimuth);
     expect(lowerEdge.y).toBeCloseTo(0, 8);
     expect(lowerEdge.z).toBeGreaterThan(0);
   });
@@ -87,7 +88,8 @@ describe("iPhone Duo view alignment", () => {
     expect(coverNormal.y).toBeGreaterThan(0);
     expect(innerCounterpart.z).toBeLessThan(-0.5);
     expectDirection(coverNormal.clone().negate(), innerCounterpart);
-    const ridge = panelDirection(hingeAxis, "left", tent);
+    const levelView = (point: Vector3) => point.clone().applyAxisAngle(new Vector3(1, 0, 0), -Math.PI / 18);
+    const ridge = levelView(panelDirection(hingeAxis, "left", tent));
     const azimuth = Math.atan2(-ridge.z, ridge.x);
     expect(azimuth).toBeLessThan(-Math.PI / 18);
     expect(azimuth).toBeGreaterThan(-Math.PI / 6);
@@ -99,10 +101,30 @@ describe("iPhone Duo view alignment", () => {
     expect(rearFoot.y).toBeLessThan(0);
     expect(frontFoot.z).toBeGreaterThan(0);
     expect(rearFoot.z).toBeLessThan(0);
-    const removeView = (point: Vector3) => point.clone()
-      .applyAxisAngle(hingeAxis, -azimuth)
-      .applyAxisAngle(new Vector3(1, 0, 0), -Math.PI / 18);
-    expect(removeView(frontFoot).y).toBeCloseTo(removeView(rearFoot).y, 8);
+    expect(levelView(frontFoot).y).toBeCloseTo(levelView(rearFoot).y, 8);
+  });
+
+  test("view controls orbit a level tabletop across hinge angles and viewing directions", () => {
+    for (const angle of [30, 55, 80, 90, 120, 150]) {
+      for (const elevation of [0, 10, 20, 45, 90]) {
+        const radians = elevation * Math.PI / 180;
+        const tableNormal = new Vector3(0, Math.cos(radians), Math.sin(radians));
+        for (const rotation of [-180, -90, -20, 0, 45, 90, 180]) {
+          const view = { elevation, rotation };
+          const laptop = duoPose(angle, "laptop", 3, undefined, undefined, view);
+          expectDirection(panelDirection(new Vector3(0, 0, 1), "left", laptop), tableNormal, 6);
+          const tent = duoPose(angle, "tent", 1, undefined, undefined, view);
+          // All four ends of the two supporting edges have the same height
+          // on the table, including when viewed from the side or from above.
+          const contacts = [-1, 1].flatMap((end) => [
+            panelDirection(new Vector3(-1, end, 0), "left", tent),
+            panelDirection(new Vector3(1, end, 0), "right", tent),
+          ]);
+          const height = contacts[0]!.dot(tableNormal);
+          for (const contact of contacts) expect(contact.dot(tableNormal)).toBeCloseTo(height, 6);
+        }
+      }
+    }
   });
 
   test("slider endpoints show readable front-facing displays while retaining Laptop or Tent", () => {

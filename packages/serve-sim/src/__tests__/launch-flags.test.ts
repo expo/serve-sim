@@ -35,6 +35,29 @@ describe.skipIf(!existsSync(CLI))("launch flags", () => {
     expect(stderr).toContain("Pass --launch-app-identifier");
   });
 
+  test("rejects an app launch that --detach would silently skip", async () => {
+    const { code, stderr } = await runCli([
+      "--detach",
+      "--launch-app-identifier",
+      "dev.expo.serve-sim.launch-fixture",
+    ]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("--launch-app-identifier");
+    expect(stderr).toContain("drop --detach");
+  });
+
+  test("names every flag that --detach would silently skip", async () => {
+    const { code, stderr } = await runCli([
+      "--detach",
+      "--launch-app-identifier",
+      "dev.expo.serve-sim.launch-fixture",
+      "--launch-arg",
+      "-Foo",
+    ]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("--launch-app-identifier, --launch-arg need the foreground session");
+  });
+
   test("rejects a URL that is not a URL", async () => {
     const { code, stderr } = await runCli([
       "--launch-app-identifier",

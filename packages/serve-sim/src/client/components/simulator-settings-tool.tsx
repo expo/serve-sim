@@ -83,14 +83,16 @@ const TOGGLE_OPTIONS = [
 export function SettingRow({
   icon,
   label,
+  title,
   children,
 }: {
   icon: ReactNode;
   label: string;
+  title?: string;
   children: ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2 min-h-[30px]" data-setting-row={label}>
+    <div className="flex items-center justify-between gap-2 min-h-[30px]" data-setting-row={label} title={title}>
       <span className="flex shrink-0 items-center gap-2 text-[12px] text-white/90 whitespace-nowrap">
         <span className="flex size-[18px] items-center justify-center text-white">{icon}</span>
         {label}
@@ -331,19 +333,18 @@ export function HingeSettings({
           </label>
         </span>
       </SettingRow>
-      <SettingRow icon={<Laptop size={14} strokeWidth={2} />} label="Table Mode">
-        <span title={canChangeTableMode ? undefined : "Table Mode is not available in the current pose"}>
-          <SettingSwitch
-            label="Table Mode"
-            checked={tableMode ?? false}
-            disabled={!canChangeTableMode}
-            onChange={(value) => onChange({ control: "table", value })}
-          />
-        </span>
+      <SettingRow
+        icon={<Laptop size={14} strokeWidth={2} />}
+        label="Table Mode"
+        title={`Tells iOS the device is resting on a table. Tent turns it on; rotation or hinge edits turn it off.${canChangeTableMode ? "" : " Table Mode is not available in the current pose."}`}
+      >
+        <SettingSwitch
+          label="Table Mode"
+          checked={tableMode ?? false}
+          disabled={!canChangeTableMode}
+          onChange={(value) => onChange({ control: "table", value })}
+        />
       </SettingRow>
-      <p className="m-0 mb-1 pl-[26px] text-[11px] leading-relaxed text-white/60">
-        Tells iOS the device is resting on a table. Tent turns it on; rotation or hinge edits turn it off.
-      </p>
       <SettingRow icon={<Image size={14} strokeWidth={2} />} label="Cache screen on fold">
         <SettingSwitch
           label="Cache screen on fold"

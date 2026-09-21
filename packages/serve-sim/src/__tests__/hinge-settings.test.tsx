@@ -81,7 +81,7 @@ describe("foldable simulator sidebar controls", () => {
 
   test("makes Table Mode available only when supported in the current pose", () => {
     const unavailable = renderToStaticMarkup(<HingeSettings supported onChange={onChange} />);
-    expect(unavailable).toContain('title="Table Mode is not available in the current pose"');
+    expect(unavailable).toMatch(/title="[^"]*Table Mode is not available in the current pose/);
     expect(unavailable).toMatch(/role="switch"[^>]*aria-label="Table Mode"[^>]* disabled=""/);
     const available = renderToStaticMarkup(<HingeSettings angle={80} pose="tent" tableMode tableModeAvailable onChange={onChange} />);
     expect(available).toMatch(/role="switch"[^>]*aria-checked="true"[^>]*aria-label="Table Mode"/);
@@ -108,10 +108,10 @@ describe("foldable simulator sidebar controls", () => {
     expect(html).toContain(">Fill available space<");
   });
 
-  test("explains Table Mode as an iOS state and how it is reset", () => {
+  test("explains Table Mode and how it is reset in a native hover tooltip", () => {
     const html = renderToStaticMarkup(<HingeSettings supported tableModeAvailable onChange={onChange} />);
     expect(html).toContain("Tells iOS the device is resting on a table.");
     expect(html).toContain("Tent turns it on; rotation or hinge edits turn it off.");
-    expect(html).toMatch(/<p[^>]*>Tells iOS the device is resting on a table\./);
+    expect(html).toMatch(/title="Tells iOS the device is resting on a table\. Tent turns it on; rotation or hinge edits turn it off\."/);
   });
 });

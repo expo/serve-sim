@@ -13,6 +13,7 @@ const tableModes: boolean[] = [];
 let hingePoseDelay = 0;
 let hingeResult = true;
 let hingeSupported = false;
+let nativeHingeState: { hingeAngle?: number; physicalOrientation?: string; tableMode?: boolean } = {};
 let inputSetupError: Error | undefined;
 let touchError: Error | undefined;
 const inputCalls: string[] = [];
@@ -41,8 +42,10 @@ const addon = {
     async memoryWarning() { inputCalls.push("memoryWarning"); }
     async softwareKeyboard() { inputCalls.push("softwareKeyboard"); }
     async caDebug() { inputCalls.push("caDebug"); return true; }
-    async setTableMode(enabled: boolean) { tableModes.push(enabled); return hingeResult; }
+    async hingeState() { return { ...nativeHingeState }; }
+    async setTableMode(enabled: boolean) { inputCalls.push("setTableMode"); tableModes.push(enabled); return hingeResult; }
     async setHingePose(pose: string) {
+      inputCalls.push("setHingePose");
       hingePoses.push(pose);
       await Bun.sleep(hingePoseDelay);
       return hingeResult;
@@ -82,6 +85,8 @@ const inputCommands: Array<{
   { name: "orientation", call: (hid) => hid.orientation(4), result: true },
   { name: "supportsHingeAngle", call: (hid) => hid.supportsHingeAngle(), result: true },
   { name: "setHingeAngle", call: (hid) => hid.setHingeAngle(90), result: true },
+  { name: "setHingePose", call: (hid) => hid.setHingePose("book"), result: true },
+  { name: "setTableMode", call: (hid) => hid.setTableMode(true), result: true },
   { name: "memoryWarning", call: (hid) => hid.memoryWarning() },
   { name: "softwareKeyboard", call: (hid) => hid.softwareKeyboard() },
   { name: "caDebug", call: (hid) => hid.caDebug("color-blended-layers", true), result: true },
@@ -117,6 +122,9 @@ beforeEach(() => {
   inputCalls.length = 0;
   routedScreens.length = 0;
   hingeAngles.length = 0;
+  hingePoses.length = 0;
+  tableModes.length = 0;
+  hingePoseDelay = 0;
   hingeResult = true;
   hingeSupported = true;
 });
@@ -139,6 +147,7 @@ async function start(initialScreen: NativeScreenInfo, supportsHingeAngle = false
   hingePoseDelay = 0;
   hingeResult = true;
   hingeSupported = supportsHingeAngle;
+  nativeHingeState = {};
   inputSetupError = setupError;
   inputCalls.length = 0;
   mjpeg = undefined;
@@ -186,6 +195,8 @@ describe("native input failure isolation", () => {
     }
     expect(inputCalls).toEqual([]);
     expect(hingeAngles).toEqual([]);
+    expect(hingePoses).toEqual([]);
+    expect(tableModes).toEqual([]);
 
     // The failed native setup task cannot recover. Metadata updates must not
     // retry it or re-enable partial input, even if capabilities become available.
@@ -203,6 +214,8 @@ describe("native input failure isolation", () => {
     }
     expect(inputCalls).toEqual(inputCommands.map(({ name }) => name));
     expect(hingeAngles).toEqual([90]);
+    expect(hingePoses).toEqual(["book"]);
+    expect(tableModes).toEqual([true]);
     expect(routedScreens).toEqual([3, 1]);
     expect(errorLog).toHaveBeenCalledTimes(1);
   });
@@ -451,7 +464,28 @@ describe("physical hinge controls", () => {
     expect(controlResults[1]).toMatchObject({ requestId: 42, ok: false });
     expect(controlResults[1]?.error).toBeTruthy();
     expect(configs.at(-1)?.hingePose).toBeNull();
-    expect(configs.at(-1)).not.toHaveProperty("hingeAngle");
+    expect(configs.at(-1)?.hingeAngle).toBe(0);
     expect(configs.at(-1)).not.toHaveProperty("tableMode");
+  });
+
+  test("reads a partially applied pose back before acknowledging failure and accepts a Table Mode retry", async () => {
+    const { controlResults, configs } = await start({ width: 1398, height: 2034, screenId: 1 }, true);
+    send(1, { control: "pose", value: "closed" });
+    await waitUntil(() => controlResults.length === 1);
+    // The hinge and physical orientation moved, then the table sensor failed.
+    hingeResult = false;
+    nativeHingeState = { hingeAngle: 82.5, physicalOrientation: "landscape-left", tableMode: false };
+    screen = { width: 2007, height: 2853, screenId: 3, orientation: "landscape_left" };
+    send(2, { control: "pose", value: "tent" });
+    await waitUntil(() => controlResults.length === 2);
+    expect(controlResults[1]).toMatchObject({ ok: false });
+    expect(session!.screenConfig()).toMatchObject({ hingeAngle: 82.5, hingePose: null, screenId: 3, tableModeAvailable: true });
+    expect(configs.at(-1)).toMatchObject({ hingeAngle: 82.5, screenId: 3, tableMode: false });
+    expect(routedScreens).toEqual([1, 3]);
+    hingeResult = true;
+    send(3, { control: "table", value: true });
+    await waitUntil(() => controlResults.length === 3);
+    expect(controlResults[2]).toMatchObject({ ok: true });
+    expect(tableModes).toEqual([true]);
   });
 });

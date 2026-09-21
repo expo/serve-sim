@@ -16,6 +16,7 @@ import {
   type StreamEncoderSettings,
 } from "./stream-settings";
 import { readSenderStats, type SenderStats } from "./webrtc-sender-stats";
+import type { HingePhysicalOrientation } from "./hinge-control";
 
 const require = createRequire(import.meta.url);
 
@@ -26,6 +27,7 @@ const require = createRequire(import.meta.url);
 interface SimHIDHandle {
   setScreen(screenId: number): Promise<void>;
   supportsHingeAngle(): Promise<boolean>;
+  hingeState(): Promise<NativeHingeState>;
   setHingeAngle(angle: number): Promise<boolean>;
   setHingePose(pose: string): Promise<boolean>;
   setTableMode(enabled: boolean): Promise<boolean>;
@@ -103,6 +105,12 @@ export type AvccFrame = {
 };
 
 export type NativeCaptureOptions = StreamEncoderSettings;
+
+export type NativeHingeState = {
+  hingeAngle?: number;
+  tableMode?: boolean;
+  physicalOrientation?: HingePhysicalOrientation;
+};
 
 export type NativeScreenInfo = {
   width: number;
@@ -212,6 +220,10 @@ export class NativeHid {
 
   supportsHingeAngle(): Promise<boolean> {
     return this.guard("supportsHingeAngle", () => this.handle.supportsHingeAngle(), false);
+  }
+
+  hingeState(): Promise<NativeHingeState> {
+    return this.guard("hingeState", () => this.handle.hingeState(), {});
   }
 
   multiTouch(type: TouchType, x1: number, y1: number, x2: number, y2: number, w: number, h: number): Promise<void> {

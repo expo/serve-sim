@@ -1015,11 +1015,17 @@ export class DeviceSession {
         if (command.control === "pose") this.hingePhysicalOrientation = hingePoseOrientation(command.value);
         this.broadcastConfig();
       } else {
-        // Angle edits and presets can fail after changing part of the state.
+        // A failed sequence can still move the hinge or change the active
+        // panel. Recover actual state before the failure ack permits a retry.
         this.hingePose = null;
-        this.hingeAngle = undefined;
-        this.tableMode = undefined;
-        this.hingePhysicalOrientation = undefined;
+        const recovered = await this.hid.hingeState();
+        if (this.phase !== "running") return false;
+        this.hingeAngle = recovered.hingeAngle ?? this.hingeAngle;
+        this.tableMode = recovered.tableMode;
+        this.hingePhysicalOrientation = recovered.physicalOrientation ?? this.hingePhysicalOrientation;
+        try { await this.refreshScreenSizeFromNative(); }
+        catch { /* Preserve the last readable screen through a transient failure. */ }
+        if (this.phase !== "running") return false;
         this.broadcastConfig();
       }
       return ok;

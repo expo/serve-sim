@@ -36,6 +36,20 @@ async function selectPose(state: ServeSimDeviceState, value: HingePose) {
   });
 }
 
+test.skipIf(!device)("native hinge recovery reads angles changed by another process", async () => {
+  const { NativeHid } = await import("../native");
+  const observer = new NativeHid(device!);
+  const state = JSON.parse(readFileSync(stateFileForDevice(device!), "utf8")) as ServeSimDeviceState;
+  try {
+    for (const [pose, angle] of [["closed", 0], ["open", 180], ["book", 90]] as const) {
+      // Commands run in the server, so this process cannot use its last sent
+      // angle to pass. It must receive a fresh native motion sample.
+      await selectPose(state, pose);
+      expect((await observer.hingeState()).hingeAngle).toBe(angle);
+    }
+  } finally { await selectPose(state, "tent"); }
+}, 20_000);
+
 test.skipIf(!device)("Tent makes the cover landscape regardless of the previous preset", async () => {
   const state = JSON.parse(readFileSync(stateFileForDevice(device!), "utf8")) as ServeSimDeviceState;
   const configUrl = state.streamUrl.replace(/\/stream\.[^/]+$/, "/config");

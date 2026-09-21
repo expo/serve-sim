@@ -95,6 +95,15 @@ private func u32(_ v: Int) -> UInt32 {
         try await setup.run { await injector.supportsHingeAngle() }
     }
 
+    @NodeMethod func hingeState() async -> [String: any NodePropertyConvertible] {
+        let state = await CoreDeviceBridge.shared.hingeState(udid: udid)
+        var result: [String: any NodePropertyConvertible] = [:]
+        if let angle = state.angle { result["hingeAngle"] = angle }
+        if let tableMode = state.tableMode { result["tableMode"] = tableMode }
+        if let orientation = state.orientation { result["physicalOrientation"] = orientation }
+        return result
+    }
+
     @NodeMethod func setHingePose(_ pose: String) async throws -> Bool {
         try await setup.run { await injector.setHingePose(pose) }
     }

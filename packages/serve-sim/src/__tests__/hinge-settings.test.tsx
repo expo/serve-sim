@@ -15,7 +15,7 @@ describe("foldable simulator sidebar controls", () => {
     expect(html).not.toContain("<details");
     expect(html).not.toContain("<summary");
     expect(Array.from(html.matchAll(/data-setting-row="([^"]+)"/g), ([, label]) => label)).toEqual([
-      "Fold pose", "Hinge angle", "Table Mode", "Cache screen on fold", "Preview size",
+      "Fold pose", "Hinge angle", "Table Mode", "Preview mode", "Cache screen on fold", "Preview size",
     ]);
     expect(html).toMatch(/<button[^>]*aria-label="Fold pose"/);
     expect(html).toContain('aria-haspopup="listbox"');
@@ -32,10 +32,12 @@ describe("foldable simulator sidebar controls", () => {
       ["laptop", "Laptop"],
       ["tent", "Tent"],
     ] as const) {
-      const html = renderToStaticMarkup(<HingeSettings angle={90} pose={pose} onChange={onChange} />);
-      expect(html).toContain(`>${label}<`);
-      expect(html).not.toContain(">Custom<");
-      expect(html).not.toContain(">Unknown<");
+      for (const viewMode of ["2d", "3d"] as const) {
+        const html = renderToStaticMarkup(<HingeSettings angle={90} pose={pose} viewMode={viewMode} onChange={onChange} />);
+        expect(html).toContain(`>${label}<`);
+        expect(html).not.toContain(">Custom<");
+        expect(html).not.toContain(">Unknown<");
+      }
     }
   });
 
@@ -68,7 +70,7 @@ describe("foldable simulator sidebar controls", () => {
   });
 
   test("keeps controls enabled while a previous update is pending", () => {
-    const html = renderToStaticMarkup(<HingeSettings angle={90} pose="laptop" tableModeAvailable pending onChange={onChange} onCacheScreenOnFoldChange={() => {}} onSizeModeChange={() => {}} />);
+    const html = renderToStaticMarkup(<HingeSettings angle={90} pose="laptop" tableModeAvailable pending onChange={onChange} onViewModeChange={() => {}} onCacheScreenOnFoldChange={() => {}} onSizeModeChange={() => {}} />);
     expect(html).toContain('aria-busy="true"');
     expect(html).not.toMatch(/<(input|button)[^>]* disabled=""/);
   });
@@ -100,6 +102,17 @@ describe("foldable simulator sidebar controls", () => {
     expect(html).toMatch(/role="switch"[^>]*aria-checked="false"[^>]*aria-label="Cache screen on fold"/);
     expect(html).toMatch(/<button[^>]*aria-label="Preview size"/);
     expect(html).toContain(">Fill available space<");
+    expect(html).toMatch(/<button[^>]*aria-label="Preview mode"/);
+    expect(html).toContain(">3D<");
+  });
+
+  test("2D retains native fold controls and hides options that only affect the 3D model", () => {
+    const html = renderToStaticMarkup(<HingeSettings supported viewMode="2d" onViewModeChange={() => {}} onChange={onChange} />);
+    expect(html).toContain(">2D<");
+    expect(Array.from(html.matchAll(/data-setting-row="([^"]+)"/g), ([, label]) => label)).toEqual([
+      "Fold pose", "Hinge angle", "Table Mode", "Preview mode",
+    ]);
+    expect(html).not.toMatch(/<button[^>]*aria-label="Preview mode"[^>]* disabled=""/);
   });
 
   test("reflects enabled caching and a selected physical size", () => {

@@ -629,7 +629,20 @@ function AppWithConfig({
   const isDuo = supportsHingeAngle === true ||
     /\biphone\s+duo\b/i.test(deviceName ?? "") ||
     defaultChrome?.identifier === "phone14" || defaultChrome?.identifier === "phone15";
-  const useDuoModel = isDuo && chromeEnabled && !axOverlayEnabled;
+  const [duoViewMode, setDuoViewModeState] = useState<"2d" | "3d">(() => {
+    try { return localStorage.getItem("serve-sim:duo-view-mode") === "2d" ? "2d" : "3d"; } catch { return "3d"; }
+  });
+  const [duoModelUnavailable, setDuoModelUnavailable] = useState(false);
+  const useDuoModel = isDuo && duoViewMode === "3d" && chromeEnabled && !axOverlayEnabled && !duoModelUnavailable;
+  const setDuoViewMode = useCallback((mode: "2d" | "3d") => {
+    setDuoViewModeState(mode);
+    setDuoModelUnavailable(false);
+    if (mode === "3d") {
+      setChromeEnabled(true);
+      setAxOverlayEnabled(false);
+    }
+    try { localStorage.setItem("serve-sim:duo-view-mode", mode); } catch { /* Viewer storage is optional. */ }
+  }, [setChromeEnabled, setAxOverlayEnabled]);
   const [cacheScreenOnFold, setCacheScreenOnFoldState] = useState(() => {
     try { return localStorage.getItem("serve-sim:duo-cache-screen-on-fold") === "true"; } catch { return false; }
   });
@@ -644,10 +657,9 @@ function AppWithConfig({
     setDuoSizeModeState(mode);
     try { localStorage.setItem("serve-sim:duo-preview-size", mode); } catch { /* Viewer storage is optional. */ }
   }, []);
-  const [duoModelUnavailable, setDuoModelUnavailable] = useState(false);
   const [duoPanelPeer, setDuoPanelPeer] = useState<DuoPanelPeer | null>(null);
   const [duoPanelError, setDuoPanelError] = useState<string | null>(null);
-  const useDuoPanelFeeds = useDuoModel && !duoModelUnavailable;
+  const useDuoPanelFeeds = useDuoModel;
   const onDuoUnavailable = useCallback(() => setDuoModelUnavailable(true), []);
   useEffect(() => setDuoModelUnavailable(false), [config.streamUrl]);
   const devtools = useWebKitDevtools(config.devtoolsEndpoint ?? simEndpoint("devtools"), devtoolsOpen);
@@ -1839,6 +1851,9 @@ function AppWithConfig({
           pending: hingePending,
           error: hingeError,
           onChange: setHingeControl,
+          viewMode: useDuoModel ? "3d" : "2d",
+          onViewModeChange: setDuoViewMode,
+          viewError: duoModelUnavailable ? "3D preview unavailable. Select 3D to retry." : null,
           cacheScreenOnFold,
           onCacheScreenOnFoldChange: setCacheScreenOnFold,
           sizeMode: duoSizeMode,

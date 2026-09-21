@@ -23,6 +23,9 @@ export interface HingeControlsProps {
   supported?: boolean;
   tableMode?: boolean;
   tableModeAvailable?: boolean;
+  viewMode?: "2d" | "3d";
+  onViewModeChange?: (mode: "2d" | "3d") => void;
+  viewError?: string | null;
   cacheScreenOnFold?: boolean;
   onCacheScreenOnFoldChange?: (enabled: boolean) => void;
   sizeMode?: "physical" | "fill";

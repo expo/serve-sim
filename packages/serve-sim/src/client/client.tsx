@@ -459,6 +459,7 @@ function App() {
   const selectedDevice = gridDevices?.find((d) => d.device === effectiveUdid) ?? null;
   // The catalog is a fetch behind the inlined config, so until it lands the
   // device would lay out at the bare screen aspect and then reflow into its bezel.
+  // Once available, prefer the catalog's complete cover/inner display variants.
   const inlineChrome =
     injectedConfig?.device === effectiveUdid
       ? injectedConfig.chrome ?? null
@@ -472,7 +473,7 @@ function App() {
         config={config}
         deviceName={selectedDevice?.name ?? null}
         deviceRuntime={selectedDevice?.runtime ?? null}
-        chrome={inlineChrome ?? selectedDevice?.chrome ?? null}
+        chrome={selectedDevice?.chrome ?? inlineChrome}
         axOverlayEnabled={axOverlayEnabled}
         setAxOverlayEnabled={setAxOverlayEnabled}
         devtoolsOpen={devtoolsOpen}

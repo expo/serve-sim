@@ -169,10 +169,8 @@ The installed Action Bar exposes one hinge-angle slider. Its other physical
 controls are presets and rotation controls; no independent pitch, roll, or yaw
 sliders were found.
 
-A reply to the source post describes holding Option to access the hinge-angle
-slider. The installed binary also changes the rotation control from Rotate
-Right to Rotate Left while Option is held. serve-sim's decimal input provides
-fine angle adjustment directly.
+Device Hub changes the rotation control from Rotate Right to Rotate Left while
+Option is held. serve-sim's decimal input provides fine angle adjustment directly.
 
 A second hidden preference controls how Device Hub sends a requested angle:
 
@@ -185,19 +183,17 @@ sweeping through intermediate angles. It does not change the 3D model or
 sliders. This is a Device Hub setting; serve-sim sends the requested angle
 directly and does not depend on either preference.
 
-The [source post and video](https://x.com/itspdfu/status/2101038602528375181)
-demonstrate the internal Action Bar and its keyboard shortcuts. The pose
-values, Table Mode availability, and preference strings above were checked
-against the installed Xcode 27.1 beta binary:
+The pose values, Table Mode availability, and preference strings above come
+from the installed Xcode 27.1 beta binary:
 
 ```text
 /Applications/Xcode-27.1.0-Beta.app/Contents/SharedFrameworks/DeviceKit.framework/Versions/A/PlugIns/CoreDevicePopDeviceKitExtension.devicekitplugin/Contents/MacOS/CoreDevicePopDeviceKitExtension
 ```
 
-The video also shows the hidden `HingeStatePoster` wallpaper visualizing the
-hinge with a circular progress indicator and state labels: 0.00 Closed, 0.50
-Partial, and 1.00 Fully Open. The installed iOS 27.1 runtime also contains its
-extension at this path relative to the `runtimeRoot` reported by
+The hidden `HingeStatePoster` wallpaper visualizes the hinge with a circular
+progress indicator and state labels: 0.00 Closed, 0.50 Partial, and 1.00 Fully
+Open. The installed iOS 27.1 runtime contains its extension at this path relative
+to the `runtimeRoot` reported by
 `xcrun simctl list runtimes --json`:
 
 ```text
@@ -205,9 +201,7 @@ System/Library/ExtensionKit/Extensions/HingeStatePoster.appex
 ```
 
 Its bundle identifier is `com.apple.Posters.HingeStatePoster`. The extension
-declares a Lock Screen poster with `PRSupportsGallery = false`, consistent
-with its hidden status. Bundle inspection confirms its presence; the wallpaper
-was not enabled or changed during this investigation.
+declares a Lock Screen poster with `PRSupportsGallery = false`.
 
 ## Device Hub's simulation transport
 
@@ -225,8 +219,7 @@ type = range
 value = angle in degrees, clamped to 0...180
 ```
 
-This was verified against the booted iPhone Duo using CoreDevice's hinge-motion
-readback. It is a private Xcode API and is separate from the public UIKit APIs.
+This is a private Xcode API, separate from the public UIKit APIs.
 
 DeviceHub's orientation picker uses the same transport with
 `source = orientation-picker-control`, `type = enum`, and a value of `portrait`,
@@ -280,14 +273,8 @@ failures and never falls back to the disconnected legacy inner service.
 The new path is restricted to profiles with exactly two integrated displays;
 virtual outputs (such as CarPlay) do not count. Nonfoldable devices keep their
 original Indigo target (`0x32`), Down events for both begin and move, and legacy
-rotation, without CoreDevice capability queries. The new behavior worked in
-iOS 27.2 testing, but remains guarded to protect older runtimes. Legacy keyboard
+rotation, without CoreDevice capability queries. Legacy keyboard
 and button input can coexist with Universal HID touch reports on the Duo.
-
-Verified at 0°, 90°, and 180° in portrait and both landscape directions:
-all four corner buttons, single-finger drags, wheel-generated drags, and two
-simultaneous contacts reached an instrumented UIKit app. `backboardd` retained
-its PID throughout. Upside-down orientation is not included in this check.
 
 For independent checks on Xcode 27.1 beta:
 
@@ -298,15 +285,3 @@ xcrun devicectl device motion hinge-angle --device <udid>
 
 The motion command is a monitor. Its stdout can contain valid angle samples even
 when a command timeout causes the final JSON report to record a timeout.
-
-
-## Pose-control validation
-
-The rebuilt local CLI was exercised in the in-app browser against iOS 27.1:
-all five presets, decimal angle entry, range keyboard controls, ⌘3, Table Mode
-on/off, and a 390px viewport. Independent CoreDevice hinge readback confirmed
-90° and 123.5°. A read-only `monitorDeviceMotionState()` probe confirmed Laptop
-(physical orientation 3, partially open), Book (orientation 1, partially open),
-and Tent (orientation 6, partially open, table state nonzero). Turning Table
-Mode off returned its sensor property to zero. `devicectl`'s spatial-orientation
-monitor is unavailable on this simulator; that command was not used as evidence.

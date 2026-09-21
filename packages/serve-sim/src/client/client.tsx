@@ -790,6 +790,10 @@ function AppWithConfig({
   const previewHingePose = hingePreview ? hingePreview.hingePose : streamConfig?.hingePose;
   const initialDuoView = useMemo(() => duoInitialView(hingeAngle, streamConfig?.hingePose, activeStreamConfig),
     [hingeAngle, streamConfig?.hingePose, activeStreamConfig]);
+  // Control callbacks read the latest native state without re-registering
+  // keyboard and folding-handle listeners on every config broadcast.
+  const duoControlStateRef = useRef({ streamConfig, initialDuoView, orientation: activeStreamConfig.orientation });
+  duoControlStateRef.current = { streamConfig, initialDuoView, orientation: activeStreamConfig.orientation };
   const showHingeControls = !presentation && (supportsHingeAngle ?? hingeAngle !== undefined);
   const clipOrientation = activeStreamConfig.orientation ?? (activeStreamConfig.width > activeStreamConfig.height ? "landscape_left" : "portrait");
   const hasDisplayRadii = !!chrome?.screenCornerRadii;
@@ -990,6 +994,7 @@ function AppWithConfig({
     );
   }, []);
   const setHingeControl = useCallback((command: HingeControlCommand) => {
+    const { streamConfig, initialDuoView } = duoControlStateRef.current;
     setHingeError(null);
     // Editing the hinge or Table Mode clears the named preset, but preserves
     // the simulator's physical orientation (for example Laptop on a table).
@@ -1008,20 +1013,21 @@ function AppWithConfig({
       ...hingeControlState(command),
     }));
     hingeQueueRef.current?.enqueue(command, { key: command.control, replaceQueued: command.control === "pose" });
-  }, [streamConfig, initialDuoView]);
+  }, []);
   const setHingeAngleFromHandle = useCallback((value: number) => {
     setHingeControl({ control: "angle", value });
   }, [setHingeControl]);
   const rotateDevice = useCallback((orientation: SimulatorOrientation, direction?: "left" | "right") => {
+    const current = duoControlStateRef.current;
     const turns = direction ? (direction === "left" ? -1 : 1)
-      : (rotationDegreesForOrientation(activeStreamConfig.orientation) - rotationDegreesForOrientation(orientation)) / 90;
-    setDuoView((previous) => duoRotateView(previous ?? initialDuoView, turns));
+      : (rotationDegreesForOrientation(current.orientation) - rotationDegreesForOrientation(orientation)) / 90;
+    setDuoView((previous) => duoRotateView(previous ?? current.initialDuoView, turns));
     setHingePreview(null);
     setPhysicalPose(null);
     sentHingePoseRef.current = null;
     setOrientationOverride(true);
     sendWs(0x07, { orientation });
-  }, [sendWs, activeStreamConfig.orientation, initialDuoView]);
+  }, [sendWs]);
   const currentOrientation =
     (activeStreamConfig as { orientation?: SimulatorOrientation }).orientation ?? "portrait";
   const canRotate = deviceType !== "watch" && deviceType !== "vision";

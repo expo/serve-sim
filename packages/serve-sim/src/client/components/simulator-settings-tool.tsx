@@ -328,7 +328,6 @@ export function HingeSettings({
               onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
               className="w-[48px] min-w-0 bg-white/[0.06] border border-white/10 rounded-md text-white/90 text-[12px] py-0.5 px-1 text-right"
             />
-            <span aria-hidden="true">°</span>
           </label>
         </span>
       </SettingRow>

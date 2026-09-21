@@ -10,3 +10,13 @@ Original work copyright 2026 Evan Bacon.
 The original work is licensed under the Apache License, Version 2.0. This
 fork contains modifications by Expo and other contributors. See the LICENSE
 file for the applicable terms and the Git history for modification details.
+
+The iPhone Duo 3D model is adapted from Apple's Star White eSIM USDZ asset:
+
+https://www.apple.com/105/media/us/iphone-duo/2026/9305e4b9-72d9-4c05-9381-b572adadd5e5/ar/iPhone_Duo_e-sim_Star-White_Variant.usdz
+
+Apple's model and product designs remain the property of Apple Inc. The
+bundled derivative converts the model to GLB, optimizes geometry and textures,
+and separates its panels for hinge animation. See docs/iphone-duo-model.md
+in the source repository for conversion and provenance details. The project's
+Apache License does not grant rights to Apple's model, designs, or trademarks.

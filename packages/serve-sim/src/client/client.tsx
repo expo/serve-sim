@@ -49,8 +49,11 @@ import { ShareSessionButton } from "./components/share-session-button";
 import { SimulatorResizeSizeBadge } from "./components/simulator-resize-size-badge";
 import { StreamStatusPill } from "./components/stream-status-pill";
 import { HingeControls } from "./components/hinge-controls";
+import { DuoDeviceModel } from "./components/duo-device-model";
+import { rotationDegreesForOrientation } from "./simulator/orientation";
+import type { SimulatorStreamStatus } from "./simulator/SimulatorView";
 import { screenConfigsEqual } from "./simulator/screen-config-state";
-import { HINGE_POSES, type HingeControlCommand } from "../hinge-control";
+import { HINGE_POSES, hingeControlState, type HingeControlCommand, type HingeControlState } from "../hinge-control";
 import { createAcknowledgedControlQueue, type AcknowledgedControlReply } from "./utils/acknowledged-control-queue";
 import { ToolsPanel } from "./components/tools-panel";
 import { WebKitDevtoolsPanel } from "./components/webkit-devtools-panel";
@@ -734,6 +737,11 @@ function AppWithConfig({
   const [wsStreamConfig, setWsStreamConfig] = useState<StreamConfig | null>(null);
   const [hingePending, setHingePending] = useState(false);
   const [hingeError, setHingeError] = useState<string | null>(null);
+  const [hingePreview, setHingePreview] = useState<HingeControlState | null>(null);
+  const [duoModelFailed, setDuoModelFailed] = useState(false);
+  const [duoRotationOffset, setDuoRotationOffset] = useState(0);
+  const [duoStreamStatus, setDuoStreamStatus] = useState<SimulatorStreamStatus>({ connected: false, error: null, slow: false });
+  const onDuoModelError = useCallback(() => setDuoModelFailed(true), []);
   const hingePendingRef = useRef(false);
   const hingeQueueRef = useRef<ReturnType<typeof createAcknowledgedControlQueue<HingeControlCommand>> | null>(null);
   const streamConfig = wsStreamConfig;
@@ -742,6 +750,13 @@ function AppWithConfig({
   const chrome = defaultChrome ? deviceKitChromeForScreen(defaultChrome, activeScreenId) : null;
   const hingeAngle = streamConfig?.hingeAngle;
   const supportsHingeAngle = streamConfig?.supportsHingeAngle;
+  const confirmedHingeRef = useRef<HingeControlState>({});
+  confirmedHingeRef.current = streamConfig ?? {};
+  const displayedHinge = hingePreview ?? streamConfig;
+  // The 3D stage has a stable footprint: the native capture switches between
+  // cover and inner display while the two physical panels keep animating.
+  // AX inspection uses the flat screen so its DOM targets stay aligned.
+  const useDuoModel = chromeEnabled && supportsHingeAngle === true && !duoModelFailed && !axOverlayEnabled;
   const showHingeControls = !presentation && (supportsHingeAngle ?? hingeAngle !== undefined);
   const clipOrientation = activeStreamConfig.orientation ?? (activeStreamConfig.width > activeStreamConfig.height ? "landscape_left" : "portrait");
   const hasDisplayRadii = !!chrome?.screenCornerRadii;
@@ -765,11 +780,11 @@ function AppWithConfig({
   const chromeGeometry = chrome ? deviceKitChromeGeometry(chrome, clipOrientation) : null;
   const useChrome = !!chromeGeometry && chromeEnabled;
   const chromeScale = useChrome ? chromeGeometry!.frame.width / chromeGeometry!.screen.width : 1;
-  const containerDefaultWidth = frameMaxWidth * chromeScale;
-  const containerAspectRatioValue = useChrome
+  const containerDefaultWidth = useDuoModel ? 640 : frameMaxWidth * chromeScale;
+  const containerAspectRatioValue = useDuoModel ? 1 : useChrome
     ? chromeGeometry!.frame.width / chromeGeometry!.frame.height
     : frameAspectRatioValue;
-  const containerAspectRatio = useChrome
+  const containerAspectRatio = useDuoModel ? "1 / 1" : useChrome
     ? `${chromeGeometry!.frame.width} / ${chromeGeometry!.frame.height}`
     : frameAspectRatio;
 
@@ -778,7 +793,11 @@ function AppWithConfig({
   if (!hingeQueueRef.current) {
     hingeQueueRef.current = createAcknowledgedControlQueue<HingeControlCommand>({
       send: (request) => trySendWsMessage(wsRef.current, 0x10, request),
-      onPendingChange: (pending) => { hingePendingRef.current = pending; setHingePending(pending); },
+      onPendingChange: (pending) => {
+        hingePendingRef.current = pending;
+        setHingePending(pending);
+        if (!pending) setHingePreview(null);
+      },
       onError: setHingeError,
     });
   }
@@ -915,13 +934,21 @@ function AppWithConfig({
   }, []);
   const setHingeControl = useCallback((command: HingeControlCommand) => {
     setHingeError(null);
+    if (command.control === "pose") setDuoRotationOffset(0);
+    // Animate immediately from the current visual pose. Older simulator
+    // confirmations must not pull a slider drag back toward an earlier angle.
+    setHingePreview((previous) => ({
+      ...confirmedHingeRef.current, ...previous, ...hingeControlState(command),
+    }));
     hingeQueueRef.current?.enqueue(command, { key: command.control, replaceQueued: command.control === "pose" });
   }, []);
-  const rotateDevice = useCallback((orientation: SimulatorOrientation) => {
-    sendWs(0x07, { orientation });
-  }, [sendWs]);
   const currentOrientation =
     (activeStreamConfig as { orientation?: SimulatorOrientation }).orientation ?? "portrait";
+  const rotateDevice = useCallback((orientation: SimulatorOrientation) => {
+    const delta = rotationDegreesForOrientation(orientation) - rotationDegreesForOrientation(currentOrientation);
+    setDuoRotationOffset((previous) => previous + ((delta + 540) % 360 - 180));
+    sendWs(0x07, { orientation });
+  }, [currentOrientation, sendWs]);
   const canRotate = deviceType !== "watch" && deviceType !== "vision";
   const rotateBy = useCallback(
     (direction: "left" | "right") => {
@@ -937,6 +964,9 @@ function AppWithConfig({
     setWsStreamConfig(null);
     setHingePending(false);
     setHingeError(null);
+    setHingePreview(null);
+    setDuoModelFailed(false);
+    setDuoRotationOffset(0);
   }, [config.streamUrl]);
 
   useEffect(() => {
@@ -1456,6 +1486,7 @@ function AppWithConfig({
                 } as CSSProperties}
                 hideControls
                 onStreamingChange={setStreaming}
+                onStreamStatusChange={useDuoModel ? setDuoStreamStatus : undefined}
                 onStreamTouch={onStreamTouch}
                 onStreamMultiTouch={onStreamMultiTouch}
                 onStreamButton={onStreamButton}
@@ -1479,6 +1510,20 @@ function AppWithConfig({
                 {streamView}
                 {axOverlayEnabled && !presentation && <AxDomOverlay />}
               </>
+            );
+            if (useDuoModel) return (
+              <DuoDeviceModel
+                angle={displayedHinge?.hingeAngle ?? (activeScreenId === 1 ? 0 : 180)}
+                pose={displayedHinge?.hingePose}
+                tableMode={displayedHinge?.tableMode}
+                rotationOffset={duoRotationOffset}
+                screenConfig={activeStreamConfig}
+                screen={streamView}
+                onStreamTouch={onStreamTouch}
+                onStreamMultiTouch={onStreamMultiTouch}
+                onStreamScroll={onStreamScroll}
+                onError={onDuoModelError}
+              />
             );
             if (!useChrome) return screenContent;
             // The screen slot is the bezel's true opening; the stream letterboxes
@@ -1511,6 +1556,14 @@ function AppWithConfig({
               />
             );
           })()}
+          {useDuoModel && (!duoStreamStatus.connected || duoStreamStatus.error || duoStreamStatus.slow) && (
+            <div
+              role={duoStreamStatus.error ? "alert" : "status"}
+              style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", maxWidth: "90%", padding: "8px 12px", borderRadius: 12, background: "#202020", color: duoStreamStatus.error ? "#fca5a5" : "#d4d4d4", fontSize: 12, textAlign: "center", pointerEvents: "none" }}
+            >
+              {duoStreamStatus.error ?? (!duoStreamStatus.connected ? "Connecting to simulator…" : "Slow connection")}
+            </div>
+          )}
           {mediaDrop.isDragOver && (
             <div
               // No backdrop-blur here: the canvas underneath repaints every
@@ -1550,9 +1603,9 @@ function AppWithConfig({
           {showHingeControls && (
             <HingeControls
               key={config.device}
-              angle={hingeAngle}
-              pose={streamConfig?.hingePose}
-              tableMode={streamConfig?.tableMode}
+              angle={displayedHinge?.hingeAngle}
+              pose={displayedHinge?.hingePose}
+              tableMode={displayedHinge?.tableMode}
               tableModeAvailable={streamConfig?.tableModeAvailable}
               supported={supportsHingeAngle}
               pending={hingePending}

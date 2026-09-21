@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
 @source "./";
+/* Encoded model bytes cannot contain utility classes. */
+@source not "./assets/iphone-duo-model.glb.base64";
 
 @theme {
   /* Panel / surface palette */

@@ -40,6 +40,7 @@ import {
   serveDevicePlaceholderAsset,
   type DeviceKitChromeDescriptor,
 } from "./devicekit-chrome";
+import { serveDuoModelAsset } from "./duo-model-asset";
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
 import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware-utils";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
@@ -1763,6 +1764,11 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     if (url === base + "/grid/api/device-placeholder-asset") {
       serveDevicePlaceholderAsset(new URL(rawUrl || "/", "http://serve-sim.local"), res);
+      return;
+    }
+
+    if (url === base + "/assets/iphone-duo/model.glb") {
+      serveDuoModelAsset(req, res);
       return;
     }
 

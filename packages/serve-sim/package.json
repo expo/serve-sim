@@ -83,6 +83,7 @@
     "@types/debug": "^4.1.13",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/three": "^0.186.0",
     "@types/ws": "^8.18.1",
     "bun-plugin-tailwind": "^0.1.2",
     "commander": "^14.0.1",
@@ -93,6 +94,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwindcss": "^4.1.7",
+    "three": "^0.186.0",
     "typescript": "^5.7.0",
     "werift": "^0.24.4",
     "zod": "^4.5.4"

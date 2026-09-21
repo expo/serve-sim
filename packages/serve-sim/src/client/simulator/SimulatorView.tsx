@@ -41,6 +41,12 @@ const WS_MSG_MULTI_TOUCH = 0x05;
 const WS_MSG_DIGITAL_CROWN = 0x0a;
 const WS_MSG_SCROLL = 0x0b;
 
+export type SimulatorStreamStatus = {
+  connected: boolean;
+  error: string | null;
+  slow: boolean;
+};
+
 export interface SimulatorViewProps {
   /** Base URL of the serve-sim server, e.g. "http://localhost:3100" */
   url: string;
@@ -79,6 +85,8 @@ export interface SimulatorViewProps {
   hideControls?: boolean;
   /** Called when streaming state changes (true = frames are flowing). */
   onStreamingChange?: (streaming: boolean) => void;
+  /** Lets alternate renderers keep connection and failure messages visible. */
+  onStreamStatusChange?: (status: SimulatorStreamStatus) => void;
   /** Connection quality indicator: green (good), yellow (degraded), red (poor). */
   connectionQuality?: "good" | "degraded" | "poor" | null;
   /** Video render mode. "avcc" falls back to MJPEG when WebCodecs is unavailable. */
@@ -127,6 +135,7 @@ export function SimulatorView({
   onScreenConfigChange,
   hideControls,
   onStreamingChange,
+  onStreamStatusChange,
   connectionQuality,
   streamMode = "avcc",
   webRtcStream,
@@ -309,6 +318,12 @@ export function SimulatorView({
   useEffect(() => {
     onStreamingChangeRef.current?.(connected);
   }, [connected]);
+
+  const onStreamStatusChangeRef = useRef(onStreamStatusChange);
+  onStreamStatusChangeRef.current = onStreamStatusChange;
+  useEffect(() => {
+    onStreamStatusChangeRef.current?.({ connected, error, slow: showSlowOverlay });
+  }, [connected, error, showSlowOverlay]);
 
   // Parent-supplied configuration is authoritative regardless of video mode.
   useEffect(() => {

@@ -184,19 +184,21 @@ const binJsSize = (await binJsResult.outputs[0]!.text()).length;
 console.log(`dist/serve-sim.js   ${kb(binJsSize)}`);
 
 // ─── 5. Compiled single-file executable ──────────────────────────────────
-// Bun.build doesn't expose --compile yet, so shell out. The define arg carries
-// the base64 HTML (~100 KB) which is well under the macOS ARG_MAX.
+// Pass the embedded browser client through a config file. The 3D renderer
+// makes the HTML too large for macOS's command-line argument limit.
+const compileConfig = resolve(distDir, ".compile-defines.toml");
+writeFileSync(compileConfig, `[define]\n${Object.entries(PREVIEW_DEFINE)
+  .map(([name, value]) => `${name} = ${JSON.stringify(value)}`).join("\n")}\n`);
 
 const compile = spawnSync(
   "bun",
   [
     "build",
+    `--config=${compileConfig}`,
     "--compile",
     "--minify",
     resolve(root, "src/index.ts"),
     "--outfile", resolve(distDir, "serve-sim"),
-    "--define", `__PREVIEW_HTML_B64__=${JSON.stringify(htmlB64)}`,
-    "--define", `__SERVE_SIM_VERSION__=${JSON.stringify(pkgVersion)}`,
     // `ws` must stay a runtime-resolved specifier so Bun substitutes its
     // native implementation — bundling the Node implementation breaks
     // upgrades (raw handshake writes never flush under Bun's node:http).
@@ -204,6 +206,11 @@ const compile = spawnSync(
   ],
   { stdio: "inherit" },
 );
+rmSync(compileConfig, { force: true });
+if (compile.error) {
+  console.error("Compiled executable build failed:", compile.error);
+  process.exit(1);
+}
 if (compile.status !== 0) process.exit(compile.status ?? 1);
 console.log("dist/serve-sim      (compiled binary)");
 

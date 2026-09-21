@@ -153,6 +153,9 @@ These orientations describe the physical device, independently of the active
 panel's native rotation. A Laptop preset therefore differs from sending a 90°
 hinge angle alone. Non-Tent presets release Table Mode before applying their
 hinge angle and orientation. Tent sets 80°, then face down, then Table Mode.
+serve-sim first seeds Tent's landscape-right physical orientation before face
+down, so its outside display uses landscape instead of retaining the previous
+portrait interface orientation. The final physical state remains face down.
 Device Hub's hinge-slider editing callback releases Table Mode, and its
 rotation control sends the new orientation before releasing Table Mode.
 

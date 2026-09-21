@@ -103,8 +103,12 @@ actor CoreDeviceBridge {
         // Match Device Hub's ordering: release the table sensor before leaving
         // a tabletop pose; enter Tent only after angle and orientation are set.
         if !tableMode, !(await setTableMode(udid: udid, enabled: false)) { return false }
-        guard await setHingeAngle(udid: udid, angle: angle),
-              await setPhysicalOrientation(udid: udid, value: orientation) else { return false }
+        guard await setHingeAngle(udid: udid, angle: angle) else { return false }
+        // Face down leaves iOS using its previous interface orientation. Seed
+        // Tent's landscape direction before applying its final physical pose;
+        // otherwise coming from Closed/Book leaves the cover UI sideways.
+        if pose == "tent", !(await setPhysicalOrientation(udid: udid, value: "landscape-right")) { return false }
+        guard await setPhysicalOrientation(udid: udid, value: orientation) else { return false }
         if tableMode { return await setTableMode(udid: udid, enabled: true) }
         return true
     }

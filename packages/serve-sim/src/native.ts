@@ -57,6 +57,7 @@ interface SimCaptureHandle {
   closeWebRTCSession(sessionId: string): Promise<void>;
   webRTCSenderStats(sessionId: string): Promise<string>;
   screenSize(): Promise<NativeScreenInfo>;
+  subscribeScreenChanges(onChange: () => Promise<void>): Promise<NativeUnsubscribe>;
   stop(): Promise<void>;
   subscribe(codec: number, onFrame: RawFrameCallback): Promise<NativeUnsubscribe>;
 }
@@ -345,6 +346,10 @@ export class NativeCapture {
 
   screenSize(): Promise<NativeScreenInfo> {
     return this.handle.screenSize();
+  }
+
+  subscribeScreenChanges(onChange: () => Promise<void>): Promise<NativeUnsubscribe> {
+    return this.handle.subscribeScreenChanges(onChange);
   }
 
   /** Halt frame production. Full teardown happens when this object is GC'd. */

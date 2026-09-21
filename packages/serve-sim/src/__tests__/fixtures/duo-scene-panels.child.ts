@@ -11,7 +11,7 @@ class TestCanvas extends EventTarget {
   height = 150;
   pixel = 0;
   draws = 0;
-  style = { cssText: "", width: "", height: "" };
+  style = { cssText: "", width: "", height: "", cursor: "" };
   remove() {}
   getBoundingClientRect() { return { left: 0, top: 0, width: 480, height: 540 }; }
   setPointerCapture() {}
@@ -138,6 +138,12 @@ function setup(dual: boolean, cacheScreenOnFold?: boolean) {
     host, sourceHost, cover, inner, innerTexture: innerTexture!, coverTexture: coverTexture!,
     loaded,
     rotation: () => renderer.bodyRotation.clone(),
+    hover: (screenId: 1 | 3) => {
+      hitScreenId = screenId;
+      renderer.domElement.dispatchEvent(Object.assign(new Event("pointermove"), { pointerId: 1, clientX: 240, clientY: 270 }));
+      return renderer.domElement.style.cursor;
+    },
+    cursor: () => renderer.domElement.style.cursor,
     tap: (screenId: 1 | 3) => {
       hitScreenId = screenId;
       const before = touches.filter(({ type }) => type === "begin").length;
@@ -364,6 +370,28 @@ test.each([undefined, 80])("a failed pose restores matching-panel input with nat
     rig.setState({ angle: 90, pose: null, streamConfig: { ...config, hingeAngle }, hingeCommands: submitted });
     rig.tick();
     expect(rig.tap(3)).toBe(1);
+  } finally { rig.dispose(); }
+});
+
+test("a visible arriving panel shows a wait cursor only until native input follows it", async () => {
+  const rig = setup(true);
+  const commands = { pending: false, coverDepartures: 0, innerDepartures: 0 };
+  try {
+    await rig.loaded;
+    rig.inner.pixel = 180;
+    rig.setState({ hingeCommands: commands });
+    rig.tick();
+    rig.setState({ angle: 90, pose: "book", hingeCommands: { ...commands, pending: true, coverDepartures: 1 } });
+    rig.tick();
+    expect(rig.host.dataset.screenId).toBe("3");
+    expect(rig.hover(3)).toBe("progress");
+    expect(rig.tap(3)).toBe(0);
+    // Native routing is ready, even if the command ack/angle is still delayed.
+    rig.setState({ streamConfig: { screenId: 3, width: 2007, height: 2853, orientation: "portrait" } });
+    rig.tick();
+    expect(rig.cursor()).toBe("pointer");
+    expect(rig.tap(3)).toBe(1);
+    expect(rig.tap(1)).toBe(0);
   } finally { rig.dispose(); }
 });
 

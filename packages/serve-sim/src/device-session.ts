@@ -244,6 +244,8 @@ export class DeviceSession {
   private hingeControlUpdate: Promise<void> = Promise.resolve();
   private nativeScreen?: NativeScreenInfo;
   private screenRefresh?: Promise<boolean>;
+  private screenRefreshRequested = false;
+  private unsubscribeScreenChanges?: NativeUnsubscribe;
   private screenRefreshTimer?: ReturnType<typeof setTimeout>;
 
   private latestJpegBuffer: Buffer | null = null;
@@ -273,6 +275,14 @@ export class DeviceSession {
     if (this.phase === "stopped") return Promise.reject(new Error("Capture session is stopped"));
     this.phase = "running";
     this.captureStart = this.capture.start().then(async () => {
+      const unsubscribe = await this.capture.subscribeScreenChanges(async () => {
+        if (this.phase !== "running") return;
+        try {
+          if (await this.refreshScreenSizeFromNative()) this.broadcastConfig();
+        } catch { /* The periodic refresh retries transient read failures. */ }
+      });
+      if (this.phase !== "running") { await unsubscribe(); return; }
+      this.unsubscribeScreenChanges = unsubscribe;
       if (await this.refreshScreenSizeFromNative()) this.broadcastConfig();
       this.scheduleScreenRefresh();
       // Discover fold controls without delaying the first frame or inventing
@@ -291,6 +301,8 @@ export class DeviceSession {
     this.phase = "stopped";
     clearTimeout(this.screenRefreshTimer);
     this.screenRefreshTimer = undefined;
+    void this.unsubscribeScreenChanges?.().catch(() => {});
+    this.unsubscribeScreenChanges = undefined;
     for (const ws of this.hidSockets) ws.close();
     this.hidSockets.clear();
     for (const res of this.panelRequests) res.destroy();
@@ -1222,8 +1234,16 @@ export class DeviceSession {
   }
 
   private refreshScreenSizeFromNative(): Promise<boolean> {
+    this.screenRefreshRequested = true;
     if (this.screenRefresh) return this.screenRefresh;
-    this.screenRefresh = this.readScreenFromNative().finally(() => {
+    this.screenRefresh = (async () => {
+      let changed = false;
+      do {
+        this.screenRefreshRequested = false;
+        changed = await this.readScreenFromNative() || changed;
+      } while (this.phase === "running" && this.screenRefreshRequested);
+      return changed;
+    })().finally(() => {
       this.screenRefresh = undefined;
     });
     return this.screenRefresh;
@@ -1257,8 +1277,8 @@ export class DeviceSession {
 
   private scheduleScreenRefresh(): void {
     if (this.phase !== "running") return;
-    // Metadata changes when Simulator rotates/folds a device even while its
-    // framebuffer is idle. Keep one non-overlapping poll per running session.
+    // Native notifications drive routing; retain a non-overlapping fallback
+    // for runtimes that miss properties/surface notifications while idle.
     this.screenRefreshTimer = setTimeout(async () => {
       try {
         if (await this.refreshScreenSizeFromNative()) this.broadcastConfig();

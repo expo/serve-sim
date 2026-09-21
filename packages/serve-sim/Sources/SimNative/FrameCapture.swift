@@ -41,6 +41,7 @@ actor FrameCapture {
     private var pollLateSumNs: UInt64 = 0
     private var pollGrid: PollDeadlineGrid?
     private var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
+    private var screenObservers: [UUID: @Sendable () -> Void] = [:]
     private var frameCount: UInt64 = 0
     /// Counted by which path produced the frame, callback or idle deadline.
     private var pickCount: UInt64 = 0
@@ -84,8 +85,11 @@ actor FrameCapture {
     private var framebufferSurfaces: [ObjectIdentifier: IOSurface] = [:]
     private var screenMetadata: [ObjectIdentifier: SimDisplayMetadata] = [:]
     private var fixedScreenID: UInt32?
+    private var deviceUDID: String?
     private var authoritativeDisplay: CoreDeviceDisplayState?
     private var displayInfoTask: Task<Void, Never>?
+    private var displayRefreshTask: Task<Void, Never>?
+    private var displayRefreshRequested = false
     private var displayConfigurationReady = false
     private var captureGeneration: UInt64 = 0
     private var capturedDisplay: SimDisplayMetadata?
@@ -95,6 +99,7 @@ actor FrameCapture {
 
     func start(deviceUDID: String, screenID: UInt32? = nil, onFrame: @escaping @Sendable (CVPixelBuffer, CMTime) -> Void) async throws {
         self.onFrame = onFrame
+        self.deviceUDID = deviceUDID
         fixedScreenID = screenID
         displayConfigurationReady = false
         captureGeneration &+= 1
@@ -126,7 +131,7 @@ actor FrameCapture {
             if let displays {
                 updateDisplayInfo(displays)
             }
-            startDisplayInfoUpdates(udid: deviceUDID)
+            startDisplayInfoUpdates()
         }
         displayConfigurationReady = true
         captureFrame(force: true)
@@ -241,25 +246,52 @@ actor FrameCapture {
         return surfaces[index]
     }
 
-    private func startDisplayInfoUpdates(udid: String) {
+    private func startDisplayInfoUpdates() {
         displayInfoTask?.cancel()
         displayInfoTask = Task { [weak self] in
             while !Task.isCancelled {
                 do {
                     try await Task.sleep(for: .milliseconds(250))
-                    if let displays = try await CoreDeviceDisplayInfo.read(udid: udid) {
-                        guard !Task.isCancelled else { return }
-                        await self?.updateDisplayInfo(displays)
-                    }
-                } catch is CancellationError {
-                    return
+                    guard !Task.isCancelled else { return }
+                    await self?.requestDisplayInfoRefresh()
                 } catch {
-                    // Keep the last known panel through transient CoreDevice
-                    // failures. Capture itself remains on the legacy IO path.
+                    return
                 }
             }
         }
     }
+
+    private func requestDisplayInfoRefresh() {
+        guard fixedScreenID == nil, displayConfigurationReady, let deviceUDID,
+              Set(screenMetadata.values.filter { $0.screenType == 0 }.map(\.screenID)).count == 2 else { return }
+        displayRefreshRequested = true
+        guard displayRefreshTask == nil else { return }
+        let generation = captureGeneration
+        displayRefreshTask = Task { [weak self] in
+            await self?.refreshDisplayInfo(udid: deviceUDID, generation: generation)
+        }
+    }
+
+    private func refreshDisplayInfo(udid: String, generation: UInt64) async {
+        defer { if generation == captureGeneration { displayRefreshTask = nil } }
+        while displayRefreshRequested, generation == captureGeneration, !Task.isCancelled {
+            displayRefreshRequested = false
+            if let displays = try? await CoreDeviceDisplayInfo.read(udid: udid) {
+                guard generation == captureGeneration, !Task.isCancelled else { return }
+                updateDisplayInfo(displays)
+            }
+            // Transient failures retain the last known panel until another
+            // notification or fallback poll retries the read.
+        }
+    }
+
+    func subscribeScreenChanges(_ callback: @escaping @Sendable () -> Void) -> @Sendable () async -> Void {
+        let id = UUID()
+        screenObservers[id] = callback
+        return { [weak self] in await self?.removeScreenObserver(id) }
+    }
+
+    private func removeScreenObserver(_ id: UUID) { screenObservers.removeValue(forKey: id) }
 
     private func updateDisplayInfo(_ displays: [CoreDeviceDisplayState]) {
         let integratedIDs = Set(screenMetadata.values.filter { $0.screenType == 0 }.map(\.screenID))
@@ -326,6 +358,9 @@ actor FrameCapture {
                 }
                 $0.invalidatePick()
                 $0.captureFrame(force: true)
+                // Older SimScreen properties can lag Duo's active flag; query
+                // CoreDevice immediately instead of waiting for the idle poll.
+                $0.requestDisplayInfoRefresh()
             }
         }
         callbackBlocks[key] = ScreenCallbackBlocks(
@@ -456,10 +491,14 @@ actor FrameCapture {
         // actually being streamed, including non-default integrated displays.
         capturedDisplay = display
 
-        if capturedWidth != w || capturedHeight != h {
+        let dimensionsChanged = capturedWidth != w || capturedHeight != h
+        if dimensionsChanged {
             capturedWidth = w
             capturedHeight = h
             print("[capture] Surface size changed: \(w)x\(h)")
+        }
+        if displayChanged || dimensionsChanged {
+            for notify in screenObservers.values { notify() }
         }
 
         var pixelBuffer: Unmanaged<CVPixelBuffer>?
@@ -513,12 +552,18 @@ actor FrameCapture {
     deinit {
         surfacePollTimer?.cancel()
         displayInfoTask?.cancel()
+        displayRefreshTask?.cancel()
     }
 
     func stop() {
         captureGeneration &+= 1
         displayInfoTask?.cancel()
         displayInfoTask = nil
+        displayRefreshTask?.cancel()
+        displayRefreshTask = nil
+        displayRefreshRequested = false
+        screenObservers.removeAll()
+        deviceUDID = nil
         authoritativeDisplay = nil
         displayConfigurationReady = false
         surfacePollTimer?.cancel()

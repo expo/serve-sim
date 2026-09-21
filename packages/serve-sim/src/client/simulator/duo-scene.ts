@@ -402,7 +402,7 @@ export function createDuoScene(
     raycaster.setFromCamera(pointer, camera);
     return true;
   }
-  function screenHit(clientX: number, clientY: number): ScreenHit | null {
+  function screenHit(clientX: number, clientY: number): ScreenHit | "waiting" | null {
     if (!model || failed || disposed || !castRay(clientX, clientY)) return null;
     // Intersect the entire device so a rear panel cannot receive taps through
     // the front chassis, and ignore inactive display surfaces.
@@ -410,13 +410,16 @@ export function createDuoScene(
     if (!hit?.uv || !hit.face || !(hit.object instanceof THREE.Mesh)) return null;
     const isCover = cover.meshes.includes(hit.object);
     const isInner = inner.meshes.includes(hit.object);
-    const config = state().streamConfig;
-    if ((!isCover && !isInner) || config?.screenId !== (isCover ? 1 : 3)) return null;
+    const current = state();
+    const config = current.streamConfig;
+    const physicalPose = current.physicalPose === undefined ? current.pose : current.physicalPose;
+    const intended = duoIntendedScreen(current.angle, physicalPose, config?.screenId);
+    if ((!isCover && !isInner) || intended !== (isCover ? 1 : 3)) return null;
     const surface = isCover ? cover : inner;
     const mapping = surface.mapping;
     // A new native config can precede its video frame. The retained image is
     // still useful visually, but its transform must not target the new layout.
-    if (surface.handoff || !mapping || surface.mappingConfigKey !== inputConfigKey(config)) return null;
+    if (config?.screenId !== intended || surface.handoff || !mapping || surface.mappingConfigKey !== inputConfigKey(config)) return "waiting";
     const point = duoScreenPoint(hit.uv.x, 1 - hit.uv.y, mapping);
     if (point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1) return null;
     const positions = hit.object.geometry.getAttribute("position");
@@ -509,7 +512,7 @@ export function createDuoScene(
     validateGesture();
     if (event.button !== 0 || failed || disposed || hingeDrag) return;
     const hit = screenHit(event.clientX, event.clientY);
-    if (!hit) return;
+    if (!hit || hit === "waiting") return;
     const point = boundedPoint(hit.point);
     const contact = { id: event.pointerId, point, hit, pointerType: event.pointerType };
     if (gesture) {
@@ -544,10 +547,17 @@ export function createDuoScene(
     if (gesture.multi) gesture.multi({ type: "begin", ...gesture.fingers });
     else gesture.touch?.({ type: "begin", ...point, edge: gesture.edge });
   };
+  let hoverPoint: Point | undefined;
+  function updateCursor(hit = hoverPoint && screenHit(hoverPoint.x, hoverPoint.y)) {
+    renderer.domElement.style.cursor = hit === "waiting" ? "progress" : hit ? "pointer" : "default";
+  }
+  const leave = () => { hoverPoint = undefined; updateCursor(); };
   const move = (event: PointerEvent) => {
     validateGesture();
-    const hit = screenHit(event.clientX, event.clientY);
-    renderer.domElement.style.cursor = hit ? "pointer" : "default";
+    hoverPoint = { x: event.clientX, y: event.clientY };
+    const result = screenHit(event.clientX, event.clientY);
+    updateCursor(result);
+    const hit = result === "waiting" ? null : result;
     const contact = gesture?.contacts.get(event.pointerId);
     if (!gesture || !contact) return;
     const point = hit?.point ?? pointOnPanel(contact.hit, event.clientX, event.clientY);
@@ -568,7 +578,7 @@ export function createDuoScene(
     if (gesture) return;
     const hit = screenHit(event.clientX, event.clientY);
     const send = state().onScroll;
-    if (!hit || !send) return;
+    if (!hit || hit === "waiting" || !send) return;
     const rect = host.getBoundingClientRect();
     const dxPixels = event.deltaX * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.width : 1);
     const dyPixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.height : 1);
@@ -690,6 +700,7 @@ export function createDuoScene(
   const canvas = renderer.domElement;
   canvas.addEventListener("pointerdown", down);
   canvas.addEventListener("pointermove", move);
+  canvas.addEventListener("pointerleave", leave);
   canvas.addEventListener("pointerup", up);
   canvas.addEventListener("pointercancel", up);
   canvas.addEventListener("lostpointercapture", up);
@@ -705,6 +716,7 @@ export function createDuoScene(
     if (!current.onHingeAngleChange) endHingeDrag();
     validateGesture();
     try { updateScreen(); } catch { fail(); return; }
+    if (hoverPoint && !gesture && !hingeDrag) updateCursor();
     const view = viewFor(current);
     const angle = Math.max(0, Math.min(180, current.angle ?? (current.streamConfig?.screenId === 1 ? 0 : 180)));
     const targetFold = (180 - angle) * Math.PI / 360;
@@ -782,6 +794,7 @@ export function createDuoScene(
       canvas.removeEventListener("webglcontextlost", fail);
       canvas.removeEventListener("pointerdown", down);
       canvas.removeEventListener("pointermove", move);
+      canvas.removeEventListener("pointerleave", leave);
       canvas.removeEventListener("pointerup", up);
       canvas.removeEventListener("pointercancel", up);
       canvas.removeEventListener("lostpointercapture", up);

@@ -255,6 +255,18 @@ private func u32(_ v: Int) -> UInt32 {
         return result
     }
 
+    @NodeMethod func subscribeScreenChanges(_ onChange: NodeFunction) async throws -> NodeFunction {
+        let unsubscribe = await engine.subscribeScreenChanges { [weak self] in
+            guard let self else { return }
+            Task {
+                try? await self.queue.run {
+                    _ = try? await onChange.call([]).as(NodePromise.self)?.value
+                }
+            }
+        }
+        return try NodeFunction { await unsubscribe() }
+    }
+
     deinit {
         Task { [engine] in await engine.stop() }
     }

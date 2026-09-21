@@ -320,6 +320,10 @@ actor CaptureEngine {
             ?? CapturedScreenInfo(width: screenSize.width, height: screenSize.height)
     }
 
+    func subscribeScreenChanges(_ callback: @escaping @Sendable () -> Void) async -> @Sendable () async -> Void {
+        await frameCapture.subscribeScreenChanges(callback)
+    }
+
     func stop() async {
         if phase == .stopped { return }
         phase = .stopped

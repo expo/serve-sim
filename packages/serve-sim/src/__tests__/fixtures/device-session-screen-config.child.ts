@@ -6,6 +6,8 @@ import type { NativeScreenInfo, MjpegFrame } from "../../native";
 let screen: NativeScreenInfo;
 let screenReads = 0;
 let mjpeg: ((frame: MjpegFrame) => Promise<void>) | undefined;
+let screenChanged: (() => Promise<void>) | undefined;
+let screenReadGate: Promise<void> | undefined;
 const routedScreens: number[] = [];
 const hingeAngles: number[] = [];
 const hingePoses: string[] = [];
@@ -96,7 +98,11 @@ mock.module("../../native", () => ({
   NativeCapture: class {
     async start() {}
     async stop() {}
-    async screenSize() { screenReads++; return { ...screen }; }
+    async screenSize() { screenReads++; const value = { ...screen }; await screenReadGate; return value; }
+    async subscribeScreenChanges(callback: typeof screenChanged) {
+      screenChanged = callback;
+      return async () => { screenChanged = undefined; };
+    }
     async subscribeMjpeg(callback: typeof mjpeg) { mjpeg = callback; return async () => {}; }
   },
   NativeHid,
@@ -151,6 +157,8 @@ async function start(initialScreen: NativeScreenInfo, supportsHingeAngle = false
   inputSetupError = setupError;
   inputCalls.length = 0;
   mjpeg = undefined;
+  screenChanged = undefined;
+  screenReadGate = undefined;
   session = new DeviceSession("SCREEN-TEST");
   await session.start();
   server = createServer((req, res) => session!.handleMjpeg(req, res));
@@ -293,6 +301,42 @@ describe("native active screen config", () => {
     await waitUntil(() => configs.at(-1)?.screenId === 0);
     expect(configs.at(-1)).toMatchObject({ width: 1170, height: 2532, orientation: "portrait", screenId: 0 });
     expect(routedScreens).toEqual([1, 0]);
+  });
+
+  test("routes input from a screen-change notification before publishing the new panel", async () => {
+    const { configs } = await start({ width: 1398, height: 2034, screenId: 1 });
+    expect(screenChanged).toBeDefined();
+    screen = { width: 2007, height: 2853, screenId: 3, orientation: "landscape_left" };
+    await screenChanged!();
+    expect(routedScreens).toEqual([1, 3]);
+    expect(session!.screenConfig()).toMatchObject(screen);
+    await waitUntil(() => configs.at(-1)?.screenId === 3);
+  });
+
+  test("re-reads a change received during an outstanding screen refresh", async () => {
+    await start({ width: 1398, height: 2034, screenId: 1 });
+    expect(screenChanged).toBeDefined();
+    let release!: () => void;
+    screenReadGate = new Promise<void>((resolve) => { release = resolve; });
+    screen = { width: 2007, height: 2853, screenId: 3 };
+    const first = screenChanged!();
+    screen = { width: 1398, height: 2034, screenId: 1, orientation: "landscape_left" };
+    const second = screenChanged!();
+    screenReadGate = undefined;
+    release();
+    await Promise.all([first, second]);
+    expect(session!.screenConfig()).toMatchObject(screen);
+    expect(routedScreens.at(-1)).toBe(1);
+  });
+
+  test("unsubscribes screen notifications on close and ignores an already queued callback", async () => {
+    await start({ width: 1398, height: 2034, screenId: 1 });
+    expect(screenChanged).toBeDefined();
+    const notify = screenChanged!;
+    session!.close();
+    await notify();
+    expect(screenChanged).toBeUndefined();
+    expect(routedScreens).toEqual([1]);
   });
 
   test("metadata refresh preserves the encoded dimensions", async () => {

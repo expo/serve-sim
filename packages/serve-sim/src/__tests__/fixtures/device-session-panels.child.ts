@@ -18,6 +18,7 @@ class Capture {
   constructor(_udid: string, options: NativeCaptureOptions, readonly screenId?: number) { this.settings = [options]; captures.push(this); }
   async start() { if (this.screenId) await startBarrier; }
   async stop() { this.stopped = true; }
+  async subscribeScreenChanges() { return async () => {}; }
   async screenSize() { return { width: 1398, height: 2034, screenId: this.screenId ?? 1, orientation: "portrait" }; }
   async subscribeMjpeg(callback: (frame: MjpegFrame) => Promise<void>) { this.callbacks.add(callback); return async () => { this.callbacks.delete(callback); }; }
   async subscribeAvcc(callback: (frame: MjpegFrame & { isDescription: boolean; isKeyframe: boolean }) => Promise<void>) { this.avcc.add(callback); return async () => { this.avcc.delete(callback); }; }

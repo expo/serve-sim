@@ -50,6 +50,32 @@ test.skipIf(!device)("native hinge recovery reads angles changed by another proc
   } finally { await selectPose(state, "tent"); }
 }, 20_000);
 
+test.skipIf(!device)("native capture notifies active panel changes without JS metadata polling", async () => {
+  const { NativeCapture } = await import("../native");
+  const capture = new NativeCapture(device!);
+  const state = JSON.parse(readFileSync(stateFileForDevice(device!), "utf8")) as ServeSimDeviceState;
+  const observed: number[] = [];
+  let unsubscribe: (() => Promise<void>) | undefined;
+  try {
+    await capture.start();
+    unsubscribe = await capture.subscribeScreenChanges(async () => {
+      const config = await capture.screenSize();
+      if (config.screenId !== undefined) observed.push(config.screenId);
+    });
+    for (const [pose, screenId] of [["open", 3], ["closed", 1], ["open", 3]] as const) {
+      const start = observed.length;
+      await selectPose(state, pose);
+      const deadline = Date.now() + 3000;
+      while (!observed.slice(start).includes(screenId) && Date.now() < deadline) await Bun.sleep(20);
+      expect(observed.slice(start)).toContain(screenId);
+    }
+  } finally {
+    await unsubscribe?.();
+    await capture.stop();
+    await selectPose(state, "tent");
+  }
+}, 20_000);
+
 test.skipIf(!device)("Tent makes the cover landscape regardless of the previous preset", async () => {
   const state = JSON.parse(readFileSync(stateFileForDevice(device!), "utf8")) as ServeSimDeviceState;
   const configUrl = state.streamUrl.replace(/\/stream\.[^/]+$/, "/config");

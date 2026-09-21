@@ -164,8 +164,32 @@ test("keeps WebRTC captures alive after SDP, shares sessions, and closes each pa
 test("does not start capture for stats, close, preflight, or direct-helper invalid IDs", async () => {
   expect((await request("panel/3/webrtc/stats"))!.status).toBe(404);
   expect((await request("panel/3/webrtc/close", json({ sessionId: crypto.randomUUID() })))!.status).toBe(204);
-  expect((await request("panel/3/webrtc/offer", { method: "OPTIONS" }))!.status).toBe(204);
+  for (const path of ["panel/3/webrtc/offer", "panel/3/unknown"]) {
+    // The shared CORS policy answers preflights before route validation.
+    const response = (await request(path, {
+      method: "OPTIONS",
+      headers: { origin: "http://localhost:4000", "access-control-request-method": "POST" },
+    }))!;
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("http://localhost:4000");
+    expect(await response.text()).toBe("");
+  }
   expect((await middleware(new Request(`http://localhost/sim/helper/panel/2/stream.avcc?device=${DEVICE}`)))!.status).toBe(400);
+  expect(captures).toHaveLength(0);
+});
+
+test("rejects invalid panel routes consistently before creating a capture", async () => {
+  for (const [path, method, status, error] of [
+    ["panel/01/stream.avcc", "GET", 400, "invalid_panel"],
+    ["panel/3/unknown", "GET", 404, "unknown_panel_endpoint"],
+    ["panel/1/stream.mjpeg", "POST", 405, "method_not_allowed"],
+    ["panel/3/webrtc/offer", "GET", 405, "method_not_allowed"],
+    ["panel/1/webrtc/stats", "POST", 405, "method_not_allowed"],
+  ] as const) {
+    const response = (await request(path, { method }))!;
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ error });
+  }
   expect(captures).toHaveLength(0);
 });
 

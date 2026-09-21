@@ -29,6 +29,7 @@ import {
 import { isSoftwareKeyboardVisible } from "./ax";
 import { debugKeyboard } from "./debug";
 import { isHingeAngle, type HingeAngleResult } from "./hinge-angle";
+import { panelRouteError } from "./panel-route";
 import { isHingeControlCommand, hingeControlState, hingePoseOrientation, isTableModeAvailable, type HingeControlCommand, type HingePose, type HingePhysicalOrientation } from "./hinge-control";
 import { clearDeviceOptionState, setUiOption } from "./ui-settings";
 import { eventLogEventForHidMessage, formatEventLogPoint, recordEventLogEvent, updateEventLogEvent } from "./event-log";
@@ -353,14 +354,9 @@ export class DeviceSession {
   async handlePanel(req: IncomingMessage, res: ServerResponse, screenId: number, endpoint: string): Promise<void> {
     const isStream = endpoint === "stream.mjpeg" || endpoint === "stream.avcc";
     const createsCapture = isStream || endpoint === "webrtc/offer";
-    if (screenId !== 1 && screenId !== 3) { this.sendJson(res, 400, { error: "invalid_panel" }); return; }
-    if (!isStream && !["webrtc/offer", "webrtc/close", "webrtc/stats"].includes(endpoint)) {
-      this.sendJson(res, 404, { error: "unknown_panel_endpoint" }); return;
-    }
+    const invalid = panelRouteError(screenId, endpoint, req.method);
+    if (invalid) { this.sendJson(res, invalid.status, { error: invalid.error }); return; }
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
-    if (req.method !== (isStream || endpoint === "webrtc/stats" ? "GET" : "POST")) {
-      this.sendJson(res, 405, { error: "method_not_allowed" }); return;
-    }
     if (isStream && this.transport === "webrtc") { this.sendTransportLocked(res); return; }
     // Install body listeners before capture startup yields: Fetch requests may
     // deliver their entire body while the native panel is still opening.

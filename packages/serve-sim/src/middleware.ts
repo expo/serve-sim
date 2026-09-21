@@ -40,6 +40,7 @@ import {
   type DeviceKitChromeDescriptor,
 } from "./devicekit-chrome";
 import { serveDeviceKitModelAsset } from "./devicekit-model";
+import { panelRouteError } from "./panel-route";
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
 import { claimHelperHidSocket, type UpgradeHandlerWebSocket } from "./middleware-utils";
 import { UI_OPTIONS, getUiStatus, normalizeUiValue, setUiOption } from "./ui-settings";
@@ -801,16 +802,13 @@ function serveHelperInProcess(
   const endpoint = upstreamPath.split("?")[0];
   const panelRoute = /^\/panel\/([^/]+)\/(.+)$/.exec(endpoint ?? "");
   if (panelRoute) {
-    const method = panelRoute[2] === "webrtc/offer" || panelRoute[2] === "webrtc/close" ? "POST" : "GET";
-    const status = !["1", "3"].includes(panelRoute[1]!) ? 400
-      : !["stream.mjpeg", "stream.avcc", "webrtc/offer", "webrtc/close", "webrtc/stats"].includes(panelRoute[2]!) ? 404
-      : req.method !== "OPTIONS" && req.method !== method ? 405 : undefined;
-    if (status) {
-      res.writeHead(status, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: status === 400 ? "invalid_panel" : status === 405 ? "method_not_allowed" : "unknown_panel_endpoint" }));
+    const invalid = panelRouteError(panelRoute[1]!, panelRoute[2]!, req.method);
+    if (invalid) {
+      res.writeHead(invalid.status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: invalid.error }));
       return true;
     }
-    if (req.method === "OPTIONS") { sendCorsPreflight(res); return true; }
+    if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return true; }
   }
   if (endpoint === "/camera/status") {
     void handleCameraStatus(req, res, device);

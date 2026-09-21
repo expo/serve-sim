@@ -1,6 +1,8 @@
 import { expect, mock, test } from "bun:test";
 import type { Scene } from "three";
 import type { DuoSceneState } from "../../client/simulator/duo-scene";
+import { HINGE_POSES } from "../../hinge-control";
+import { duoPresetView, duoRotateView } from "../../client/simulator/duo-view";
 
 // The real scene chooses and uploads its textures. Only browser/GPU plumbing
 // is replaced; frame content and individual texture writes remain observable.
@@ -150,40 +152,53 @@ function setup(dual: boolean, cacheScreenOnFold?: boolean) {
   };
 }
 
-test("hinge motion preserves orientation across delayed display handoffs while explicit rotations and presets still work", async () => {
-  for (const start of [0, 180]) {
+test("hinge motion preserves the full view rotation through every preset and delayed native orientation updates", async () => {
+  for (const { id: pose, angle: start } of HINGE_POSES) {
     const rig = setup(true);
     const configFor = (angle: number) => angle <= 54
       ? { screenId: 1, width: 1398, height: 2034, orientation: "portrait" as const, hingeAngle: angle }
       : { screenId: 3, width: 2007, height: 2853, orientation: "portrait" as const, hingeAngle: angle };
     const settle = () => { for (let frame = 0; frame < 120; frame++) rig.tick(); };
-    const hingeDirection = () => new three.Vector3(0, 1, 0).applyQuaternion(rig.rotation());
     try {
       await rig.loaded;
       rig.inner.pixel = 180;
-      const pose = start === 0 ? "closed" : "open";
-      rig.setState({ angle: start, pose, physicalPose: pose, streamConfig: configFor(start) });
+      rig.setState({ angle: start, pose, physicalPose: pose, view: duoPresetView(pose), streamConfig: configFor(start) });
       settle();
-      const direction = hingeDirection();
-      for (const angle of start === 0 ? [1, 54, 55, 90, 180, 55, 54, 0, 55, 180] : [179, 55, 54, 0, 54, 55, 180, 54, 0]) {
+      const rotation = rig.rotation();
+      for (const angle of [1, 54, 55, 90, 180, 55, 54, 0, 55, 180]) {
         rig.setState({ angle, pose: null });
+        rig.tick();
+        expect(rig.rotation().angleTo(rotation)).toBeLessThan(1e-6);
         settle();
-        const beforeFrame = rig.rotation();
-        rig.setState({ streamConfig: configFor(angle) });
-        settle();
-        expect(rig.rotation().angleTo(beforeFrame)).toBeLessThan(1e-6);
-        expect(hingeDirection().distanceTo(direction)).toBeLessThan(1e-6);
+        expect(rig.rotation().angleTo(rotation)).toBeLessThan(1e-6);
+        for (const orientation of ["portrait", "landscape_left", "landscape_right", "portrait_upside_down", "portrait"] as const) {
+          rig.setState({ streamConfig: { ...configFor(angle), orientation } });
+          settle();
+          expect(rig.rotation().angleTo(rotation)).toBeLessThan(1e-6);
+        }
       }
-      // Rotate acts relative to the retained view, even if opening previously
-      // switched to a display with a different physical pixel mounting.
-      rig.setState({ physicalPose: null, streamConfig: { ...configFor(180 - start), orientation: "landscape_left" } });
-      settle();
-      const rotated = direction.clone().applyAxisAngle(new three.Vector3(0, 0, 1), -Math.PI / 2);
-      expect(hingeDirection().distanceTo(rotated)).toBeLessThan(1e-6);
+    } finally { rig.dispose(); }
+  }
+});
 
-      rig.setState({ angle: 180, pose: "open", physicalPose: "open", streamConfig: configFor(180) });
+test("Rotate and repeated preset commands adjust the view without waiting for native orientation", async () => {
+  for (const { id: pose, angle } of HINGE_POSES) {
+    const rig = setup(true);
+    const settle = () => { for (let frame = 0; frame < 120; frame++) rig.tick(); };
+    try {
+      await rig.loaded;
+      let view = duoPresetView(pose);
+      rig.setState({ angle, pose, physicalPose: pose, view });
       settle();
-      expect(hingeDirection().distanceTo(new three.Vector3(-1, 0, 0))).toBeLessThan(1e-6);
+      const initial = rig.rotation();
+      // Two clicks can precede a render or the native reply; both must count.
+      view = duoRotateView(duoRotateView(view, -1), -1);
+      rig.setState({ view, pose: null, physicalPose: null });
+      settle();
+      expect(rig.rotation().angleTo(initial)).toBeCloseTo(Math.PI, 6);
+      rig.setState({ view: duoPresetView(pose), pose, physicalPose: pose });
+      settle();
+      expect(rig.rotation().angleTo(initial)).toBeLessThan(1e-6);
     } finally { rig.dispose(); }
   }
 });
@@ -197,7 +212,7 @@ test("a manual hinge edit cancels an unfinished preset's pending orientation cha
     settle();
     // Request Open while native capture still reports the cover, then take
     // over with a manual angle before the new display's metadata arrives.
-    rig.setState({ angle: 180, pose: "open", physicalPose: "open" });
+    rig.setState({ angle: 180, pose: "open", physicalPose: "open", view: duoPresetView("open") });
     settle();
     rig.setState({ angle: 120, pose: null });
     settle();

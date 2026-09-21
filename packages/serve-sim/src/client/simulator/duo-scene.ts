@@ -2,7 +2,8 @@ import * as THREE from "three";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import type { DuoModelViewProps } from "../components/duo-model-view";
 import type { StreamConfig } from "../types";
-import { duoPose, duoIntendedScreen, duoScreenRoll, duoFrameMatchesDisplay, duoScreenMapping, duoScreenPoint, stepDuoSpring, type DuoScreenMapping } from "./duo-pose";
+import { duoIntendedScreen, duoFrameMatchesDisplay, duoScreenMapping, duoScreenPoint, stepDuoSpring, type DuoScreenMapping } from "./duo-pose";
+import { duoInitialView, duoViewFolds, type DuoView } from "./duo-view";
 import { duoFitScale, duoPanelEdgeAnchor, duoProjectAnchor, duoHingeDragAngle, type DuoScreenPoint as ProjectedPoint } from "./duo-layout";
 import { HID_EDGE_BOTTOM, HID_EDGE_LEFT, HID_EDGE_RIGHT, HID_EDGE_TOP, HOME_INDICATOR_BAND_NORM, rawEdgeForDisplayEdge, streamDisplayGeometry } from "./orientation";
 import { loadDuoModel } from "./duo-model";
@@ -93,13 +94,24 @@ export function createDuoScene(
   let fold = 0;
   let velocity = 0;
   let firstPose = true;
-  let presentationRoll = 0;
-  let presentationFrame: { screenId: number; roll: number } | undefined;
-  let presentationPose: DuoSceneState["pose"];
-  let resetPresentation = false;
-  const euler = new THREE.Euler(0, 0, 0, "YXZ");
+  let initialView: DuoView | undefined;
+  let anchoredView: DuoView | undefined;
+  let anchorWeight = 0;
   const targetQuaternion = new THREE.Quaternion();
   const center = new THREE.Vector3();
+  function viewFor(current: DuoSceneState): DuoView {
+    return current.view ?? (initialView ??= duoInitialView(current.angle,
+      current.physicalPose === undefined ? current.pose : current.physicalPose, current.streamConfig));
+  }
+  function applyPanelFolds(panels: { left: number; right: number }) {
+    if (!left || !right) return;
+    left.rotation.y = panels.left;
+    right.rotation.y = panels.right;
+    // Center the articulated body, including Laptop's stationary base.
+    center.set(2.025 * (Math.cos(panels.right) - Math.cos(panels.left)), 0,
+      2.025 * (Math.sin(panels.left) - Math.sin(panels.right))).applyQuaternion(root.quaternion);
+    root.position.copy(center).multiplyScalar(-1);
+  }
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   let viewportWidth = 0;
   let viewportHeight = 0;
@@ -588,18 +600,14 @@ export function createDuoScene(
   function hingeEndpoint(angle: number, handle: HingeHandle): ProjectedPoint | null {
     if (!model || !left || !right) return null;
     const current = state();
-    const physicalPose = current.physicalPose === undefined ? current.pose : current.physicalPose;
-    const pose = duoPose(angle, physicalPose, current.streamConfig?.screenId, current.streamConfig, presentationRoll);
+    const view = viewFor(current);
     const savedPosition = root.position.clone();
     const savedRotation = root.quaternion.clone();
     const savedLeft = left.rotation.y;
     const savedRight = right.rotation.y;
     const savedZoom = camera.zoom;
     try {
-      left.rotation.y = pose.fold;
-      right.rotation.y = -pose.fold;
-      root.quaternion.setFromEuler(new THREE.Euler(...pose.rotation, "YXZ"));
-      root.position.set(0, 0, -4.05 * Math.sin(pose.fold)).applyQuaternion(root.quaternion);
+      applyPanelFolds(duoViewFolds((180 - angle) * Math.PI / 360, view));
       const scale = current.sizeMode !== "physical"
         ? duoFitScale(model, camera, { width: viewportWidth, height: viewportHeight }, { width: stageWidth, height: stageHeight }, 32)
         : 1;
@@ -696,44 +704,29 @@ export function createDuoScene(
     if (!current.onHingeAngleChange) endHingeDrag();
     validateGesture();
     try { updateScreen(); } catch { fail(); return; }
-    const config = current.streamConfig;
-    const physicalPose = current.physicalPose === undefined ? current.pose : current.physicalPose;
-    const visibleScreen = duoIntendedScreen(current.angle, physicalPose, config?.screenId);
-    const surface = visibleScreen === 1 ? cover : inner;
-    if (current.pose !== presentationPose) resetPresentation = !!current.pose;
-    presentationPose = current.pose;
-    // The cover and inner display have different pixel mounts. Switching
-    // between them changes the texture mapping, not the device orientation.
-    // Retain that orientation after the new frame arrives, and apply later
-    // Rotate commands relative to it. Named presets choose a fresh view.
-    if (config?.screenId === visibleScreen && surface.mappingConfigKey === inputConfigKey(config)) {
-      const roll = duoScreenRoll(config);
-      if (!presentationFrame || resetPresentation) presentationRoll = roll;
-      else if (presentationFrame.screenId === config.screenId) presentationRoll += roll - presentationFrame.roll;
-      presentationFrame = { screenId: config.screenId, roll };
-      resetPresentation = false;
-    }
-    const target = duoPose(current.angle, physicalPose, config?.screenId, config, presentationRoll);
-    targetQuaternion.setFromEuler(euler.set(...target.rotation));
+    const view = viewFor(current);
+    const angle = Math.max(0, Math.min(180, current.angle ?? (current.streamConfig?.screenId === 1 ? 0 : 180)));
+    const targetFold = (180 - angle) * Math.PI / 360;
+    // View state changes only on initialization, Rotate, or a pose command.
+    // Neither the hinge angle nor delayed native orientation can rotate it.
+    targetQuaternion.fromArray(view.rotation);
+    if (view.fixedLeftFold !== undefined) anchoredView = view;
+    const targetAnchor = view.fixedLeftFold === undefined ? 0 : 1;
     if (firstPose || reducedMotion.matches) {
-      fold = target.fold;
+      fold = targetFold;
       velocity = 0;
+      anchorWeight = targetAnchor;
       root.quaternion.copy(targetQuaternion);
       firstPose = false;
     } else {
-      const step = stepDuoSpring(fold, velocity, target.fold, dt);
+      const step = stepDuoSpring(fold, velocity, targetFold, dt);
       fold = step.value;
       velocity = step.velocity;
       root.quaternion.slerp(targetQuaternion, 1 - Math.exp(-10 * dt));
+      anchorWeight += (targetAnchor - anchorWeight) * (1 - Math.exp(-10 * dt));
+      if (Math.abs(targetAnchor - anchorWeight) < 1e-6) anchorWeight = targetAnchor;
     }
-    if (left && right) {
-      left.rotation.y = fold;
-      right.rotation.y = -fold;
-      // Center the moving body rather than the hinge; constant camera framing
-      // makes opening/closing and rapid preset interruptions continuous.
-      center.set(0, 0, 4.05 * Math.sin(fold)).applyQuaternion(root.quaternion);
-      root.position.copy(center).multiplyScalar(-1);
-    }
+    applyPanelFolds(duoViewFolds(fold, anchoredView ?? view, anchorWeight));
     const renderedAngle = 180 - fold * 360 / Math.PI;
     try {
       // Only a window resize reallocates the buffer. Apply it with rendering

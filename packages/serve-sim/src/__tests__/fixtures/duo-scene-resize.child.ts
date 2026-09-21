@@ -1,6 +1,8 @@
 import { expect, mock, test } from "bun:test";
 import type { Camera } from "three";
 import type { DuoSceneState } from "../../client/simulator/duo-scene";
+import { HINGE_POSES } from "../../hinge-control";
+import { duoPresetView, duoRotateView } from "../../client/simulator/duo-view";
 
 // Drive the real scene's render/resize lifecycle. The renderer models the
 // WebGL guarantee that changing canvas dimensions clears its drawing buffer.
@@ -247,5 +249,32 @@ test("either hinge handle folds and unfolds, and a hidden handle retains its act
     const count = rig.changes.length;
     handle.pointer("pointermove", 1000, 500);
     expect(rig.changes.length).toBe(count);
+  }
+});
+
+test("fold handles reach both endpoints using the saved view, including rotated tabletop poses", async () => {
+  for (const { id } of HINGE_POSES) {
+    for (const turns of [0, 1]) {
+      const rig = await hingeRig();
+      try {
+        rig.state.view = duoRotateView(duoPresetView(id), turns);
+        rig.state.angle = 0;
+        rig.settle();
+        const closed = rig.left.point();
+        rig.state.angle = 180;
+        rig.settle();
+        const open = rig.left.point();
+        rig.left.pointer("pointerdown", open.x, open.y);
+        expect(rig.left.hasPointerCapture(1)).toBe(true);
+        rig.left.pointer("pointermove", open.x + (closed.x - open.x) * 10, open.y + (closed.y - open.y) * 10);
+        rig.settle();
+        expect(rig.state.angle).toBe(0);
+        rig.left.pointer("pointermove", open.x, open.y);
+        rig.settle();
+        expect(rig.state.angle).toBe(180);
+        rig.left.pointer("pointerup", open.x, open.y);
+        expect(rig.left.hasPointerCapture(1)).toBe(false);
+      } finally { rig.dispose(); }
+    }
   }
 });

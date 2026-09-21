@@ -17,7 +17,7 @@ import type { SimulatorOrientation } from "../types.js";
 import { getDeviceType, type DeviceType } from "./deviceFrames.js";
 import { createRotationCursor } from "./rotation-cursor.js";
 
-type RotateFn = (orientation: SimulatorOrientation) => void | Promise<void>;
+type RotateFn = (orientation: SimulatorOrientation, direction?: "left" | "right") => void | Promise<void>;
 
 interface ToolbarContextValue {
   onRotate?: RotateFn;
@@ -522,7 +522,7 @@ const RotateButton = forwardRef<HTMLButtonElement, ToolbarButtonProps & { direct
         // request so the button can move past that pose on the next click.
         const next = rotationCursor.current.requestNext(direction);
         if (ctx.onRotate) {
-          void ctx.onRotate(next);
+          void ctx.onRotate(next, direction);
         } else {
           void runHostAction("rotate", { value: next, udid: ctx.deviceUdid });
         }

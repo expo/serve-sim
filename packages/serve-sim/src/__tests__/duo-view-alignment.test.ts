@@ -42,7 +42,7 @@ describe("iPhone Duo view alignment", () => {
     expectDirection(panelDirection(hingeAxis, "left", open), new Vector3(0, 1, 0));
   });
 
-  test("named Open keeps portrait and landscape-left native UI axes upright", () => {
+  test("initial Open framing keeps portrait and landscape-left native UI axes upright", () => {
     for (const orientation of ["portrait", "landscape_left"] as const) {
       const config = { width: 2007, height: 2853, screenId: 3, orientation };
       const open = duoPose(180, "open", 3, config);
@@ -140,7 +140,7 @@ describe("iPhone Duo view alignment", () => {
     }
   });
 
-  test("slider motion reaches both endpoints continuously while holding the previous frame's presentation roll", () => {
+  test("initial tabletop framing is continuous across endpoint angles and ignores display roll", () => {
     for (const pose of ["laptop", "tent"] as const) {
       for (const range of [{ start: 0, end: 31, heldRoll: 0 }, { start: 149, end: 180, heldRoll: Math.PI / 2 }]) {
         let previous: Quaternion | undefined;

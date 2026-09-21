@@ -4,12 +4,14 @@ import type { StreamConfig } from "../types";
 import { createDuoScene, type DuoSceneState } from "../simulator/duo-scene";
 import { DuoHingeHandle } from "./duo-hinge-handle";
 import type { DuoHingeCommands } from "../simulator/duo-hinge-commands";
+import type { DuoView } from "../simulator/duo-view";
 
 export interface DuoModelViewProps {
   angle?: number;
   pose?: HingePose | null;
-  /** Undefined follows the confirmed pose; null explicitly uses a generic presentation. */
+  /** Physical pose for display selection; undefined follows the confirmed pose, null is unknown. */
   physicalPose?: HingePose | null;
+  view?: DuoView;
   streamConfig?: StreamConfig | null;
   hingeCommands?: DuoHingeCommands;
   children: ReactNode;

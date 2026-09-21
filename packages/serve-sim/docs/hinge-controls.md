@@ -43,11 +43,15 @@ loads Apple's `V68.usdz` from a local Xcode installation, with the live stream
 on its cover or inner display. Folding, unfolding, and
 switching poses animate continuously, including when a new preset interrupts a
 transition. Closed presents the cover straight toward the viewer, and Open
-presents the inner display straight toward the viewer. The open model turns with
-the active screen's portrait or landscape layout so the UI stays readable.
+presents the inner display straight toward the viewer. The view uses native
+orientation once when connecting. After that, only the browser's Rotate controls
+and pose presets change the model's viewing direction. Hinge edits preserve the
+complete view rotation, including across display switches and delayed orientation
+updates. They do not automatically turn the device toward the cover as it closes.
 Laptop has a level base and horizontal hinge; Tent presents the outer cover
 screen with both halves descending from a horizontal ridge. Slider adjustments
-preserve the device's physical orientation through the closed and open endpoints.
+preserve the view through the closed and open endpoints. Laptop folds around its
+stationary base; Tent folds symmetrically beneath its ridge.
 The browser's reduced-motion preference applies pose changes immediately.
 
 Drag either outer-edge handle to fold or unfold the 3D preview. Near closed
@@ -59,8 +63,8 @@ for the cover, and a clockwise 90° rotation in canvas coordinates for the inner
 display. This matches the inner panel's native 270° mounting in Y-up coordinates.
 App rotation is already present in the captured pixels, so the renderer does not
 apply an additional correction from app orientation or the model's viewing angle.
-View rotation follows the intended display only after a matching frame is ready,
-so a delayed cover/inner display switch does not add a spurious quarter-turn.
+Stream orientation updates affect the live display, independently of the saved
+model view. Rotate controls turn that view immediately without waiting for a frame.
 Native frames fill their corresponding panels without changing aspect ratio;
 touch coordinates use the inverse of the same mapping. The inactive display
 keeps its last decoded frame while the simulator switches between cover and inner

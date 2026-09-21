@@ -37,6 +37,7 @@ export function duoIntendedScreen(
   return nativeScreenId === 3 ? 3 : 1;
 }
 
+/** Initial/preset framing. Live hinge edits articulate the saved view in duo-view.ts. */
 export function duoPose(
   angle: number | undefined,
   pose: HingePose | null | undefined,

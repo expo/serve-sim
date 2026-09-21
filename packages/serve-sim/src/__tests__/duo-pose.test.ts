@@ -28,7 +28,7 @@ describe("iPhone Duo physical poses", () => {
     expect(duoPose(90, "book", 1)).toEqual(duoPose(90, "book", 3));
   });
 
-  test("closing the angle slider after Open brings the cover into view", () => {
+  test("initial framing brings the cover into view when connecting to a closed device", () => {
     for (const degrees of [0, 45, 90, 180]) {
       expect(duoPose(degrees, "open")).toEqual(duoPose(degrees, null));
     }
@@ -87,7 +87,7 @@ describe("iPhone Duo physical poses", () => {
     expect(tentNormal.y).toBeLessThan(0);
   });
 
-  test("toolbar rotations turn the whole closed, half-open, and open device with its fixed pixels", () => {
+  test("initial framing accounts for native orientation on closed, half-open, and open devices", () => {
     const orientations: { orientation: SimulatorOrientation; right: [number, number]; up: [number, number] }[] = [
       { orientation: "portrait", right: [1, 0], up: [0, 1] },
       { orientation: "landscape_left", right: [0, -1], up: [1, 0] },

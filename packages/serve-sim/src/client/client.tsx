@@ -36,6 +36,8 @@ import { DevicePlaceholder } from "./components/device-placeholder";
 import { DuoModelView } from "./components/duo-model-view";
 import { DuoPanelStreams, type DuoPanelPeer } from "./components/duo-panel-streams";
 import { duoIntendedScreen } from "./simulator/duo-pose";
+import { duoInitialView, duoPresetView, duoRotateView, type DuoView } from "./simulator/duo-view";
+import { rotationDegreesForOrientation } from "./simulator/orientation";
 import { recordDuoHingeCommand, type DuoHingeCommands } from "./simulator/duo-hinge-commands";
 import { PresentationControls } from "./components/presentation-controls";
 import {
@@ -771,6 +773,7 @@ function AppWithConfig({
   const [hingeError, setHingeError] = useState<string | null>(null);
   const [hingePreview, setHingePreview] = useState<HingeControlState | null>(null);
   const [physicalPose, setPhysicalPose] = useState<HingePose | null | undefined>(undefined);
+  const [duoView, setDuoView] = useState<DuoView | null>(null);
   const [orientationOverride, setOrientationOverride] = useState(false);
   const hingePendingRef = useRef(false);
   const [hingeCommands, setHingeCommands] = useState<DuoHingeCommands>({ pending: false, coverDepartures: 0, innerDepartures: 0 });
@@ -781,6 +784,8 @@ function AppWithConfig({
   const chrome = defaultChrome ? deviceKitChromeForScreen(defaultChrome, activeScreenId) : null;
   const previewHingeAngle = hingePreview?.hingeAngle ?? hingeAngle;
   const previewHingePose = hingePreview ? hingePreview.hingePose : streamConfig?.hingePose;
+  const initialDuoView = useMemo(() => duoInitialView(hingeAngle, streamConfig?.hingePose, activeStreamConfig),
+    [hingeAngle, streamConfig?.hingePose, activeStreamConfig]);
   const showHingeControls = !presentation && (supportsHingeAngle ?? hingeAngle !== undefined);
   const clipOrientation = activeStreamConfig.orientation ?? (activeStreamConfig.width > activeStreamConfig.height ? "landscape_left" : "portrait");
   const hasDisplayRadii = !!chrome?.screenCornerRadii;
@@ -987,6 +992,10 @@ function AppWithConfig({
     if (command.control === "pose") {
       setPhysicalPose(command.value);
       setOrientationOverride(false);
+      setDuoView(duoPresetView(command.value));
+    } else {
+      // Lock even an early edit before the first complete native config.
+      setDuoView((previous) => previous ?? initialDuoView);
     }
     setHingePreview((previous) => ({
       hingeAngle: previous?.hingeAngle ?? streamConfig?.hingeAngle,
@@ -995,17 +1004,20 @@ function AppWithConfig({
       ...hingeControlState(command),
     }));
     hingeQueueRef.current?.enqueue(command, { key: command.control, replaceQueued: command.control === "pose" });
-  }, [streamConfig]);
+  }, [streamConfig, initialDuoView]);
   const setHingeAngleFromHandle = useCallback((value: number) => {
     setHingeControl({ control: "angle", value });
   }, [setHingeControl]);
-  const rotateDevice = useCallback((orientation: SimulatorOrientation) => {
+  const rotateDevice = useCallback((orientation: SimulatorOrientation, direction?: "left" | "right") => {
+    const turns = direction ? (direction === "left" ? -1 : 1)
+      : (rotationDegreesForOrientation(activeStreamConfig.orientation) - rotationDegreesForOrientation(orientation)) / 90;
+    setDuoView((previous) => duoRotateView(previous ?? initialDuoView, turns));
     setHingePreview(null);
     setPhysicalPose(null);
     sentHingePoseRef.current = null;
     setOrientationOverride(true);
     sendWs(0x07, { orientation });
-  }, [sendWs]);
+  }, [sendWs, activeStreamConfig.orientation, initialDuoView]);
   const currentOrientation =
     (activeStreamConfig as { orientation?: SimulatorOrientation }).orientation ?? "portrait";
   const canRotate = deviceType !== "watch" && deviceType !== "vision";
@@ -1013,7 +1025,7 @@ function AppWithConfig({
     (direction: "left" | "right") => {
       if (!canRotate) return;
       const next = (direction === "left" ? ROTATE_LEFT_CYCLE : ROTATE_RIGHT_CYCLE)[currentOrientation];
-      rotateDevice(next);
+      rotateDevice(next, direction);
     },
     [canRotate, currentOrientation, rotateDevice],
   );
@@ -1025,9 +1037,15 @@ function AppWithConfig({
     setHingeError(null);
     setHingePreview(null);
     setPhysicalPose(undefined);
+    setDuoView(null);
     sentHingePoseRef.current = undefined;
     setOrientationOverride(false);
   }, [config.streamUrl]);
+
+  useEffect(() => {
+    // Use native orientation once when connecting, never as a live view control.
+    if (!duoView && activeStreamConfig.screenId !== undefined) setDuoView((previous) => previous ?? initialDuoView);
+  }, [duoView, activeStreamConfig.screenId, initialDuoView]);
 
   useEffect(() => {
     if (!hingePreview || hingePending || !streamConfig) return;
@@ -1044,7 +1062,7 @@ function AppWithConfig({
   useEffect(() => {
     // Also learn poses applied outside this browser. An older queued reply
     // must not replace the orientation chosen by the latest local request.
-    // Rotate explicitly selects a generic presentation. Ignore an older
+    // Rotate clears the known native physical pose. Ignore an older
     // preset acknowledgement until native reports that its pose was cleared.
     if (!orientationOverride && !hingePreview && !hingePending && streamConfig?.hingePose) {
       setPhysicalPose(streamConfig.hingePose);
@@ -1599,6 +1617,7 @@ function AppWithConfig({
                 angle={previewHingeAngle}
                 pose={previewHingePose}
                 physicalPose={physicalPose}
+                view={duoView ?? initialDuoView}
                 streamConfig={activeStreamConfig}
                 hingeCommands={hingeCommands}
                 onUnavailable={onDuoUnavailable}

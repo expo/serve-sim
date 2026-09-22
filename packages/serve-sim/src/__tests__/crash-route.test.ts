@@ -325,6 +325,21 @@ describe("handleCrashReportRequest", () => {
     expect(payload.reportError).toContain("deleted");
   });
 
+  test("reports why a report in Retired/ could not be read", async () => {
+    const runtime = await runtimeWithCrash();
+    const res = fakeRes();
+    await handleCrashReportRequest(fakeReq(), res, state, "INC-1", null, runtime, async (path) => {
+      if (!path.includes("/Retired/")) throw missingFile();
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    });
+
+    const payload = JSON.parse(res.body_);
+    expect(payload.report).toBeNull();
+    expect(payload.reportError).toContain("EACCES");
+    expect(payload.reportError).toContain("/reports/Retired/Demo-1.ips");
+    expect(payload.reportError).not.toContain("deleted");
+  });
+
   test("does not look in Retired/ for a report it cannot read", async () => {
     const runtime = await runtimeWithCrash();
     const res = fakeRes();

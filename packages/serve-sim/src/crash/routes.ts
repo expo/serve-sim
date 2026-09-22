@@ -101,21 +101,33 @@ export async function handleCrashReportRequest(
   const occurrence = record.occurrences[requested]!;
 
   const rawPath = occurrence.rawPath;
+  const retiredPath = join(dirname(rawPath), "Retired", basename(rawPath));
   let report: string | null = null;
-  let reportError: string | null = null;
+  let failure: unknown = null;
+  let failedPath = rawPath;
   try {
     report = await readReport(rawPath);
   } catch (error) {
+    failure = error;
     if (isMissingFile(error)) {
-      report = await readReport(join(dirname(rawPath), "Retired", basename(rawPath))).catch(() => null);
-    }
-    if (report === null) {
-      reportError = isMissingFile(error)
-        ? "macOS has deleted this report, so the summary and this occurrence's log tail are what is left."
-        : `Could not read ${rawPath} (${error instanceof Error ? error.message : String(error)}). ` +
-          `Check that serve-sim can read ${dirname(rawPath)}.`;
+      try {
+        report = await readReport(retiredPath);
+        failure = null;
+      } catch (retiredError) {
+        if (!isMissingFile(retiredError)) {
+          failure = retiredError;
+          failedPath = retiredPath;
+        }
+      }
     }
   }
+  const reportError =
+    failure === null
+      ? null
+      : isMissingFile(failure)
+        ? "macOS has deleted this report, so the summary and this occurrence's log tail are what is left."
+        : `Could not read ${failedPath} (${failure instanceof Error ? failure.message : String(failure)}). ` +
+          `Check that serve-sim can read ${dirname(failedPath)}.`;
 
   res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   res.end(

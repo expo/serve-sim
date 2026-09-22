@@ -352,6 +352,14 @@ bun run --filter @expo/serve-sim tart-dev             # guest preview at localho
 bun run --filter @expo/serve-sim tart-test -- <files> # bun test on the guest
 ```
 
+### Release and rollback
+
+`Release @expo/serve-sim` in the Actions tab bumps the version on `expo`, tags the commit, builds the tarball on EAS, and publishes it to npm `latest`. It is manual.
+
+If a release is bad, run `Roll back @expo/serve-sim` from the same tab. Give it the last good version. It points npm `latest` back at that version and can mark the bad version deprecated. Anyone who installs `@expo/serve-sim` or runs `npx @expo/serve-sim` after that gets the good version. Then fix forward on `expo` and release again. The release workflow bumps from the version in `package.json`, so the next release is always newer than the deprecated one.
+
+The rollback workflow needs `NPM_ROLLBACK_TOKEN` in the `npm-release` environment: an npm granular access token with read and write on `@expo/serve-sim`. The release workflow's OIDC token only allows `npm publish`, so it cannot move a dist-tag.
+
 ### Tart guest
 
 Run serve-sim **on a [tart](https://github.com/cirruslabs/tart) macOS VM** instead of the host. SSH as Unix user `expo` (not `tart exec` as admin), which matches how EAS-shaped VMs actually run.

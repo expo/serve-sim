@@ -1,9 +1,10 @@
 # Review guide
 
 This file tells a reviewer, human or automated, what to look for in a
-serve-sim pull request. Every rule below comes from a finding that a
-reviewer made on a merged PR. When a new finding repeats, add it here, or
-better, turn it into a lint rule or a test and delete the prose.
+serve-sim pull request. Every rule below comes from a finding a reviewer
+made on a PR, or hit while verifying one locally. When a new finding
+repeats, add it here, or better, turn it into a lint rule or a test and
+delete the prose.
 
 Lint already covers formatting, filename case, and import boundaries.
 Do not flag those by hand. Flag behavior, safety, and evidence.
@@ -24,6 +25,12 @@ Do not flag those by hand. Flag behavior, safety, and evidence.
 - **One behavior change per PR.** A fix for one device class must not
   change the path for every other device class. If it does, the PR says
   so and shows a tap, drag, and scroll on a non-affected device.
+- **The first MJPEG frame after connect is a cached seed, not the live
+  screen.** After switching a simulator to dark mode, `simctl ui <udid>
+  appearance` read back `dark` while the first frame from a fresh
+  `stream.mjpeg` connection was still the earlier light frame, byte for
+  byte. Evidence built from the first frame proves nothing. Use a later
+  frame, or `simctl io <udid> screenshot` on your own device.
 
 ## Native code: `Sources/`
 
@@ -74,6 +81,11 @@ drops input. Review for these:
   `setScreen`.
 - **No barrier round trip per event in a hot path.** One `type` command
   sent 26 barriers. Batch to the end of the sequence.
+- **A failed `dlopen` surfaces its reason.** `SimFrameworks.load()`
+  discards every result. When SimulatorKit is missing, from a bad
+  `DEVELOPER_DIR` or a new Xcode layout, the user later sees "Device
+  <udid> not found" from `findSimDevice`, which points the wrong way.
+  Record which path loaded, and throw with the `dlerror` for each path.
 
 ## Server: `packages/serve-sim/src/*.ts`
 
@@ -133,6 +145,17 @@ drops input. Review for these:
 - **Plain TypeScript failure paths get a child-process test.** The
   `*.child.ts` fixtures under `src/__tests__/fixtures/` run without a
   simulator. Use them for latches, state machines, and route parsing.
+- **Tests never read the shared state folder.** `stateDir()` defaults to
+  `$TMPDIR/serve-sim`, which every session on the machine shares. A test
+  that hits a route calling `readServeSimStates()` without
+  `useTempStateDir()` from `helpers.ts` can attach to another session's
+  server. `readiness-endpoints.test.ts` did, and failed with 200 instead
+  of 503.
+- **Start servers on a port you own, with your own state folder.**
+  `killOwnListeners()` SIGKILLs any listener a state file records. With
+  the shared folder, that includes another session's server. Take a free
+  OS-assigned port with `freePortAsync()` and a private
+  `SERVE_SIM_STATE_DIR`.
 
 ## Assets, size, and licensing
 

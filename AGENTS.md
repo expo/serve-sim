@@ -20,8 +20,10 @@
 
 ## Commands
 
-Run these from the repo root. CI runs the same lint, typecheck, and test
-commands, so a green local run predicts a green PR.
+Run these from the repo root. CI runs the same underlying steps: `bun run
+lint` and `bun run typecheck` in `.eas/workflows/checks.yml`, and the
+`test:e2e` command inside a timeout-and-retry wrapper in
+`.eas/workflows/sim-test.yml`. A green local run predicts a green PR.
 
 - `bun run check` — lint and typecheck. Run before every commit.
 - `bun run build` — full build: bundled JS, compiled CLI, native helpers, and
@@ -31,9 +33,10 @@ commands, so a green local run predicts a green PR.
   tests under `scripts/tart/__tests__`. Simulator-backed tests skip with a
   warning when no simulator is booted. The Swift `StreamingPolicyTests` are
   separate; run them with `swift test` in `packages/serve-sim`.
-- `bun run test:e2e` — the whole suite with `SERVE_SIM_E2E_REQUIRED=1`, so a
-  missing simulator or build artifact fails instead of skipping. This is what
-  CI runs. Boot a simulator first.
+- `bun run test:e2e` — the same Bun suite with `SERVE_SIM_E2E_REQUIRED=1`.
+  Tests that call `requireE2E` then fail instead of skipping when the
+  simulator or a build artifact is missing. Tests that check for a simulator
+  on their own still skip. This is what CI runs. Boot a simulator first.
 
 ## E2E testing with agent-browser
 

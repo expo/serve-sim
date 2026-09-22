@@ -105,6 +105,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   let retries = 0;
   let gaveUp = false;
   let watcherSince: number | null = null;
+  let backfilling: Promise<void> | null = null;
 
   const markUnavailable = (error: unknown): void => {
     if (watcherSince !== null && clock() - watcherSince >= HEALTHY_WATCH_MS) retries = 0;
@@ -244,7 +245,11 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   };
 
   async function start(opts: { deferToRetry?: boolean } = {}): Promise<void> {
-    if (watcher || gaveUp) return;
+    if (watcher) {
+      await backfilling;
+      return;
+    }
+    if (gaveUp) return;
     if (opts.deferToRetry && retryTimer) return;
     if (retryTimer) {
       clearTimeout(retryTimer);
@@ -275,7 +280,13 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       markUnavailable(error);
       return;
     }
-    await backfillAsync();
+    const run = backfillAsync();
+    backfilling = run;
+    try {
+      await run;
+    } finally {
+      if (backfilling === run) backfilling = null;
+    }
   }
 
   return {

@@ -841,6 +841,19 @@ describe("createCrashRuntime meta", () => {
     runtime.stop();
   });
 
+  test("makes a second caller wait for the backfill already running", async () => {
+    files.set("A.ips", ips({ udid: UDID_A, symbol: "One.boom()" }));
+    files.set("B.ips", ips({ udid: UDID_A, symbol: "Two.boom()" }));
+    const runtime = makeRuntime({ dirEntries: ["A.ips", "B.ips"], mtimes: { "A.ips": 2_000, "B.ips": 2_000 } });
+
+    const first = runtime.start();
+    await runtime.start();
+
+    expect(runtime.listFor(UDID_A)).toHaveLength(2);
+    await first;
+    runtime.stop();
+  });
+
   test("holds a request-driven start to the backoff after a failure", async () => {
     let attempts = 0;
     const runtime = createCrashRuntime({

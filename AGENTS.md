@@ -111,7 +111,9 @@ following the template in `.github/PULL_REQUEST_TEMPLATE.md`.
   touched area on a simulator you booted:
   `SERVE_SIM_TEST_UDID=<udid> bun run test:e2e -- <paths>`. It builds the
   fixtures the launch suites need. Name the tests, the UDID, the device, and
-  the Xcode version in the PR.
+  the Xcode version in the PR. For a change under
+  `packages/serve-sim/Sources/StreamingPolicy`, also run
+  `swift test --filter StreamingPolicyTests` in `packages/serve-sim`.
 - **Evidence matches the change.** A CLI change shows the command and its
   output. A UI change shows a screenshot or video. A native change was
   exercised on a simulator, not only compiled. "It builds" is not evidence.

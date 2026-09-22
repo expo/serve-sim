@@ -497,6 +497,10 @@ final class WebRTCPublisher: @unchecked Sendable {
         guard StreamCodecPolicy.isH264(codec) else {
             return WebRTCEncoderIdentity(id: nil, hardware: false, codec: codec, probe: false)
         }
+        // Forced H.264 skips the probe, and nothing else can say which encoder runs.
+        guard h264WebRTCSupport.probed else {
+            return WebRTCEncoderIdentity(id: nil, hardware: nil, codec: nil, probe: false)
+        }
         return WebRTCEncoderIdentity(
             id: h264WebRTCSupport.encoderID,
             hardware: h264WebRTCSupport.usesHardware,
@@ -1368,6 +1372,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                 reason: "disabled by SERVE_SIM_DISABLE_WEBRTC_H264",
                 encoderID: nil,
                 usesHardware: nil,
+                probed: false,
                 probeSummary: "disabled by environment"
             )
         }
@@ -1378,6 +1383,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                 reason: nil,
                 encoderID: nil,
                 usesHardware: nil,
+                probed: false,
                 probeSummary: "forced by environment"
             )
         }
@@ -1388,6 +1394,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                 reason: nil,
                 encoderID: probe.encoderID,
                 usesHardware: probe.usesHardware,
+                probed: true,
                 probeSummary: probe.summary
             )
         }
@@ -1397,6 +1404,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             reason: "VideoToolbox H.264 probe failed\(modelPrefix): \(probe.summary)",
             encoderID: probe.encoderID,
             usesHardware: probe.usesHardware,
+            probed: true,
             probeSummary: probe.summary
         )
     }
@@ -1611,6 +1619,8 @@ private struct WebRTCH264Support {
     let reason: String?
     let encoderID: String?
     let usesHardware: Bool?
+    /// False when the environment decided without running the VideoToolbox probe.
+    let probed: Bool
     let probeSummary: String
 }
 

@@ -47,9 +47,12 @@ drops input. Review for these:
 - **Cleanup restores the whole original state.** Restoring only the hinge
   angle dropped the pose and table mode the test started in. Restore by
   pose when a pose was set.
-- **Optional-returning symbols get a nil check.** A Swift initializer
-  whose mangled name ends in `...tcfC` returns `Optional`. Passing the
-  buffer through as a non-optional sends the nil tag bytes as a value.
+- **Optional-returning symbols get a nil check.** Read the result type in
+  the mangled name. `Sg` marks `Optional`, as in `...ACSg...tcfC` for a
+  failable initializer. `tcfC` alone only marks an allocating initializer
+  and says nothing about the result. When the result is `Optional`,
+  check the nil tag before use. Passing the buffer through as a
+  non-optional sends the nil tag bytes as a value.
 - **Validate runtime value sizes before writing into fixed buffers.** A
   two-word stack buffer plus a future layout change is a stack overwrite.
   Check the size at resolve time and mark the capability unavailable when
@@ -81,8 +84,10 @@ drops input. Review for these:
   inside `captureStart` left the middleware answering 503 "starting"
   forever. Log once, disable input for that session, and let capture
   continue.
-- **Every HID method goes through `guard`.** A method that bypasses it
-  never logs its rejection.
+- **Every HID method logs its rejection.** Most go through `guard`.
+  `setScreen` catches setup failures itself, logs once, and latches
+  `inputUnavailable`; that is deliberate, not a bypass. A method with
+  neither path is the finding.
 - **Validate once.** Panel id, endpoint, and method validation lived in
   two places with the same status codes and strings. Extract one helper
   or delete one copy.

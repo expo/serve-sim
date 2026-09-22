@@ -17,6 +17,7 @@ describeNative("CoreDevice keyboard bridge", () => {
       "clang", "-fblocks", "-framework", "Foundation",
       "-I", join(import.meta.dir, "../../Sources/CoreDeviceShim/include"),
       join(import.meta.dir, "fixtures/core-device-keyboard.m"),
+      join(import.meta.dir, "../../Sources/CoreDeviceShim/CoreDeviceDisplayShim.m"),
       "-o", executable,
     ], { timeout: 30_000, stdio: "pipe" });
   }, 30_000);
@@ -31,7 +32,8 @@ describeNative("CoreDevice keyboard bridge", () => {
     "nil-one-byte", "nil-two-byte",
   ])("%s", (scenario) => {
     // Same native-fixture approach as the digitizer bridge tests. Each process
-    // resolves its own simulated runtime through the production shim.
+    // resolves its own simulated runtime through the production keyboard and
+    // value-witness helpers, including Optional tag decoding and destruction.
     const result = spawnSync(executable, [scenario], { encoding: "utf8", timeout: 5000 });
     expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: "" });
   });

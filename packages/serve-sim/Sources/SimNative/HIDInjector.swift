@@ -94,19 +94,26 @@ actor HIDInjector {
         if isFoldable {
             // Touch and keyboard are both required for a usable Duo session.
             // Fail input setup if either transport is unavailable.
-            guard SSCoreDeviceDigitizerAvailable(), SSCoreDeviceKeyboardAvailable() else {
-                throw CoreDeviceBridge.BridgeError.unavailable
+            guard SSCoreDeviceDigitizerAvailable() else {
+                throw NSError(domain: "HIDInjector", code: 6,
+                              userInfo: [NSLocalizedDescriptionKey: "CoreDevice touch transport is unavailable (missing symbols or unsupported value layout)"])
+            }
+            guard SSCoreDeviceKeyboardAvailable() else {
+                throw NSError(domain: "HIDInjector", code: 7,
+                              userInfo: [NSLocalizedDescriptionKey: "CoreDevice keyboard transport is unavailable (missing symbols or unsupported value layout)"])
             }
             // Capabilities can become available after the simulator is listed.
             // Do not cache a transient lookup failure or fall back to Indigo on
             // the inner panel: its legacy service is disconnected.
             for attempt in 0..<10 {
+                var transport = "touch"
                 do {
                     digitizerCapability = try await CoreDeviceBridge.shared.capability(
                         udid: deviceUDID,
                         metadataSymbol: "$s10CoreDevice29UniversalHIDServiceCapabilityVN",
                         witnessSymbol: "$s10CoreDevice29UniversalHIDServiceCapabilityVAA0bE0AAWP"
                     )
+                    transport = "keyboard"
                     keyboardCapability = try await CoreDeviceBridge.shared.capability(
                         udid: deviceUDID,
                         metadataSymbol: "$s10CoreDevice21KeyboardHIDCapabilityVN",
@@ -114,7 +121,11 @@ actor HIDInjector {
                     )
                     break
                 } catch {
-                    if attempt == 9 { throw error }
+                    if attempt == 9 {
+                        throw NSError(domain: "HIDInjector", code: 8,
+                                      userInfo: [NSLocalizedDescriptionKey: "CoreDevice \(transport) capability lookup failed: \(error)",
+                                                 NSUnderlyingErrorKey: error])
+                    }
                     try await Task.sleep(nanoseconds: 250_000_000)
                 }
             }

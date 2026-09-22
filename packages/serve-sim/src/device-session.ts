@@ -1209,6 +1209,7 @@ export class DeviceSession {
     width: number;
     height: number;
     orientation: string;
+    inputUnavailable: boolean;
     screenId?: number;
     supportsHingeAngle?: boolean;
     hingeAngle?: number;
@@ -1220,6 +1221,7 @@ export class DeviceSession {
       width: this.width,
       height: this.height,
       orientation: this.orientation,
+      inputUnavailable: this.hid.inputUnavailable,
       ...(this.nativeScreen?.screenId !== undefined ? { screenId: this.nativeScreen.screenId } : {}),
       ...(this.supportsHingeAngle !== undefined ? { supportsHingeAngle: this.supportsHingeAngle } : {}),
       ...(this.hingeAngle !== undefined ? { hingeAngle: this.hingeAngle } : {}),

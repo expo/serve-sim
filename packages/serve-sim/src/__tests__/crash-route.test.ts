@@ -102,6 +102,10 @@ async function runtimeWithCrash(): Promise<CrashRuntime> {
   return runtime;
 }
 
+function missingFile(): NodeJS.ErrnoException {
+  return Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+}
+
 /** Two crashes that share a signature, so they collapse into one record. */
 async function runtimeWithRepeat(): Promise<CrashRuntime> {
   let emit: (eventType: string, filename: string | null) => void = () => {};
@@ -291,17 +295,47 @@ describe("handleCrashReportRequest", () => {
     expect(JSON.parse(res.body_).error).toContain("0-1");
   });
 
-  test("keeps the summary and explains a report file that has been retired", async () => {
+  test("reads a report that macOS has moved into Retired/", async () => {
+    const runtime = await runtimeWithCrash();
+    const res = fakeRes();
+    const reads: string[] = [];
+    await handleCrashReportRequest(fakeReq(), res, state, "INC-1", null, runtime, async (path) => {
+      reads.push(path);
+      if (!path.includes("/Retired/")) throw missingFile();
+      return "retired report";
+    });
+
+    const payload = JSON.parse(res.body_);
+    expect(payload.report).toBe("retired report");
+    expect(payload.reportError).toBeNull();
+    expect(reads).toEqual(["/reports/Demo-1.ips", "/reports/Retired/Demo-1.ips"]);
+  });
+
+  test("keeps the summary and explains a report macOS has deleted", async () => {
     const runtime = await runtimeWithCrash();
     const res = fakeRes();
     await handleCrashReportRequest(fakeReq(), res, state, "INC-1", null, runtime, async () => {
-      throw new Error("ENOENT");
+      throw missingFile();
     });
 
     expect(res.statusCode_).toBe(200);
     const payload = JSON.parse(res.body_);
     expect(payload.record.id).toBe("INC-1");
     expect(payload.report).toBeNull();
-    expect(payload.reportError).toContain("Retired");
+    expect(payload.reportError).toContain("deleted");
+  });
+
+  test("does not look in Retired/ for a report it cannot read", async () => {
+    const runtime = await runtimeWithCrash();
+    const res = fakeRes();
+    const reads: string[] = [];
+    await handleCrashReportRequest(fakeReq(), res, state, "INC-1", null, runtime, async (path) => {
+      reads.push(path);
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    });
+
+    const payload = JSON.parse(res.body_);
+    expect(reads).toEqual(["/reports/Demo-1.ips"]);
+    expect(payload.reportError).toContain("EACCES");
   });
 });

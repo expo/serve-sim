@@ -62,7 +62,7 @@ function isFinalCrashReportName(filename: string): boolean {
   return filename.endsWith(".ips") && !filename.startsWith(".");
 }
 
-function isMissingFile(error: unknown): boolean {
+export function isMissingFile(error: unknown): boolean {
   return (
     typeof error === "object" &&
     error !== null &&

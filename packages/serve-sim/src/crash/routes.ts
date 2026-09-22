@@ -1,9 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import type { ServeSimDeviceState } from "../state";
 import { logBufferCache, type LogBufferCache } from "../log-buffer";
 import { openSseStream } from "../sse-stream";
-import { crashRuntime, type CrashRuntime } from "./runtime";
+import { crashRuntime, isMissingFile, type CrashRuntime } from "./runtime";
 import { summarizeCrash, type CrashStreamFrame } from "./protocol";
 
 /** A reader keeps the tail alive, so a crash during this stream still has lines before it. */
@@ -99,15 +100,21 @@ export async function handleCrashReportRequest(
   }
   const occurrence = record.occurrences[requested]!;
 
+  const rawPath = occurrence.rawPath;
   let report: string | null = null;
   let reportError: string | null = null;
   try {
-    report = await readReport(occurrence.rawPath);
+    report = await readReport(rawPath);
   } catch (error) {
-    reportError =
-      `Could not read ${occurrence.rawPath} (${error instanceof Error ? error.message : String(error)}). ` +
-      "macOS ages crash reports into Retired/ and then deletes them, so an older occurrence can be " +
-      "gone for good; the summary and this occurrence's log tail are what is left.";
+    if (isMissingFile(error)) {
+      report = await readReport(join(dirname(rawPath), "Retired", basename(rawPath))).catch(() => null);
+    }
+    if (report === null) {
+      reportError = isMissingFile(error)
+        ? "macOS has deleted this report, so the summary and this occurrence's log tail are what is left."
+        : `Could not read ${rawPath} (${error instanceof Error ? error.message : String(error)}). ` +
+          `Check that serve-sim can read ${dirname(rawPath)}.`;
+    }
   }
 
   res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });

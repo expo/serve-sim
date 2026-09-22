@@ -1242,6 +1242,7 @@ function AppWithConfig({
     };
   }, []);
   useEffect(() => {
+    setCurrentApp(null);
     const es = openHostEventStream(config.appStateEndpoint ?? simEndpoint("appstate"));
     let timer: ReturnType<typeof setTimeout> | null = null;
     es.onmessage = (e) => {
@@ -2014,7 +2015,7 @@ function AppWithConfig({
       </>
       )}
       <LogsDrawer
-        open={logsOpen}
+        open={logsOpen && !presentation}
         onClose={() => setLogsOpen(false)}
         udid={config.device}
         logsEndpoint={config.logsEndpoint}

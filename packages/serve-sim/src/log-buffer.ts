@@ -133,27 +133,18 @@ export class DeviceLogBuffer {
     maxBytes?: number;
     maxGapMs?: number;
   }): { lines: LogLine[]; reason: "app-windowed" | "buffer-rolled-past" | "no-app-lines" } {
-    const selected: LogLine[] = [];
+    const kept: LogLine[] = [];
+    let bytes = 0;
+    let sawAppLine = false;
     let newestBefore: LogLine | undefined;
-    for (let i = this.lines.length - 1; i >= 0 && selected.length < count; i -= 1) {
+    for (let i = this.lines.length - 1; i >= 0 && kept.length < count; i -= 1) {
       const line = this.lines[i]!;
       if (line.at > at) continue;
       newestBefore ??= line;
-      if (emittedBy(line.raw, processName)) selected.push(line);
-    }
-    if (!newestBefore) return { lines: [], reason: "buffer-rolled-past" };
-    // The ring can hold lines from after the gap, so measure it from the newest line before `at`.
-    if (maxGapMs !== undefined && newestBefore.at < at - maxGapMs) {
-      return { lines: [], reason: "buffer-rolled-past" };
-    }
-    if (selected.length === 0) return { lines: [], reason: "no-app-lines" };
-
-    if (maxBytes === undefined) return { lines: selected.reverse(), reason: "app-windowed" };
-    const kept: LogLine[] = [];
-    let bytes = 0;
-    for (const line of selected) {
+      if (!emittedBy(line.raw, processName)) continue;
+      sawAppLine = true;
       const size = Buffer.byteLength(line.raw);
-      if (bytes + size <= maxBytes) {
+      if (maxBytes === undefined || bytes + size <= maxBytes) {
         kept.push(line);
         bytes += size;
         continue;
@@ -164,6 +155,12 @@ export class DeviceLogBuffer {
       kept.push({ ...line, raw: fitted });
       break;
     }
+    if (!newestBefore) return { lines: [], reason: "buffer-rolled-past" };
+    // The ring can hold lines from after the gap, so measure it from the newest line before `at`.
+    if (maxGapMs !== undefined && newestBefore.at < at - maxGapMs) {
+      return { lines: [], reason: "buffer-rolled-past" };
+    }
+    if (!sawAppLine) return { lines: [], reason: "no-app-lines" };
     return { lines: kept.reverse(), reason: "app-windowed" };
   }
 

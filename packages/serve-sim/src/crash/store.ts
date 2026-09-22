@@ -25,9 +25,16 @@ export interface CrashRecord extends CrashReport {
   lastSeen: number;
 }
 
+export type OccurrenceStamp = {
+  capturedAtMs: number | null;
+  capturedAt: string | null;
+  rawPath: string;
+};
+
 export type CrashSummary = Omit<CrashRecord, "frames" | "occurrences"> & {
   logTailLines: number;
   occurrenceCount: number;
+  occurrenceTimes: OccurrenceStamp[];
 };
 
 export type LogTailSource = "none" | "buffer-rolled-past" | "no-app-lines" | "app-windowed";
@@ -59,8 +66,7 @@ export class CrashStore {
     for (const onClosed of [...this.closeListeners]) {
       try {
         onClosed();
-      } catch {
-      }
+      } catch {}
     }
     this.closeListeners.clear();
     this.listeners.clear();
@@ -133,8 +139,7 @@ export class CrashStore {
     for (const listener of this.listeners) {
       try {
         listener(delivered);
-      } catch {
-      }
+      } catch {}
     }
   }
 }

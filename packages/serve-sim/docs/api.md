@@ -73,10 +73,11 @@ Offering several is fine; every entry is checked, so a stale token alongside a
 fresh one still connects. Values outside the RFC 7230 token charset are dropped
 rather than echoed.
 
-The exec channel accepts the same subprotocol at its handshake. It also still
-accepts the token in its first frame, for older clients and for a host that
-forwards an already accepted socket; that path will be dropped in a later
-release.
+The exec channel accepts the same subprotocol at its handshake. It also accepts
+the token in its first frame. The preview client falls back to that when its
+token has characters a subprotocol cannot carry, such as the `=` padding of
+standard base64; older clients and a host that forwards an already accepted
+socket use it too.
 
 There is no `?token=` fallback on a WebSocket. Query strings are
 recorded by proxy and tunnel access logs; request headers and subprotocols are

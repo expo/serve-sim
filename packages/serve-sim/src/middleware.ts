@@ -1715,7 +1715,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   // can't read this value (it's only injected into the preview page's config).
   const execToken = options?.execToken ?? randomBytes(32).toString("base64url");
   const requirePreviewToken = options?.requirePreviewToken ?? false;
-  const corsOrigins = options?.corsOrigins ?? [];
+  const corsOrigins = [...(options?.corsOrigins ?? [])];
   const frameAncestors = options?.frameAncestors ?? [];
   const shareUrl = options?.shareUrl;
   // The proxied DevTools frontend sits behind the same cookie, so its document needs the policy too.

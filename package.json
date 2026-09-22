@@ -5,9 +5,12 @@
   "scripts": {
     "build": "bun run --filter '*' build",
     "dev": "bun run --filter '@expo/serve-sim' dev",
-    "knip": "knip",
+    "check": "bun run lint && bun run typecheck",
+    "lint": "oxlint",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint"
+    "knip": "knip",
+    "test": "bun test --max-concurrency=1 packages/serve-sim/src/__tests__/",
+    "test:e2e": "SERVE_SIM_E2E_REQUIRED=1 bun test --max-concurrency=1 packages/serve-sim/src/__tests__/"
   },
   "workspaces": [
     "packages/*"

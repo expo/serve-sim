@@ -18,6 +18,21 @@
   `packages/serve-sim/dist/`) rather than `npx serve-sim` or a globally
   installed binary.
 
+## Commands
+
+Run these from the repo root. CI runs the same lint, typecheck, and test
+commands, so a green local run predicts a green PR.
+
+- `bun run check` — lint and typecheck. Run before every commit.
+- `bun run build` — full build: bundled JS, compiled CLI, native helpers, and
+  the N-API addon. Run once before `bun run test`; several tests drive the
+  built artifacts under `packages/serve-sim/dist/`.
+- `bun run test` — the whole suite. Simulator-backed tests skip with a warning
+  when no simulator is booted.
+- `bun run test:e2e` — the whole suite with `SERVE_SIM_E2E_REQUIRED=1`, so a
+  missing simulator or build artifact fails instead of skipping. This is what
+  CI runs. Boot a simulator first.
+
 ## E2E testing with agent-browser
 
 If you are codex, run in the in-app Codex browser instead of using agent-browser. Only use agent-browser when developing from TUIs like Claude Code.

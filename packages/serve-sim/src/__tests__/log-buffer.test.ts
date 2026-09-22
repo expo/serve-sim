@@ -298,6 +298,22 @@ describe("DeviceLogBuffer", () => {
     buffer.stop();
   });
 
+  test("skips a newest line that cannot fit and keeps the older lines that do", () => {
+    const buffer = makeBuffer(1_000_000);
+    buffer.start();
+    clock = 1_000;
+    spawned[0]!.emitLines(
+      JSON.stringify({ processImagePath: "/x/Demo", eventMessage: "older" }) +
+        "\n" +
+        JSON.stringify({ processImagePath: "/x/Demo", subsystem: "s".repeat(400), eventMessage: "hi" }) +
+        "\n"
+    );
+
+    const tail = buffer.tailBefore({ at: 1_000, count: 10, processName: "Demo", maxBytes: 250 });
+    expect(tail.lines.map((line) => JSON.parse(line.raw).eventMessage)).toEqual(["older"]);
+    buffer.stop();
+  });
+
   test("respawns the tail when it dies, without a listener keeping it alive", async () => {
     const buffer = makeBuffer();
     buffer.start();

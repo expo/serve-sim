@@ -148,20 +148,23 @@ export class DeviceLogBuffer {
     }
     if (selected.length === 0) return { lines: [], reason: "no-app-lines" };
 
-    selected.reverse();
-    if (maxBytes === undefined) return { lines: selected, reason: "app-windowed" };
+    if (maxBytes === undefined) return { lines: selected.reverse(), reason: "app-windowed" };
+    const kept: LogLine[] = [];
     let bytes = 0;
-    let first = selected.length;
-    while (first > 0) {
-      const size = Buffer.byteLength(selected[first - 1]!.raw);
-      if (bytes + size > maxBytes) break;
-      bytes += size;
-      first -= 1;
+    for (const line of selected) {
+      const size = Buffer.byteLength(line.raw);
+      if (bytes + size <= maxBytes) {
+        kept.push(line);
+        bytes += size;
+        continue;
+      }
+      if (kept.length > 0) break;
+      const fitted = fitLine(line.raw, maxBytes);
+      if (fitted === null) continue;
+      kept.push({ ...line, raw: fitted });
+      break;
     }
-    if (first < selected.length) return { lines: selected.slice(first), reason: "app-windowed" };
-    const newest = selected[selected.length - 1]!;
-    const fitted = fitLine(newest.raw, maxBytes);
-    return { lines: fitted === null ? [] : [{ ...newest, raw: fitted }], reason: "app-windowed" };
+    return { lines: kept.reverse(), reason: "app-windowed" };
   }
 
   get latestSeq(): number {

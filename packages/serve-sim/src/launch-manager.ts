@@ -2,6 +2,7 @@ import { existsSync, unlinkSync } from "fs";
 import { basename, join } from "path";
 import {
   capabilitiesToApply,
+  capabilityDefinition,
   type CapabilityContext,
   type CapabilityDefinition,
   type CapabilityOverrides,
@@ -302,6 +303,47 @@ async function prepare(
     scope: definition.scope,
     loadDelayMs: definition.loadDelayMs,
   };
+}
+
+/**
+ * Unused on `expo` today. Kept because #148, #102, and #53 import it; the
+ * first of them to land makes it live. Remove the tag then.
+ * @public
+ */
+export async function setCapabilityEnabled(
+  udid: string,
+  name: string,
+  {
+    bundleId = null,
+    options = {},
+    enabled,
+    relaunch = true,
+    ownerPid = process.pid,
+  }: {
+    bundleId?: string | null;
+    options?: Record<string, string>;
+    enabled: boolean;
+  } & EnableOptions,
+): Promise<void> {
+  const definition = capabilityDefinition(name);
+  const context: CapabilityContext = { udid, bundleId, options, enabled };
+
+  await withLaunchStateLock(udid, async () => {
+    if (!enabled) {
+      await definition.setEnabled(context);
+      await disableCapabilityUnlocked(udid, bundleId, name, { relaunch: false });
+      return;
+    }
+
+    const capability = await prepare(definition, context);
+    if (!capability) {
+      throw new Error(
+        `Capability ${name} declined to start on ${udid}. It reported nothing to load, so there ` +
+          `is nothing to enable. Check the message above for why.`,
+      );
+    }
+    await enableCapabilitiesUnlocked(udid, bundleId, [capability], { relaunch, ownerPid });
+  });
 }
 
 export async function applyDefaultCapabilities(

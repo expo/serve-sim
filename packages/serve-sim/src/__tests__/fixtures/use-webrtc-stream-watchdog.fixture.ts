@@ -409,6 +409,48 @@ async function tick(advanceMs = POLL_MS) {
   await flush();
 }
 
+/// Give up on the read in flight, as its decision deadline does.
+async function expireReadDeadline() {
+  for (const [id, timer] of timers) {
+    if (timer.delay !== POLL_MS * 2) continue;
+    timers.delete(id);
+    timer.callback();
+  }
+  await flush();
+}
+
+/// `getStats` cannot be cancelled, so a deadline only stops the waiting. Asking again on every
+/// poll would pile up one more hung read each time.
+test("a hung read stays the only read until it settles", async () => {
+  const hook = await start();
+  hook.markFrameDecoded();
+  for (let i = 0; i < 4; i++) {
+    await tick();
+    await expireReadDeadline();
+  }
+  expect(pendingStats).toHaveLength(1);
+
+  resolveStats(100, 100);
+  await flush();
+  await tick();
+  expect(pendingStats).toHaveLength(1);
+});
+
+/// The panel's listeners outlive a reconnect, so a read the old peer finishes late would
+/// otherwise open the new peer's history with the old one's counters.
+test("a read that lands after its peer was replaced never reaches the panel", async () => {
+  const hook = await start();
+  hook.markFrameDecoded();
+  const seen: number[] = [];
+  hook.subscribeStats((report) => seen.push(report.size));
+  await tick();
+  const late = pendingStats.shift()!;
+  await reconnect();
+  late.resolve(new Map([["video", { id: "video", type: "inbound-rtp", kind: "video", framesReceived: 900, framesDecoded: 900 }]]));
+  await flush();
+  expect(seen).toEqual([]);
+});
+
 test("ticks that overlap an unfinished read do not count twice", async () => {
   const hook = await start();
   hook.markFrameDecoded();

@@ -37,6 +37,19 @@ export function parseInboundVideo(report: RTCStatsReport): InboundVideo[] {
   return reports;
 }
 
+/// A hung `getStats` cannot be cancelled, so it stays the connection's one read until it
+/// settles. A deadline only stops the waiting.
+const readsInFlight = new WeakMap<RTCPeerConnection, Promise<RTCStatsReport | null>>();
+
+function readStats(pc: RTCPeerConnection): Promise<RTCStatsReport | null> {
+  const inFlight = readsInFlight.get(pc);
+  if (inFlight) return inFlight;
+  const read = pc.getStats().catch(() => null);
+  readsInFlight.set(pc, read);
+  void read.then(() => readsInFlight.delete(pc));
+  return read;
+}
+
 /// One read, shared by the stall watchdog and the stats panel. Null means "could not
 /// measure", which restarts the stall run rather than accusing the decoder.
 export async function readStatsBeforeDeadline(
@@ -47,7 +60,7 @@ export async function readStatsBeforeDeadline(
   let timeout: number | undefined;
   try {
     return await Promise.race([
-      pc.getStats().catch(() => null),
+      readStats(pc),
       new Promise<null>((resolve) => {
         timeout = window.setTimeout(() => resolve(null), deadlineMs);
       }),
@@ -110,7 +123,8 @@ export function startPlaybackStallWatchdog({
     const report = await readStatsBeforeDeadline(pc, READ_DEADLINE_MS);
     // Stamped on arrival, because that is when the counters in it were read. Stamping the
     // call instead puts the read's own latency into the panel's rate divisor.
-    if (report) publish(report, Date.now());
+    // A read the replaced peer finishes late would open the next one's history.
+    if (report && readable() && peer() === pc) publish(report, Date.now());
     // Re-checked after the read: the tab can hide or the connection drop in flight.
     if (!judgeable() || !pc) {
       invalidate();

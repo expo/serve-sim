@@ -16,6 +16,7 @@ export interface PlaybackProgress {
 
 export interface PlaybackStallState {
   decoded: number | null;
+  /// As of the poll that began the frozen run, so bursty delivery still counts as arriving.
   received: number;
   stalledPolls: number;
 }
@@ -42,7 +43,7 @@ export function nextPlaybackStallState(
   if (progress.decoded !== state.decoded) return settled(0);
   const stalledPolls = state.stalledPolls + 1;
   return {
-    state: { decoded: progress.decoded, received: progress.received, stalledPolls },
+    state: { decoded: progress.decoded, received: state.received, stalledPolls },
     stalled: stalledPolls >= PLAYBACK_STALL_POLLS,
     mediaArriving,
   };

@@ -85,6 +85,21 @@ describe("tracking whether decoding has stopped", () => {
     expect(silent.mediaArriving).toBe(false);
   });
 
+  /// Frames can arrive in bursts wider than a poll, so a quiet last second does not make a
+  /// run that received the whole time into a transport failure.
+  test("judges media arrival over the whole frozen run, not its last poll", () => {
+    const received = [100, 110, 120, 130, 140, 150, 160, 160, 160];
+    let state: PlaybackStallState = initialPlaybackStallState;
+    let verdict = nextPlaybackStallState(state, { decoded: 100, received: received[0]! });
+    for (const count of received.slice(1)) {
+      state = verdict.state;
+      verdict = nextPlaybackStallState(state, { decoded: 100, received: count });
+    }
+    expect(verdict.stalled).toBe(true);
+    expect(verdict.mediaArriving).toBe(true);
+    expect(webRtcFailureDisposition("playback-stall", "connected", verdict)).toBe("codec");
+  });
+
   test("the first sample only establishes a baseline", () => {
     expect(nextPlaybackStallState(initialPlaybackStallState, { decoded: 7, received: 1 }).stalled)
       .toBe(false);

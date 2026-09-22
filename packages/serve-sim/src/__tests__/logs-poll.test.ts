@@ -96,6 +96,47 @@ describe("startLogsPoll", () => {
     expect(batches.flat().map((line) => line.seq)).toEqual([7]);
   });
 
+  async function pollOnce(since: number, reply: { lines: { seq: number; raw: string }[]; latestSeq: number }) {
+    const restoreWindow = withPreviewWindow();
+    const original = globalThis.fetch;
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(JSON.stringify(reply), { headers: { "Content-Type": "application/json" } })
+      )) as unknown as typeof fetch;
+
+    const batches: LogSnapshotLine[][] = [];
+    let cursor = since;
+    const stop = startLogsPoll("/logs", {
+      getSince: () => cursor,
+      setSince: (seq) => {
+        cursor = seq;
+      },
+      onBatch: (lines) => batches.push(lines),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stop();
+    globalThis.fetch = original;
+    restoreWindow();
+    return { lines: batches.flat(), cursor };
+  }
+
+  test("marks the lines a capped reply skipped instead of dropping them silently", async () => {
+    const { lines, cursor } = await pollOnce(3, {
+      lines: [{ seq: 10, raw }, { seq: 11, raw }],
+      latestSeq: 11,
+    });
+
+    expect(cursor).toBe(11);
+    expect(lines.map((line) => line.seq)).toEqual([4, 10, 11]);
+    expect(lines[0]!.fields.message).toBe("6 lines skipped");
+  });
+
+  test("adds no marker when the reply picks up right after the cursor", async () => {
+    const { lines } = await pollOnce(6, { lines: [{ seq: 7, raw }], latestSeq: 7 });
+
+    expect(lines.map((line) => line.seq)).toEqual([7]);
+  });
+
   test("reports a failed request without moving the cursor", async () => {
     const restoreWindow = withPreviewWindow();
     const original = globalThis.fetch;

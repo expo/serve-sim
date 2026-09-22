@@ -40,6 +40,22 @@ export function parseLogSnapshot(payload: unknown): { latestSeq: number; lines: 
   return { latestSeq, lines };
 }
 
+function skippedLine(seq: number, count: number): LogSnapshotLine {
+  return {
+    seq,
+    fields: {
+      process: "serve-sim",
+      library: "",
+      subsystem: "",
+      category: "",
+      message: `${count} lines skipped`,
+      level: "default",
+      pid: null,
+      timestamp: "",
+    },
+  };
+}
+
 export function startLogsPoll(
   endpoint: string,
   opts: {
@@ -76,7 +92,9 @@ export function startLogsPoll(
       }
       const fresh = parsed.lines.filter((line) => line.seq > since);
       if (parsed.latestSeq > since) opts.setSince(parsed.latestSeq);
-      if (fresh.length > 0) opts.onBatch(fresh);
+      const skipped = since > 0 && fresh.length > 0 ? fresh[0]!.seq - since - 1 : 0;
+      const batch = skipped > 0 ? [skippedLine(since + 1, skipped), ...fresh] : fresh;
+      if (batch.length > 0) opts.onBatch(batch);
     } catch {
       if (!stopped) opts.onError?.(/* errored */ true);
     } finally {

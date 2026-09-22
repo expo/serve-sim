@@ -278,10 +278,26 @@ describe("StreamStatsBody", () => {
         history={[stats()]}
         faults={[]}
         sender={sender}
-        encoder={{ id: null, hardware: false, codec: "VP8" }}
+        encoder={{ id: null, hardware: false, codec: "VP8", probe: false }}
       />,
     );
     expect(row(markup, "Encoder")).toBe("vp8 (CPU)");
+  });
+
+  /// A 64x64 test session cannot show what the live sender uses, so the row says what it is.
+  test("labels an H.264 encoder answer as a probe", () => {
+    const markup = renderToStaticMarkup(
+      <StreamStatsBody
+        stats={stats()}
+        history={[stats()]}
+        faults={[]}
+        sender={sender}
+        encoder={{ id: "paravirtualized:com.apple.videotoolbox.videoencoder.ave.avc", hardware: true, codec: "H264", probe: true }}
+      />,
+    );
+    expect(row(markup, "Encoder probe")).toBe("paravirt avc (hardware)");
+    expect(row(markup, "Encoder")).toBeNull();
+    expect(help(markup, "Encoder probe")).toContain("not this stream");
   });
 
   test("omits the encoder row when the session reports none", () => {

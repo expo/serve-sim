@@ -6,7 +6,7 @@ import type { EncoderIdentity, SenderStreamStats } from "../../webrtc-sender-sta
  * `paravirtualized:` marks a guest reaching the host's hardware encoder. A session with no
  * encoder id is not on H.264, so it falls back to naming its codec.
  */
-export function encoderLabel(encoder: EncoderIdentity): string {
+export function encoderLabel(encoder: Omit<EncoderIdentity, "probe">): string {
   const kind = encoder.hardware === true ? "hardware" : encoder.hardware === false ? "CPU" : "?";
   const id = encoder.id ?? "";
   if (!id) return encoder.codec ? `${encoder.codec.toLowerCase()} (${kind})` : kind;

@@ -47,7 +47,9 @@ struct WebRTCAnswerPayload: Codable {
 /// Seconds and bits/second, as libwebrtc reports them.
 struct WebRTCSenderStatsPayload: Codable {
     let sessionId: String
-    let codec: String
+    /// Nil until the stats name it. The requested codec is only a preference, and the answer
+    /// can settle on another one.
+    let codec: String?
     let connected: Bool
     let qualityLimitationReason: String?
     let qualityLimitationDurations: [String: Double]?
@@ -96,14 +98,17 @@ struct WebRTCCaptureCounts: Codable {
     let pollLateSumMs: Double
 }
 
-/// Which encoder the publisher actually selected. Surfaced so a silent downgrade to a
-/// software encoder is visible instead of looking like an ordinary slow stream.
+/// What is known about the encoder behind the live sessions. Surfaced so a software encoder
+/// is visible instead of looking like an ordinary slow stream.
 struct WebRTCEncoderIdentity: Codable {
     /// Nil when the live session is not H.264, because the probe describes an H.264 encoder.
     let id: String?
     let hardware: Bool?
     /// One answer for the whole report, even when sessions disagree.
     let codec: String?
+    /// The H.264 answer comes from a test session, because the live encoder does not report
+    /// itself. The VP8 and VP9 answers follow from libwebrtc encoding them in software.
+    let probe: Bool
 }
 
 struct WebRTCSenderStatsReport: Codable {
@@ -410,7 +415,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         let remoteCandidate = statsString(candidatePair, "remoteCandidateId").flatMap { byId[$0] }
         return WebRTCSenderStatsPayload(
             sessionId: session.id,
-            codec: negotiatedCodec(byId, outbound: outbound) ?? session.codecName,
+            codec: negotiatedCodec(byId, outbound: outbound),
             connected: session.isConnected,
             qualityLimitationReason: statsString(outbound, "qualityLimitationReason"),
             qualityLimitationDurations: statsDurations(outbound, "qualityLimitationDurations"),
@@ -486,16 +491,17 @@ final class WebRTCPublisher: @unchecked Sendable {
         // Nothing live means nothing to describe. The probe answers what this machine can do,
         // which is not the same claim.
         guard let codec = StreamCodecPolicy.dominant(liveCodecs) else {
-            return WebRTCEncoderIdentity(id: nil, hardware: nil, codec: nil)
+            return WebRTCEncoderIdentity(id: nil, hardware: nil, codec: nil, probe: false)
         }
         // The probe describes an H.264 encoder; libwebrtc encodes VP8 and VP9 in software.
         guard StreamCodecPolicy.isH264(codec) else {
-            return WebRTCEncoderIdentity(id: nil, hardware: false, codec: codec)
+            return WebRTCEncoderIdentity(id: nil, hardware: false, codec: codec, probe: false)
         }
         return WebRTCEncoderIdentity(
             id: h264WebRTCSupport.encoderID,
             hardware: h264WebRTCSupport.usesHardware,
-            codec: codec
+            codec: codec,
+            probe: true
         )
     }
 

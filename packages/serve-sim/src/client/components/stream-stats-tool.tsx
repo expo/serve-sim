@@ -135,7 +135,7 @@ function Diagnostics({
           <Cell label="Frames sent" value={compact(sender.framesSent)} />
           <Cell label="Loss" value={percent(sender.lossRatio)} />
           {sender.codec && <Cell label="Codec" value={sender.codec.toLowerCase()} />}
-          {encoder && <Cell label="Encoder" value={encoderLabel(encoder)} />}
+          {encoder && <Cell label={encoder.probe ? "Encoder probe" : "Encoder"} value={encoderLabel(encoder)} />}
           {downscale && <Cell label="Scaled" value={downscale} />}
         </Group>
       )}
@@ -191,6 +191,10 @@ const HELP: Record<string, { meaning: string; scope: Scope }> = {
   Loss: { meaning: "Packets lost on the way to the browser.", scope: SESSION },
   Codec: { meaning: "Codec negotiated for this live sender.", scope: NOW },
   Encoder: { meaning: "Encoder implementation and whether it is using hardware or the CPU.", scope: NOW },
+  "Encoder probe": {
+    meaning: "The H.264 encoder a test encode on this machine used, and whether it ran on hardware. The live encoder does not report itself, so this is what the machine offers, not this stream.",
+    scope: NOW,
+  },
   Scaled: { meaning: "Encoded long edge compared with the selected size, plus the limiting cause when known.", scope: NOW },
 
   "Screen frames": { meaning: "New images the simulator produced.", scope: WINDOW },

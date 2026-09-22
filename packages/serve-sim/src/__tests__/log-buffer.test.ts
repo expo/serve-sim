@@ -114,6 +114,21 @@ describe("DeviceLogBuffer", () => {
     buffer.stop();
   });
 
+  test("counts the UTF-8 bytes of non-ASCII lines against the cap", () => {
+    const buffer = makeBuffer(120);
+    buffer.start();
+    const child = spawned[0]!;
+    for (let i = 1; i <= 20; i++) {
+      child.emitLines(JSON.stringify({ eventMessage: `日本語のログ ${i} 🚀` }) + "\n");
+    }
+
+    const lines = buffer.read();
+    const utf8 = lines.reduce((sum, entry) => sum + Buffer.byteLength(entry.raw), 0);
+    expect(buffer.byteLength).toBe(utf8);
+    expect(utf8).toBeLessThanOrEqual(120);
+    buffer.stop();
+  });
+
   test("keeps a single line that is larger than the whole cap", () => {
     const buffer = makeBuffer(10);
     buffer.start();
@@ -242,6 +257,20 @@ describe("DeviceLogBuffer", () => {
     const tail = buffer.tailBefore({ at: 1_000, count: 10, processName: "Demo", maxBytes: 250 });
     expect(tail.lines.length).toBeLessThanOrEqual(3);
     expect(tail.lines.length).toBeGreaterThan(0);
+    buffer.stop();
+  });
+
+  test("trims a single line that alone exceeds the tail's byte cap", () => {
+    const buffer = makeBuffer(1_000_000);
+    buffer.start();
+    clock = 1_000;
+    spawned[0]!.emitLines(JSON.stringify({ processImagePath: "/x/Demo", m: "é".repeat(5_000) }) + "\n");
+
+    const tail = buffer.tailBefore({ at: 1_000, count: 10, processName: "Demo", maxBytes: 250 });
+    expect(tail.reason).toBe("app-windowed");
+    expect(tail.lines).toHaveLength(1);
+    expect(Buffer.byteLength(tail.lines[0]!.raw)).toBeLessThanOrEqual(250);
+    expect(tail.lines[0]!.raw).not.toContain("�");
     buffer.stop();
   });
 

@@ -152,11 +152,15 @@ export class DeviceLogBuffer {
     if (maxBytes === undefined) return { lines: selected, reason: "app-windowed" };
     let bytes = 0;
     let first = selected.length;
-    while (first > 0 && bytes + selected[first - 1]!.raw.length <= maxBytes) {
-      bytes += selected[first - 1]!.raw.length;
+    while (first > 0) {
+      const size = Buffer.byteLength(selected[first - 1]!.raw);
+      if (bytes + size > maxBytes) break;
+      bytes += size;
       first -= 1;
     }
-    return { lines: selected.slice(Math.min(first, selected.length - 1)), reason: "app-windowed" };
+    if (first < selected.length) return { lines: selected.slice(first), reason: "app-windowed" };
+    const newest = selected[selected.length - 1]!;
+    return { lines: [{ ...newest, raw: truncateUtf8(newest.raw, maxBytes) }], reason: "app-windowed" };
   }
 
   get latestSeq(): number {
@@ -239,7 +243,7 @@ export class DeviceLogBuffer {
   private append(raw: string): void {
     const line: LogLine = { seq: ++this.seq, at: this.deps.now(), raw };
     this.lines.push(line);
-    this.bytes += raw.length;
+    this.bytes += Buffer.byteLength(raw);
     this.evictOverflow();
     for (const listener of this.listeners) {
       try {
@@ -251,9 +255,17 @@ export class DeviceLogBuffer {
 
   private evictOverflow(): void {
     while (this.bytes > this.deps.maxBytes && this.lines.length > 1) {
-      this.bytes -= this.lines.shift()!.raw.length;
+      this.bytes -= Buffer.byteLength(this.lines.shift()!.raw);
     }
   }
+}
+
+function truncateUtf8(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text);
+  if (bytes.length <= maxBytes) return text;
+  let end = maxBytes;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+  return bytes.subarray(0, end).toString();
 }
 
 export type LogBufferCache = ReturnType<typeof createLogBufferCache>;

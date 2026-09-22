@@ -63,6 +63,8 @@ jobs:
             set -e
             if [ "$STATUS" -eq 0 ] && [ "$LOOKUP" = "$1" ]; then return 0; fi
             if printf '%s' "$LOOKUP" | grep -q 'E404'; then return 1; fi
+            # Undo a local version bump so the tree matches the message below.
+            git checkout -- packages/serve-sim/package.json
             echo "::error::Could not check npm for @expo/serve-sim@$1. Nothing was changed. Re-run the job."
             printf '%s\n' "$LOOKUP"
             exit 1

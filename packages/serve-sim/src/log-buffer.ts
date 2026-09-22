@@ -160,7 +160,8 @@ export class DeviceLogBuffer {
     }
     if (first < selected.length) return { lines: selected.slice(first), reason: "app-windowed" };
     const newest = selected[selected.length - 1]!;
-    return { lines: [{ ...newest, raw: fitLine(newest.raw, maxBytes) }], reason: "app-windowed" };
+    const fitted = fitLine(newest.raw, maxBytes);
+    return { lines: fitted === null ? [] : [{ ...newest, raw: fitted }], reason: "app-windowed" };
   }
 
   get latestSeq(): number {
@@ -260,18 +261,18 @@ export class DeviceLogBuffer {
   }
 }
 
-function fitLine(raw: string, maxBytes: number): string {
+function fitLine(raw: string, maxBytes: number): string | null {
   let entry: { eventMessage?: unknown };
   try {
     entry = JSON.parse(raw) as { eventMessage?: unknown };
   } catch {
-    return truncateUtf8(raw, maxBytes);
+    return null;
   }
-  if (typeof entry.eventMessage !== "string") return truncateUtf8(raw, maxBytes);
+  if (typeof entry.eventMessage !== "string") return null;
   const chars = Array.from(entry.eventMessage);
   const lineWith = (count: number): string =>
     JSON.stringify({ ...entry, eventMessage: chars.slice(0, count).join("") });
-  if (Buffer.byteLength(lineWith(0)) > maxBytes) return truncateUtf8(raw, maxBytes);
+  if (Buffer.byteLength(lineWith(0)) > maxBytes) return null;
   let low = 0;
   let high = chars.length;
   while (low < high) {
@@ -280,14 +281,6 @@ function fitLine(raw: string, maxBytes: number): string {
     else high = mid - 1;
   }
   return lineWith(low);
-}
-
-function truncateUtf8(text: string, maxBytes: number): string {
-  const bytes = Buffer.from(text);
-  if (bytes.length <= maxBytes) return text;
-  let end = maxBytes;
-  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
-  return bytes.subarray(0, end).toString();
 }
 
 export type LogBufferCache = ReturnType<typeof createLogBufferCache>;

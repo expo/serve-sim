@@ -280,6 +280,24 @@ describe("DeviceLogBuffer", () => {
     buffer.stop();
   });
 
+  test("drops a line whose metadata alone exceeds the tail's byte cap instead of cutting its JSON", () => {
+    const buffer = makeBuffer(1_000_000);
+    buffer.start();
+    clock = 1_000;
+    spawned[0]!.emitLines(
+      JSON.stringify({ processImagePath: "/x/Demo", subsystem: "s".repeat(400), eventMessage: "hi" }) +
+        "\n" +
+        JSON.stringify({ processImagePath: "/x/Demo", eventMessage: { text: "x".repeat(400) } }) +
+        "\n"
+    );
+
+    const tail = buffer.tailBefore({ at: 1_000, count: 1, processName: "Demo", maxBytes: 250 });
+    expect(tail).toEqual({ lines: [], reason: "app-windowed" });
+    const both = buffer.tailBefore({ at: 1_000, count: 2, processName: "Demo", maxBytes: 250 });
+    expect(both).toEqual({ lines: [], reason: "app-windowed" });
+    buffer.stop();
+  });
+
   test("respawns the tail when it dies, without a listener keeping it alive", async () => {
     const buffer = makeBuffer();
     buffer.start();

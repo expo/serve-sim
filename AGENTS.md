@@ -22,21 +22,31 @@
 
 Run these from the repo root. CI runs the same underlying steps: `bun run
 lint` and `bun run typecheck` in `.eas/workflows/checks.yml`, and the
-`test:e2e` command inside a timeout-and-retry wrapper in
+simulator run inside a timeout-and-retry wrapper in
 `.eas/workflows/sim-test.yml`. A green local run predicts a green PR.
 
 - `bun run check` — lint and typecheck. Run before every commit.
 - `bun run build` — full build: bundled JS, compiled CLI, native helpers, and
-  the N-API addon. Run once before `bun run test`; several tests drive the
+  the N-API addon. Run once before the test commands; several tests drive the
   built artifacts under `packages/serve-sim/dist/`.
-- `bun run test` — the whole Bun suite: `src/__tests__` and the Tart script
-  tests under `scripts/tart/__tests__`. Simulator-backed tests skip with a
-  warning when no simulator is booted. The Swift `StreamingPolicyTests` are
-  separate; run them with `swift test` in `packages/serve-sim`.
-- `bun run test:e2e` — the same Bun suite with `SERVE_SIM_E2E_REQUIRED=1`.
-  Tests that call `requireE2E` then fail instead of skipping when the
-  simulator or a build artifact is missing. Tests that check for a simulator
-  on their own still skip. This is what CI runs. Boot a simulator first.
+- `bun run test` — the isolated run. It uses a private state directory and
+  puts an `xcrun` shim first on `PATH` that refuses `simctl`, so no test can
+  find another session's server or touch a booted simulator, even on a
+  machine where other agents keep simulators running. Simulator-backed
+  suites skip deterministically. Pass paths to narrow it:
+  `bun run test -- packages/serve-sim/src/__tests__/ports.test.ts`.
+- `bun run test:e2e` — the simulator-backed run. It requires
+  `SERVE_SIM_TEST_UDID`, the UDID of a simulator you booted for this run, so
+  it never drives a device that belongs to another session. It builds the
+  test fixtures, then sets `SERVE_SIM_E2E_REQUIRED=1` so every precondition
+  fails instead of skipping. Every suite that picks a device with
+  `e2eDevice()` also calls `requireE2E()`; a test enforces the pairing.
+  Example: `SERVE_SIM_TEST_UDID=<udid> bun run test:e2e --
+  packages/serve-sim/src/__tests__/permissions.e2e.test.ts`.
+- `bun run build:fixtures` — the simulator test fixtures on their own.
+  `test:e2e` runs this for you.
+- The Swift `StreamingPolicyTests` are separate. Run `swift test` in
+  `packages/serve-sim`.
 
 ## E2E testing with agent-browser
 

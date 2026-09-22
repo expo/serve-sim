@@ -1,4 +1,4 @@
-import { e2eDevice } from "./e2e-preconditions";
+import { e2eDevice, requireE2E } from "./e2e-preconditions";
 import { afterAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "child_process";
 import { existsSync } from "fs";
@@ -45,6 +45,7 @@ function simctlUiUsable(): boolean {
 }
 
 const describeIfSim = udid && existsSync(CLI) && simctlUiUsable() ? describe : describe.skip;
+requireE2E("ui-settings.e2e", Boolean(udid && existsSync(CLI) && simctlUiUsable()));
 
 // Timeouts on every child call so a wedged simulator fails the test instead
 // of hanging the CI job.

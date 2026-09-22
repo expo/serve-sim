@@ -11,7 +11,8 @@ export function screenConfigsEqual(a: StreamConfig | null, b: StreamConfig): boo
   return !!a && a.width === b.width && a.height === b.height &&
     a.orientation === b.orientation && a.screenId === b.screenId && a.hingeAngle === b.hingeAngle &&
     a.supportsHingeAngle === b.supportsHingeAngle && a.hingePose === b.hingePose &&
-    a.tableMode === b.tableMode && a.tableModeAvailable === b.tableModeAvailable;
+    a.tableMode === b.tableMode && a.tableModeAvailable === b.tableModeAvailable &&
+    a.inputUnavailable === b.inputUnavailable;
 }
 
 export function resolveScreenConfigUpdate(

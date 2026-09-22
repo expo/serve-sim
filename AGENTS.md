@@ -27,8 +27,10 @@ commands, so a green local run predicts a green PR.
 - `bun run build` — full build: bundled JS, compiled CLI, native helpers, and
   the N-API addon. Run once before `bun run test`; several tests drive the
   built artifacts under `packages/serve-sim/dist/`.
-- `bun run test` — the whole suite. Simulator-backed tests skip with a warning
-  when no simulator is booted.
+- `bun run test` — the whole Bun suite: `src/__tests__` and the Tart script
+  tests under `scripts/tart/__tests__`. Simulator-backed tests skip with a
+  warning when no simulator is booted. The Swift `StreamingPolicyTests` are
+  separate; run them with `swift test` in `packages/serve-sim`.
 - `bun run test:e2e` — the whole suite with `SERVE_SIM_E2E_REQUIRED=1`, so a
   missing simulator or build artifact fails instead of skipping. This is what
   CI runs. Boot a simulator first.

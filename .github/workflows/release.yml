@@ -54,8 +54,10 @@ jobs:
           RELEASE_RUN_ID: ${{ github.run_id }}
         run: |
           LAST_RUN_ID=$(git log -1 --format='%(trailers:key=Release-Run,valueonly)')
+          REUSED=false
           if [ "$LAST_RUN_ID" = "$RELEASE_RUN_ID" ] && [ "$(git rev-parse HEAD^)" = "$DISPATCH_SHA" ]; then
             echo "Reusing the release commit created by this run."
+            REUSED=true
           elif [ "$(git rev-parse HEAD)" != "$DISPATCH_SHA" ]; then
             echo "::error::expo moved after this release was started. Start a new release from the latest expo."
             exit 1
@@ -71,6 +73,7 @@ jobs:
           fi
 
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "reused=$REUSED" >> "$GITHUB_OUTPUT"
 
       - name: Build npm package with EAS
         env:
@@ -93,20 +96,40 @@ jobs:
           curl --fail --location "$ARTIFACT_URL" --output /tmp/serve-sim.tgz
 
       - name: Publish to npm with OIDC
+        env:
+          REUSED: ${{ steps.release.outputs.reused }}
         run: |
-          # A re-run after a failure past this point must not stop here: npm
-          # rejects a version it already has. Skip the publish in that case
-          # and continue to the GitHub release.
           VERSION=$(tar -xOf /tmp/serve-sim.tgz package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
           EXPECTED=$(node -p "require('./packages/serve-sim/package.json').version")
           if [ "$VERSION" != "$EXPECTED" ]; then
             echo "::error::tarball is $VERSION but the release commit is $EXPECTED"
             exit 1
           fi
-          if [ "$(npm view "@expo/serve-sim@$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
-            echo "::notice::@expo/serve-sim@$VERSION is already on npm. Skipping publish."
-          else
+
+          # Ask npm whether this exact version exists. E404 is the one answer
+          # that means "absent"; any other failure is a lookup error, and
+          # publishing on a guess would strand a re-run behind npm's
+          # duplicate-version rejection.
+          set +e
+          LOOKUP=$(npm view "@expo/serve-sim@$VERSION" version 2>&1)
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -eq 0 ] && [ "$LOOKUP" = "$VERSION" ]; then
+            # Only a re-run of the run that created this release commit may
+            # skip the publish. Any other history means someone published this
+            # version outside the workflow, and tagging this source for it
+            # would be wrong.
+            if [ "$REUSED" != "true" ]; then
+              echo "::error::@expo/serve-sim@$VERSION is already on npm and this run did not create its release commit. Refusing to tag it."
+              exit 1
+            fi
+            echo "::notice::@expo/serve-sim@$VERSION was published by an earlier attempt of this run. Skipping publish."
+          elif printf '%s' "$LOOKUP" | grep -q 'E404'; then
             npm publish /tmp/serve-sim.tgz
+          else
+            echo "::error::Could not check npm for @expo/serve-sim@$VERSION. Re-run the job."
+            printf '%s\n' "$LOOKUP"
+            exit 1
           fi
 
       - name: Create GitHub release

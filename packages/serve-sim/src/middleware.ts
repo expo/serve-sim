@@ -1646,8 +1646,7 @@ async function selectDeviceAndReap(selectedDevice: string | null): Promise<Serve
 async function collectCrashesFor(selectedDevice: string | null): Promise<ServeSimState | null> {
   const state = await selectDeviceAndReap(selectedDevice);
   if (!state) return null;
-  void crashRuntime.start({ deferToRetry: true }).catch(() => {});
-  logBufferCache.ensure(state.device);
+  await crashRuntime.start({ deferToRetry: true }).catch(() => {});
   return state;
 }
 

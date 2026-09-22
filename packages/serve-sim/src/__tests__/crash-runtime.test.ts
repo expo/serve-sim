@@ -469,6 +469,31 @@ describe("createCrashRuntime back-scan", () => {
     runtime.stop();
   });
 
+  test("does not count a report again after its name ages out of the dedupe index", async () => {
+    const names = Array.from({ length: 501 }, (_, index) => `Demo-${index}.ips`);
+    const mtimes: Record<string, number> = { "DuringOutage.ips": 4_000 };
+    const runtime = makeRuntime({ dirEntries: [...names, "DuringOutage.ips"], mtimes });
+    await runtime.start();
+    for (const [index, name] of names.entries()) {
+      clock = 1_000 + index;
+      mtimes[name] = clock;
+      files.set(name, ips({ pid: index }));
+      emit("rename", name);
+      await flush();
+    }
+    const total = () => runtime.listFor(UDID_A).reduce((sum, crash) => sum + crash.count, 0);
+    expect(total()).toBe(501);
+
+    failWatch(new Error("ENOENT"));
+    files.set("DuringOutage.ips", ips({ pid: 999 }));
+    clock = 5_000;
+    await runtime.start();
+
+    expect(runtime.meta().status).toBe("watching");
+    expect(total()).toBe(502);
+    runtime.stop();
+  });
+
   test("does not scan when the watch could not be established", async () => {
     const runtime = createCrashRuntime({
       reportsDir: "/reports",

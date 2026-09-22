@@ -95,7 +95,11 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     });
 
   const byUdid = new Map<string, CrashStore>();
-  const ingested = new Map<string, { generation: number; udid: string | null }>();
+  const ingested = new Map<
+    string,
+    { generation: number; udid: string | null; claimedAt: number }
+  >();
+  let forgottenThrough = -Infinity;
   let watcher: CrashWatcherHandle | null = null;
   let running = false;
   let statusError: string | null = null;
@@ -207,10 +211,13 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   const claim = (filename: string): boolean => {
     if (!running || !isFinalCrashReportName(filename) || ingested.has(filename)) return false;
     if (ingested.size >= MAX_INGESTED) {
-      const oldest = ingested.keys().next().value;
-      if (oldest !== undefined) ingested.delete(oldest);
+      const oldest = ingested.entries().next().value;
+      if (oldest) {
+        ingested.delete(oldest[0]);
+        forgottenThrough = Math.max(forgottenThrough, oldest[1].claimedAt);
+      }
     }
-    ingested.set(filename, { generation, udid: null });
+    ingested.set(filename, { generation, udid: null, claimedAt: clock() });
     return true;
   };
 
@@ -239,7 +246,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
         continue;
       }
       if (epoch !== generation || !running) return;
-      if (mtimeMs < cutoff) continue;
+      if (mtimeMs < cutoff || mtimeMs <= forgottenThrough) continue;
 
       if (!claim(filename)) continue;
       await ingest(filename);
@@ -313,6 +320,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       for (const store of byUdid.values()) store.close();
       byUdid.clear();
       ingested.clear();
+      forgottenThrough = -Infinity;
     },
 
     prune(liveUdids: readonly string[]): void {

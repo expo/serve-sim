@@ -260,17 +260,23 @@ describe("DeviceLogBuffer", () => {
     buffer.stop();
   });
 
-  test("trims a single line that alone exceeds the tail's byte cap", () => {
+  test("trims a single line that alone exceeds the tail's byte cap, keeping it valid JSON", () => {
     const buffer = makeBuffer(1_000_000);
     buffer.start();
     clock = 1_000;
-    spawned[0]!.emitLines(JSON.stringify({ processImagePath: "/x/Demo", m: "é".repeat(5_000) }) + "\n");
+    spawned[0]!.emitLines(
+      JSON.stringify({ processImagePath: "/x/Demo", eventMessage: "\u00e9\n\"".repeat(2_000) }) + "\n"
+    );
 
     const tail = buffer.tailBefore({ at: 1_000, count: 10, processName: "Demo", maxBytes: 250 });
     expect(tail.reason).toBe("app-windowed");
     expect(tail.lines).toHaveLength(1);
-    expect(Buffer.byteLength(tail.lines[0]!.raw)).toBeLessThanOrEqual(250);
-    expect(tail.lines[0]!.raw).not.toContain("�");
+    const raw = tail.lines[0]!.raw;
+    expect(Buffer.byteLength(raw)).toBeLessThanOrEqual(250);
+    const entry = JSON.parse(raw) as { processImagePath: string; eventMessage: string };
+    expect(entry.processImagePath).toBe("/x/Demo");
+    expect(entry.eventMessage.length).toBeGreaterThan(0);
+    expect(entry.eventMessage).not.toContain("\uFFFD");
     buffer.stop();
   });
 

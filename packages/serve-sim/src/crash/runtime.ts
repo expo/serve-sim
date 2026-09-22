@@ -203,6 +203,14 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     storeFor(report.deviceUdid).record(report, path, tail.logTail, tail.logTailSource);
   };
 
+  const forgetIfGone = async (filename: string): Promise<void> => {
+    try {
+      await statFile(join(reportsDir, filename));
+    } catch (error) {
+      if (isMissingFile(error)) ingested.delete(filename);
+    }
+  };
+
   const claim = (filename: string): boolean => {
     if (!running || !isFinalCrashReportName(filename) || ingested.has(filename)) return false;
     ingested.set(filename, { generation, udid: null });
@@ -267,10 +275,13 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       const handle = watchDir(
         reportsDir,
         (_eventType, filename) => {
-          if (filename && claim(filename)) {
+          if (!filename) return;
+          if (claim(filename)) {
             void ingest(filename).catch((error) =>
               reportError(`could not ingest ${filename}`, error)
             );
+          } else if (ingested.has(filename)) {
+            void forgetIfGone(filename);
           }
         },
         markUnavailable

@@ -80,7 +80,7 @@ function makeRuntime(
     statFile: async (path) => {
       const name = path.replace("/reports/", "");
       const mtimeMs = options.mtimes?.[name];
-      if (mtimeMs === undefined) throw new Error("ENOENT");
+      if (mtimeMs === undefined) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       return { mtimeMs };
     },
     ensureDir: () => {},
@@ -167,7 +167,7 @@ describe("createCrashRuntime", () => {
   });
 
   test("reads each report once even when fs.watch repeats the name", async () => {
-    const runtime = makeRuntime();
+    const runtime = makeRuntime({ mtimes: { "Demo-1.ips": 1_500 } });
     runtime.start();
     files.set("Demo-1.ips", ips());
 
@@ -177,6 +177,28 @@ describe("createCrashRuntime", () => {
     await flush();
 
     expect(runtime.listFor(UDID_A)[0]?.count).toBe(1);
+    runtime.stop();
+  });
+
+  test("forgets a report once the watcher sees it leave the directory", async () => {
+    const mtimes: Record<string, number> = { "Demo-1.ips": 1_500 };
+    const runtime = makeRuntime({ mtimes });
+    runtime.start();
+    files.set("Demo-1.ips", ips());
+    emit("rename", "Demo-1.ips");
+    await flush();
+    emit("rename", "Demo-1.ips");
+    await flush();
+    expect(runtime.listFor(UDID_A)[0]?.count).toBe(1);
+
+    delete mtimes["Demo-1.ips"];
+    emit("rename", "Demo-1.ips");
+    await flush();
+    mtimes["Demo-1.ips"] = 2_500;
+    emit("rename", "Demo-1.ips");
+    await flush();
+
+    expect(runtime.listFor(UDID_A)[0]?.count).toBe(2);
     runtime.stop();
   });
 

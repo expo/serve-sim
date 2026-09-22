@@ -38,17 +38,6 @@ export function clearRegisteredCapabilities(): void {
   registry.clear();
 }
 
-export function capabilityDefinition(name: string): CapabilityDefinition {
-  const definition = registry.get(name);
-  if (!definition) {
-    throw new UnknownCapabilityError(
-      name,
-      registeredCapabilities().map((known) => known.name),
-    );
-  }
-  return definition;
-}
-
 export function assertKnownCapabilities(names: string[]): void {
   const known = registeredCapabilities().map((definition) => definition.name);
   for (const name of names) {

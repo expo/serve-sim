@@ -2756,6 +2756,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   });
 
   fetchMiddleware.handleWebSocket = (request: Request, websocket: UpgradeHandlerWebSocket): boolean => {
+    // Before any refusal below can close it: an unhandled error from a peer that keeps sending
+    // would exit the process.
+    websocket.on("error", () => websocket.close());
     // Embedded hosts forward accepted sockets and bypass the request gate. The exec channel
     // re-checks the token itself; the helper HID socket does not.
     if (

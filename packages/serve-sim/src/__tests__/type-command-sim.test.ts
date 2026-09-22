@@ -7,6 +7,7 @@ import { stateDir } from "../state";
 import { parseDetachState } from "./detach-state";
 import { freePortAsync } from "./helpers";
 import { sendKeyEventsToWs } from "../text-to-keys";
+import { restoreHingeState, selectHingeControl, selectPose } from "./duo-hinge-helpers";
 import type { ServeSimDeviceState } from "../state";
 import type { StreamConfig } from "../client/types";
 
@@ -35,8 +36,8 @@ const APP = "dev.expo.serve-sim.launch-fixture";
 // Set SERVE_SIM_TEST_UDID and SERVE_SIM_DUO_E2E_DEVICE to the same Duo UDID.
 const duoDevice = process.env.SERVE_SIM_DUO_E2E_DEVICE;
 const bootedUdid = e2eDevice();
-const testDuo = duoDevice !== undefined && duoDevice === bootedUdid;
-const ready = bootedUdid !== null && existsSync(CLI_PATH) && (!duoDevice || (testDuo && existsSync(FIXTURE)));
+const testDuo = duoDevice !== undefined && duoDevice === bootedUdid && existsSync(FIXTURE);
+const ready = bootedUdid !== null && existsSync(CLI_PATH);
 requireE2E("serve-sim typing", ready);
 const describeWithSim = ready ? describe : describe.skip;
 
@@ -175,11 +176,30 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
         await waitFor(text, "Hi! 12xy");
       }
     } finally {
-      if (original.hingeAngle !== undefined) {
-        cli("hinge", String(original.hingeAngle), "-d", bootedUdid!);
-      }
+      await restoreHingeState(state, original);
     }
   }, 90_000);
+
+  test.skipIf(!testDuo)("typing cleanup restores pose and table mode", async () => {
+    const initial = await screenConfig();
+    try {
+      for (const pose of ["book", "tent", "open"] as const) {
+        await selectPose(state, pose);
+        // Table Mode can also be set without a named pose.
+        if (pose === "open") await selectHingeControl(state, { control: "table", value: true });
+        const original = await screenConfig();
+        await selectHingeControl(state, { control: "angle", value: 0 });
+        await restoreHingeState(state, original);
+        expect(await screenConfig()).toMatchObject({
+          hingeAngle: original.hingeAngle,
+          hingePose: original.hingePose,
+          tableMode: original.tableMode,
+        });
+      }
+    } finally {
+      await restoreHingeState(state, initial);
+    }
+  }, 30_000);
 });
 
 function countKeyLines(s: string): number {

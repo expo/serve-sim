@@ -92,6 +92,8 @@ actor HIDInjector {
         self.nativeScreenRotations = displayProfile.nativeRotations
         self.isFoldable = displayProfile.isFoldable
         if isFoldable {
+            // Touch and keyboard are both required for a usable Duo session.
+            // Fail input setup if either transport is unavailable.
             guard SSCoreDeviceDigitizerAvailable(), SSCoreDeviceKeyboardAvailable() else {
                 throw CoreDeviceBridge.BridgeError.unavailable
             }
@@ -344,7 +346,7 @@ actor HIDInjector {
         // Indigo logs successful dispatch but never delivers it to the guest.
         if isFoldable {
             guard let keyboardCapability,
-                  SSCoreDeviceSendKey(keyboardCapability.storage, usage, type == "down") else {
+                  SSCoreDeviceSendKey(keyboardCapability.storage, usage, direction == 1) else {
                 print("[hid] CoreDevice keyboard injection failed (usage=0x\(String(usage, radix: 16)))")
                 return
             }

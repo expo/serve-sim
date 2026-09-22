@@ -27,7 +27,8 @@ describeNative("CoreDevice keyboard bridge", () => {
 
   test.each([
     "down", "up", "send-error", "missing-symbol", "key-size", "state-size",
-    "optional-size", "invalid-usage", "invalid-capability",
+    "optional-size", "invalid-usage", "invalid-capability", "some-one-byte",
+    "nil-one-byte", "nil-two-byte",
   ])("%s", (scenario) => {
     // Same native-fixture approach as the digitizer bridge tests. Each process
     // resolves its own simulated runtime through the production shim.

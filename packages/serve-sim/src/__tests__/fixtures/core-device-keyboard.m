@@ -34,7 +34,9 @@ static void __attribute__((swiftcall)) stateInit(
     assert(value == 1 || value == 2);
     rawState = value;
     ((uint8_t *)result)[0] = value - 1;
-    ((uint8_t *)result)[1] = 0;
+    if (optionalSize == 2) ((uint8_t *)result)[1] = 0;
+    if (strcmp(scenario, "nil-one-byte") == 0) ((uint8_t *)result)[0] = 0xfe;
+    if (strcmp(scenario, "nil-two-byte") == 0) ((uint8_t *)result)[1] = 1;
 }
 static void checkCapability(void *metadata, void *witness, void *context) {
     assert(metadata == capability[3] && witness == capability[4] && context == capability);
@@ -79,6 +81,12 @@ static void *testSymbol(void *handle, const char *name) {
 bool SSCoreDeviceInitialize(void) { return true; }
 void *SSCoreDeviceSymbol(const char *name) { return testSymbol(NULL, name); }
 uintptr_t SSCoreDeviceValueSize(void *metadata) { return *(uintptr_t *)metadata; }
+bool SSCoreDeviceOptionalHasValue(const void *value, void *wrappedMetadata) {
+    assert(wrappedMetadata == &stateSize);
+    const uint8_t *bytes = value;
+    // The runtime decides the spare inhabitant; callers must not assume a tag.
+    return optionalSize == 1 ? bytes[0] != 0xfe : bytes[1] == 0;
+}
 void SSCoreDeviceDestroyValue(void *value, void *metadata) {
     assert(metadata == &keySize || metadata == &optionalSize);
     destroys++;
@@ -90,16 +98,19 @@ int main(int argc, const char *argv[]) {
     if (strcmp(scenario, "key-size") == 0) keySize = 4;
     if (strcmp(scenario, "state-size") == 0) stateSize = 8;
     if (strcmp(scenario, "optional-size") == 0) optionalSize = 3;
+    if (strstr(scenario, "one-byte")) optionalSize = 1;
     if (strcmp(scenario, "invalid-capability") == 0) capability[4] = NULL;
     uint32_t usage = strcmp(scenario, "invalid-usage") == 0 ? 0x100e1 : 0xe1;
     bool down = strcmp(scenario, "up") != 0;
     bool result = SSCoreDeviceSendKey(capability, usage, down);
-    bool success = strcmp(scenario, "down") == 0 || strcmp(scenario, "up") == 0;
+    bool success = strcmp(scenario, "down") == 0 || strcmp(scenario, "up") == 0 ||
+        strcmp(scenario, "some-one-byte") == 0;
     bool failure = strcmp(scenario, "send-error") == 0;
+    bool missingState = strncmp(scenario, "nil-", 4) == 0;
     assert(result == success);
     assert(sends == (success || failure ? 1 : 0));
-    assert(destroys == (success || failure ? 2 : 0));
-    assert(barriers == (success ? 1 : 0));
+    assert(destroys == (success || failure ? 2 : missingState ? 1 : 0));
+    assert(barriers == 0);
     assert(releases == (failure ? 1 : 0));
     if (success) assert(rawState == (down ? 1 : 2));
     return 0;

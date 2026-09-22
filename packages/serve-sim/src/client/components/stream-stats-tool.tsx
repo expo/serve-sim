@@ -377,14 +377,15 @@ function Graph({
   );
 }
 
+/** A value too wide to sit beside its label drops below it, so neither one is cut off. */
 function Cell({ label, value }: { label: string; value: string }) {
   return (
     <div
-      className="flex min-w-0 items-baseline justify-between gap-2 [&:nth-child(even)_[role=tooltip]]:left-auto [&:nth-child(even)_[role=tooltip]]:right-0"
+      className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 [&:nth-child(even)_[role=tooltip]]:left-auto [&:nth-child(even)_[role=tooltip]]:right-0"
       data-stream-stat={label}
     >
       <Label label={label} className="min-w-0 truncate text-[11px] text-white/50" />
-      <span data-stream-value className="shrink-0 tabular-nums whitespace-nowrap text-[11px] text-white/90">
+      <span data-stream-value className="ml-auto min-w-0 text-right tabular-nums text-[11px] text-white/90">
         {value}
       </span>
     </div>

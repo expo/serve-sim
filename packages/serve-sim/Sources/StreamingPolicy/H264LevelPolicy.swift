@@ -37,6 +37,21 @@ public enum H264LevelPolicy {
         return found.min()
     }
 
+    /// The level this side sends at. Only the payloads the answer chose, in its active video
+    /// section, count: a rejected section or an unchosen payload does not bound the stream.
+    public static func negotiatedLevel(offer: String, answer: String) -> Int? {
+        guard let answered = MediaSection.all(in: answer).first(where: \.isActiveVideo) else { return nil }
+        let chosen = answered.h264PayloadTypes
+        guard !chosen.isEmpty else { return nil }
+        let offered = MediaSection.all(in: offer).first { $0.mid == answered.mid }
+        let offerLevel = offered.flatMap { minAdvertisedLevel(sdp: $0.lines(for: chosen)) } ?? defaultLevelIdc
+        let answerLevel = minAdvertisedLevel(sdp: answered.lines(for: chosen)) ?? defaultLevelIdc
+        // With asymmetry on both sides each direction runs at its receiver's level (RFC 6184
+        // section 8.2.2). Otherwise both share the lower one.
+        let asymmetric = (offered?.allowsLevelAsymmetry(chosen) ?? false) && answered.allowsLevelAsymmetry(chosen)
+        return asymmetric ? offerLevel : min(offerLevel, answerLevel)
+    }
+
 
     private static func h264PayloadCount(in sdp: String) -> Int {
         var count = 0
@@ -84,6 +99,70 @@ public enum H264LevelPolicy {
     public static func macroblocks(width: Int, height: Int) -> Int {
         guard width > 0, height > 0 else { return 0 }
         return ((width + 15) / 16) * ((height + 15) / 16)
+    }
+
+    /// One `m=` section of an SDP and the attribute lines under it.
+    private struct MediaSection {
+        let isActiveVideo: Bool
+        let mid: String?
+        let attributes: [Substring]
+
+        static func all(in sdp: String) -> [MediaSection] {
+            var sections: [MediaSection] = []
+            var header: [Substring]?
+            var attributes: [Substring] = []
+            func close() {
+                guard let header else { return }
+                let mid = attributes.first { $0.hasPrefix("a=mid:") }.map { String($0.dropFirst("a=mid:".count)) }
+                // A zero port is how an answer rejects a section.
+                let isActiveVideo = header.first == "m=video" && header.count > 1 && header[1] != "0"
+                sections.append(MediaSection(isActiveVideo: isActiveVideo, mid: mid, attributes: attributes))
+            }
+            for line in sdp.split(whereSeparator: \.isNewline) {
+                if line.hasPrefix("m=") {
+                    close()
+                    header = line.split(separator: " ")
+                    attributes = []
+                } else {
+                    attributes.append(line)
+                }
+            }
+            close()
+            return sections
+        }
+
+        var h264PayloadTypes: Set<Substring> {
+            Set(attributes.compactMap { line in
+                guard let rest = Self.value(of: "a=rtpmap:", in: line) else { return nil }
+                let parts = rest.split(separator: " ", maxSplits: 1)
+                guard parts.count == 2, parts[1].range(of: "H264/", options: .caseInsensitive) != nil else { return nil }
+                return parts[0]
+            })
+        }
+
+        /// The `rtpmap` and `fmtp` lines of those payloads, for `minAdvertisedLevel` to read.
+        func lines(for payloadTypes: Set<Substring>) -> String {
+            attributes.filter { payloadType(of: $0).map(payloadTypes.contains) ?? false }.joined(separator: "\n")
+        }
+
+        func allowsLevelAsymmetry(_ payloadTypes: Set<Substring>) -> Bool {
+            payloadTypes.allSatisfy { type in
+                attributes.contains { line in
+                    guard let rest = Self.value(of: "a=fmtp:", in: line), rest.hasPrefix("\(type) ") else { return false }
+                    return rest.dropFirst(type.count + 1).split(separator: ";")
+                        .contains { $0.trimmingCharacters(in: .whitespaces) == "level-asymmetry-allowed=1" }
+                }
+            }
+        }
+
+        private func payloadType(of line: Substring) -> Substring? {
+            guard let rest = Self.value(of: "a=rtpmap:", in: line) ?? Self.value(of: "a=fmtp:", in: line) else { return nil }
+            return rest.prefix { $0 != " " }
+        }
+
+        private static func value(of prefix: String, in line: Substring) -> Substring? {
+            line.hasPrefix(prefix) ? line.dropFirst(prefix.count) : nil
+        }
     }
 
     public static func maxFrameSize(levelIdc: Int) -> Int {

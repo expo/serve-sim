@@ -221,7 +221,8 @@ the simulator's single synthetic touch surface.
   60 fps is over that rate on paper; measured sessions encode anyway, so nothing clamps for
   it.
 - Raising the posted offer's level moves the bound rather than removing it: a peer is still
-  clamped to whatever level the offer finally carries.
+  clamped to the level the answer settles for the chosen payload. With level asymmetry, as
+  browsers offer, that is the offer's level.
 - Signaling URLs are derived from the MJPEG URL rather than advertised directly.
 - Encoder resolution, frame rate, and target bitrate are shared across viewers;
   one viewer changing them affects every peer attached to that simulator.

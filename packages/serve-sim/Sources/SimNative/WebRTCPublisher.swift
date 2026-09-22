@@ -775,8 +775,6 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
 
         let session = WebRTCSession(id: request.sessionId, peerConnection: peerConnection, delegate: delegate)
-        // Held onto so the encode size can stay inside what the peer negotiated.
-        session.h264LevelIdc = H264LevelPolicy.minAdvertisedLevel(sdp: request.sdp)
         delegate.peerConnection = peerConnection
         pendingOffer = PendingWebRTCOffer(session: session, completion: completion)
 
@@ -816,6 +814,13 @@ final class WebRTCPublisher: @unchecked Sendable {
                                     self.failOffer(session, self.makeError("WebRTC offer was superseded"), completion)
                                     return
                                 }
+                                // Held onto so the encode size stays inside what the answer settled,
+                                // from the first frame rather than from the first re-apply.
+                                session.h264LevelIdc = H264LevelPolicy.negotiatedLevel(
+                                    offer: request.sdp,
+                                    answer: answer.sdp
+                                )
+                                self.applySenderParameters(to: session)
                                 session.waitForIceGathering { completed in
                                     self.queue.async {
                                         guard self.isPending(session) else {

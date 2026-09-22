@@ -16,6 +16,92 @@ final class H264LevelPolicyTests: XCTestCase {
     a=fmtp:118 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=64001f
     """
 
+    // MARK: negotiated level
+
+    /// What the helper answers to a Chrome offer, captured from a live session: one payload,
+    /// asymmetry allowed, and its own Level 5.2.
+    private let helperAnswer = """
+    m=video 63577 UDP/TLS/RTP/SAVPF 108 109 96
+    a=mid:0
+    a=rtpmap:108 H264/90000
+    a=fmtp:108 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e034
+    a=rtpmap:96 VP8/90000
+    """
+
+    private func offer(_ fmtp108: String, extra: String = "") -> String {
+        """
+        m=video 9 UDP/TLS/RTP/SAVPF 102 108 118
+        a=mid:0
+        a=rtpmap:102 H264/90000
+        a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f
+        a=rtpmap:108 H264/90000
+        a=fmtp:108 \(fmtp108)
+        a=rtpmap:118 H264/90000
+        a=fmtp:118 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=64001f
+        \(extra)
+        """
+    }
+
+    /// With asymmetry on both sides, the send direction runs at the level the browser can
+    /// receive, which is what the offer states.
+    func testSendsAtTheOfferedLevelWhenBothSidesAllowAsymmetry() {
+        let raised = offer("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e034")
+        XCTAssertEqual(H264LevelPolicy.negotiatedLevel(offer: raised, answer: helperAnswer), 52)
+        let browser = offer("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f")
+        XCTAssertEqual(H264LevelPolicy.negotiatedLevel(offer: browser, answer: helperAnswer), 31)
+        let lowAnswer = helperAnswer.replacingOccurrences(of: "profile-level-id=42e034", with: "profile-level-id=42e01f")
+        XCTAssertEqual(H264LevelPolicy.negotiatedLevel(offer: raised, answer: lowAnswer), 52)
+    }
+
+    /// Without asymmetry both directions share the lower level, even when the offer is higher.
+    func testTakesTheCommonLevelWithoutAsymmetry() {
+        let symmetric = offer("packetization-mode=1;profile-level-id=42e034")
+        let lowAnswer = helperAnswer.replacingOccurrences(of: "profile-level-id=42e034", with: "profile-level-id=42e01f")
+        XCTAssertEqual(H264LevelPolicy.negotiatedLevel(offer: symmetric, answer: lowAnswer), 31)
+    }
+
+    /// Payloads the answer did not choose do not bound the stream, however low they are.
+    func testIgnoresPayloadsTheAnswerDidNotChoose() {
+        let raised = offer("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e034")
+        XCTAssertEqual(H264LevelPolicy.minAdvertisedLevel(sdp: raised), 31)
+        XCTAssertEqual(H264LevelPolicy.negotiatedLevel(offer: raised, answer: helperAnswer), 52)
+    }
+
+    /// A rejected section at Level 1.0 once capped a 1206x2622 stream at a 224 px long edge.
+    func testIgnoresARejectedVideoSection() {
+        let rejected = """
+        m=video 9 UDP/TLS/RTP/SAVPF 110
+        a=mid:1
+        a=rtpmap:110 H264/90000
+        a=fmtp:110 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42000a
+        """
+        // First in both, so a parser that takes the first video section is caught out.
+        let raised = rejected + "\n" + offer("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e034")
+        let answer = """
+        m=video 0 UDP/TLS/RTP/SAVPF 110
+        a=mid:1
+        a=rtpmap:110 H264/90000
+        a=fmtp:110 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42000a
+
+        """ + helperAnswer
+        XCTAssertEqual(H264LevelPolicy.negotiatedLevel(offer: raised, answer: answer), 52)
+    }
+
+    /// A chosen payload with no `profile-level-id` still counts, at the level libwebrtc assumes.
+    func testAChosenBarePayloadCountsAsTheDefaultLevel() {
+        let bare = offer("level-asymmetry-allowed=1;packetization-mode=1")
+        XCTAssertEqual(H264LevelPolicy.negotiatedLevel(offer: bare, answer: helperAnswer), 31)
+    }
+
+    func testReturnsNilWhenTheAnswerChoseNoH264() {
+        let vp8Answer = """
+        m=video 63577 UDP/TLS/RTP/SAVPF 96
+        a=mid:0
+        a=rtpmap:96 VP8/90000
+        """
+        XCTAssertNil(H264LevelPolicy.negotiatedLevel(offer: offer("profile-level-id=42e034"), answer: vp8Answer))
+    }
+
     // MARK: level parsing
 
     func testReadsLevel31FromAChromeOffer() {

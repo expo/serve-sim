@@ -1,5 +1,6 @@
 import {
   memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -18,7 +19,7 @@ import {
   formatLogLine,
   type DeviceLogLevel,
 } from "../utils/device-log-format";
-import { logWindow } from "../utils/logs-window";
+import { LOG_ROW_EXPAND_EXTRA, LOG_ROW_HEIGHT, logWindow } from "../utils/logs-window";
 import { useDeviceLogs } from "../hooks/use-device-logs";
 import type { DisplayLine } from "../utils/log-rows";
 import { simEndpoint } from "../utils/sim-endpoint";
@@ -287,8 +288,22 @@ function LogList({
 }) {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(120);
+  const [expandedExtra, setExpandedExtra] = useState(LOG_ROW_EXPAND_EXTRA);
   const scrollRaf = useRef<number | null>(null);
   const scrollTopRef = useRef(0);
+  const expandedObserver = useRef<ResizeObserver | null>(null);
+
+  const measureExpanded = useCallback((el: HTMLButtonElement | null) => {
+    expandedObserver.current?.disconnect();
+    expandedObserver.current = null;
+    if (!el) return;
+    const report = (): void => setExpandedExtra(Math.max(0, el.offsetHeight - LOG_ROW_HEIGHT));
+    report();
+    expandedObserver.current = new ResizeObserver(report);
+    expandedObserver.current.observe(el);
+  }, []);
+
+  useEffect(() => () => expandedObserver.current?.disconnect(), []);
 
   useLayoutEffect(() => {
     const el = listRef.current;
@@ -315,7 +330,9 @@ function LogList({
     lines.length,
     scrollTop,
     viewportHeight,
-    expandedIndex === -1 ? null : expandedIndex
+    expandedIndex === -1 ? null : expandedIndex,
+    LOG_ROW_HEIGHT,
+    expandedExtra
   );
   const slice = lines.slice(win.start, win.end);
 
@@ -345,6 +362,7 @@ function LogList({
               line={line}
               expanded={expandedId === line.id}
               onToggle={onToggle}
+              measureRef={expandedId === line.id ? measureExpanded : undefined}
             />
           ))}
         </div>
@@ -402,7 +420,7 @@ function IconButton({
         aria-label={label}
         onClick={onClick}
         disabled={disabled}
-        className="flex h-6 w-6 items-center justify-center rounded border-0 bg-transparent p-0 text-[#8e8e93] hover:bg-white/8 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-[#8e8e93]"
+        className="flex h-6 w-6 items-center justify-center rounded border-0 bg-transparent p-0 text-[#8e8e93] hover:bg-white/8 hover:text-white disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-[#8e8e93]"
       >
         {children}
       </button>
@@ -414,10 +432,12 @@ const LogRow = memo(function LogRow({
   line,
   expanded,
   onToggle,
+  measureRef,
 }: {
   line: DisplayLine;
   expanded: boolean;
   onToggle: (id: number) => void;
+  measureRef?: (el: HTMLButtonElement | null) => void;
 }) {
   const time = formatLogClock(line.timestamp);
   const meta = [line.subsystem, line.category].filter(Boolean).join(":");
@@ -425,6 +445,7 @@ const LogRow = memo(function LogRow({
     line.level === "fault" || line.level === "error" ? "text-white/90" : "text-white/70";
   return (
     <button
+      ref={measureRef}
       type="button"
       role="listitem"
       onClick={() => onToggle(line.id)}

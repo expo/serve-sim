@@ -105,7 +105,7 @@ actor FrameCapture {
         captureGeneration &+= 1
         let generation = captureGeneration
 
-        SimFrameworks.load()
+        try SimFrameworks.load()
         guard let device = Self.findSimDevice(udid: deviceUDID) else {
             throw makeError(1, "Device \(deviceUDID) not found")
         }

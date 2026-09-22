@@ -76,6 +76,7 @@ interface NativeAddon {
   axDescribe(udid: string): Promise<string>;
   axFrontmost(udid: string): Promise<string>;
   setHardwareKeyboard(udid: string, enabled: boolean): Promise<boolean>;
+  frameworkStatus(): Promise<string>;
 }
 
 // (codec, data, width, height, flags) — codec 0=MJPEG 1=AVCC; flags bit0=desc bit1=keyframe.
@@ -384,4 +385,16 @@ export function axFrontmostAsync(udid: string): Promise<string> {
  */
 export function setHardwareKeyboard(udid: string, enabled: boolean): Promise<boolean> {
   return load().setHardwareKeyboard(udid, enabled);
+}
+
+export interface FrameworkStatus {
+  developerDir: string;
+  coreSimulator: string | null;
+  simulatorKit: string | null;
+  attempts: Array<{ path: string; error: string | null }>;
+}
+
+/** Which private simulator frameworks loaded from the active Xcode, and why the other candidates failed. */
+export async function frameworkStatusAsync(): Promise<FrameworkStatus> {
+  return JSON.parse(await load().frameworkStatus()) as FrameworkStatus;
 }

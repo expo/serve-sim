@@ -325,7 +325,7 @@ private func axQuery(
     // axDescribe(udid): Promise<string> — axe-shaped accessibility JSON.
     "axDescribe": try NodeFunction { (udid: String) async throws -> String in
         try await axQuery(udid) { udid in
-            SimFrameworks.load()  // /ax may be hit before capture/HID load them
+            try SimFrameworks.load()  // /ax may be hit before capture/HID load them
             let data = try AccessibilityBridge.shared.describeUI(udid: udid)
             return String(decoding: data, as: UTF8.self)
         }
@@ -333,11 +333,16 @@ private func axQuery(
     // axFrontmost(udid): Promise<string> — JSON `{ bundleId, pid }`.
     "axFrontmost": try NodeFunction { (udid: String) async throws -> String in
         try await axQuery(udid) { udid in
-            SimFrameworks.load()
+            try SimFrameworks.load()
             let info = try AccessibilityBridge.shared.frontmostApp(udid: udid)
             let data = try JSONSerialization.data(withJSONObject: info)
             return String(decoding: data, as: UTF8.self)
         }
+    },
+    // frameworkStatus(): Promise<string> — JSON report of which CoreSimulator /
+    // SimulatorKit paths loaded, and why the other candidates failed.
+    "frameworkStatus": try NodeFunction { () async throws -> String in
+        try SimFrameworks.statusJSON()
     },
     // setHardwareKeyboard(udid, enabled): Promise<boolean> — connect/disconnect
     // the guest's hardware keyboard (⌘⇧K). Disconnected → on-screen keyboard.

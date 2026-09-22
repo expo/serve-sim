@@ -81,7 +81,7 @@ actor HIDInjector {
     // scroll events are ignored by iOS, so we scroll via a touch drag instead.
 
     func setup(deviceUDID: String) async throws {
-        SimFrameworks.load()
+        try SimFrameworks.load()
         guard let device = FrameCapture.findSimDevice(udid: deviceUDID) else {
             throw NSError(domain: "HIDInjector", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "Device \(deviceUDID) not found"])

@@ -106,9 +106,12 @@ following the template in `.github/PULL_REQUEST_TEMPLATE.md`.
   current implementation. Never weaken an assertion to match a wrong
   implementation.
 - **`bun run check` is green.**
-- **`bun run build` then `bun run test` is green** with no simulator booted,
-  and the simulator-backed tests for the touched area ran on a booted
-  simulator. Name the tests, the device, and the Xcode version in the PR.
+- **`bun run build` then `bun run test` is green.** That run is isolated and
+  skips simulator-backed suites on purpose, so also run the ones for the
+  touched area on a simulator you booted:
+  `SERVE_SIM_TEST_UDID=<udid> bun run test:e2e -- <paths>`. It builds the
+  fixtures the launch suites need. Name the tests, the UDID, the device, and
+  the Xcode version in the PR.
 - **Evidence matches the change.** A CLI change shows the command and its
   output. A UI change shows a screenshot or video. A native change was
   exercised on a simulator, not only compiled. "It builds" is not evidence.

@@ -188,10 +188,9 @@ export function assertPreviewAccess(
   return false;
 }
 
-// A browser cannot set a header on a WebSocket, so a cross-origin caller names the token here.
 export const TOKEN_SUBPROTOCOL_PREFIX = "serve-sim.token.";
 
-// RFC 7230 token chars. A CR or LF here would forge a header line in the handshake.
+// A CR or LF here would forge a header line in the handshake.
 const SUBPROTOCOL_TOKEN = /^[!#$%&'*+\-.0-9A-Za-z^_`|~]+$/;
 
 function offeredTokenSubprotocols(headers: SessionAuthReq["headers"]): string[] {
@@ -208,7 +207,6 @@ function offeredTokenSubprotocols(headers: SessionAuthReq["headers"]): string[] 
     );
 }
 
-/** The offered `serve-sim.token.*` subprotocol carrying this token, for the handshake to name. */
 export function acceptedTokenSubprotocol(
   headers: SessionAuthReq["headers"],
   sessionToken: string,
@@ -218,8 +216,6 @@ export function acceptedTokenSubprotocol(
   ) ?? null;
 }
 
-// Every credential the upgrade gate reads. A socket added later picks these up by construction
-// rather than by remembering to copy the list.
 const UPGRADE_AUTH_HEADERS = [
   "authorization",
   "cookie",
@@ -229,7 +225,6 @@ const UPGRADE_AUTH_HEADERS = [
   "sec-websocket-protocol",
 ] as const;
 
-/** The headers {@link assertUpgradeAccess} reads, from a Node request or a fetch `Request`. */
 export function upgradeAuthHeaders(
   source: SessionAuthReq["headers"] | Request,
 ): SessionAuthReq["headers"] {

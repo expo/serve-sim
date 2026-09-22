@@ -2,12 +2,12 @@ import { describe, expect, test } from "bun:test";
 
 import type { SessionAuthReq } from "../session-auth";
 import {
+  acceptedTokenSubprotocol,
   accessCookieName,
   assertPreviewAccess,
   assertUpgradeAccess,
-  acceptedTokenSubprotocol,
-  upgradeAuthHeaders,
   safeEqualString,
+  upgradeAuthHeaders,
 } from "../session-auth";
 
 describe("safeEqualString", () => {
@@ -531,13 +531,6 @@ describe(upgradeAuthHeaders, () => {
     );
 
     expect(node).toEqual(web);
-  });
-
-  test("carries the subprotocol, which a socket added later would otherwise forget", () => {
-    expect(
-      upgradeAuthHeaders(new Request("http://h/", {
-        headers: { "sec-websocket-protocol": "serve-sim.token.t" },
-      }))["sec-websocket-protocol"],
-    ).toBe("serve-sim.token.t");
+    expect(web["sec-websocket-protocol"]).toBe("serve-sim.token.t");
   });
 });

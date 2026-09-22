@@ -2018,7 +2018,7 @@ program
     "--cors-origin <origin>",
     "Allow this origin to read the preview cross-origin and open its control socket " +
       "(repeatable). Accepts a subdomain wildcard, e.g. https://*.expo.dev. Loopback origins " +
-      "are always allowed to read, but never to open the control socket.",
+      "can always read, but open the control socket only when named.",
     (value: string, prev: string[]) => [...prev, value],
     [] as string[],
   )

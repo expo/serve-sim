@@ -66,17 +66,19 @@ names the token as a subprotocol:
 new WebSocket(url, [`serve-sim.token.${token}`]);
 ```
 
-The handshake names a token subprotocol back, which the Node `ws` client
-requires and a browser ignores. The HID and CDP sockets name the entry that
-authenticated; `/exec-ws` is served by `ws`, which names the first one offered. Offering several is fine; every entry is
-checked, so a stale token alongside a fresh one still connects. Values outside
-the RFC 7230 token charset are dropped rather than echoed.
+The handshake names a token subprotocol back, because a client that offered
+one fails the connection otherwise. The HID and CDP sockets name the entry that
+authenticated; `/exec-ws` is served by `ws`, which names the first one offered.
+Offering several is fine; every entry is checked, so a stale token alongside a
+fresh one still connects. Values outside the RFC 7230 token charset are dropped
+rather than echoed.
 
-The exec channel accepts the same subprotocol at its handshake. It also still accepts the token
-in its first frame, for clients built before this and for a host that forwards an already
-accepted socket; that path will be dropped in a later release.
+The exec channel accepts the same subprotocol at its handshake. It also still
+accepts the token in its first frame, for older clients and for a host that
+forwards an already accepted socket; that path will be dropped in a later
+release.
 
-There is deliberately no `?token=` fallback on a WebSocket. Query strings are
+There is no `?token=` fallback on a WebSocket. Query strings are
 recorded by proxy and tunnel access logs; request headers and subprotocols are
 not.
 
@@ -134,7 +136,7 @@ WebSocket.
 | Path | Purpose |
 | --- | --- |
 | `{helper}/ws` | HID input. Pointer and key events to the device. |
-| `/exec-ws` | Scoped simulator actions. Request and response frames. When the caller sends an `Origin`, it must be the preview's own or one named by `--cors-origin`. |
+| `/exec-ws` | Scoped simulator actions. Request and response frames. |
 | `/devtools/page/{targetId}` | CDP bridge to an inspectable WebKit target. |
 
 `{helper}` is the helper proxy prefix under the mount point. The target ids for

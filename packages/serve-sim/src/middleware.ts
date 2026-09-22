@@ -666,7 +666,7 @@ function writeWebSocketAccept(req: SimReq, socket: Socket, execToken: string): b
     return false;
   }
   const accept = createHash("sha1").update(key + WS_ACCEPT_GUID).digest("base64");
-  // A `ws` client fails the connection unless the server names a subprotocol it offered.
+  // A client that offered subprotocols fails the handshake unless one is named back.
   const subprotocol = acceptedTokenSubprotocol(req.headers, execToken);
   socket.write(
     "HTTP/1.1 101 Switching Protocols\r\n" +
@@ -2757,7 +2757,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
   fetchMiddleware.handleWebSocket = (request: Request, websocket: UpgradeHandlerWebSocket): boolean => {
     // Embedded hosts forward accepted sockets and bypass the request gate. The exec channel
-    // re-checks the token in its first frame; the helper HID socket does not.
+    // re-checks the token itself; the helper HID socket does not.
     if (
       !assertUpgradeAccess(
         upgradeAuthHeaders(request),

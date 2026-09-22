@@ -653,6 +653,40 @@ describe("createCrashRuntime prune", () => {
     runtime.stop();
   });
 
+  test("keeps dedupe for the devices it keeps", async () => {
+    const runtime = makeRuntime();
+    await runtime.start();
+    files.set("A.ips", ips({ udid: UDID_A }));
+    files.set("B.ips", ips({ udid: UDID_B, symbol: "Other.boom()" }));
+    emit("rename", "A.ips");
+    emit("rename", "B.ips");
+    await flush();
+
+    runtime.prune([UDID_B]);
+    emit("rename", "B.ips");
+    await flush();
+
+    expect(runtime.listFor(UDID_B).map((record) => record.count)).toEqual([1]);
+    runtime.stop();
+  });
+
+  test("lets a pruned device's reports be read again when it returns", async () => {
+    const runtime = makeRuntime();
+    await runtime.start();
+    files.set("A.ips", ips({ udid: UDID_A }));
+    files.set("B.ips", ips({ udid: UDID_B, symbol: "Other.boom()" }));
+    emit("rename", "A.ips");
+    emit("rename", "B.ips");
+    await flush();
+
+    runtime.prune([UDID_B]);
+    emit("rename", "A.ips");
+    await flush();
+
+    expect(runtime.listFor(UDID_A)).toHaveLength(1);
+    runtime.stop();
+  });
+
   test("ignores an empty device list", async () => {
     const runtime = makeRuntime();
     await runtime.start();
@@ -781,6 +815,32 @@ describe("createCrashRuntime meta", () => {
     runtime.stop();
   });
 
+  test("keeps backing off when each new watcher errors as soon as it comes up", async () => {
+    let attempts = 0;
+    const runtime = createCrashRuntime({
+      reportsDir: "/reports",
+      retryDelayMs: 1,
+      ensureDir: () => {},
+      watchDir: (_dir, _listener, onWatchError) => {
+        attempts += 1;
+        queueMicrotask(() => onWatchError(new Error("EIO")));
+        return { close: () => {} };
+      },
+      readReport: async () => "",
+      readDir: async () => [],
+      statFile: async () => ({ mtimeMs: 0 }),
+      now: () => clock,
+      onError: () => {},
+    });
+
+    await runtime.start();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(attempts).toBe(7);
+    expect(runtime.meta().statusError).toContain("Retries are exhausted");
+    runtime.stop();
+  });
+
   test("holds a request-driven start to the backoff after a failure", async () => {
     let attempts = 0;
     const runtime = createCrashRuntime({
@@ -832,6 +892,7 @@ describe("createCrashRuntime meta", () => {
     await runtime.start();
     expect(runtime.meta().status).toBe("watching");
 
+    clock += 10 * 60_000;
     const attemptsBefore = attempts;
     onError!(new Error("ENOENT"));
     await new Promise((resolve) => setTimeout(resolve, 60));

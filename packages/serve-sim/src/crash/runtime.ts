@@ -3,7 +3,7 @@
 import { mkdirSync, watch } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { isSimulatorAppCrash, parseCrashReport, parseIpsHeader, type CrashReport } from "./report";
 import { logBufferCache, POLL_IDLE_MS, pruneByUdid, type LogBufferCache } from "../log-buffer";
@@ -19,6 +19,7 @@ const MAX_INGESTED = 500;
 const RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30_000;
 const MAX_WATCH_RETRIES = 6;
+const HEALTHY_WATCH_MS = 60_000;
 const MAX_TAIL_GAP_MS = POLL_IDLE_MS + 2_000;
 const LOG_TAIL_LINES = 60;
 const LOG_TAIL_MAX_BYTES = 64 * 1024;
@@ -103,8 +104,11 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let retries = 0;
   let gaveUp = false;
+  let watcherSince: number | null = null;
 
   const markUnavailable = (error: unknown): void => {
+    if (watcherSince !== null && clock() - watcherSince >= HEALTHY_WATCH_MS) retries = 0;
+    watcherSince = null;
     const reason = error instanceof Error ? error.message : String(error);
     generation += 1;
     if (!retryTimer && retries >= MAX_WATCH_RETRIES) gaveUp = true;
@@ -265,7 +269,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       );
       if (running) {
         watcher = handle;
-        retries = 0;
+        watcherSince = clock();
       } else handle.close();
     } catch (error) {
       markUnavailable(error);
@@ -292,6 +296,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       }
       watcher?.close();
       watcher = null;
+      watcherSince = null;
       for (const store of byUdid.values()) store.close();
       byUdid.clear();
       ingested.clear();
@@ -299,8 +304,10 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
 
     prune(liveUdids: readonly string[]): void {
       pruneByUdid(byUdid, liveUdids, (store) => {
+        for (const record of store.list()) {
+          for (const occurrence of record.occurrences) ingested.delete(basename(occurrence.rawPath));
+        }
         store.close();
-        ingested.clear();
       });
     },
 

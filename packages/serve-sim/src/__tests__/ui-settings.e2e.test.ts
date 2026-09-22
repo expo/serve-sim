@@ -44,8 +44,11 @@ function simctlUiUsable(): boolean {
   }
 }
 
-const describeIfSim = udid && existsSync(CLI) && simctlUiUsable() ? describe : describe.skip;
-requireE2E("ui-settings.e2e", Boolean(udid && existsSync(CLI) && simctlUiUsable()));
+// The `simctl ui` probe is an intentional exclusion, not a precondition: it
+// skips on CI by design (see above), so it must not fail the required run.
+const ready = Boolean(udid && existsSync(CLI));
+requireE2E("ui-settings.e2e", ready);
+const describeIfSim = ready && simctlUiUsable() ? describe : describe.skip;
 
 // Timeouts on every child call so a wedged simulator fails the test instead
 // of hanging the CI job.

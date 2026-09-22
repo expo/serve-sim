@@ -15,6 +15,8 @@ STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/serve-sim-test.XXXXXX")"
 trap 'rm -rf "$STATE_DIR"' EXIT
 export SERVE_SIM_STATE_DIR="$STATE_DIR"
 export PATH="$HERE/shims:$PATH"
+# Values left exported from an e2e run must not turn skips into failures here.
+unset SERVE_SIM_E2E_REQUIRED SERVE_SIM_TEST_UDID
 
 cd "$ROOT"
 if [ $# -eq 0 ]; then

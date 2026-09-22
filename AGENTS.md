@@ -21,9 +21,12 @@
 ## Commands
 
 Run these from the repo root. CI runs the same underlying steps: `bun run
-lint` and `bun run typecheck` in `.eas/workflows/checks.yml`, and the
-simulator run inside a timeout-and-retry wrapper in
-`.eas/workflows/sim-test.yml`. A green local run predicts a green PR.
+lint` and `bun run typecheck` in `.eas/workflows/checks.yml`, and the same
+`bun test` command with `SERVE_SIM_E2E_REQUIRED=1` inside a timeout-and-retry
+wrapper in `.eas/workflows/sim-test.yml`. CI runs on a fresh worker with one
+simulator of its own, so it needs neither the device pin nor the private
+state directory that `test:e2e` adds for shared machines. A green local run
+predicts a green PR.
 
 - `bun run check` — lint and typecheck. Run before every commit.
 - `bun run build` — full build: bundled JS, compiled CLI, native helpers, and
@@ -41,8 +44,12 @@ simulator run inside a timeout-and-retry wrapper in
   state directory, so it never kills another session's server. It builds the
   test fixtures, then sets `SERVE_SIM_E2E_REQUIRED=1` so every precondition
   fails instead of skipping. Every suite that picks a device with
-  `e2eDevice()` also calls `requireE2E()`; a test enforces the pairing.
-  Example: `SERVE_SIM_TEST_UDID=<udid> bun run test:e2e --
+  `e2eDevice()` also calls `requireE2E()`; a test enforces the pairing. One
+  suite, `ui-settings.e2e`, skips on CI by design because `simctl ui` hangs
+  on shared runners; `SERVE_SIM_UI_E2E=1` forces it on. On exit the run
+  kills any server it started and removes its state directory. Export
+  `SERVE_SIM_STATE_DIR` yourself to point a run at a server you started, and
+  it is left alone. Example: `SERVE_SIM_TEST_UDID=<udid> bun run test:e2e --
   packages/serve-sim/src/__tests__/permissions.e2e.test.ts`.
 - `bun run build:fixtures` — the simulator test fixtures on their own.
   `test:e2e` runs this for you.

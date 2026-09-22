@@ -19,6 +19,7 @@ const POLL_MS = PLAYBACK_STALL_POLL_MS;
 let clock = 0;
 /// What the signalling endpoint answers the offer with.
 let offerStatus = 200;
+let offersPosted = 0;
 
 class FakePeer {
   connectionState = "connected";
@@ -93,6 +94,7 @@ Object.assign(globalThis, {
     if (input.includes("/stats")) {
       return new Response(JSON.stringify({ sessions: [{ framesEncoded: 0 }] }));
     }
+    if (input.includes("/offer")) offersPosted += 1;
     if (input.includes("/offer") && offerStatus !== 200) {
       return new Response("nope", { status: offerStatus });
     }
@@ -123,6 +125,7 @@ async function start(
   closed = 0;
   visibility = visible;
   offerStatus = offerAnswers;
+  offersPosted = 0;
   clock = 0;
   timers.clear();
   intervals.clear();
@@ -360,6 +363,20 @@ test("a locked session waits out an offer rejected with 404", async () => {
   await start("visible", 404, true);
   expect(failures()).toEqual([]);
   expect(updates).toContain("WebRTC offer failed: HTTP 404. Retrying...");
+
+  const retry = [...timers.entries()].find(([, timer]) => timer.delay === 500);
+  if (!retry) throw new Error("Expected the transport retry to be armed");
+  timers.delete(retry[0]);
+  updates = [];
+  retry[1].callback();
+  expect(updates.some((update) => typeof update === "function")).toBe(true);
+
+  offerStatus = 200;
+  await reconnect();
+  expect(offersPosted).toBe(2);
+  expect(peers).toHaveLength(1);
+  expect(failures()).toEqual([]);
+  expect(updates).not.toContain("WebRTC offer failed: HTTP 404. Retrying...");
 });
 
 /// Retrying here would be worse than failing: the reported failure is what hands the session

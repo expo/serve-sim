@@ -32,3 +32,11 @@ jobs:
       - uses: eas/checkout
       - uses: eas/install_node_modules
       - run: bun run typecheck
+
+  knip:
+    name: Knip
+    runs_on: linux-medium
+    steps:
+      - uses: eas/checkout
+      - uses: eas/install_node_modules
+      - run: bun run knip

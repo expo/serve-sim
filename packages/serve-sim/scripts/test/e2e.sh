@@ -2,9 +2,10 @@
 # The simulator-backed run: `bun run test:e2e`.
 #
 # Requires SERVE_SIM_TEST_UDID, the simulator you booted for this run, so the
-# tests never pick a device that belongs to another session. Builds the test
-# fixtures the launch suites need, then sets SERVE_SIM_E2E_REQUIRED=1 so a
-# missing precondition fails instead of skipping.
+# tests never pick a device that belongs to another session. Uses a private
+# state directory, so killOwnListeners() can only reach servers this run
+# started. Builds the test fixtures the launch suites need, then sets
+# SERVE_SIM_E2E_REQUIRED=1 so a missing precondition fails instead of skipping.
 #
 # Pass test paths to narrow the run; with none it runs the whole Bun suite.
 set -euo pipefail
@@ -18,10 +19,14 @@ if ! xcrun simctl list devices booted -j | grep -q "\"udid\" : \"$SERVE_SIM_TEST
 fi
 
 bash "$ROOT/packages/serve-sim/Sources/build-test-fixtures.sh" >/dev/null
+
+STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/serve-sim-e2e.XXXXXX")"
+trap 'rm -rf "$STATE_DIR"' EXIT
+export SERVE_SIM_STATE_DIR="$STATE_DIR"
 export SERVE_SIM_E2E_REQUIRED=1
 
 cd "$ROOT"
 if [ $# -eq 0 ]; then
   set -- packages/serve-sim/src/__tests__/ packages/serve-sim/scripts/tart/__tests__/
 fi
-exec bun test --max-concurrency=1 "$@"
+bun test --max-concurrency=1 "$@"

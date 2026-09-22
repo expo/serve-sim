@@ -37,7 +37,8 @@ simulator run inside a timeout-and-retry wrapper in
   `bun run test -- packages/serve-sim/src/__tests__/ports.test.ts`.
 - `bun run test:e2e` — the simulator-backed run. It requires
   `SERVE_SIM_TEST_UDID`, the UDID of a simulator you booted for this run, so
-  it never drives a device that belongs to another session. It builds the
+  it never drives a device that belongs to another session, and a private
+  state directory, so it never kills another session's server. It builds the
   test fixtures, then sets `SERVE_SIM_E2E_REQUIRED=1` so every precondition
   fails instead of skipping. Every suite that picks a device with
   `e2eDevice()` also calls `requireE2E()`; a test enforces the pairing.

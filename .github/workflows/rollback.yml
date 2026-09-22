@@ -43,14 +43,36 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      - name: Verify the target version is on npm
+      - name: Verify the inputs against npm
         env:
           VERSION: ${{ inputs.version }}
+          BAD: ${{ inputs.deprecate }}
         run: |
+          # Exact versions only. A range passed to `npm deprecate` could cover
+          # the version this run restores.
+          EXACT='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          if ! printf '%s' "$VERSION" | grep -Eq "$EXACT"; then
+            echo "::error::version must be one exact version like 0.3.0, got '$VERSION'. Nothing was changed."
+            exit 1
+          fi
           PUBLISHED=$(npm view "@expo/serve-sim@$VERSION" version 2>/dev/null || true)
           if [ "$PUBLISHED" != "$VERSION" ]; then
             echo "::error::@expo/serve-sim@$VERSION is not on npm. Nothing was changed."
             exit 1
+          fi
+          if [ -n "$BAD" ]; then
+            if ! printf '%s' "$BAD" | grep -Eq "$EXACT"; then
+              echo "::error::deprecate must be one exact version, got '$BAD'. Nothing was changed."
+              exit 1
+            fi
+            if [ "$BAD" = "$VERSION" ]; then
+              echo "::error::deprecate equals version. Refusing to deprecate the version being restored. Nothing was changed."
+              exit 1
+            fi
+            if [ "$(npm view "@expo/serve-sim@$BAD" version 2>/dev/null || true)" != "$BAD" ]; then
+              echo "::error::@expo/serve-sim@$BAD is not on npm. Nothing was changed."
+              exit 1
+            fi
           fi
           echo "latest before: $(npm view @expo/serve-sim dist-tags.latest)"
 

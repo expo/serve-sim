@@ -53,17 +53,46 @@ jobs:
           DISPATCH_SHA: ${{ github.sha }}
           RELEASE_RUN_ID: ${{ github.run_id }}
         run: |
-          LAST_RUN_ID=$(git log -1 --format='%(trailers:key=Release-Run,valueonly)')
+          # Ask npm whether a version exists. Only E404 means absent; any
+          # other failure is a lookup error and stops the run before it
+          # changes anything.
+          on_npm() {
+            set +e
+            LOOKUP=$(npm view "@expo/serve-sim@$1" version 2>&1)
+            STATUS=$?
+            set -e
+            if [ "$STATUS" -eq 0 ] && [ "$LOOKUP" = "$1" ]; then return 0; fi
+            if printf '%s' "$LOOKUP" | grep -q 'E404'; then return 1; fi
+            echo "::error::Could not check npm for @expo/serve-sim@$1. Nothing was changed. Re-run the job."
+            printf '%s\n' "$LOOKUP"
+            exit 1
+          }
+
           REUSED=false
+          PUBLISHED=false
+          LAST_RUN_ID=$(git log -1 --format='%(trailers:key=Release-Run,valueonly)')
           if [ "$LAST_RUN_ID" = "$RELEASE_RUN_ID" ] && [ "$(git rev-parse HEAD^)" = "$DISPATCH_SHA" ]; then
             echo "Reusing the release commit created by this run."
             REUSED=true
+            VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
+            if on_npm "$VERSION"; then
+              echo "@expo/serve-sim@$VERSION is already on npm from an earlier attempt of this run. Skipping the build and publish steps."
+              PUBLISHED=true
+            fi
           elif [ "$(git rev-parse HEAD)" != "$DISPATCH_SHA" ]; then
             echo "::error::expo moved after this release was started. Start a new release from the latest expo."
             exit 1
           else
             npm version "$BUMP" --no-git-tag-version --no-package-lock --no-workspaces-update --workspace packages/serve-sim
             VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
+            # Refuse before the commit and tag exist. A version that is already
+            # on npm was published outside this workflow, and tagging this
+            # source for it would lie about what the package contains.
+            if on_npm "$VERSION"; then
+              git checkout -- packages/serve-sim/package.json
+              echo "::error::@expo/serve-sim@$VERSION is already on npm and was not published by this workflow. Nothing was committed or tagged. Choose a different bump or fix npm first."
+              exit 1
+            fi
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add packages/serve-sim/package.json
@@ -74,8 +103,10 @@ jobs:
 
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "reused=$REUSED" >> "$GITHUB_OUTPUT"
+          echo "published=$PUBLISHED" >> "$GITHUB_OUTPUT"
 
       - name: Build npm package with EAS
+        if: steps.release.outputs.published != 'true'
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_DEV_EXPO_GITHUB_ROBOT_ACCESS_TOKEN }}
         run: |
@@ -86,6 +117,7 @@ jobs:
             --json > /tmp/eas-workflow.json
 
       - name: Download EAS artifact
+        if: steps.release.outputs.published != 'true'
         run: |
           ARTIFACT_URL=$(jq -er '
             .jobs[]
@@ -96,6 +128,7 @@ jobs:
           curl --fail --location "$ARTIFACT_URL" --output /tmp/serve-sim.tgz
 
       - name: Publish to npm with OIDC
+        if: steps.release.outputs.published != 'true'
         env:
           REUSED: ${{ steps.release.outputs.reused }}
         run: |

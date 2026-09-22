@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "child_process";
-import { existsSync, mkdtempSync, rmSync } from "fs";
-import { basename, dirname, join } from "path";
-import { tmpdir } from "os";
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "fs";
+import { join } from "path";
+import { homedir, tmpdir } from "os";
 
 import type { CrashDetailResponse } from "../crash/protocol";
 import type { CrashMeta } from "../crash/runtime";
@@ -55,9 +55,10 @@ describe.skipIf(!ready)("crash ingestion (real simulator app and built CLI)", ()
   let server: ChildProcess | null = null;
   let tempDir = "";
   let baseUrl = "";
-  const generatedReports: string[] = [];
+  let startedAt = 0;
 
   beforeAll(async () => {
+    startedAt = Date.now();
     tempDir = mkdtempSync(join(tmpdir(), "serve-sim-crash-e2e-"));
     spawnSync("xcrun", ["simctl", "uninstall", udid!, BUNDLE_ID], { stdio: "ignore" });
     execFileSync("xcrun", ["simctl", "install", udid!, FIXTURE], { stdio: "pipe" });
@@ -80,13 +81,17 @@ describe.skipIf(!ready)("crash ingestion (real simulator app and built CLI)", ()
   afterAll(() => {
     server?.kill("SIGKILL");
     spawnSync("xcrun", ["simctl", "uninstall", udid!, BUNDLE_ID], { stdio: "ignore" });
-    for (const report of generatedReports) {
-      if (
-        basename(report).startsWith(`${APP_NAME}-`) &&
-        basename(dirname(report)) === "DiagnosticReports"
-      ) {
-        rmSync(report, { force: true });
-      }
+    const reportsDir = join(homedir(), "Library/Logs/DiagnosticReports");
+    let names: string[] = [];
+    try {
+      names = readdirSync(reportsDir);
+    } catch {}
+    for (const name of names) {
+      if (!name.startsWith(`${APP_NAME}-`)) continue;
+      const path = join(reportsDir, name);
+      try {
+        if (statSync(path).mtimeMs >= startedAt) rmSync(path, { force: true });
+      } catch {}
     }
     if (tempDir) rmSync(tempDir, { recursive: true, force: true });
   });
@@ -107,7 +112,6 @@ describe.skipIf(!ready)("crash ingestion (real simulator app and built CLI)", ()
         (record) => record.bundleId === BUNDLE_ID && record.pid === firstPid,
       ) ?? null;
     }, 60_000, "ReportCrash to publish the fixture's first .ips file");
-    generatedReports.push(crash.rawPath);
 
     expect(crash).toMatchObject({
       appName: APP_NAME,
@@ -139,7 +143,6 @@ describe.skipIf(!ready)("crash ingestion (real simulator app and built CLI)", ()
         (record) => record.id === crash.id && record.pid === secondPid && record.count === 2,
       ) ?? null;
     }, 60_000, "ReportCrash to publish and group the fixture's second .ips file");
-    generatedReports.push(recurred.rawPath);
 
     expect(recurred.occurrenceCount).toBe(2);
     const newestResponse = await fetch(

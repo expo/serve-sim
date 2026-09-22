@@ -3,7 +3,7 @@
 import { mkdirSync, watch } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 
 import { isSimulatorAppCrash, parseCrashReport, parseIpsHeader, type CrashReport } from "./report";
 import { logBufferCache, POLL_IDLE_MS, pruneByUdid, type LogBufferCache } from "../log-buffer";
@@ -95,7 +95,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     });
 
   const byUdid = new Map<string, CrashStore>();
-  const ingested = new Map<string, number>();
+  const ingested = new Map<string, { generation: number; udid: string | null }>();
   let watcher: CrashWatcherHandle | null = null;
   let running = false;
   let statusError: string | null = null;
@@ -166,7 +166,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   const ingest = async (filename: string): Promise<void> => {
     const epoch = generation;
     const releaseClaim = (): void => {
-      if (ingested.get(filename) === epoch) ingested.delete(filename);
+      if (ingested.get(filename)?.generation === epoch) ingested.delete(filename);
     };
     const path = join(reportsDir, filename);
     let raw: string;
@@ -197,6 +197,8 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       );
       return;
     }
+    const entry = ingested.get(filename);
+    if (entry) entry.udid = report.deviceUdid;
 
     const tail = logTailFor(report);
     storeFor(report.deviceUdid).record(report, path, tail.logTail, tail.logTailSource);
@@ -208,7 +210,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       const oldest = ingested.keys().next().value;
       if (oldest !== undefined) ingested.delete(oldest);
     }
-    ingested.set(filename, generation);
+    ingested.set(filename, { generation, udid: null });
     return true;
   };
 
@@ -314,12 +316,13 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     },
 
     prune(liveUdids: readonly string[]): void {
-      pruneByUdid(byUdid, liveUdids, (store) => {
-        for (const record of store.list()) {
-          for (const occurrence of record.occurrences) ingested.delete(basename(occurrence.rawPath));
-        }
-        store.close();
-      });
+      const before = [...byUdid.keys()];
+      pruneByUdid(byUdid, liveUdids, (store) => store.close());
+      const pruned = new Set(before.filter((udid) => !byUdid.has(udid)));
+      if (pruned.size === 0) return;
+      for (const [filename, entry] of ingested) {
+        if (entry.udid !== null && pruned.has(entry.udid)) ingested.delete(filename);
+      }
     },
 
     meta(): CrashMeta {

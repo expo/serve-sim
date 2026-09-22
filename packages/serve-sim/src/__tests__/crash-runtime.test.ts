@@ -670,6 +670,30 @@ describe("createCrashRuntime prune", () => {
     runtime.stop();
   });
 
+  test("rereads every report of a returning device, including occurrences it had evicted", async () => {
+    const runtime = makeRuntime();
+    await runtime.start();
+    const names = Array.from({ length: 7 }, (_, i) => `A-${i + 1}.ips`);
+    names.forEach((name, i) => files.set(name, ips({ udid: UDID_A, pid: i + 1 })));
+    files.set("B.ips", ips({ udid: UDID_B, symbol: "Other.boom()" }));
+    for (const name of names) {
+      emit("rename", name);
+      await flush();
+    }
+    emit("rename", "B.ips");
+    await flush();
+    expect(runtime.listFor(UDID_A)[0]?.count).toBe(7);
+
+    runtime.prune([UDID_B]);
+    for (const name of names) {
+      emit("rename", name);
+      await flush();
+    }
+
+    expect(runtime.listFor(UDID_A)[0]?.count).toBe(7);
+    runtime.stop();
+  });
+
   test("lets a pruned device's reports be read again when it returns", async () => {
     const runtime = makeRuntime();
     await runtime.start();

@@ -42,7 +42,11 @@ requireE2E("serve-sim typing", ready);
 const describeWithSim = ready ? describe : describe.skip;
 
 function cli(...args: string[]): string {
-  return execFileSync("node", [CLI_PATH, ...args], { encoding: "utf8", timeout: 15_000 });
+  return execFileSync("node", [CLI_PATH, ...args], {
+    encoding: "utf8",
+    timeout: 15_000,
+    env: { ...process.env },
+  });
 }
 
 function simctl(...args: string[]): string {
@@ -126,6 +130,7 @@ describeWithSim(`serve-sim type e2e (booted sim ${bootedUdid ?? "<skipped>"})`, 
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 15_000,
+      env: { ...process.env },
     });
     if (result.status !== 0) {
       throw new Error(

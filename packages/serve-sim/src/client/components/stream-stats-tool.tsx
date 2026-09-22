@@ -50,7 +50,8 @@ export function StreamStatsBody({
 
       <div className="flex items-start justify-end gap-2">{action}</div>
 
-      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 border-t border-white/10 pt-1.5">
+      {/* Full rows, like the graphs: the frame gap's spread does not fit half the panel. */}
+      <div className="flex flex-col gap-y-0.5 border-t border-white/10 pt-1.5">
         <Cell label="Frame gap" value={frameGap(stats.frameGapMs, stats.pacingDeviationMs)} />
         <Cell
           label="Resolution"
@@ -249,7 +250,10 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="pt-1.5">
       <div className="pb-0.5 text-[10px] uppercase tracking-[0.08em] text-white/25">{label}</div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">{children}</div>
+      {/* The right column's tooltips open leftward, or they run off the panel. */}
+      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 [&>:nth-child(even)_[role=tooltip]]:left-auto [&>:nth-child(even)_[role=tooltip]]:right-0">
+        {children}
+      </div>
     </div>
   );
 }
@@ -381,7 +385,7 @@ function Graph({
 function Cell({ label, value }: { label: string; value: string }) {
   return (
     <div
-      className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 [&:nth-child(even)_[role=tooltip]]:left-auto [&:nth-child(even)_[role=tooltip]]:right-0"
+      className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2"
       data-stream-stat={label}
     >
       <Label label={label} className="min-w-0 truncate text-[11px] text-white/50" />

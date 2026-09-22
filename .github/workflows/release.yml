@@ -93,7 +93,21 @@ jobs:
           curl --fail --location "$ARTIFACT_URL" --output /tmp/serve-sim.tgz
 
       - name: Publish to npm with OIDC
-        run: npm publish /tmp/serve-sim.tgz
+        run: |
+          # A re-run after a failure past this point must not stop here: npm
+          # rejects a version it already has. Skip the publish in that case
+          # and continue to the GitHub release.
+          VERSION=$(tar -xOf /tmp/serve-sim.tgz package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          EXPECTED=$(node -p "require('./packages/serve-sim/package.json').version")
+          if [ "$VERSION" != "$EXPECTED" ]; then
+            echo "::error::tarball is $VERSION but the release commit is $EXPECTED"
+            exit 1
+          fi
+          if [ "$(npm view "@expo/serve-sim@$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
+            echo "::notice::@expo/serve-sim@$VERSION is already on npm. Skipping publish."
+          else
+            npm publish /tmp/serve-sim.tgz
+          fi
 
       - name: Create GitHub release
         env:

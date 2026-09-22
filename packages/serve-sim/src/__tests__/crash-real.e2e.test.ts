@@ -1,10 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "fs";
 import { join } from "path";
 import { homedir, tmpdir } from "os";
 
 import type { CrashDetailResponse } from "../crash/protocol";
+import { parseCrashReport } from "../crash/report";
 import type { CrashMeta } from "../crash/runtime";
 import type { CrashSummary } from "../crash/store";
 import { e2eDevice, requireE2E } from "./e2e-preconditions";
@@ -56,6 +57,7 @@ describe.skipIf(!ready)("crash ingestion (real simulator app and built CLI)", ()
   let tempDir = "";
   let baseUrl = "";
   let startedAt = 0;
+  const launchedPids: number[] = [];
 
   beforeAll(async () => {
     startedAt = Date.now();
@@ -82,16 +84,20 @@ describe.skipIf(!ready)("crash ingestion (real simulator app and built CLI)", ()
     server?.kill("SIGKILL");
     spawnSync("xcrun", ["simctl", "uninstall", udid!, BUNDLE_ID], { stdio: "ignore" });
     const reportsDir = join(homedir(), "Library/Logs/DiagnosticReports");
-    let names: string[] = [];
-    try {
-      names = readdirSync(reportsDir);
-    } catch {}
-    for (const name of names) {
-      if (!name.startsWith(`${APP_NAME}-`)) continue;
-      const path = join(reportsDir, name);
+    for (const dir of [reportsDir, join(reportsDir, "Retired")]) {
+      let names: string[] = [];
       try {
-        if (statSync(path).mtimeMs >= startedAt) rmSync(path, { force: true });
+        names = readdirSync(dir);
       } catch {}
+      for (const name of names) {
+        if (!name.startsWith(`${APP_NAME}-`)) continue;
+        const path = join(dir, name);
+        try {
+          if (statSync(path).mtimeMs < startedAt) continue;
+          const pid = parseCrashReport(readFileSync(path, "utf8"))?.pid;
+          if (typeof pid === "number" && launchedPids.includes(pid)) rmSync(path, { force: true });
+        } catch {}
+      }
     }
     if (tempDir) rmSync(tempDir, { recursive: true, force: true });
   });
@@ -102,6 +108,7 @@ describe.skipIf(!ready)("crash ingestion (real simulator app and built CLI)", ()
     expect(initial.status).toBe(200);
 
     const firstPid = launchFixture(udid!);
+    launchedPids.push(firstPid);
 
     const crash = await waitFor<CrashSummary>(async () => {
       const response = await fetch(`${baseUrl}/crashes?device=${encodeURIComponent(udid!)}`);
@@ -135,6 +142,7 @@ describe.skipIf(!ready)("crash ingestion (real simulator app and built CLI)", ()
     expect(detail.reportError).toBeNull();
 
     const secondPid = launchFixture(udid!);
+    launchedPids.push(secondPid);
     const recurred = await waitFor<CrashSummary>(async () => {
       const response = await fetch(`${baseUrl}/crashes?device=${encodeURIComponent(udid!)}`);
       if (!response.ok) return null;

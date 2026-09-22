@@ -47,6 +47,7 @@ const DEFAULT_LEVELS: LevelEnabled = {
 
 export function LogsDrawer({
   open,
+  hidden = false,
   onClose,
   udid,
   logsEndpoint,
@@ -57,6 +58,7 @@ export function LogsDrawer({
   onResizePointerDown,
 }: {
   open: boolean;
+  hidden?: boolean;
   onClose: () => void;
   udid: string;
   logsEndpoint?: string;
@@ -79,6 +81,7 @@ export function LogsDrawer({
   const listRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const { lines, paused, errored, clear, togglePause } = useDeviceLogs(path, open);
+  const shown = open && !hidden;
 
   useEffect(() => {
     if (!open) return;
@@ -88,7 +91,7 @@ export function LogsDrawer({
 
 
   useEffect(() => {
-    if (!open) return;
+    if (!shown) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== "Escape") return;
       if (filter.trim()) {
@@ -101,7 +104,7 @@ export function LogsDrawer({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose, filter]);
+  }, [shown, onClose, filter]);
 
   const visible = useMemo(() => {
     const needle = filter.trim();
@@ -147,7 +150,7 @@ export function LogsDrawer({
   return (
     <aside
       data-logs=""
-      aria-hidden={!open}
+      aria-hidden={!shown}
       aria-label="Device logs"
       className="fixed z-34 flex min-w-0 flex-col overflow-hidden border-t border-white/10 bg-panel-bg text-white/90 shadow-[0_-8px_32px_rgba(0,0,0,0.35)] backdrop-blur-[18px] [font-family:-apple-system,system-ui,sans-serif] [transition:transform_0.25s_ease,opacity_0.2s_ease]"
       style={{
@@ -156,9 +159,9 @@ export function LogsDrawer({
         right: rightInset,
         bottom: 0,
         backgroundColor: PANEL_BACKGROUND,
-        transform: open ? "translateY(0)" : "translateY(100%)",
-        opacity: open ? 1 : 0,
-        pointerEvents: open ? "auto" : "none",
+        transform: shown ? "translateY(0)" : "translateY(100%)",
+        opacity: shown ? 1 : 0,
+        pointerEvents: shown ? "auto" : "none",
       }}
     >
       <ResizeEdge onPointerDown={onResizePointerDown} />
@@ -205,7 +208,7 @@ export function LogsDrawer({
             <Dropdown
               label="Log levels"
               multiple
-              disabled={!open}
+              disabled={!shown}
               trigger={<ListFilter size={15} strokeWidth={1.75} />}
               className={`flex h-6 w-6 items-center justify-center rounded hover:bg-white/8 hover:text-white ${
                 levelsFiltered ? "text-accent" : "text-[#8e8e93]"
@@ -420,7 +423,7 @@ function IconButton({
         aria-label={label}
         onClick={onClick}
         disabled={disabled}
-        className="flex h-6 w-6 items-center justify-center rounded border-0 bg-transparent p-0 text-[#8e8e93] hover:bg-white/8 hover:text-white disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-[#8e8e93]"
+        className="flex h-6 w-6 items-center justify-center rounded border-0 bg-transparent p-0 text-[#8e8e93] hover:bg-white/8 hover:text-white disabled:text-[#48484a] disabled:hover:bg-transparent disabled:hover:text-[#48484a]"
       >
         {children}
       </button>

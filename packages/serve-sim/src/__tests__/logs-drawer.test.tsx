@@ -47,6 +47,25 @@ describe("LogsDrawer", () => {
     expect(render(99)).not.toContain('aria-label="Current app" disabled=""');
   });
 
+  test("stays open but out of sight while hidden", () => {
+    const html = renderToStaticMarkup(
+      <LogsDrawer
+        open
+        hidden
+        onClose={() => {}}
+        udid="DEVICE"
+        logsEndpoint="/logs"
+        height={320}
+        leftInset={0}
+        rightInset={0}
+        onResizePointerDown={() => {}}
+      />
+    );
+
+    expect(html).toContain("translateY(100%)");
+    expect(html).toContain('aria-hidden="true"');
+  });
+
   test("slides off-screen when closed", () => {
     const html = renderToStaticMarkup(
       <LogsDrawer

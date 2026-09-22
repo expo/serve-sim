@@ -2015,7 +2015,8 @@ function AppWithConfig({
       </>
       )}
       <LogsDrawer
-        open={logsOpen && !presentation}
+        open={logsOpen}
+        hidden={presentation}
         onClose={() => setLogsOpen(false)}
         udid={config.device}
         logsEndpoint={config.logsEndpoint}

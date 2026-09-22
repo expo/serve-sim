@@ -51,8 +51,20 @@ describe("parseLogSnapshot", () => {
   });
 
   test("treats a malformed payload as empty", () => {
-    expect(parseLogSnapshot(null)).toEqual({ latestSeq: 0, lines: [] });
-    expect(parseLogSnapshot("nope")).toEqual({ latestSeq: 0, lines: [] });
+    expect(parseLogSnapshot(null)).toEqual({ latestSeq: 0, firstSeq: null, lines: [] });
+    expect(parseLogSnapshot("nope")).toEqual({ latestSeq: 0, firstSeq: null, lines: [] });
+  });
+
+  test("reports the first seq the server sent, even for a row it could not parse", () => {
+    const parsed = parseLogSnapshot({
+      latestSeq: 8,
+      lines: [
+        { seq: 7, raw: "not-json" },
+        { seq: 8, raw },
+      ],
+    });
+    expect(parsed.firstSeq).toBe(7);
+    expect(parsed.lines.map((line) => line.seq)).toEqual([8]);
   });
 });
 
@@ -129,6 +141,22 @@ describe("startLogsPoll", () => {
     expect(cursor).toBe(11);
     expect(lines.map((line) => line.seq)).toEqual([4, 10, 11]);
     expect(lines[0]!.fields.message).toBe("6 lines skipped");
+  });
+
+  test("adds no marker when the reply's first row is one it could not parse", async () => {
+    const empty = JSON.stringify({ processImagePath: "/x/Demo", eventMessage: "" });
+    const { lines } = await pollOnce(10, {
+      lines: [{ seq: 11, raw: empty }, { seq: 12, raw }],
+      latestSeq: 12,
+    });
+
+    expect(lines.map((line) => line.seq)).toEqual([12]);
+  });
+
+  test("says line, not lines, for a single skipped line", async () => {
+    const { lines } = await pollOnce(3, { lines: [{ seq: 5, raw }], latestSeq: 5 });
+
+    expect(lines[0]!.fields.message).toBe("1 line skipped");
   });
 
   test("adds no marker when the reply picks up right after the cursor", async () => {

@@ -18,9 +18,13 @@ export function logsSnapshotUrl(endpoint: string, since: number): string {
   return `${url.pathname}${url.search}`;
 }
 
-export function parseLogSnapshot(payload: unknown): { latestSeq: number; lines: LogSnapshotLine[] } {
+export function parseLogSnapshot(payload: unknown): {
+  latestSeq: number;
+  firstSeq: number | null;
+  lines: LogSnapshotLine[];
+} {
   if (payload === null || typeof payload !== "object") {
-    return { latestSeq: 0, lines: [] };
+    return { latestSeq: 0, firstSeq: null, lines: [] };
   }
   const record = payload as { latestSeq?: unknown; lines?: unknown };
   const latestSeq =
@@ -29,15 +33,19 @@ export function parseLogSnapshot(payload: unknown): { latestSeq: number; lines: 
       : 0;
   const rows = Array.isArray(record.lines) ? record.lines : [];
   const lines: LogSnapshotLine[] = [];
+  let firstSeq: number | null = null;
   for (const row of rows) {
     if (row === null || typeof row !== "object") continue;
     const item = row as { seq?: unknown; raw?: unknown };
+    if (typeof item.seq === "number" && Number.isSafeInteger(item.seq)) {
+      firstSeq = firstSeq === null ? item.seq : Math.min(firstSeq, item.seq);
+    }
     if (typeof item.seq !== "number" || typeof item.raw !== "string") continue;
     const fields = parseDeviceLogJson(item.raw);
     if (!fields) continue;
     lines.push({ seq: item.seq, fields });
   }
-  return { latestSeq, lines };
+  return { latestSeq, firstSeq, lines };
 }
 
 function skippedLine(seq: number, count: number): LogSnapshotLine {
@@ -48,7 +56,7 @@ function skippedLine(seq: number, count: number): LogSnapshotLine {
       library: "",
       subsystem: "",
       category: "",
-      message: `${count} lines skipped`,
+      message: `${count} ${count === 1 ? "line" : "lines"} skipped`,
       level: "default",
       pid: null,
       timestamp: "",
@@ -92,7 +100,8 @@ export function startLogsPoll(
       }
       const fresh = parsed.lines.filter((line) => line.seq > since);
       if (parsed.latestSeq > since) opts.setSince(parsed.latestSeq);
-      const skipped = since > 0 && fresh.length > 0 ? fresh[0]!.seq - since - 1 : 0;
+      const first = parsed.firstSeq;
+      const skipped = since > 0 && first !== null && first > since ? first - since - 1 : 0;
       const batch = skipped > 0 ? [skippedLine(since + 1, skipped), ...fresh] : fresh;
       if (batch.length > 0) opts.onBatch(batch);
     } catch {

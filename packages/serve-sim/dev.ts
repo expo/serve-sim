@@ -136,7 +136,7 @@ watch(CLIENT_DIR, { recursive: true }, (_event, filename) => {
   const name = String(filename);
   if (!/\.(tsx?|css)$/.test(name)) return;
   if (/\.tsx?$/.test(name)) pendingClientBuild = true;
-  if (/\.css$/.test(name)) pendingTailwindBuild = true;
+  if (name.endsWith(".css")) pendingTailwindBuild = true;
   scheduleWatchedBuild();
 });
 
@@ -157,7 +157,7 @@ function readTailwindContentSignature(): string {
   const parts: string[] = [];
   for (const path of listClientFiles(CLIENT_DIR)) {
     const text = readFileSync(path, "utf-8");
-    if (/\.css$/.test(path)) {
+    if (path.endsWith(".css")) {
       parts.push(path, text);
       continue;
     }

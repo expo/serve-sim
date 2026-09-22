@@ -90,4 +90,10 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ROLLBACK_TOKEN }}
           BAD: ${{ inputs.deprecate }}
           REASON: ${{ inputs.reason }}
-        run: npm deprecate "@expo/serve-sim@$BAD" "$REASON"
+        run: |
+          # `npm deprecate <pkg>@<v> ""` removes a deprecation. A cleared form
+          # field must never turn this step into an un-deprecate.
+          if [ -z "$REASON" ]; then
+            REASON="Rolled back. Install the version that npm latest points to."
+          fi
+          npm deprecate "@expo/serve-sim@$BAD" "$REASON"

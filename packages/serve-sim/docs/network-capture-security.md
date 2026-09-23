@@ -45,6 +45,10 @@ Each body preview is capped at 512 KiB. The in-memory store retains at most 500 
 16 MiB for stored headers and bodies. Full transfer sizes are recorded even when previews are truncated
 or omitted.
 
+Bodies sent with `gzip`, `deflate`, or `br` content-encoding are decoded, and decoding stops at
+the 512 KiB cap, so a small compressed body cannot expand without limit. Other encodings keep their
+wire bytes and appear as base64.
+
 ## Redaction and its limits
 
 Header values are replaced with `[REDACTED]` when their names match one of the rules in

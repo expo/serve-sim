@@ -76,7 +76,6 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
         return;
       }
       rejected = true;
-      req.destroy();
       reject(new ControlBodyTooLargeError(size, limit));
     });
     req.on("error", reject);

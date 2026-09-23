@@ -141,7 +141,7 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
         <CaptureState attachment={meta?.attachment ?? "not-enabled"} attachError={meta?.attachError ?? null} />
         <OversizedBodiesNotice count={meta?.droppedOversizedBodies ?? 0} />
 
-        {(capturing || rows.length > 0) && (
+        {(capturing || requests.length > 0) && (
           <>
             <div className="flex items-center gap-1">
               <input

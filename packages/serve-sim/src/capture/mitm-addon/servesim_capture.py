@@ -158,9 +158,12 @@ def _part(message, want_body):
         part["truncated"] = len(wire) > MAX_BODY_BYTES
         try:
             part["body"] = head.decode("utf-8")
-        except UnicodeDecodeError:
-            part["body"] = None
-            part["base64"] = b64.b64encode(head).decode("ascii")
+        except UnicodeDecodeError as error:
+            if part["truncated"] and error.end == len(head) and error.reason == "unexpected end of data":
+                part["body"] = head[: error.start].decode("utf-8")
+            else:
+                part["body"] = None
+                part["base64"] = b64.b64encode(head).decode("ascii")
     return part
 
 

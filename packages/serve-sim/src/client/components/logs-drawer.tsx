@@ -25,6 +25,7 @@ import type { DisplayLine } from "../utils/log-rows";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { triggerBrowserDownload } from "../utils/screenshot-capture";
 import { PanelTitle } from "../panel";
+import { onEscapeCapture } from "../utils/escape-capture";
 import { PANEL_BACKGROUND } from "./panel-colors";
 import { Dropdown, DropdownOption } from "./select";
 import { ResizeEdge } from "./resize-handle";
@@ -92,18 +93,10 @@ export function LogsDrawer({
 
   useEffect(() => {
     if (!shown) return;
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key !== "Escape") return;
-      if (filter.trim()) {
-        e.preventDefault();
-        setFilter("");
-        return;
-      }
-      e.preventDefault();
-      onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return onEscapeCapture(window, () => {
+      if (filter.trim()) setFilter("");
+      else onClose();
+    });
   }, [shown, onClose, filter]);
 
   const visible = useMemo(() => {

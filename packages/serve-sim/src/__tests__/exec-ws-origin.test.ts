@@ -3,17 +3,22 @@ import WebSocket from "ws";
 import { simMiddleware } from "../middleware";
 import { accessCookieName } from "../session-auth";
 import { servePreview, type PreviewServer } from "../runtime";
+import { freePortAsync, useTempStateDir } from "./helpers";
 
-const PORT = 3473;
-const GATED_PORT = 3474;
 const TOKEN = "exec-ws-origin-token";
 
+let previewPort: number;
+let gatedPort: number;
+let tempState: ReturnType<typeof useTempStateDir>;
 let server: PreviewServer;
 let gatedServer: PreviewServer;
 
 beforeAll(async () => {
+  tempState = useTempStateDir();
+  previewPort = await freePortAsync();
+  gatedPort = await freePortAsync();
   server = await servePreview({
-    port: PORT,
+    port: previewPort,
     host: "127.0.0.1",
     middleware: simMiddleware({
       basePath: "/",
@@ -23,7 +28,7 @@ beforeAll(async () => {
     }),
   });
   gatedServer = await servePreview({
-    port: GATED_PORT,
+    port: gatedPort,
     host: "127.0.0.1",
     middleware: simMiddleware({
       basePath: "/",
@@ -38,6 +43,7 @@ beforeAll(async () => {
 afterAll(() => {
   server?.stop(true);
   gatedServer?.stop(true);
+  tempState?.restore();
 });
 
 type Outcome = "ready" | "refused" | "hung";
@@ -45,7 +51,7 @@ type Outcome = "ready" | "refused" | "hung";
 function connect(
   origin: string | null,
   {
-    port = PORT,
+    port = previewPort,
     token = TOKEN,
     subprotocol = true,
     headers = {},
@@ -102,11 +108,11 @@ describe("exec-ws origin policy", () => {
   });
 
   test("still accepts the page serve-sim serves itself", async () => {
-    expect(await connect(`http://127.0.0.1:${PORT}`)).toBe("ready");
+    expect(await connect(`http://127.0.0.1:${previewPort}`)).toBe("ready");
   });
 
   test("refuses a scheme no browser sends, even on the server's own host", async () => {
-    expect(await connect(`ws://127.0.0.1:${PORT}`)).toBe("refused");
+    expect(await connect(`ws://127.0.0.1:${previewPort}`)).toBe("refused");
   });
 
   test("still accepts a client that sends no Origin at all", async () => {
@@ -124,20 +130,20 @@ describe("exec-ws origin policy", () => {
 
 describe("exec-ws origin policy, token gate on", () => {
   test("a configured origin opens it with the token subprotocol", async () => {
-    expect(await connect("https://expo.dev", { port: GATED_PORT })).toBe("ready");
+    expect(await connect("https://expo.dev", { port: gatedPort })).toBe("ready");
   });
 
   test("refuses a configured origin presenting only the access cookie", async () => {
     const headers = { Cookie: `${accessCookieName(TOKEN)}=${TOKEN}` };
-    expect(await connect("https://expo.dev", { port: GATED_PORT, subprotocol: false, headers })).toBe(
+    expect(await connect("https://expo.dev", { port: gatedPort, subprotocol: false, headers })).toBe(
       "refused",
     );
-    expect(await connect("https://evil.test", { port: GATED_PORT, subprotocol: false, headers })).toBe(
+    expect(await connect("https://evil.test", { port: gatedPort, subprotocol: false, headers })).toBe(
       "refused",
     );
   });
 
   test("refuses a configured origin with no credential at all", async () => {
-    expect(await connect("https://expo.dev", { port: GATED_PORT, subprotocol: false })).toBe("refused");
+    expect(await connect("https://expo.dev", { port: gatedPort, subprotocol: false })).toBe("refused");
   });
 });

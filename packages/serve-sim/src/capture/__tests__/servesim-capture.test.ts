@@ -35,14 +35,35 @@ describeOrSkip("servesim_capture addon", () => {
     expect(probe.requestStartedAt).toBe(1_000_000);
   });
 
-  test("captures bounded wire bytes without decompressing hostile content", () => {
-    expect(probe.compressedSize).toBe(90);
-    expect(probe.compressedBody).toBe("gzipbytes".repeat(10));
+  test("keeps the wire bytes of a body without a content-encoding", () => {
+    expect(probe.plainSize).toBe(90);
+    expect(probe.plainBody).toBe("gzipbytes".repeat(10));
     expect(probe.metadataBody).toBe("");
   });
 
+  test("decodes gzip and deflate bodies so they read as text, and reports wire size", () => {
+    expect(probe.gzipBody).toBe('{"ok":true}');
+    expect(probe.gzipSize).toBe(true);
+    expect(probe.gzipTruncated).toBe(false);
+    expect(probe.deflateBodies).toEqual(["zlib deflate", "raw deflate"]);
+  });
+
+  test("stops decoding a compressed body at the cap instead of inflating all of it", () => {
+    expect(probe.bombBodyLength).toBe(512 * 1024);
+    expect(probe.bombTruncated).toBe(true);
+    expect(probe.bombSize).toBe(true);
+  });
+
+  test("falls back to the wire bytes for an encoding it does not decode", () => {
+    expect(probe.unsupportedBase64).toBe("//4=");
+  });
+
+  test.skipIf(probe.brBody === undefined)("decodes brotli bodies when the proxy ships brotli", () => {
+    expect(probe.brBody).toBe("brotli body");
+  });
+
   test("survives a body whose content-encoding does not match its bytes", () => {
-    // Strict decoding raises, which kills the hook and leaves the row in flight forever.
+    // A decode error must not kill the hook, which would leave the row in flight forever.
     expect(probe.lyingBody).toBe("raw-wire-bytes");
     expect(probe.lyingSize).toBe(14);
   });

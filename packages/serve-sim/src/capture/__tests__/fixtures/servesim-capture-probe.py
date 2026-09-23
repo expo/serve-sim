@@ -1,11 +1,13 @@
 """Exercise one add-on instance against a real control server."""
 
+import gzip
 import importlib.util
 import json
 import os
 import sys
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 ADDON_PATH = sys.argv[1]
@@ -45,16 +47,9 @@ MAX_BODY_BYTES = addon.MAX_BODY_BYTES
 
 
 class FakeMessage:
-    def __init__(self, content, wire, headers=None, raises=False):
-        self.content = content
+    def __init__(self, wire, headers=None):
         self.raw_content = wire
         self.headers = headers if headers is not None else {"Content-Type": "text/plain"}
-        self.raises = raises
-
-    def get_content(self, strict=True):
-        if self.raises:
-            raise ValueError("content-encoding does not match the bytes")
-        return self.content
 
 
 def wait_for(count, timeout=5.0):
@@ -66,43 +61,71 @@ def wait_for(count, timeout=5.0):
 
 results = {}
 
-compressed = addon._part(FakeMessage(b"x" * 10_000, b"gzipbytes" * 10), True)
-results["compressedSize"] = compressed["size"]
-results["compressedBody"] = compressed["body"]
+plain = addon._part(FakeMessage(b"gzipbytes" * 10), True)
+results["plainSize"] = plain["size"]
+results["plainBody"] = plain["body"]
 
-lying = addon._part(FakeMessage(b"whatever", b"raw-wire-bytes", raises=True), True)
+gzipped_wire = gzip.compress(b'{"ok":true}')
+gzipped = addon._part(FakeMessage(gzipped_wire, {"content-encoding": "gzip"}), True)
+results["gzipBody"] = gzipped["body"]
+results["gzipSize"] = gzipped["size"] == len(gzipped_wire)
+results["gzipTruncated"] = gzipped["truncated"]
+
+raw_deflate = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+raw_deflate_wire = raw_deflate.compress(b"raw deflate") + raw_deflate.flush()
+results["deflateBodies"] = [
+    addon._part(FakeMessage(zlib.compress(b"zlib deflate"), {"content-encoding": "deflate"}), True)["body"],
+    addon._part(FakeMessage(raw_deflate_wire, {"content-encoding": "deflate"}), True)["body"],
+]
+
+bomb_wire = gzip.compress(b"\0" * (20 * 1024 * 1024))
+bomb = addon._part(FakeMessage(bomb_wire, {"content-encoding": "gzip"}), True)
+results["bombBodyLength"] = len(bomb["body"])
+results["bombTruncated"] = bomb["truncated"]
+results["bombSize"] = bomb["size"] == len(bomb_wire)
+
+lying = addon._part(FakeMessage(b"raw-wire-bytes", {"content-encoding": "gzip"}), True)
 results["lyingSize"] = lying["size"]
 results["lyingBody"] = lying["body"]
 
+unsupported = addon._part(FakeMessage(b"\xff\xfe", {"content-encoding": "zstd"}), True)
+results["unsupportedBase64"] = unsupported["base64"]
 
-class ExplodingMessage(FakeMessage):
-    def get_content(self, strict=True):
-        raise AssertionError("body decoding must not run")
+if addon.brotli is not None:
+    br_wire = addon.brotli.compress(b"brotli body")
+    results["brBody"] = addon._part(FakeMessage(br_wire, {"content-encoding": "br"}), True)["body"]
 
 
-metadata_only = addon._part(ExplodingMessage(b"decoded", b"compressed"), False)
+class ExplodingHeaders(dict):
+    def get(self, key, default=None):
+        if key == "content-encoding":
+            raise AssertionError("body decoding must not run")
+        return super().get(key, default)
+
+
+metadata_only = addon._part(FakeMessage(b"compressed", ExplodingHeaders({"content-encoding": "gzip"})), False)
 results["metadataBody"] = metadata_only["body"]
 
-binary = addon._part(FakeMessage(b"\xff\xfe\x00\x01", b"\xff\xfe\x00\x01"), True)
+binary = addon._part(FakeMessage(b"\xff\xfe\x00\x01"), True)
 results["binaryBody"] = binary["body"]
 results["binaryBase64"] = binary["base64"]
 
-oversized = addon._part(FakeMessage(b"a" * (MAX_BODY_BYTES + 10), b"a" * (MAX_BODY_BYTES + 10)), True)
+oversized = addon._part(FakeMessage(b"a" * (MAX_BODY_BYTES + 10)), True)
 results["oversizedTruncated"] = oversized["truncated"]
 results["oversizedBodyLength"] = len(oversized["body"])
 
 split_wire = b"a" * (MAX_BODY_BYTES - 1) + "é".encode("utf-8")
-split = addon._part(FakeMessage(split_wire, split_wire), True)
+split = addon._part(FakeMessage(split_wire), True)
 results["splitCharBody"] = len(split["body"]) if split["body"] is not None else None
 results["splitCharBase64"] = split["base64"]
 results["splitCharTruncated"] = split["truncated"]
 
-empty = addon._part(FakeMessage(b"", b""), True)
+empty = addon._part(FakeMessage(b""), True)
 results["emptySize"] = empty["size"]
 results["emptyBody"] = empty["body"]
 results["emptyTruncated"] = empty["truncated"]
 
-headers = addon._part(FakeMessage(b"", b"", headers={"Content-Type": "application/json"}), True)
+headers = addon._part(FakeMessage(b"", headers={"Content-Type": "application/json"}), True)
 results["headerKeys"] = list(headers["headers"].keys())
 
 # Delivery. Reaching the control server at all proves the hostile proxy above was ignored.

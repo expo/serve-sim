@@ -23,7 +23,6 @@ export {
   CAPTURE_SCHEMA_VERSION,
   CaptureStore,
   clampBody,
-  isCapturing,
   type CapturedBody,
   type CapturedRequest,
   type CaptureEvent,

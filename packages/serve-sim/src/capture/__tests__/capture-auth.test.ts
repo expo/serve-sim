@@ -64,6 +64,16 @@ describe("network-capture auth", () => {
     });
   });
 
+  test("answers a malformed capture id with 400 instead of failing the route", async () => {
+    await withMiddleware(async (origin, request) => {
+      const r = await request("/network-capture/%ZZ", {
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: origin },
+      });
+      expect(r.status).toBe(400);
+      expect(r.headers.get("cache-control")).toBe("no-store, private");
+    });
+  });
+
   test("rejects unauthenticated body GET", async () => {
     await withMiddleware(async (_origin, request) => {
       const r = await request("/network-capture/some-id");

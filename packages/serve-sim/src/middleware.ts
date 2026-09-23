@@ -2788,10 +2788,24 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
 
     if (url.startsWith(base + "/network-capture/")) {
-      const id = url.slice((base + "/network-capture/").length);
+      const rawId = url.slice((base + "/network-capture/").length);
+      let id: string;
+      try {
+        id = decodeURIComponent(rawId);
+      } catch {
+        res.writeHead(400, { "Content-Type": "application/json", "Cache-Control": "no-store, private" });
+        res.end(
+          JSON.stringify({
+            error:
+              `Malformed percent-escape in the capture id (${rawId}). Copy the id verbatim from ` +
+              "the {base}/network-capture stream.",
+          }),
+        );
+        return;
+      }
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
-      handleCaptureBodyRequest(req, res, state, decodeURIComponent(id), captureRuntime);
+      handleCaptureBodyRequest(req, res, state, id, captureRuntime);
       return;
     }
 

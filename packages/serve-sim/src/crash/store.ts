@@ -80,7 +80,7 @@ export class CrashStore {
       capturedAt: report.capturedAt,
       capturedAtMs: report.capturedAtMs,
       rawPath,
-      frames: [...report.frames],
+      frames: copyFrames(report.frames),
       logTail: [...logTail],
       logTailSource,
       seenAt: at,
@@ -93,7 +93,7 @@ export class CrashStore {
       !existing || occurrences.at(-1) === occurrence ? { ...report, rawPath, logTailSource } : existing;
     const record: CrashRecord = {
       ...summary,
-      frames: [...summary.frames],
+      frames: copyFrames(summary.frames),
       id: existing?.id ?? report.incidentId ?? `no-incident-${++this.seq}`,
       occurrences,
       count: (existing?.count ?? 0) + 1,
@@ -143,13 +143,17 @@ function crashTime(occurrence: CrashOccurrence): number {
   return occurrence.capturedAtMs ?? occurrence.seenAt;
 }
 
+function copyFrames(frames: CrashFrame[]): CrashFrame[] {
+  return frames.map((frame) => ({ ...frame }));
+}
+
 function snapshot(record: CrashRecord): CrashRecord {
   return {
     ...record,
-    frames: [...record.frames],
+    frames: copyFrames(record.frames),
     occurrences: record.occurrences.map((o) => ({
       ...o,
-      frames: [...o.frames],
+      frames: copyFrames(o.frames),
       logTail: [...o.logTail],
     })),
   };

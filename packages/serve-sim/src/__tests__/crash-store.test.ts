@@ -233,6 +233,19 @@ describe("CrashStore", () => {
     expect(second!.frames.map((f) => f.symbol)).toEqual(["b()"]);
   });
 
+  test("hands out stacks a caller can change without touching the stored crash", () => {
+    const frame = { image: "Demo", symbol: "a()", imageOffset: 1, imageUuid: null, appOwned: true };
+    store.record(report({ incidentId: "INC-1", frames: [frame] }), "/a.ips");
+    frame.symbol = "changed by the reporter";
+    const first = store.get("INC-1")!;
+    first.frames[0]!.symbol = "changed";
+    first.occurrences[0]!.frames[0]!.symbol = "changed";
+
+    const again = store.get("INC-1")!;
+    expect(again.frames[0]!.symbol).toBe("a()");
+    expect(again.occurrences[0]!.frames[0]!.symbol).toBe("a()");
+  });
+
   test("caps retained occurrences while count keeps the true total", () => {
     for (let index = 0; index < MAX_OCCURRENCES + 3; index++) {
       clock = 1_000 + index;

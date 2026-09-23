@@ -335,6 +335,17 @@ describe("handleCrashReportRequest", () => {
     expect(JSON.parse(other.body_).reportError).toContain("no longer holds this crash");
   });
 
+  test("does not serve a report whose header matches but whose body is cut off", async () => {
+    const runtime = await runtimeWithCrash();
+    const res = fakeRes();
+    const cutOff = `${ips().split("\n")[0]}\n{ "pid":`;
+    await handleCrashReportRequest(fakeReq(), res, state, "INC-1", null, runtime, async () => cutOff);
+
+    const payload = JSON.parse(res.body_);
+    expect(payload.report).toBeNull();
+    expect(payload.reportError).toContain("no longer holds this crash");
+  });
+
   test("does not serve a file at this occurrence's path that no longer parses", async () => {
     const runtime = await runtimeWithCrash();
     const res = fakeRes();

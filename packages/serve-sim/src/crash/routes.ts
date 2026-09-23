@@ -5,7 +5,7 @@ import type { ServeSimDeviceState } from "../state";
 import { logBufferCache, type LogBufferCache } from "../log-buffer";
 import { openSseStream } from "../sse-stream";
 import { crashRuntime, isMissingFile, type CrashRuntime } from "./runtime";
-import { parseCrashReport, parseIpsHeader } from "./report";
+import { parseCrashReport } from "./report";
 import type { CrashOccurrence } from "./store";
 import { summarizeCrash, type CrashStreamFrame } from "./protocol";
 
@@ -164,9 +164,8 @@ export async function handleCrashReportRequest(
 }
 
 function isSameReport(raw: string, occurrence: CrashOccurrence): boolean {
-  const header = parseIpsHeader(raw);
-  if (header === null) return false;
-  if (occurrence.incidentId !== null) return header.incidentId === occurrence.incidentId;
   const report = parseCrashReport(raw);
-  return report !== null && report.pid === occurrence.pid && report.capturedAt === occurrence.capturedAt;
+  if (report === null) return false;
+  if (occurrence.incidentId !== null) return report.incidentId === occurrence.incidentId;
+  return report.pid === occurrence.pid && report.capturedAt === occurrence.capturedAt;
 }

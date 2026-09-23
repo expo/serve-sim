@@ -3,7 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { followCaptureHar } from "../har-follow";
+import { inProcessServeSimState } from "../../state";
+import { captureBaseUrl, followCaptureHar } from "../har-follow";
 
 describe("followCaptureHar", () => {
   it("reports a failed flush even when the stream was aborted", async () => {
@@ -153,6 +154,47 @@ describe("followCaptureHar", () => {
         }),
       ).rejects.toThrow(/ENOENT/);
       expect(existsSync(outPath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("captureBaseUrl", () => {
+  const UDID = "ABCD1234-0000-0000-0000-0000000000EF";
+
+  it("is the origin for a standalone server", () => {
+    expect(captureBaseUrl(inProcessServeSimState(UDID, 3100))).toBe("http://127.0.0.1:3100");
+  });
+
+  it("keeps the mount prefix of an embedded server", () => {
+    expect(captureBaseUrl(inProcessServeSimState(UDID, 3200, "/.sim"))).toBe("http://127.0.0.1:3200/.sim");
+    expect(captureBaseUrl(inProcessServeSimState(UDID, 3200, "tools/sim/"))).toBe("http://127.0.0.1:3200/tools/sim");
+  });
+});
+
+describe("followCaptureHar under an embedded mount", () => {
+  it("reads the stream and bodies below the mount prefix", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-har-mount-"));
+    const requested: string[] = [];
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"type":"finished","request":{"id":"r1","method":"GET","url":"https://a.test/","status":200,"mimeType":"text/plain","requestBytes":0,"responseBytes":2,"startedAt":1,"ttfbMs":1,"durationMs":2,"failure":null}}\n\n'));
+        controller.close();
+      },
+    });
+    try {
+      await followCaptureHar({
+        baseUrl: "http://127.0.0.1:3200/.sim", device: "D", outPath: join(dir, "session.har"), token: "test",
+        fetchImpl: async (input) => {
+          requested.push(String(input));
+          return String(input).includes("/network-capture/") ? new Response("null") : new Response(stream);
+        },
+      });
+      expect(requested).toEqual([
+        "http://127.0.0.1:3200/.sim/network-capture?device=D",
+        "http://127.0.0.1:3200/.sim/network-capture/r1?device=D",
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

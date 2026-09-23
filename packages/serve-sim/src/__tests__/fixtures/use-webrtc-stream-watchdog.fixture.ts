@@ -20,6 +20,7 @@ let clock = 0;
 /// What the signalling endpoint answers the offer with.
 let offerStatus = 200;
 let offersPosted = 0;
+let offerBody = "nope";
 
 class FakePeer {
   connectionState = "connected";
@@ -96,7 +97,7 @@ Object.assign(globalThis, {
     }
     if (input.includes("/offer")) offersPosted += 1;
     if (input.includes("/offer") && offerStatus !== 200) {
-      return new Response("nope", { status: offerStatus });
+      return new Response(offerBody, { status: offerStatus });
     }
     return new Response(JSON.stringify({ type: "answer", sdp: "" }));
   },
@@ -126,6 +127,7 @@ async function start(
   visibility = visible;
   offerStatus = offerAnswers;
   offersPosted = 0;
+  offerBody = "nope";
   clock = 0;
   timers.clear();
   intervals.clear();
@@ -413,6 +415,18 @@ test("a session that can fall back to HTTP reports the busy signalling instead",
   await start("visible", 409, false);
   await drainBusyRetries();
   expect(failures()).toMatchObject([{ kind: "permanent" }]);
+  expect(updates).not.toContain("WebRTC signaling stayed busy. Retrying...");
+});
+
+/// A device with no panel streams answers 409 too, and that never clears. Waiting it out would
+/// hold a locked Duo in a loop of identical offers.
+test("a 409 that names a lasting reason is final even for a locked session", async () => {
+  const hook = start("visible", 409, true);
+  offerBody = JSON.stringify({ error: "panel_streams_unsupported" });
+  await hook;
+  await drainBusyRetries();
+  expect(failures()).toMatchObject([{ kind: "permanent" }]);
+  expect(offersPosted).toBe(1);
   expect(updates).not.toContain("WebRTC signaling stayed busy. Retrying...");
 });
 

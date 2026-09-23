@@ -39,6 +39,46 @@ describe("WebRTC offer negotiation", () => {
     })).rejects.toBeInstanceOf(WebRtcSignalingBusyError);
   });
 
+  /// The server also answers 409 for reasons that never clear, such as a device with no panel
+  /// streams. Retrying those holds a locked session in a loop, so only contention is retried.
+  test("returns a 409 that names a lasting reason instead of retrying it", async () => {
+    for (const error of ["panel_streams_unsupported", "stream_transport_locked"]) {
+      let requests = 0;
+      const response = await postWebRtcOffer({
+        url: "https://example.test/webrtc/offer",
+        body: "{}",
+        requestTimeoutMs: 100,
+        busyRetryIntervalMs: 0,
+        busyRetryCount: 3,
+        fetchImpl: async () => {
+          requests++;
+          return new Response(JSON.stringify({ error }), { status: 409 });
+        },
+      });
+      expect(response.status).toBe(409);
+      expect(requests).toBe(1);
+    }
+  });
+
+  test("retries a 409 that names signaling contention", async () => {
+    let requests = 0;
+    const response = await postWebRtcOffer({
+      url: "https://example.test/webrtc/offer",
+      body: "{}",
+      requestTimeoutMs: 100,
+      busyRetryIntervalMs: 0,
+      busyRetryCount: 3,
+      fetchImpl: async () => {
+        requests++;
+        return requests < 3
+          ? new Response(JSON.stringify({ error: "webrtc_session_busy" }), { status: 409 })
+          : new Response(null, { status: 200 });
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(requests).toBe(3);
+  });
+
   test("reports a timeout for the individual signaling request", async () => {
     await expect(postWebRtcOffer({
       url: "https://example.test/webrtc/offer",

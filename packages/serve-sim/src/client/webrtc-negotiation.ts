@@ -79,6 +79,16 @@ export async function closeWebRtcSession({
   }).then(() => undefined, () => undefined);
 }
 
+/// Only contention clears by itself. A 409 naming another reason, such as a device with no
+/// panel streams, is final. One with no readable reason keeps the old treatment as busy.
+async function isSignalingBusy(response: Response): Promise<boolean> {
+  const error = await response.clone().json().then(
+    (body: { error?: unknown } | null) => body?.error,
+    () => undefined,
+  );
+  return error === undefined || error === "webrtc_session_busy";
+}
+
 /**
  * Post an SDP offer, retrying while the native publisher negotiates another
  * peer. Active peers can coexist; only offer setup is serialized.
@@ -130,7 +140,7 @@ export async function postWebRtcOffer({
       signal?.removeEventListener("abort", abortRequest);
     }
 
-    if (response.status !== 409) return response;
+    if (response.status !== 409 || !(await isSignalingBusy(response))) return response;
     await response.body?.cancel();
     if (attempt === busyRetryCount) throw new WebRtcSignalingBusyError();
     await waitForRetry(busyRetryIntervalMs, signal);

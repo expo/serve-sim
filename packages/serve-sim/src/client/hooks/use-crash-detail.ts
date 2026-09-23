@@ -7,8 +7,8 @@ import { simAuthHeaders } from "../utils/sim-endpoint";
 
 export function useCrashDetail(path: string, crashes: CrashSummary[]) {
   const [state, setState] = useState(EMPTY_CRASH_DETAIL);
-  const controller = useMemo(() => createCrashDetailController(async (id, occurrence, signal) => {
-    const response = await fetch(crashDetailUrl(path, id, occurrence), { headers: simAuthHeaders(), signal });
+  const controller = useMemo(() => createCrashDetailController(async (id, occurrence, signal, key) => {
+    const response = await fetch(crashDetailUrl(path, id, occurrence, key), { headers: simAuthHeaders(), signal });
     if (!response.ok) throw new Error(`Crash detail request failed (${response.status}).`);
     return await response.json() as CrashDetailResponse;
   }, setState), [path]);

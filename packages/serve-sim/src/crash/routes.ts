@@ -7,7 +7,7 @@ import { logBufferCache, type LogBufferCache } from "../log-buffer";
 import { openSseStream } from "../sse-stream";
 import { crashRuntime, isMissingFile, type CrashRuntime } from "./runtime";
 import { parseCrashReport } from "./report";
-import type { CrashOccurrence } from "./store";
+import { MAX_OCCURRENCES, type CrashOccurrence } from "./store";
 import { summarizeCrash, type CrashStreamFrame, type CrashDetailResponse } from "./protocol";
 
 /** A reader keeps the tail alive, so a crash during this stream still has lines before it. */
@@ -103,7 +103,8 @@ export async function handleCrashReportRequest(
   id: string,
   occurrenceParam: string | null = null,
   runtime: CrashRuntime = crashRuntime,
-  readReport: (path: string) => Promise<string> = (path) => readFile(path, "utf8")
+  readReport: (path: string) => Promise<string> = (path) => readFile(path, "utf8"),
+  keyParam: string | null = null
 ): Promise<void> {
   const fail = (status: number, error: string): void => {
     res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -121,8 +122,19 @@ export async function handleCrashReportRequest(
   }
 
   const total = record.occurrences.length;
+  const key = keyParam?.trim();
+  const keyed = key
+    ? record.occurrences.findIndex((occurrence) => String(occurrence.key) === key)
+    : null;
+  if (keyed === -1) {
+    return fail(
+      404,
+      `Occurrence ${key} of crash ${id} is no longer kept: only the newest ${MAX_OCCURRENCES} ` +
+        "repeats are retained. Omit key and occurrence for the newest."
+    );
+  }
   const wanted = occurrenceParam?.trim();
-  const requested = wanted ? Number(wanted) : total - 1;
+  const requested = keyed ?? (wanted ? Number(wanted) : total - 1);
   if (!Number.isInteger(requested) || requested < 0 || requested >= total) {
     return fail(
       400,

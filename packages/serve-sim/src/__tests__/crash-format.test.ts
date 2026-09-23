@@ -12,6 +12,10 @@ function frame(appOwned: boolean, symbol = "sym"): CrashFrame {
 }
 
 describe("crashDetailUrl", () => {
+  test("names the occurrence by key when it has one", () => {
+    expect(crashDetailUrl("/crashes?device=B", "INC-1", 2, 12)).toBe("/crashes/INC-1?device=B&occurrence=2&key=12");
+  });
+
   test("keeps the list query when fetching a record", () => {
     expect(crashDetailUrl("/crashes?device=B", "INC-1")).toBe("/crashes/INC-1?device=B");
   });

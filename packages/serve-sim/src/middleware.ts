@@ -2560,8 +2560,17 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         return;
       }
       const state = await selectDeviceAndReap(selectedDevice);
-      const occurrenceParam = new URL(rawUrl, "http://127.0.0.1").searchParams.get("occurrence");
-      await handleCrashReportRequest(req, res, state, id, occurrenceParam);
+      const params = new URL(rawUrl, "http://127.0.0.1").searchParams;
+      await handleCrashReportRequest(
+        req,
+        res,
+        state,
+        id,
+        params.get("occurrence"),
+        undefined,
+        undefined,
+        params.get("key")
+      );
       return;
     }
 

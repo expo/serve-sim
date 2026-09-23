@@ -10,10 +10,10 @@ function harness(paths = ["/0.ips", "/1.ips", "/2.ips"]) {
   for (const path of paths) store.record(report, path);
   const record = store.list()[0]!;
   const summary = summarizeCrash(record);
-  const requests: { index: number | undefined; signal: AbortSignal; reply: ReturnType<typeof Promise.withResolvers<CrashDetailResponse>> }[] = [];
-  const controller = createCrashDetailController((_id, index, signal) => {
+  const requests: { index: number | undefined; key: number | undefined; signal: AbortSignal; reply: ReturnType<typeof Promise.withResolvers<CrashDetailResponse>> }[] = [];
+  const controller = createCrashDetailController((_id, index, signal, key) => {
     const reply = Promise.withResolvers<CrashDetailResponse>();
-    requests.push({ index, signal, reply });
+    requests.push({ index, key, signal, reply });
     return reply.promise;
   }, () => {});
   controller.sync([summary]);
@@ -125,5 +125,16 @@ test("occurrences that share a report path keep their own place", async () => {
 
   expect(controller.step(-1)).toBe(true);
   expect(requests.at(-1)!.index).toBe(0);
+  controller.dispose();
+});
+
+test("paging asks for the chosen occurrence by key, so a shifted list still returns it", async () => {
+  const { controller, requests, response, summary } = harness();
+  const first = controller.load("A");
+  requests[0]!.reply.resolve(response(2));
+  await first;
+
+  expect(controller.select(1)).toBe(true);
+  expect(requests[1]).toMatchObject({ index: 1, key: summary.occurrenceTimes[1]!.key });
   controller.dispose();
 });

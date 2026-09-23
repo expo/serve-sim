@@ -8,10 +8,11 @@ export function formatCrashAgo(ms: number | null, now: number): string {
   return `${Math.floor(seconds / 3600)}h ago`;
 }
 
-export function crashDetailUrl(listPath: string, id: string, occurrence?: number): string {
+export function crashDetailUrl(listPath: string, id: string, occurrence?: number, key?: number): string {
   const [pathname, search] = listPath.split("?");
   const params = new URLSearchParams(search);
   if (occurrence !== undefined) params.set("occurrence", String(occurrence));
+  if (key !== undefined) params.set("key", String(key));
   const qs = params.toString();
   return `${pathname?.replace(/\/+$/, "")}/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`;
 }

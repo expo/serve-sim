@@ -415,6 +415,18 @@ describe("handleCrashReportRequest", () => {
     expect(payload.reportError).toContain("no longer holds this crash");
   });
 
+  test("serves an occurrence by its key wherever it sits now, and 404s once it aged out", async () => {
+    const runtime = await runtimeWithRepeat();
+    const found = fakeRes();
+    await handleCrashReportRequest(fakeReq(), found, state, "INC-1", "1", runtime, async (path) => path, "1");
+    expect(JSON.parse(found.body_).occurrence).toMatchObject({ key: 1, index: 0 });
+
+    const gone = fakeRes();
+    await handleCrashReportRequest(fakeReq(), gone, state, "INC-1", "1", runtime, async (path) => path, "99");
+    expect(gone.statusCode_).toBe(404);
+    expect(JSON.parse(gone.body_).error).toContain("no longer kept");
+  });
+
   test("serves the newest occurrence when none is asked for", async () => {
     const runtime = await runtimeWithRepeat();
     const res = fakeRes();

@@ -119,7 +119,8 @@ requests and requests without `tail` do not hold this long-lived lease.
 `meta` contains `schemaVersion`, `status` (`idle`, `watching`, or `unavailable`),
 `statusError`, `reportsDir`, and `reportDelaySeconds` (an estimate, not a delivery
 deadline). Crash summaries contain `occurrenceTimes` with each retained
-occurrence's `capturedAt`, `capturedAtMs`, and `rawPath`, in oldest-first order.
+occurrence's `key`, `capturedAt`, `capturedAtMs`, and `rawPath`, in oldest-first
+order.
 
 `/crashes/<id>?occurrence=<n>` returns `{record, occurrence, report, reportError}`.
 `occurrence` includes its `index`, retained `total`, `incidentId`, `pid`,
@@ -162,7 +163,8 @@ Repeats of the same crash collapse into one record, and the newest few are kept
 as `occurrences`. The list omits them and reports `occurrenceCount` and
 `logTailLines` instead; fetch `/crashes/<id>` for one occurrence, which carries
 that occurrence's `.ips` path and `logTail`. Pass `?occurrence=<n>` to pick one,
-oldest first, or omit it for the newest.
+oldest first, or omit it for the newest. Pass `?key=<key>` from `occurrenceTimes`
+to get that occurrence wherever it sits now; a key that aged out returns `404`.
 
 A tail holds the crashed app's own device-log lines from at or before the crash,
 and `logTailSource` says how it was chosen: `app-windowed` (lines found),

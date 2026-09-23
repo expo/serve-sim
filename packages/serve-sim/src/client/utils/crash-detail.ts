@@ -7,7 +7,12 @@ export type CrashDetailState = {
   error: string | null;
 };
 export const EMPTY_CRASH_DETAIL: CrashDetailState = { detail: null, pendingIndex: null, error: null };
-type LoadDetail = (id: string, occurrence: number | undefined, signal: AbortSignal) => Promise<CrashDetailResponse>;
+type LoadDetail = (
+  id: string,
+  occurrence: number | undefined,
+  signal: AbortSignal,
+  key?: number
+) => Promise<CrashDetailResponse>;
 
 export function createCrashDetailController(loadDetail: LoadDetail, onChange: (state: CrashDetailState) => void) {
   let state = EMPTY_CRASH_DETAIL;
@@ -26,14 +31,14 @@ export function createCrashDetailController(loadDetail: LoadDetail, onChange: (s
     request = null;
   };
 
-  const load = async (id: string, occurrence?: number): Promise<void> => {
+  const load = async (id: string, occurrence?: number, key?: number): Promise<void> => {
     cancel();
     const epoch = generation;
     const controller = new AbortController();
     request = controller;
     publish({ ...state, pendingIndex: occurrence ?? null, error: null });
     try {
-      const detail = await loadDetail(id, occurrence, controller.signal);
+      const detail = await loadDetail(id, occurrence, controller.signal, key);
       if (epoch !== generation) return;
       publish({ detail, pendingIndex: detail.occurrence.index, error: null });
       sync(crashes);
@@ -82,7 +87,7 @@ export function createCrashDetailController(loadDetail: LoadDetail, onChange: (s
   const select = (index: number): boolean => {
     const detail = state.detail;
     if (!detail || index < 0 || index >= detail.occurrence.total || index === state.pendingIndex) return false;
-    void load(detail.record.id, index);
+    void load(detail.record.id, index, detail.record.occurrenceTimes[index]?.key);
     return true;
   };
 

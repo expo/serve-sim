@@ -149,9 +149,11 @@ that process logged nothing), or `none` (nothing buffered for that device, or th
 report carried no device, process name, or parsable crash time).
 
 The device log only runs while something holds it: an open `/crashes` stream, or
-a `/logs?follow` poller. A JSON `/crashes` request does not start it, so a crash
-seen only through JSON polling has `logTailSource: "none"` unless one of those is
-open when it happens.
+a `/logs?follow` poller that polls at least every 8 seconds. It stops 8 seconds
+after the last reader lets go. A JSON `/crashes` request does not start it, so a
+crash seen only through JSON polling, or through a slower poller, has no tail
+lines (`none` or `buffer-rolled-past`) unless one of those is open when it
+happens.
 
 Prefer `npx @expo/serve-sim --list -q` over reading state files directly. The state
 format is internal and may also contain short-lived TURN credentials.

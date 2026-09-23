@@ -85,7 +85,7 @@ export class CrashStore {
     };
 
     const occurrences = [...(existing?.occurrences ?? []), occurrence]
-      .sort((a, b) => crashTime(a) - crashTime(b) || 0)
+      .sort((a, b) => crashTime(a) - crashTime(b))
       .slice(-MAX_OCCURRENCES);
     const summary =
       !existing || occurrences.at(-1) === occurrence ? { ...report, rawPath, logTailSource } : existing;
@@ -138,7 +138,7 @@ export class CrashStore {
 }
 
 function crashTime(occurrence: CrashOccurrence): number {
-  return occurrence.capturedAtMs ?? Number.POSITIVE_INFINITY;
+  return occurrence.capturedAtMs ?? occurrence.seenAt;
 }
 
 function snapshot(record: CrashRecord): CrashRecord {

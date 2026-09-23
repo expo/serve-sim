@@ -214,6 +214,15 @@ describe("CrashStore", () => {
     expect(record).toMatchObject({ pid: 2, rawPath: "/b.ips", capturedAt: later, count: 2 });
   });
 
+  test("places an undated occurrence by when it arrived, so a later dated one is still newest", () => {
+    store.record(report({ incidentId: "INC-1", pid: 1, capturedAt: null, capturedAtMs: null }), "/a.ips");
+    store.record(report({ incidentId: "INC-2", pid: 2 }), "/b.ips");
+
+    const record = store.get("INC-1")!;
+    expect(record.occurrences.map((occurrence) => occurrence.pid)).toEqual([1, 2]);
+    expect(record.pid).toBe(2);
+  });
+
   test("caps retained occurrences while count keeps the true total", () => {
     for (let index = 0; index < MAX_OCCURRENCES + 3; index++) {
       clock = 1_000 + index;

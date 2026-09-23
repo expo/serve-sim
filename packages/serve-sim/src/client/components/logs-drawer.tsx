@@ -24,7 +24,7 @@ import { useDeviceLogs } from "../hooks/use-device-logs";
 import type { DisplayLine } from "../utils/log-rows";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { triggerBrowserDownload } from "../utils/screenshot-capture";
-import { PanelTitle } from "../Panel";
+import { PanelTitle } from "../panel";
 import { PANEL_BACKGROUND } from "./panel-colors";
 import { Dropdown, DropdownOption } from "./select";
 import { ResizeEdge } from "./resize-handle";

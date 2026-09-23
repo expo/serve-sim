@@ -94,6 +94,9 @@ const flush = async () => {
 };
 let cleanup: (void | (() => void))[] = [];
 
+/// Options a test passes to the hook on top of the defaults. Reset by every `start`.
+let hookOptions: { judgeStalls?: boolean } = {};
+
 async function start(visible: "visible" | "hidden" = "visible") {
   cleanup.forEach((stop) => stop?.());
   effects = [];
@@ -110,7 +113,9 @@ async function start(visible: "visible" | "hidden" = "visible") {
     closeUrl: "http://local/close",
     statsUrl: "http://local/stats",
     enabled: true,
+    ...hookOptions,
   });
+  hookOptions = {};
   cleanup = effects.map((effect) => effect());
   await flush();
   peers[0]?.ontrack?.({ track: {}, streams: [{}] });
@@ -313,6 +318,21 @@ test("a hidden tab never trips the stall watchdog", async () => {
   }
   expect(pendingStats).toHaveLength(0);
   expect(failures()).toEqual([]);
+});
+
+/// A Duo keeps the hidden screen's stream running. Its decoder can freeze without the user
+/// seeing it, and its verdict would fail the codec for the screen they are looking at.
+test("a stream that may not judge stalls still feeds the panel but never calls one", async () => {
+  hookOptions = { judgeStalls: false };
+  const hook = await start();
+  hook.markFrameDecoded();
+  const seen: number[] = [];
+  hook.subscribeStats((report) => seen.push(report.size));
+  await pollStall(frozenRun(100));
+  await pollStall(frozenRun(100, 5_000));
+  expect(updates).not.toContain(STALLED);
+  expect(failures()).toEqual([]);
+  expect(seen.length).toBe(2 * (PLAYBACK_STALL_POLLS + 1));
 });
 
 /// The panel is what gets opened when the picture is black, which is before anything paints.

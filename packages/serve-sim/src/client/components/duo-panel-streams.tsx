@@ -81,6 +81,7 @@ function DuoPanelStream({
     offerUrl: `${url}/webrtc/offer`, closeUrl: `${url}/webrtc/close`,
     statsUrl: `${url}/webrtc/stats`,
     enabled: mode === "webrtc", codec, iceServers,
+    judgeStalls: activeScreenId === screenId,
   });
   const [streaming, setStreaming] = useState(false);
   useEffect(() => {

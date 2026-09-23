@@ -70,6 +70,7 @@ export function useWebRtcStream({
   codec = "h264",
   iceServers,
   statsUrl,
+  judgeStalls = true,
 }: {
   offerUrl: string;
   closeUrl: string;
@@ -77,6 +78,9 @@ export function useWebRtcStream({
   codec?: WebRtcCodec;
   iceServers?: IceServer[];
   statsUrl?: string;
+  /// Off for a stream nobody is looking at: its stats still flow, but a frozen decoder there
+  /// must not fail the codec for the one on screen.
+  judgeStalls?: boolean;
 }) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [failure, setFailure] = useState<WebRtcStreamFailure | null>(null);
@@ -87,6 +91,9 @@ export function useWebRtcStream({
   const firstFrameTimeoutRef = useRef<number | undefined>(undefined);
   const firstFrameDecodedRef = useRef(false);
   const transportRetryAttemptRef = useRef(0);
+  // Read at each poll rather than restarting the stream when the shown screen changes.
+  const judgeStallsRef = useRef(judgeStalls);
+  judgeStallsRef.current = judgeStalls;
   /// One getStats per tick, shared with the stats panel so it does not poll a second time.
   const statsListenersRef = useRef(new Set<(report: RTCStatsReport, at: number) => void>());
   const subscribeStats: StatsSubscriber = useCallback((listener) => {
@@ -174,7 +181,7 @@ export function useWebRtcStream({
       peer: () => pc,
       readable,
       judgeable: () => readable() && !failing && pc?.connectionState === "connected"
-        && firstFrameDecodedRef.current,
+        && firstFrameDecodedRef.current && judgeStallsRef.current,
       publish: publishStats,
       reconnectedAt: stallReconnectAtRef,
       failCodec: () => failCodec(),

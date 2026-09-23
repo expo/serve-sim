@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>flip</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overscroll-behavior: none; }
+  body { -webkit-tap-highlight-color: transparent; touch-action: none; -webkit-user-select: none; user-select: none; }
+  #pad { position: fixed; inset: 0; background: #000; }
+  #pad.on { background: #fff; }
+</style>
+</head>
+<body>
+<div id="pad"></div>
+<script>
+  // Toggle on finger down. touchstart fires as soon as the digitizer reports
+  // the touch, so the visual change is the earliest the simulator can react.
+  const pad = document.getElementById('pad');
+  let on = false;
+  function flip(e) { e.preventDefault(); on = !on; pad.className = on ? 'on' : ''; }
+  pad.addEventListener('touchstart', flip, { passive: false });
+  pad.addEventListener('mousedown', flip);
+</script>
+</body>
+</html>

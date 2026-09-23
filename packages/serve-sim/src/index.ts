@@ -2497,12 +2497,17 @@ registerCapability(captureRuntime.capability);
     .requiredOption("-o, --out <path>", "HAR file to keep rewriting")
     .option("--events <path>", "NDJSON event log (default: network-capture.json next to --out)")
     .option(...deviceOpt)
-    .option("--flush-ms <ms>", "How often to rewrite the HAR", "5000")
+    .option(
+      "--flush-ms <ms>",
+      "How often to rewrite the HAR",
+      (value) => parseNumberInRange(value, "--flush-ms", 250, 3_600_000, true),
+      5000,
+    )
     .action(async (opts: {
       out: string;
       events?: string;
       device?: string;
-      flushMs?: string;
+      flushMs: number;
     }) => {
       const udid = opts.device ? resolveDevice(opts.device) : undefined;
       const state = readState(udid);
@@ -2532,7 +2537,7 @@ registerCapability(captureRuntime.capability);
           device: state.device,
           outPath,
           eventsPath,
-          flushIntervalMs: Number(opts.flushMs) || 5000,
+          flushIntervalMs: opts.flushMs,
           signal: ac.signal,
           version: resolveVersion(),
           token: state.token,

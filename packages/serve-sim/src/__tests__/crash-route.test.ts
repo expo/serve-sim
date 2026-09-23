@@ -256,6 +256,17 @@ describe("handleCrashReportRequest", () => {
     expect(payload.reportError).toBeNull();
   });
 
+  test("does not show a newer report that took over this occurrence's path", async () => {
+    const runtime = await runtimeWithCrash();
+    const res = fakeRes();
+    const newer = ips().replace('"INC-1"', '"INC-2"');
+    await handleCrashReportRequest(fakeReq(), res, state, "INC-1", null, runtime, async () => newer);
+
+    const payload = JSON.parse(res.body_);
+    expect(payload.report).toBeNull();
+    expect(payload.reportError).toContain("replaced this report");
+  });
+
   test("serves the newest occurrence when none is asked for", async () => {
     const runtime = await runtimeWithRepeat();
     const res = fakeRes();

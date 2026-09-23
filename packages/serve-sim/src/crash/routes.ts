@@ -5,6 +5,7 @@ import type { ServeSimDeviceState } from "../state";
 import { logBufferCache, type LogBufferCache } from "../log-buffer";
 import { openSseStream } from "../sse-stream";
 import { crashRuntime, isMissingFile, type CrashRuntime } from "./runtime";
+import { parseIpsHeader } from "./report";
 import { summarizeCrash, type CrashStreamFrame } from "./protocol";
 
 /** A reader keeps the tail alive, so a crash during this stream still has lines before it. */
@@ -121,8 +122,13 @@ export async function handleCrashReportRequest(
       }
     }
   }
-  const reportError =
-    failure === null
+  const header = report === null ? null : parseIpsHeader(report);
+  const replaced =
+    header !== null && occurrence.incidentId !== null && header.incidentId !== occurrence.incidentId;
+  if (replaced) report = null;
+  const reportError = replaced
+    ? "macOS replaced this report with a newer one at the same path, so the summary and this occurrence's log tail are what is left."
+    : failure === null
       ? null
       : isMissingFile(failure)
         ? "macOS has deleted this report, so the summary and this occurrence's log tail are what is left."

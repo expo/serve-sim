@@ -81,11 +81,13 @@ export async function closeWebRtcSession({
 
 /// Only contention clears by itself. A 409 naming another reason, such as a device with no
 /// panel streams, is final. One with no readable reason keeps the old treatment as busy.
+/// A body read that is aborted rejects, so the caller's deadline still applies to it.
 async function isSignalingBusy(response: Response): Promise<boolean> {
-  const error = await response.clone().json().then(
-    (body: { error?: unknown } | null) => body?.error,
-    () => undefined,
-  );
+  const text = await response.clone().text();
+  let error: unknown;
+  try {
+    error = (JSON.parse(text) as { error?: unknown } | null)?.error;
+  } catch {}
   return error === undefined || error === "webrtc_session_busy";
 }
 
@@ -125,6 +127,7 @@ export async function postWebRtcOffer({
     }, requestTimeoutMs);
 
     let response: Response;
+    let busy: boolean;
     try {
       response = await fetchImpl(url, {
         method: "POST",
@@ -132,6 +135,8 @@ export async function postWebRtcOffer({
         signal: requestController.signal,
         body,
       });
+      // Headers come before the body, so a 409 is read under the same deadline and abort.
+      busy = response.status === 409 && (await isSignalingBusy(response));
     } catch (error) {
       if (timedOut && !signal?.aborted) throw new WebRtcSignalingTimeoutError();
       throw error;
@@ -140,7 +145,7 @@ export async function postWebRtcOffer({
       signal?.removeEventListener("abort", abortRequest);
     }
 
-    if (response.status !== 409 || !(await isSignalingBusy(response))) return response;
+    if (!busy) return response;
     await response.body?.cancel();
     if (attempt === busyRetryCount) throw new WebRtcSignalingBusyError();
     await waitForRetry(busyRetryIntervalMs, signal);

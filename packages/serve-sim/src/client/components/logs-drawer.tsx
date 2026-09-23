@@ -25,7 +25,7 @@ import type { DisplayLine } from "../utils/log-rows";
 import { simEndpoint } from "../utils/sim-endpoint";
 import { triggerBrowserDownload } from "../utils/screenshot-capture";
 import { PanelTitle } from "../panel";
-import { onEscapeCapture } from "../utils/escape-capture";
+import { onDrawerEscape } from "../utils/drawer-escape";
 import { PANEL_BACKGROUND } from "./panel-colors";
 import { Dropdown, DropdownOption } from "./select";
 import { ResizeEdge } from "./resize-handle";
@@ -93,7 +93,7 @@ export function LogsDrawer({
 
   useEffect(() => {
     if (!shown) return;
-    return onEscapeCapture(window, () => {
+    return onDrawerEscape(document, () => {
       if (filter.trim()) setFilter("");
       else onClose();
     });

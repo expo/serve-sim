@@ -101,6 +101,15 @@ describe("rebootWithCapture", () => {
     expect(runtime.shouldCaptureDevice("OTHER", true)).toBe(true);
   });
 
+  test("keeps the requested choice when the reboot itself fails", async () => {
+    const { runtime, deps } = harness();
+    const boot = async () => {
+      throw new Error("bootstatus timed out");
+    };
+    await expect(rebootWithCapture(UDID, true, { ...deps, boot })).rejects.toThrow("bootstatus timed out");
+    expect(runtime.shouldCaptureDevice(UDID, false)).toBe(true);
+  });
+
   test("joins a reboot already running instead of starting a competing one", async () => {
     const { runtime, deps, calls } = harness();
     let releaseBoot = () => {};

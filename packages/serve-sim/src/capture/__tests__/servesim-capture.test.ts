@@ -57,6 +57,12 @@ describeOrSkip("servesim_capture addon", () => {
     expect(probe.oversizedBodyLength).toBe(512 * 1024);
   });
 
+  test("keeps a text body readable when the cap splits a multibyte character", () => {
+    expect(probe.splitCharBody).toBe(512 * 1024 - 1);
+    expect(probe.splitCharBase64).toBeNull();
+    expect(probe.splitCharTruncated).toBe(true);
+  });
+
   test("reports an absent body as empty rather than as a cut one", () => {
     expect(probe.emptySize).toBe(0);
     expect(probe.emptyBody).toBe("");

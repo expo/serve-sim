@@ -91,6 +91,12 @@ oversized = addon._part(FakeMessage(b"a" * (MAX_BODY_BYTES + 10), b"a" * (MAX_BO
 results["oversizedTruncated"] = oversized["truncated"]
 results["oversizedBodyLength"] = len(oversized["body"])
 
+split_wire = b"a" * (MAX_BODY_BYTES - 1) + "é".encode("utf-8")
+split = addon._part(FakeMessage(split_wire, split_wire), True)
+results["splitCharBody"] = len(split["body"]) if split["body"] is not None else None
+results["splitCharBase64"] = split["base64"]
+results["splitCharTruncated"] = split["truncated"]
+
 empty = addon._part(FakeMessage(b"", b""), True)
 results["emptySize"] = empty["size"]
 results["emptyBody"] = empty["body"]

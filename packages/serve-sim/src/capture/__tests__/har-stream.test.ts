@@ -27,7 +27,7 @@ describe("HAR stream failures under Node", () => {
         import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
         import { tmpdir } from "node:os";
         import { join } from "node:path";
-        import { streamHarFromEntries, streamHarFromNdjsonFile, compactNdjsonAndStreamHar }
+        import { streamHarFromNdjsonFile, compactNdjsonAndStreamHar }
           from ${JSON.stringify(pathToFileURL(modulePath).href)};
         const dir = mkdtempSync(join(tmpdir(), "capture-stream-failure-"));
         try {
@@ -37,7 +37,7 @@ describe("HAR stream failures under Node", () => {
           const output = join(dir, "missing", "capture.har");
           const mode = ${JSON.stringify(mode)};
           const operation = mode === "large-write"
-            ? streamHarFromEntries([entry], output, "test")
+            ? streamHarFromNdjsonFile(entries, output, "test")
             : mode === "compaction"
               ? compactNdjsonAndStreamHar(entries, output, "test", 1)
               : streamHarFromNdjsonFile(join(dir, "missing.ndjson"), join(dir, "capture.har"), "test");

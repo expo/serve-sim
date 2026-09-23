@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 import { once } from "node:events";
 import { finished } from "node:stream/promises";
 
-import { emptyHar, type HarEntry } from "./har";
+import { emptyHar } from "./har";
 
 export function emptyHarText(creatorVersion: string): string {
   return `${JSON.stringify(emptyHar(creatorVersion))}\n`;
@@ -85,20 +85,6 @@ export async function streamHarFromNdjsonFile(
     } finally {
       lines.close();
       input.destroy();
-    }
-  });
-}
-
-/** Stream-write a HAR from in-memory entries (one JSON.stringify per entry). */
-export async function streamHarFromEntries(
-  entries: HarEntry[],
-  outPath: string,
-  creatorVersion: string,
-): Promise<void> {
-  await streamHarBody(outPath, creatorVersion, async (out) => {
-    for (let i = 0; i < entries.length; i++) {
-      if (i > 0) await writeChunk(out, ",");
-      await writeChunk(out, Buffer.from(JSON.stringify(entries[i])));
     }
   });
 }

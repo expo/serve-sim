@@ -252,6 +252,26 @@ describe("CrashStore", () => {
     expect(again.occurrences[0]!.frames[0]!.symbol).toBe("a()");
   });
 
+  test("keeps each repeat's own version, build, and queue", () => {
+    store.record(report({ incidentId: "INC-1" }), "/a.ips");
+    store.record(
+      report({ incidentId: "INC-2", appVersion: "1.1.0", buildVersion: "2", faultingQueue: "worker" }),
+      "/b.ips"
+    );
+
+    const [first, second] = store.get("INC-1")!.occurrences;
+    expect(first).toMatchObject({ appVersion: "1.0.0", buildVersion: "1", faultingQueue: "com.apple.main-thread" });
+    expect(second).toMatchObject({ appVersion: "1.1.0", buildVersion: "2", faultingQueue: "worker" });
+  });
+
+  test("gives occurrences that share a report path their own keys", () => {
+    store.record(report({ incidentId: "INC-1" }), "/same.ips");
+    store.record(report({ incidentId: "INC-2" }), "/same.ips");
+
+    const [first, second] = store.get("INC-1")!.occurrences;
+    expect(first!.key).not.toBe(second!.key);
+  });
+
   test("caps retained occurrences while count keeps the true total", () => {
     for (let index = 0; index < MAX_OCCURRENCES + 3; index++) {
       clock = 1_000 + index;

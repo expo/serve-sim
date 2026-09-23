@@ -4,10 +4,10 @@ import { parseCrashReport } from "../crash/report";
 import { CrashStore } from "../crash/store";
 import { summarizeCrash, type CrashDetailResponse } from "../crash/protocol";
 
-function harness() {
+function harness(paths = ["/0.ips", "/1.ips", "/2.ips"]) {
   const store = new CrashStore();
   const report = parseCrashReport('{"bundleID":"demo","incident_id":"A"}\n{}')!;
-  for (let i = 0; i < 3; i += 1) store.record(report, `/${i}.ips`);
+  for (const path of paths) store.record(report, path);
   const record = store.list()[0]!;
   const summary = summarizeCrash(record);
   const requests: { index: number | undefined; signal: AbortSignal; reply: ReturnType<typeof Promise.withResolvers<CrashDetailResponse>> }[] = [];
@@ -21,7 +21,7 @@ function harness() {
     record: summary, occurrence: { ...record.occurrences[index]!, index, total: 3 },
     report: "report", reportError: null,
   });
-  return { controller, requests, response, summary };
+  return { controller, requests, response, summary, store, report };
 }
 
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
@@ -95,4 +95,35 @@ test("closing or disposing an in-flight detail prevents a late response from reo
     expect(requests[0]!.signal.aborted).toBe(true);
     expect(controller.snapshot().detail).toBeNull();
   }
+});
+
+test("a detail newer than the list waits for the list instead of reloading", async () => {
+  const { controller, requests, store, report } = harness();
+  const first = controller.load("A");
+  store.record(report, "/3.ips");
+  const record = store.list()[0]!;
+  const newer = summarizeCrash(record);
+  requests[0]!.reply.resolve({
+    record: newer, occurrence: { ...record.occurrences[3]!, index: 3, total: 4 },
+    report: "report", reportError: null,
+  });
+  await first;
+  expect(requests).toHaveLength(1);
+
+  controller.sync([newer]);
+  expect(controller.snapshot().detail?.occurrence).toMatchObject({ rawPath: "/3.ips", index: 3, total: 4 });
+  expect(requests).toHaveLength(1);
+  controller.dispose();
+});
+
+test("occurrences that share a report path keep their own place", async () => {
+  const { controller, requests, response } = harness(["/same.ips", "/same.ips"]);
+  const first = controller.load("A");
+  requests[0]!.reply.resolve({ ...response(1), occurrence: { ...response(1).occurrence, total: 2 } });
+  await first;
+  expect(controller.snapshot().detail?.occurrence.index).toBe(1);
+
+  expect(controller.step(-1)).toBe(true);
+  expect(requests.at(-1)!.index).toBe(0);
+  controller.dispose();
 });

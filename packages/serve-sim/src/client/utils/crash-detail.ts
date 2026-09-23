@@ -14,7 +14,7 @@ export function createCrashDetailController(loadDetail: LoadDetail, onChange: (s
   let crashes: CrashSummary[] = [];
   let request: AbortController | null = null;
   let generation = 0;
-  let reloadedFor: string | null = null;
+  let reloadedFor: number | null = null;
 
   const publish = (next: CrashDetailState): void => {
     state = next;
@@ -55,11 +55,11 @@ export function createCrashDetailController(loadDetail: LoadDetail, onChange: (s
     if (!detail) return;
     const listed = crashes.find((crash) => crash.id === detail.record.id);
     if (!listed) return;
-    const index = listed.occurrenceTimes.findIndex((stamp) => stamp.rawPath === detail.occurrence.rawPath);
+    const index = listed.occurrenceTimes.findIndex((stamp) => stamp.key === detail.occurrence.key);
     if (index === -1) {
-      // A list older than the detail can miss the occurrence too; retry only once per report.
-      if (reloadedFor === detail.occurrence.rawPath) return;
-      reloadedFor = detail.occurrence.rawPath;
+      if (listed.count < detail.record.count) return;
+      if (reloadedFor === detail.occurrence.key) return;
+      reloadedFor = detail.occurrence.key;
       void load(detail.record.id, listed.occurrenceCount - 1);
       return;
     }

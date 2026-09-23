@@ -167,6 +167,7 @@ describe("handleCrashesRequest", () => {
     expect(payload.crashes[0].occurrenceCount).toBe(1);
     expect(payload.crashes[0].occurrenceTimes).toEqual([
       {
+        key: 1,
         capturedAtMs: payload.crashes[0].capturedAtMs,
         capturedAt: payload.crashes[0].capturedAt,
         rawPath: payload.crashes[0].rawPath,
@@ -424,11 +425,13 @@ describe("handleCrashReportRequest", () => {
     expect(payload.occurrence).toMatchObject({ index: 1, total: 2 });
     expect(payload.record.occurrenceTimes).toEqual([
       {
+        key: 1,
         capturedAtMs: Date.parse("2026-08-04 23:14:07.8433 -0700"),
         capturedAt: "2026-08-04 23:14:07.8433 -0700",
         rawPath: "/reports/Demo-1.ips",
       },
       {
+        key: 2,
         capturedAtMs: Date.parse("2026-08-04 23:15:07.8433 -0700"),
         capturedAt: "2026-08-04 23:15:07.8433 -0700",
         rawPath: "/reports/Demo-2.ips",

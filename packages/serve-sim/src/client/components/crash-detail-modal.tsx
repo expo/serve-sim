@@ -277,7 +277,7 @@ export function CrashDetailModal({
                 {Array.from({ length: occurrence.total }, (_, index) => {
                   const current =
                     index === occurrence.index &&
-                    record.occurrenceTimes[index]?.rawPath === occurrence.rawPath;
+                    record.occurrenceTimes[index]?.key === occurrence.key;
                   const pending = index === pendingIndex && !current;
                   return (
                     <button
@@ -333,8 +333,8 @@ export function CrashDetailModal({
         <div className="flex flex-col gap-2 border-b border-white/8 px-4 py-3">
           <Row label="Bundle" value={record.bundleId ?? "unknown"} />
           <Row label="Exception" value={`${record.exceptionType ?? "?"} · ${record.terminationIndicator ?? "?"}`} />
-          <Row label="Thread" value={record.faultingQueue ?? "unknown queue"} />
-          <Row label="Version" value={`${record.appVersion ?? "?"} (${record.buildVersion ?? "?"})`} />
+          <Row label="Thread" value={occurrence.faultingQueue ?? "unknown queue"} />
+          <Row label="Version" value={`${occurrence.appVersion ?? "?"} (${occurrence.buildVersion ?? "?"})`} />
           <Row label="Report" value={occurrence.rawPath} />
         </div>
 

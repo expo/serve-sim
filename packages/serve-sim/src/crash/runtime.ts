@@ -47,7 +47,7 @@ export interface CrashRuntimeOptions {
   ) => CrashWatcherHandle;
   readReport?: (path: string) => Promise<string>;
   readDir?: (dir: string) => Promise<string[]>;
-  statFile?: (path: string) => Promise<{ mtimeMs: number }>;
+  statFile?: (path: string) => Promise<{ mtimeMs: number; ino: number }>;
   now?: () => number;
   onError?: (message: string, error: unknown) => void;
   retryDelayMs?: number;
@@ -83,7 +83,11 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   const readReport = options.readReport ?? ((path: string) => readFile(path, "utf8"));
   const readDir = options.readDir ?? ((dir: string) => readdir(dir));
   const statFile =
-    options.statFile ?? (async (path: string) => ({ mtimeMs: (await stat(path)).mtimeMs }));
+    options.statFile ??
+    (async (path: string) => {
+      const { mtimeMs, ino } = await stat(path);
+      return { mtimeMs, ino };
+    });
   const clock = options.now ?? (() => Date.now());
   const retryDelayMs = options.retryDelayMs ?? RETRY_DELAY_MS;
   const logBuffers = options.logBuffers ?? logBufferCache;
@@ -94,7 +98,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     });
 
   const byUdid = new Map<string, CrashStore>();
-  const ingested = new Map<string, { generation: number; udid: string | null }>();
+  const ingested = new Map<string, { ino: number; udid: string | null }>();
   let watcher: CrashWatcherHandle | null = null;
   let running = false;
   let statusError: string | null = null;
@@ -162,10 +166,13 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     return { logTail: tail.lines.map((line) => line.raw), logTailSource: tail.reason };
   };
 
-  const ingest = async (filename: string): Promise<void> => {
+  const ingest = async (
+    filename: string,
+    claim: { ino: number; udid: string | null }
+  ): Promise<void> => {
     const epoch = generation;
     const releaseClaim = (): void => {
-      if (ingested.get(filename)?.generation === epoch) ingested.delete(filename);
+      if (ingested.get(filename) === claim) ingested.delete(filename);
     };
     const path = join(reportsDir, filename);
     let raw: string;
@@ -196,25 +203,30 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       );
       return;
     }
-    const entry = ingested.get(filename);
-    if (entry) entry.udid = report.deviceUdid;
+    claim.udid = report.deviceUdid;
 
     const tail = logTailFor(report);
     storeFor(report.deviceUdid).record(report, path, tail.logTail, tail.logTailSource);
   };
 
-  const forgetIfGone = async (filename: string): Promise<void> => {
+  const consider = async (filename: string, cutoff?: number): Promise<void> => {
+    if (!running || !isFinalCrashReportName(filename)) return;
+    const epoch = generation;
+    const previous = ingested.get(filename);
+    let file: { mtimeMs: number; ino: number };
     try {
-      await statFile(join(reportsDir, filename));
+      file = await statFile(join(reportsDir, filename));
     } catch (error) {
-      if (isMissingFile(error)) ingested.delete(filename);
+      if (!isMissingFile(error)) reportError(`could not stat ${filename}`, error);
+      else if (ingested.get(filename) === previous) ingested.delete(filename);
+      return;
     }
-  };
-
-  const claim = (filename: string): boolean => {
-    if (!running || !isFinalCrashReportName(filename) || ingested.has(filename)) return false;
-    ingested.set(filename, { generation, udid: null });
-    return true;
+    if (!running || epoch !== generation) return;
+    if (cutoff !== undefined && file.mtimeMs < cutoff) return;
+    if (ingested.get(filename)?.ino === file.ino) return;
+    const claim = { ino: file.ino, udid: null };
+    ingested.set(filename, claim);
+    await ingest(filename, claim);
   };
 
   const backfillAsync = async (): Promise<void> => {
@@ -238,20 +250,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
 
     for (const filename of filenames) {
       if (epoch !== generation || !running) return;
-      if (!isFinalCrashReportName(filename) || ingested.has(filename)) continue;
-
-      let mtimeMs: number;
-      try {
-        mtimeMs = (await statFile(join(reportsDir, filename))).mtimeMs;
-      } catch (error) {
-        if (!isMissingFile(error)) reportError(`could not stat ${filename}`, error);
-        continue;
-      }
-      if (epoch !== generation || !running) return;
-      if (mtimeMs < cutoff) continue;
-
-      if (!claim(filename)) continue;
-      await ingest(filename);
+      await consider(filename, cutoff);
     }
   };
 
@@ -276,13 +275,9 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
         reportsDir,
         (_eventType, filename) => {
           if (!filename) return;
-          if (claim(filename)) {
-            void ingest(filename).catch((error) =>
-              reportError(`could not ingest ${filename}`, error)
-            );
-          } else if (ingested.has(filename)) {
-            void forgetIfGone(filename);
-          }
+          void consider(filename).catch((error) =>
+            reportError(`could not ingest ${filename}`, error)
+          );
         },
         markUnavailable
       );

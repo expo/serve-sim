@@ -93,7 +93,7 @@ async function runtimeWithCrash(): Promise<CrashRuntime> {
     },
     readReport: async () => ips(),
     readDir: async () => [],
-    statFile: async () => ({ mtimeMs: 0 }),
+    statFile: async () => ({ mtimeMs: 0, ino: 1 }),
     onError: () => {},
   });
   runtime.start();
@@ -118,7 +118,7 @@ async function runtimeWithRepeat(): Promise<CrashRuntime> {
     },
     readReport: async () => ips(),
     readDir: async () => [],
-    statFile: async () => ({ mtimeMs: 0 }),
+    statFile: async () => ({ mtimeMs: 0, ino: 1 }),
     onError: () => {},
   });
   runtime.start();

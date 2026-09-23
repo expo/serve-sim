@@ -64,6 +64,7 @@ let emit: Emit;
 let failWatch: (error: unknown) => void;
 let closed: number;
 let files: Map<string, string>;
+let inodes: Map<string, number>;
 let errors: string[];
 let clock: number;
 
@@ -79,9 +80,9 @@ function makeRuntime(
     },
     statFile: async (path) => {
       const name = path.replace("/reports/", "");
-      const mtimeMs = options.mtimes?.[name];
+      const mtimeMs = options.mtimes?.[name] ?? (files.has(name) ? 1_500 : undefined);
       if (mtimeMs === undefined) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      return { mtimeMs };
+      return { mtimeMs, ino: inodes.get(name) ?? 1 };
     },
     ensureDir: () => {},
     watchDir: (_dir, listener, onWatchError) => {
@@ -121,6 +122,7 @@ beforeEach(() => {
   failWatch = () => {};
   closed = 0;
   files = new Map();
+  inodes = new Map();
   errors = [];
   clock = 1_000;
 });
@@ -181,8 +183,7 @@ describe("createCrashRuntime", () => {
   });
 
   test("forgets a report once the watcher sees it leave the directory", async () => {
-    const mtimes: Record<string, number> = { "Demo-1.ips": 1_500 };
-    const runtime = makeRuntime({ mtimes });
+    const runtime = makeRuntime();
     runtime.start();
     files.set("Demo-1.ips", ips());
     emit("rename", "Demo-1.ips");
@@ -191,10 +192,78 @@ describe("createCrashRuntime", () => {
     await flush();
     expect(runtime.listFor(UDID_A)[0]?.count).toBe(1);
 
-    delete mtimes["Demo-1.ips"];
+    files.delete("Demo-1.ips");
     emit("rename", "Demo-1.ips");
     await flush();
-    mtimes["Demo-1.ips"] = 2_500;
+    files.set("Demo-1.ips", ips());
+    emit("rename", "Demo-1.ips");
+    await flush();
+
+    expect(runtime.listFor(UDID_A)[0]?.count).toBe(2);
+    runtime.stop();
+  });
+
+  test("counts a new file that replaces a report under the same name", async () => {
+    const runtime = makeRuntime();
+    runtime.start();
+    files.set("Demo-1.ips", ips());
+    emit("rename", "Demo-1.ips");
+    await flush();
+
+    inodes.set("Demo-1.ips", 2);
+    emit("rename", "Demo-1.ips");
+    await flush();
+    emit("rename", "Demo-1.ips");
+    await flush();
+
+    expect(runtime.listFor(UDID_A)[0]?.count).toBe(2);
+    runtime.stop();
+  });
+
+  test("a stale removal check does not drop the claim of the file that replaced it", async () => {
+    let holdNextStat = false;
+    let releaseHeld: (() => void) | null = null;
+    const runtime = createCrashRuntime({
+      reportsDir: "/reports",
+      ensureDir: () => {},
+      watchDir: (_dir, listener) => {
+        emit = listener;
+        return { close: () => {} };
+      },
+      readReport: async (path) => files.get(path.replace("/reports/", "")) ?? "",
+      readDir: async () => [],
+      statFile: (path) => {
+        const name = path.replace("/reports/", "");
+        const found = files.has(name) ? { mtimeMs: 1_500, ino: inodes.get(name) ?? 1 } : null;
+        const answer = () =>
+          found
+            ? Promise.resolve(found)
+            : Promise.reject(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
+        if (!holdNextStat) return answer();
+        holdNextStat = false;
+        return new Promise((resolve, reject) => {
+          releaseHeld = () => void answer().then(resolve, reject);
+        });
+      },
+      now: () => clock,
+    });
+    runtime.start();
+    files.set("Demo-1.ips", ips());
+    emit("rename", "Demo-1.ips");
+    await flush();
+
+    files.delete("Demo-1.ips");
+    holdNextStat = true;
+    emit("rename", "Demo-1.ips");
+    await flush();
+    files.set("Demo-1.ips", ips());
+    inodes.set("Demo-1.ips", 2);
+    emit("rename", "Demo-1.ips");
+    await flush();
+    expect(runtime.listFor(UDID_A)[0]?.count).toBe(2);
+
+    releaseHeld!();
+    await flush();
     emit("rename", "Demo-1.ips");
     await flush();
 
@@ -276,6 +345,7 @@ describe("createCrashRuntime", () => {
   test("reports a read failure that is not a missing file", async () => {
     const runtime = makeRuntime({ failRead: true });
     runtime.start();
+    files.set("Demo-1.ips", ips());
 
     emit("rename", "Demo-1.ips");
     await flush();
@@ -543,7 +613,7 @@ describe("createCrashRuntime back-scan", () => {
       },
       watchDir: () => ({ close: () => {} }),
       readDir: async () => ["Demo-1.ips"],
-      statFile: async () => ({ mtimeMs: 9_999 }),
+      statFile: async () => ({ mtimeMs: 9_999, ino: 1 }),
       readReport: async () => ips(),
       onError: () => {},
     });
@@ -576,7 +646,7 @@ describe("createCrashRuntime cancellation", () => {
         });
       },
       readDir: async () => [...dirEntries],
-      statFile: async () => ({ mtimeMs: 1_500 }),
+      statFile: async () => ({ mtimeMs: 1_500, ino: 1 }),
       now: () => clock,
       onError: (message) => errors.push(message),
     });
@@ -652,11 +722,11 @@ describe("createCrashRuntime cancellation", () => {
         const name = path.replace("/reports/", "");
         statted.push(name);
         if (name === "a.ips" && !gate.release) {
-          return new Promise<{ mtimeMs: number }>((resolve) => {
-            gate.release = () => resolve({ mtimeMs: 500 });
+          return new Promise<{ mtimeMs: number; ino: number }>((resolve) => {
+            gate.release = () => resolve({ mtimeMs: 500, ino: 1 });
           });
         }
-        return Promise.resolve({ mtimeMs: 500 });
+        return Promise.resolve({ mtimeMs: 500, ino: 1 });
       },
       now: () => clock,
       onError: () => {},
@@ -891,7 +961,7 @@ describe("createCrashRuntime meta", () => {
       },
       readReport: async () => "",
       readDir: async () => [],
-      statFile: async () => ({ mtimeMs: 0 }),
+      statFile: async () => ({ mtimeMs: 0, ino: 1 }),
       now: () => clock,
       onError: () => {},
     });
@@ -918,7 +988,7 @@ describe("createCrashRuntime meta", () => {
       },
       readReport: async () => "",
       readDir: async () => [],
-      statFile: async () => ({ mtimeMs: 0 }),
+      statFile: async () => ({ mtimeMs: 0, ino: 1 }),
       now: () => clock,
       onError: () => {},
     });
@@ -956,7 +1026,7 @@ describe("createCrashRuntime meta", () => {
       },
       readReport: async () => "",
       readDir: async () => [],
-      statFile: async () => ({ mtimeMs: 0 }),
+      statFile: async () => ({ mtimeMs: 0, ino: 1 }),
       now: () => clock,
       onError: () => {},
     });
@@ -984,7 +1054,7 @@ describe("createCrashRuntime meta", () => {
       },
       readReport: async () => "",
       readDir: async () => [],
-      statFile: async () => ({ mtimeMs: 0 }),
+      statFile: async () => ({ mtimeMs: 0, ino: 1 }),
       now: () => clock,
       onError: () => {},
     });
@@ -1034,7 +1104,7 @@ describe("createCrashRuntime arm", () => {
       },
       readReport: async (path) => files.get(path.replace("/reports/", "")) ?? "",
       readDir: async () => ["Demo-1.ips"],
-      statFile: async () => ({ mtimeMs: 1_200 }),
+      statFile: async () => ({ mtimeMs: 1_200, ino: 1 }),
       now: () => clock,
       onError: () => {},
     });
@@ -1110,6 +1180,7 @@ describe("createCrashRuntime log tail", () => {
       },
       readReport: async () => files.get("Demo-1.ips") ?? "",
       readDir: async () => [],
+      statFile: async () => ({ mtimeMs: 0, ino: 1 }),
       now: () => clock,
       onError: (message) => errors.push(message),
       logBuffers: cache,
@@ -1194,11 +1265,14 @@ test("a report read from a stopped generation cannot enter the replacement store
     watchDir: (_dir, listener) => { emit = listener; return { close: () => {} }; },
     readDir: async () => [],
     readReport: () => ++reads === 1 ? pending.promise : Promise.resolve(ips()),
+    statFile: async () => ({ mtimeMs: 0, ino: 1 }),
     onError: () => {},
   });
   try {
     await runtime.start();
     emit("rename", "generation-test.ips");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reads).toBe(1);
     runtime.stop();
     await runtime.start();
     pending.resolve(ips());

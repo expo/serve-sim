@@ -222,7 +222,7 @@ export function CrashDetailModal({
           onKeyDown={onResizeKeyDown}
           className="group absolute inset-y-0 right-0 z-10 flex w-4 translate-x-1/2 cursor-col-resize touch-none items-center justify-center outline-none"
         >
-          <span className="h-8 w-1 rounded-full bg-white/15 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 group-active:opacity-100" />
+          <span className="h-8 w-1 rounded-full bg-[#48484a] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 group-active:opacity-100" />
         </div>
         <header className="flex items-start justify-between gap-3 border-b border-white/8 px-4 py-3">
           <div>
@@ -250,7 +250,7 @@ export function CrashDetailModal({
               type="button"
               onClick={onClose}
               aria-label="Close crash report"
-              className="flex items-center rounded-md px-2 py-1 text-white/50 hover:bg-white/8 hover:text-white"
+              className="flex items-center rounded-md px-2 py-1 text-[#8e8e93] hover:bg-white/8 hover:text-white"
             >
               <X size={14} strokeWidth={1.75} />
             </button>

@@ -271,6 +271,50 @@ describe("createCrashRuntime", () => {
     runtime.stop();
   });
 
+  test("a back-scan cleanup does not drop a claim made while it listed the directory", async () => {
+    let failWatcher: (error: unknown) => void = () => {};
+    let listing: { promise: Promise<string[]>; resolve: (names: string[]) => void } | null = null;
+    const runtime = createCrashRuntime({
+      reportsDir: "/reports",
+      ensureDir: () => {},
+      watchDir: (_dir, listener, onWatchError) => {
+        emit = listener;
+        failWatcher = onWatchError;
+        return { close: () => {} };
+      },
+      readReport: async (path) => files.get(path.replace("/reports/", "")) ?? "",
+      readDir: () => (listing ? listing.promise : Promise.resolve([])),
+      statFile: async (path) => {
+        const name = path.replace("/reports/", "");
+        if (!files.has(name)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        return { mtimeMs: 1_500, ino: inodes.get(name) ?? 1 };
+      },
+      retryDelayMs: 10_000,
+      now: () => clock,
+      onError: () => {},
+    });
+    await runtime.start();
+    files.set("Demo-1.ips", ips());
+    emit("rename", "Demo-1.ips");
+    await flush();
+
+    failWatcher(new Error("ENOENT"));
+    listing = Promise.withResolvers<string[]>();
+    const restarted = runtime.start();
+    inodes.set("Demo-1.ips", 2);
+    emit("rename", "Demo-1.ips");
+    await flush();
+    expect(runtime.listFor(UDID_A)[0]?.count).toBe(2);
+
+    listing.resolve([]);
+    await restarted;
+    emit("rename", "Demo-1.ips");
+    await flush();
+
+    expect(runtime.listFor(UDID_A)[0]?.count).toBe(2);
+    runtime.stop();
+  });
+
   test("skips a crash from a device build rather than a simulator", async () => {
     const runtime = makeRuntime();
     runtime.start();

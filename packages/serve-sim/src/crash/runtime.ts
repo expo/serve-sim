@@ -233,7 +233,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
     const cutoff = startedAt;
     if (cutoff === null) return;
     const epoch = generation;
-    const claimedBefore = [...ingested.keys()];
+    const claimedBefore = [...ingested.entries()];
 
     let filenames: string[];
     try {
@@ -243,9 +243,10 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       return;
     }
 
+    if (epoch !== generation || !running) return;
     const listed = new Set(filenames);
-    for (const filename of claimedBefore) {
-      if (!listed.has(filename)) ingested.delete(filename);
+    for (const [filename, claim] of claimedBefore) {
+      if (!listed.has(filename) && ingested.get(filename) === claim) ingested.delete(filename);
     }
 
     for (const filename of filenames) {

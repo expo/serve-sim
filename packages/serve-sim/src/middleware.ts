@@ -44,7 +44,7 @@ import { serveDeviceKitModelAsset } from "./devicekit-model";
 import { validatePanelRoute } from "./panel-route";
 import { createExecWebSocketHandler, type UiRequestHandler } from "./exec-ws";
 import { crashRuntime } from "./crash/runtime";
-import { handleCrashesRequest, handleCrashReportRequest } from "./crash/routes";
+import { handleCrashesRequestAfter, handleCrashReportRequest } from "./crash/routes";
 export { handleCrashesRequest, handleCrashReportRequest } from "./crash/routes";
 import { booleanParam } from "./request-params";
 import { logBufferCache, type LogBufferCache, type LogLine } from "./log-buffer";
@@ -1643,13 +1643,6 @@ async function selectDeviceAndReap(selectedDevice: string | null): Promise<Serve
   return state;
 }
 
-async function collectCrashesFor(selectedDevice: string | null): Promise<ServeSimState | null> {
-  const state = await selectDeviceAndReap(selectedDevice);
-  if (!state) return null;
-  await crashRuntime.start({ deferToRetry: true }).catch(() => {});
-  return state;
-}
-
 /**
  * Connect-style middleware that serves the simulator preview UI.
  *
@@ -2541,8 +2534,13 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
 
     if (url === base + "/crashes" || url === base + "/crashes/") {
-      const state = await collectCrashesFor(selectedDevice);
-      handleCrashesRequest(req, res, state);
+      const state = await selectDeviceAndReap(selectedDevice);
+      await handleCrashesRequestAfter(
+        () => crashRuntime.start({ deferToRetry: true }).catch(() => {}),
+        req,
+        res,
+        state
+      );
       return;
     }
 

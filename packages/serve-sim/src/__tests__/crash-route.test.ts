@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "events";
 import type { IncomingMessage, ServerResponse } from "http";
 import { handleCrashReportRequest, handleCrashesRequest } from "../middleware";
+import { handleCrashesRequestAfter } from "../crash/routes";
 import { inProcessServeSimState } from "../state";
 import { createCrashRuntime } from "../crash/runtime";
 import type { CrashRuntime } from "../crash/runtime";
@@ -213,6 +214,50 @@ describe("handleCrashesRequest", () => {
     expect(readers).toBe(0);
   });
 
+  function countingBuffers() {
+    let readers = 0;
+    const buffers = {
+      ensure: () => {
+        readers += 1;
+        return {
+          subscribeBatch: () => () => {
+            readers -= 1;
+          },
+        };
+      },
+    } as unknown as LogBufferCache;
+    return { buffers, readers: () => readers };
+  }
+
+  test("holds the device tail while the crash watcher starts, then hands it to the stream", async () => {
+    const runtime = await runtimeWithCrash();
+    const res = fakeRes();
+    const req = fakeReq({ accept: "text/event-stream" });
+    const { buffers, readers } = countingBuffers();
+    const started = Promise.withResolvers<void>();
+
+    const serving = handleCrashesRequestAfter(() => started.promise, req, res, state, runtime, buffers);
+    expect(readers()).toBe(1);
+    started.resolve();
+    await serving;
+    expect(readers()).toBe(1);
+
+    req.emit("close");
+    expect(readers()).toBe(0);
+  });
+
+  test("does not hold the tail for a JSON request while the watcher starts", async () => {
+    const runtime = await runtimeWithCrash();
+    const { buffers, readers } = countingBuffers();
+    const started = Promise.withResolvers<void>();
+
+    const serving = handleCrashesRequestAfter(() => started.promise, fakeReq(), fakeRes(), state, runtime, buffers);
+    expect(readers()).toBe(0);
+    started.resolve();
+    await serving;
+    expect(readers()).toBe(0);
+  });
+
   test("does not open a stream for a client that already went away", async () => {
     const runtime = await runtimeWithCrash();
     const res = fakeRes();
@@ -254,6 +299,37 @@ describe("handleCrashReportRequest", () => {
     expect(payload.occurrence.logTail).toEqual([]);
     expect(payload.report).toBe("RAW IPS");
     expect(payload.reportError).toBeNull();
+  });
+
+  test("checks an occurrence without an incident id by pid and capture time", async () => {
+    const incidentless = ips().replace(',"incident_id":"INC-1"', "");
+    let emit: (eventType: string, filename: string | null) => void = () => {};
+    const runtime = createCrashRuntime({
+      reportsDir: "/reports",
+      ensureDir: () => {},
+      watchDir: (_dir, listener) => {
+        emit = listener;
+        return { close: () => {} };
+      },
+      readReport: async () => incidentless,
+      readDir: async () => [],
+      statFile: async () => ({ mtimeMs: 0, ino: 1 }),
+      onError: () => {},
+    });
+    runtime.start();
+    emit("rename", "Demo-1.ips");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const id = runtime.listFor(UDID)[0]!.id;
+
+    const same = fakeRes();
+    await handleCrashReportRequest(fakeReq(), same, state, id, null, runtime, async () => incidentless);
+    expect(JSON.parse(same.body_).report).toBe(incidentless);
+
+    const other = fakeRes();
+    const newer = incidentless.replace('"pid":42', '"pid":43');
+    await handleCrashReportRequest(fakeReq(), other, state, id, null, runtime, async () => newer);
+    expect(JSON.parse(other.body_).report).toBeNull();
+    expect(JSON.parse(other.body_).reportError).toContain("replaced this report");
   });
 
   test("does not show a newer report that took over this occurrence's path", async () => {

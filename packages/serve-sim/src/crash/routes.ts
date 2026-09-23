@@ -5,12 +5,31 @@ import type { ServeSimDeviceState } from "../state";
 import { logBufferCache, type LogBufferCache } from "../log-buffer";
 import { openSseStream } from "../sse-stream";
 import { crashRuntime, isMissingFile, type CrashRuntime } from "./runtime";
-import { parseIpsHeader } from "./report";
+import { parseCrashReport, parseIpsHeader } from "./report";
+import type { CrashOccurrence } from "./store";
 import { summarizeCrash, type CrashStreamFrame } from "./protocol";
 
 /** A reader keeps the tail alive, so a crash during this stream still has lines before it. */
 function holdDeviceTail(buffers: LogBufferCache, udid: string): () => void {
   return buffers.ensure(udid).subscribeBatch(() => {});
+}
+
+export async function handleCrashesRequestAfter(
+  start: () => Promise<unknown>,
+  req: IncomingMessage,
+  res: ServerResponse,
+  state: ServeSimDeviceState | null,
+  runtime: CrashRuntime = crashRuntime,
+  logBuffers: LogBufferCache = logBufferCache
+): Promise<void> {
+  const wantsStream = (req.headers.accept ?? "").includes("text/event-stream");
+  const release = state && wantsStream ? holdDeviceTail(logBuffers, state.device) : null;
+  try {
+    if (state) await start();
+    handleCrashesRequest(req, res, state, runtime, logBuffers);
+  } finally {
+    release?.();
+  }
 }
 
 export function handleCrashesRequest(
@@ -122,9 +141,7 @@ export async function handleCrashReportRequest(
       }
     }
   }
-  const header = report === null ? null : parseIpsHeader(report);
-  const replaced =
-    header !== null && occurrence.incidentId !== null && header.incidentId !== occurrence.incidentId;
+  const replaced = report !== null && !isSameReport(report, occurrence);
   if (replaced) report = null;
   const reportError = replaced
     ? "macOS replaced this report with a newer one at the same path, so the summary and this occurrence's log tail are what is left."
@@ -144,4 +161,12 @@ export async function handleCrashReportRequest(
       reportError,
     })
   );
+}
+
+function isSameReport(raw: string, occurrence: CrashOccurrence): boolean {
+  const header = parseIpsHeader(raw);
+  if (header === null) return true;
+  if (occurrence.incidentId !== null) return header.incidentId === occurrence.incidentId;
+  const report = parseCrashReport(raw);
+  return report === null || (report.pid === occurrence.pid && report.capturedAt === occurrence.capturedAt);
 }

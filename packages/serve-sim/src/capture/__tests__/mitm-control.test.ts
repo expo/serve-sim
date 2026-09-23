@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { startMitmControl } from "../mitm-control";
+import { MAX_CONTROL_BODY_BYTES_ENV, startMitmControl } from "../mitm-control";
 import { CaptureStore } from "../store";
 
 describe("mitm control server", () => {
@@ -55,5 +55,50 @@ describe("mitm control server", () => {
     } finally {
       await new Promise<void>((resolve) => control.server.close(() => resolve()));
     }
+  });
+
+  async function withControl(
+    run: (post: (path: string, body: unknown) => Promise<Response>, store: CaptureStore) => Promise<void>,
+    onOversizedBody?: (info: { bytesSeen: number; limit: number; path: string }) => void,
+  ): Promise<void> {
+    const store = new CaptureStore(() => 10);
+    const control = await startMitmControl({ store, token: "secret", fields: [], onOversizedBody });
+    const post = (path: string, body: unknown) =>
+      fetch(`http://127.0.0.1:${control.port}${path}?t=secret`, { method: "POST", body: JSON.stringify(body) });
+    try {
+      await run(post, store);
+    } finally {
+      await new Promise<void>((resolve) => control.server.close(() => resolve()));
+    }
+  }
+
+  test("answers 413 for a post over the body cap and reports it", async () => {
+    const previous = process.env[MAX_CONTROL_BODY_BYTES_ENV];
+    process.env[MAX_CONTROL_BODY_BYTES_ENV] = "1024";
+    const oversized: { limit: number; path: string }[] = [];
+    try {
+      await withControl(async (post, store) => {
+        await post("/request", { id: "flow-1", method: "GET", url: "https://example.com" });
+        const response = await post("/response", { id: "flow-1", status: 200, res: { body: "x".repeat(4096) } });
+        expect(response.status).toBe(413);
+        expect(store.list()[0]!.status).toBeNull();
+      }, (info) => oversized.push({ limit: info.limit, path: info.path }));
+      expect(oversized).toEqual([{ limit: 1024, path: "/response" }]);
+    } finally {
+      if (previous === undefined) delete process.env[MAX_CONTROL_BODY_BYTES_ENV];
+      else process.env[MAX_CONTROL_BODY_BYTES_ENV] = previous;
+    }
+  });
+
+  test("forgets the oldest unanswered request past the pending limit", async () => {
+    await withControl(async (post) => {
+      for (let i = 0; i <= 1000; i++) {
+        await post("/request", { id: `flow-${i}`, method: "GET", url: `https://example.com/${i}` });
+      }
+      const oldest = await post("/response", { id: "flow-0", status: 200 });
+      const newest = await post("/response", { id: "flow-1000", status: 200 });
+      expect(await oldest.json()).toEqual({ ok: false });
+      expect(await newest.json()).toEqual({ ok: true });
+    });
   });
 });

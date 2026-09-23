@@ -18,6 +18,8 @@ export interface StreamConfig extends HingeControlState {
   inputUnavailable?: boolean;
   /** Whether this simulator exposes hinge angle control. */
   supportsHingeAngle?: boolean;
+  /** Whether the active Duo surface can be selected without changing its hinge angle. */
+  supportsPhysicalOrientation?: boolean;
 }
 
 export type ConnectionQuality = "good" | "degraded" | "poor";

@@ -108,6 +108,10 @@ private func u32(_ v: Int) -> UInt32 {
         try await setup.run { await injector.setHingePose(pose) }
     }
 
+    @NodeMethod func setPhysicalOrientation(_ value: String) async throws -> Bool {
+        try await setup.run { await injector.setPhysicalOrientation(value) }
+    }
+
     @NodeMethod func setTableMode(_ enabled: Bool) async throws -> Bool {
         try await setup.run { await injector.setTableMode(enabled) }
     }

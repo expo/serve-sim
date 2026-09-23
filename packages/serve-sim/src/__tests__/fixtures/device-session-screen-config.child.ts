@@ -12,6 +12,7 @@ const routedScreens: number[] = [];
 const hingeAngles: number[] = [];
 const hingePoses: string[] = [];
 const tableModes: boolean[] = [];
+const physicalOrientations: string[] = [];
 let hingePoseDelay = 0;
 let hingeResult = true;
 let hingeSupported = false;
@@ -41,6 +42,11 @@ const addon = {
     async orientation() { inputCalls.push("orientation"); return true; }
     async supportsHingeAngle() { inputCalls.push("supportsHingeAngle"); return hingeSupported; }
     async setHingeAngle(angle: number) { inputCalls.push("setHingeAngle"); hingeAngles.push(angle); return hingeResult; }
+    async setPhysicalOrientation(value: string) {
+      inputCalls.push("setPhysicalOrientation");
+      physicalOrientations.push(value);
+      return hingeResult;
+    }
     async memoryWarning() { inputCalls.push("memoryWarning"); }
     async softwareKeyboard() { inputCalls.push("softwareKeyboard"); }
     async caDebug() { inputCalls.push("caDebug"); return true; }
@@ -87,6 +93,7 @@ const inputCommands: Array<{
   { name: "orientation", call: (hid) => hid.orientation(4), result: true },
   { name: "supportsHingeAngle", call: (hid) => hid.supportsHingeAngle(), result: true },
   { name: "setHingeAngle", call: (hid) => hid.setHingeAngle(90), result: true },
+  { name: "setPhysicalOrientation", call: (hid) => hid.setPhysicalOrientation("faceup"), result: true },
   { name: "setHingePose", call: (hid) => hid.setHingePose("book"), result: true },
   { name: "setTableMode", call: (hid) => hid.setTableMode(true), result: true },
   { name: "memoryWarning", call: (hid) => hid.memoryWarning() },
@@ -130,6 +137,7 @@ beforeEach(() => {
   hingeAngles.length = 0;
   hingePoses.length = 0;
   tableModes.length = 0;
+  physicalOrientations.length = 0;
   hingePoseDelay = 0;
   hingeResult = true;
   hingeSupported = true;
@@ -150,6 +158,7 @@ async function start(initialScreen: NativeScreenInfo, supportsHingeAngle = false
   hingeAngles.length = 0;
   hingePoses.length = 0;
   tableModes.length = 0;
+  physicalOrientations.length = 0;
   hingePoseDelay = 0;
   hingeResult = true;
   hingeSupported = supportsHingeAngle;
@@ -441,6 +450,32 @@ describe("physical hinge controls", () => {
   const send = (requestId: number, command: unknown) => ws!.send(Buffer.concat([
     Buffer.from([0x10]), Buffer.from(JSON.stringify({ requestId, command })),
   ]));
+
+  test("switches the active physical surface without changing the hinge angle", async () => {
+    const { controlResults, configs } = await start({ width: 2007, height: 2853 }, true);
+    send(1, { control: "physical", value: "facedown" });
+    await waitUntil(() => controlResults.length === 1);
+    expect(controlResults[0]?.ok).toBe(false);
+    expect(physicalOrientations).toEqual([]);
+
+    send(2, { control: "pose", value: "book" });
+    send(3, { control: "physical", value: "facedown" });
+    await waitUntil(() => controlResults.length === 3);
+    expect(controlResults[2]).toEqual({ requestId: 3, ok: true });
+    expect(physicalOrientations).toEqual(["facedown"]);
+    expect(hingeAngles).toEqual([]);
+    expect(configs.at(-1)).toMatchObject({
+      hingeAngle: 90,
+      hingePose: null,
+      tableMode: true,
+      supportsPhysicalOrientation: true,
+    });
+
+    hingeResult = false;
+    send(4, { control: "physical", value: "faceup" });
+    await waitUntil(() => controlResults.length === 4);
+    expect(controlResults[3]?.ok).toBe(false);
+  });
 
   test("acknowledges distinct poses and broadcasts them to every client", async () => {
     const { controlResults, configs } = await start({ width: 2007, height: 2853 }, true);

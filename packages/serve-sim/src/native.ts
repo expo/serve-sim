@@ -30,6 +30,7 @@ interface SimHIDHandle {
   hingeState(): Promise<NativeHingeState>;
   setHingeAngle(angle: number): Promise<boolean>;
   setHingePose(pose: string): Promise<boolean>;
+  setPhysicalOrientation(value: HingePhysicalOrientation): Promise<boolean>;
   setTableMode(enabled: boolean): Promise<boolean>;
   touch(type: TouchType, x: number, y: number, w: number, hh: number, edge: number): Promise<void>;
   multiTouch(type: TouchType, x1: number, y1: number, x2: number, y2: number, w: number, hh: number): Promise<void>;
@@ -218,6 +219,10 @@ export class NativeHid {
 
   setHingePose(pose: string): Promise<boolean> {
     return this.guard("setHingePose", () => this.handle.setHingePose(pose), false);
+  }
+
+  setPhysicalOrientation(value: HingePhysicalOrientation): Promise<boolean> {
+    return this.guard("setPhysicalOrientation", () => this.handle.setPhysicalOrientation(value), false);
   }
 
   setTableMode(enabled: boolean): Promise<boolean> {

@@ -488,24 +488,17 @@ final class WebRTCPublisher: @unchecked Sendable {
     }
 
     func encoderIdentity(liveCodecs: [String]) -> WebRTCEncoderIdentity {
-        // Nothing live means nothing to describe. The probe answers what this machine can do,
-        // which is not the same claim.
-        guard let codec = StreamCodecPolicy.dominant(liveCodecs) else {
-            return WebRTCEncoderIdentity(id: nil, hardware: nil, codec: nil, probe: false)
-        }
-        // The probe describes an H.264 encoder; libwebrtc encodes VP8 and VP9 in software.
-        guard StreamCodecPolicy.isH264(codec) else {
-            return WebRTCEncoderIdentity(id: nil, hardware: false, codec: codec, probe: false)
-        }
-        // Forced H.264 skips the probe, and nothing else can say which encoder runs.
-        guard h264WebRTCSupport.probed else {
-            return WebRTCEncoderIdentity(id: nil, hardware: nil, codec: nil, probe: false)
-        }
+        let identity = WebRTCEncoderIdentityPolicy.identity(
+            liveCodecs: liveCodecs,
+            h264EncoderID: h264WebRTCSupport.encoderID,
+            h264UsesHardware: h264WebRTCSupport.usesHardware,
+            h264Probed: h264WebRTCSupport.probed
+        )
         return WebRTCEncoderIdentity(
-            id: h264WebRTCSupport.encoderID,
-            hardware: h264WebRTCSupport.usesHardware,
-            codec: codec,
-            probe: true
+            id: identity.id,
+            hardware: identity.hardware,
+            codec: identity.codec,
+            probe: identity.probe
         )
     }
 

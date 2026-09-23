@@ -144,7 +144,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
   };
 
   const logTailFor = (
-    report: Pick<CrashReport, "deviceUdid" | "capturedAtMs" | "procName">
+    report: Pick<CrashReport, "deviceUdid" | "capturedAtMs" | "procName" | "pid">
   ): { logTail: string[]; logTailSource: LogTailSource } => {
     const none = { logTail: [], logTailSource: "none" as const };
     if (!report.deviceUdid) return none;
@@ -160,6 +160,7 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       at: crashedAt,
       count: LOG_TAIL_LINES,
       processName: report.procName,
+      processId: report.pid,
       maxBytes: LOG_TAIL_MAX_BYTES,
       maxGapMs: MAX_TAIL_GAP_MS,
     });

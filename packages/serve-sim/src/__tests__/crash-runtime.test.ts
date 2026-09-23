@@ -1188,8 +1188,8 @@ describe("createCrashRuntime log tail", () => {
   const CRASH_AT = "2026-08-04 23:14:07.8433 -0700";
   const crashMs = Date.parse(CRASH_AT);
   // `Demo` is the fixture's app_name, which is what the tail filters the emitter on.
-  const appLine = (message: string): string =>
-    JSON.stringify({ processImagePath: "/x/Demo.app/Demo", m: message });
+  const appLine = (message: string, processID = 1): string =>
+    JSON.stringify({ processImagePath: "/x/Demo.app/Demo", processID, m: message });
   const daemonLine = (message: string): string =>
     JSON.stringify({ processImagePath: "/usr/libexec/SpringBoard", m: message });
 
@@ -1245,6 +1245,24 @@ describe("createCrashRuntime log tail", () => {
       logBuffers: cache,
     });
   }
+
+  test("leaves out another running instance of the same app", async () => {
+    const cache = warmRing([
+      { at: crashMs - 1_500, raw: appLine("earlier launch still running", 2) },
+      { at: crashMs - 500, raw: appLine("about to abort") },
+    ]);
+    const runtime = runtimeWithRing(cache);
+    await runtime.start();
+    files.set("Demo-1.ips", ips({ capturedAt: CRASH_AT }));
+
+    emit("rename", "Demo-1.ips");
+    await flush();
+
+    const tail = runtime.listFor(UDID_A)[0]!;
+    const detail = runtime.getFor(UDID_A, tail.id)!;
+    expect(detail.occurrences[0]!.logTail.map((raw) => JSON.parse(raw).m)).toEqual(["about to abort"]);
+    runtime.stop();
+  });
 
   test("keeps the crashed app's lines from before the crash, not the teardown after", async () => {
     const cache = warmRing([

@@ -172,7 +172,8 @@ export function parseCrashReport(raw: string): CrashReport | null {
   const threadTriggered = asObject(asObject(body.legacyInfo)?.threadTriggered);
 
   const allFrames = readFrames(body);
-  const culprit = allFrames.find((frame) => frame.appOwned) ?? allFrames[0];
+  const appFrame = allFrames.findIndex((frame) => frame.appOwned);
+  const culprit = allFrames[appFrame] ?? allFrames[0];
   const culpritFrame = culprit ? describeFrame(culprit) : null;
   const culpritKey = !culprit
     ? ""
@@ -201,7 +202,7 @@ export function parseCrashReport(raw: string): CrashReport | null {
     terminationIndicator: readString(termination, "indicator"),
     faultingQueue: readString(threadTriggered, "queue"),
     culpritFrame,
-    frames: allFrames.slice(0, MAX_FRAMES),
+    frames: allFrames.slice(0, Math.max(MAX_FRAMES, appFrame + 1)),
     signature: [
       header.bundleId ?? "",
       exceptionType ?? "",

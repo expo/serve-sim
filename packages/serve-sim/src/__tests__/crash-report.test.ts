@@ -232,6 +232,30 @@ describe("parseCrashReport", () => {
     }
   });
 
+  test("still caps the stack when the app frame is within it", () => {
+    const report = parseCrashReport(
+      ips(
+        {},
+        {
+          threads: [
+            {
+              triggered: true,
+              frames: [
+                { imageIndex: 2, imageOffset: 1, symbol: "App.early()" },
+                ...Array.from({ length: 40 }, (_unused, index) => ({
+                  imageIndex: 0,
+                  imageOffset: index,
+                  symbol: `sysFrame${index}`,
+                })),
+              ],
+            },
+          ],
+        }
+      )
+    );
+    expect(report?.frames).toHaveLength(24);
+  });
+
   test("picks the culprit from the whole stack, past the frame cap", () => {
     const deepStack = (appSymbol: string): string =>
       ips(
@@ -259,7 +283,8 @@ describe("parseCrashReport", () => {
 
     const first = parseCrashReport(deepStack("App.alpha()"));
     expect(first?.culpritFrame).toBe("Demo App.alpha()");
-    expect(first?.frames).toHaveLength(24);
+    expect(first?.frames).toHaveLength(31);
+    expect(first?.frames.at(-1)).toMatchObject({ symbol: "App.alpha()", appOwned: true });
     // Two crashes that differ only past the cap must not share a signature.
     expect(first?.signature).not.toBe(parseCrashReport(deepStack("App.beta()"))?.signature);
   });

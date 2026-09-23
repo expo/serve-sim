@@ -84,13 +84,16 @@ export class CrashStore {
       seenAt: at,
     };
 
+    const occurrences = [...(existing?.occurrences ?? []), occurrence]
+      .sort((a, b) => crashTime(a) - crashTime(b) || 0)
+      .slice(-MAX_OCCURRENCES);
+    const summary =
+      !existing || occurrences.at(-1) === occurrence ? { ...report, rawPath, logTailSource } : existing;
     const record: CrashRecord = {
-      ...report,
-      frames: [...report.frames],
+      ...summary,
+      frames: [...summary.frames],
       id: existing?.id ?? report.incidentId ?? `no-incident-${++this.seq}`,
-      rawPath,
-      logTailSource,
-      occurrences: [...(existing?.occurrences ?? []), occurrence].slice(-MAX_OCCURRENCES),
+      occurrences,
       count: (existing?.count ?? 0) + 1,
       firstSeen: existing?.firstSeen ?? at,
       lastSeen: at,
@@ -132,6 +135,10 @@ export class CrashStore {
       }
     }
   }
+}
+
+function crashTime(occurrence: CrashOccurrence): number {
+  return occurrence.capturedAtMs ?? Number.POSITIVE_INFINITY;
 }
 
 function snapshot(record: CrashRecord): CrashRecord {

@@ -204,6 +204,16 @@ describe("CrashStore", () => {
     expect(record?.occurrences.map((o) => o.rawPath)).toEqual(["/tmp/a.ips", "/tmp/b.ips"]);
   });
 
+  test("orders occurrences by crash time, not arrival, and keeps the newest as the summary", () => {
+    const later = "2026-08-03 22:55:00.0000 -0700";
+    store.record(report({ incidentId: "INC-2", pid: 2, capturedAt: later, capturedAtMs: Date.parse(later) }), "/b.ips");
+    store.record(report({ incidentId: "INC-1", pid: 1 }), "/a.ips");
+
+    const record = store.get("INC-2")!;
+    expect(record.occurrences.map((occurrence) => occurrence.pid)).toEqual([1, 2]);
+    expect(record).toMatchObject({ pid: 2, rawPath: "/b.ips", capturedAt: later, count: 2 });
+  });
+
   test("caps retained occurrences while count keeps the true total", () => {
     for (let index = 0; index < MAX_OCCURRENCES + 3; index++) {
       clock = 1_000 + index;

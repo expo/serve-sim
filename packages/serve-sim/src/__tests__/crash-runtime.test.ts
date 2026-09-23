@@ -486,6 +486,21 @@ describe("createCrashRuntime back-scan", () => {
     runtime.stop();
   });
 
+  test("records reports oldest first, so the newest ones survive the cap", async () => {
+    const names = Array.from({ length: 21 }, (_, index) => `Demo-${index}.ips`);
+    const mtimes = Object.fromEntries(names.map((name, index) => [name, 5_000 - index]));
+    for (const [index, name] of names.entries()) files.set(name, ips({ symbol: `crash${index}()` }));
+    const runtime = makeRuntime({ dirEntries: names, mtimes });
+
+    await runtime.start();
+
+    const kept = runtime.listFor(UDID_A).map((crash) => crash.culpritFrame);
+    expect(kept).toHaveLength(20);
+    expect(kept).toContain("Demo crash0()");
+    expect(kept).not.toContain("Demo crash20()");
+    runtime.stop();
+  });
+
   test("skips reports written before the runtime started", async () => {
     const runtime = makeRuntime({
       dirEntries: ["Stale.ips"],

@@ -249,7 +249,20 @@ export function createCrashRuntime(options: CrashRuntimeOptions = {}) {
       if (!listed.has(filename) && ingested.get(filename) === claim) ingested.delete(filename);
     }
 
+    const candidates: { filename: string; mtimeMs: number }[] = [];
     for (const filename of filenames) {
+      if (epoch !== generation || !running) return;
+      if (!isFinalCrashReportName(filename)) continue;
+      try {
+        const { mtimeMs } = await statFile(join(reportsDir, filename));
+        if (mtimeMs >= cutoff) candidates.push({ filename, mtimeMs });
+      } catch (error) {
+        if (!isMissingFile(error)) reportError(`could not stat ${filename}`, error);
+      }
+    }
+
+    candidates.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    for (const { filename } of candidates) {
       if (epoch !== generation || !running) return;
       await consider(filename, cutoff);
     }

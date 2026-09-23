@@ -144,7 +144,7 @@ export async function handleCrashReportRequest(
   const replaced = report !== null && !isSameReport(report, occurrence);
   if (replaced) report = null;
   const reportError = replaced
-    ? "macOS replaced this report with a newer one at the same path, so the summary and this occurrence's log tail are what is left."
+    ? "The file at this path no longer holds this crash's report: macOS replaced it, or it no longer parses. The summary and this occurrence's log tail are what is left."
     : failure === null
       ? null
       : isMissingFile(failure)
@@ -165,8 +165,8 @@ export async function handleCrashReportRequest(
 
 function isSameReport(raw: string, occurrence: CrashOccurrence): boolean {
   const header = parseIpsHeader(raw);
-  if (header === null) return true;
+  if (header === null) return false;
   if (occurrence.incidentId !== null) return header.incidentId === occurrence.incidentId;
   const report = parseCrashReport(raw);
-  return report === null || (report.pid === occurrence.pid && report.capturedAt === occurrence.capturedAt);
+  return report !== null && report.pid === occurrence.pid && report.capturedAt === occurrence.capturedAt;
 }

@@ -223,6 +223,16 @@ describe("CrashStore", () => {
     expect(record.pid).toBe(2);
   });
 
+  test("keeps each repeat's own stack", () => {
+    const frame = (symbol: string) => ({ image: "Demo", symbol, imageOffset: 1, imageUuid: null, appOwned: true });
+    store.record(report({ incidentId: "INC-1", frames: [frame("a()")] }), "/a.ips");
+    store.record(report({ incidentId: "INC-2", frames: [frame("b()")] }), "/b.ips");
+
+    const [first, second] = store.get("INC-1")!.occurrences;
+    expect(first!.frames.map((f) => f.symbol)).toEqual(["a()"]);
+    expect(second!.frames.map((f) => f.symbol)).toEqual(["b()"]);
+  });
+
   test("caps retained occurrences while count keeps the true total", () => {
     for (let index = 0; index < MAX_OCCURRENCES + 3; index++) {
       clock = 1_000 + index;

@@ -7,6 +7,12 @@ import queue
 import threading
 import urllib.error
 import urllib.request
+import zlib
+
+try:
+    import brotli
+except ImportError:
+    brotli = None
 
 CONTROL = os.environ.get("SERVE_SIM_CAPTURE_CONTROL_URL")
 TOKEN = os.environ.get("SERVE_SIM_CAPTURE_CONTROL_TOKEN", "")
@@ -143,6 +149,28 @@ def _safe_url(raw):
     return _clip(f"{head}?{'&'.join(parts)}", MAX_URL_CHARS)
 
 
+def _decoded_head(message, wire):
+    # Decode at most one byte past the cap, so a small compressed body cannot inflate without bound.
+    limit = MAX_BODY_BYTES + 1
+    encoding = (message.headers.get("content-encoding") or "").strip().lower()
+    if encoding in ("", "identity"):
+        return wire
+    if encoding in ("gzip", "x-gzip", "deflate"):
+        modes = (zlib.MAX_WBITS, -zlib.MAX_WBITS) if encoding == "deflate" else (zlib.MAX_WBITS | 32,)
+        for wbits in modes:
+            try:
+                return zlib.decompressobj(wbits).decompress(wire, limit)
+            except zlib.error:
+                continue
+        return wire
+    if encoding == "br" and brotli is not None:
+        try:
+            return brotli.Decompressor().process(wire, output_buffer_limit=limit)[:limit]
+        except brotli.error:
+            return wire
+    return wire
+
+
 def _part(message, want_body):
     wire = message.raw_content or b""
     part = {
@@ -154,8 +182,9 @@ def _part(message, want_body):
         "truncated": False,
     }
     if want_body and wire:
-        head = wire[:MAX_BODY_BYTES]
-        part["truncated"] = len(wire) > MAX_BODY_BYTES
+        body = _decoded_head(message, wire)
+        head = body[:MAX_BODY_BYTES]
+        part["truncated"] = len(body) > MAX_BODY_BYTES
         try:
             part["body"] = head.decode("utf-8")
         except UnicodeDecodeError as error:

@@ -1,3 +1,7 @@
+/**
+ * Unused until #53 reads it. Remove the tag there.
+ * @public
+ */
 export const CAPTURE_SCHEMA_VERSION = 1;
 
 const MAX_REQUESTS = 500;
@@ -42,10 +46,6 @@ export interface CaptureMeta {
   attachment: CaptureAttachment;
   attachError: string | null;
   droppedOversizedBodies: number;
-}
-
-export function isCapturing(meta: CaptureMeta): boolean {
-  return meta.attachment === "capturing";
 }
 
 type Listener = (event: CaptureEvent) => void;

@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 
 import { CaptureDiskAccumulator, NETWORK_CAPTURE_FILENAME } from "./disk";
 import { parseFinishedCaptureRequest } from "./har";
+import type { ServeSimDeviceState } from "../state";
 import type { CapturedBody } from "./store";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -30,6 +31,21 @@ function defaultEventsPath(harPath: string): string {
   return join(dirname(harPath), NETWORK_CAPTURE_FILENAME);
 }
 
+/** The URL the device's routes live under: the origin, plus the mount prefix of an embedded server. */
+export function captureBaseUrl(state: Pick<ServeSimDeviceState, "url" | "streamUrl" | "device">): string {
+  const stream = new URL(state.streamUrl);
+  const helperPath = `/helper/${state.device}/stream.mjpeg`;
+  if (!stream.pathname.endsWith(helperPath)) return state.url;
+  return `${stream.origin}${stream.pathname.slice(0, -helperPath.length)}`;
+}
+
+function captureRoute(baseUrl: string, path: string, device: string): URL {
+  const url = new URL(baseUrl);
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}${path}`;
+  url.searchParams.set("device", device);
+  return url;
+}
+
 async function fetchBody(
   baseUrl: string,
   device: string,
@@ -38,8 +54,7 @@ async function fetchBody(
   token: string,
   signal?: AbortSignal,
 ): Promise<CapturedBody | null> {
-  const withDevice = new URL(`/network-capture/${encodeURIComponent(id)}`, baseUrl);
-  withDevice.searchParams.set("device", device);
+  const withDevice = captureRoute(baseUrl, `/network-capture/${encodeURIComponent(id)}`, device);
   try {
     const res = await fetchImpl(withDevice, {
       signal,
@@ -75,10 +90,7 @@ export async function followCaptureHar(opts: FollowCaptureHarOptions): Promise<F
   });
   disk.begin();
 
-  const streamUrl = new URL(
-    `/network-capture?device=${encodeURIComponent(opts.device)}`,
-    opts.baseUrl,
-  ).toString();
+  const streamUrl = captureRoute(opts.baseUrl, "/network-capture", opts.device).toString();
 
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let streamFailure: { error: unknown } | undefined;

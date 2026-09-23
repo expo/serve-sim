@@ -604,6 +604,22 @@ describe("capture runtime", () => {
     expect((await runtime.refreshForDevice(UDID)).attachment).toBe("capturing");
   });
 
+  test("does not join two misses across a probe error", async () => {
+    const results: (boolean | Error)[] = [false, new Error("device not found"), false];
+    const { runtime } = harness({
+      checkIntervalMs: 0,
+      isInjected: async () => {
+        const next = results.shift();
+        if (next instanceof Error) throw next;
+        return next ?? true;
+      },
+    });
+    await runtime.enableForDevice(UDID);
+
+    for (let i = 0; i < 3; i++) await runtime.refreshForDevice(UDID);
+    expect(runtime.metaFor(UDID).attachment).toBe("capturing");
+  });
+
   test("hands a subscriber the live store without changing what the device does", async () => {
     const { runtime, calls } = harness();
     await runtime.enableForDevice(UDID);

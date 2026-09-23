@@ -317,6 +317,7 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
               `Network capture: injection probe for ${udid} failed:`,
               error instanceof Error ? error.message : error,
             );
+            session.injectMisses = 0;
             return session.meta;
           }
           if (live) {

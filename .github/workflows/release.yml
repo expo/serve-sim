@@ -1,12 +1,22 @@
 name: Release @expo/serve-sim
 
-run-name: Release @expo/serve-sim (${{ inputs.bump }}) by @${{ github.triggering_actor }}
+run-name: Release @expo/serve-sim (${{ (github.event_name == 'push' || inputs.canary) && 'canary' || inputs.bump }}) by @${{ github.triggering_actor }}
 
 on:
+  # Every commit that lands on expo publishes a canary. The stable release below
+  # pushes its release commit with GITHUB_TOKEN, and GitHub does not start new
+  # runs for those, so a stable release never triggers a canary of itself.
+  push:
+    branches:
+      - expo
   workflow_dispatch:
     inputs:
+      canary:
+        description: Publish a canary from this branch instead of a stable release
+        type: boolean
+        default: false
       bump:
-        description: SemVer component to bump
+        description: SemVer component to bump (ignored by canaries)
         required: true
         type: choice
         options:
@@ -14,10 +24,12 @@ on:
           - minor
           - major
 
-# Only one release may calculate and publish the next version at a time.
+# Stable releases may not overlap: each one calculates the next version from
+# expo's HEAD. Canaries write nothing to git, so they only need to cancel an
+# older canary for the same ref.
 concurrency:
-  group: release-expo-serve-sim
-  cancel-in-progress: false
+  group: release-expo-serve-sim-${{ (github.event_name == 'push' || inputs.canary) && github.ref || 'stable' }}
+  cancel-in-progress: ${{ github.event_name == 'push' || inputs.canary }}
 
 permissions:
   contents: read
@@ -25,18 +37,22 @@ permissions:
 jobs:
   release:
     name: Release
-    if: github.repository == 'expo/serve-sim' && github.ref == 'refs/heads/expo'
+    if: github.repository == 'expo/serve-sim' && (github.event_name == 'push' || inputs.canary || github.ref == 'refs/heads/expo')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: npm-release
     permissions:
       contents: write
       id-token: write
+    env:
+      CANARY: ${{ github.event_name == 'push' || inputs.canary }}
     steps:
-      - name: Checkout expo
+      - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: expo
+          # A canary builds the ref it was started from. A stable release always
+          # builds expo, so that it can detect expo moving under it.
+          ref: ${{ (github.event_name == 'push' || inputs.canary) && github.ref || 'expo' }}
           fetch-depth: 2
 
       - name: Setup Node.js
@@ -46,7 +62,7 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      - name: Create release commit
+      - name: Resolve version
         id: release
         env:
           BUMP: ${{ inputs.bump }}
@@ -72,40 +88,63 @@ jobs:
 
           REUSED=false
           PUBLISHED=false
-          LAST_RUN_ID=$(git log -1 --format='%(trailers:key=Release-Run,valueonly)')
-          if [ "$LAST_RUN_ID" = "$RELEASE_RUN_ID" ] && [ "$(git rev-parse HEAD^)" = "$DISPATCH_SHA" ]; then
-            echo "Reusing the release commit created by this run."
-            REUSED=true
-            VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
+          if [ "$CANARY" = "true" ]; then
+            # A canary claims the next patch version, so that it sorts above the
+            # last stable release. Nothing is committed or tagged: the version
+            # never reaches git, so the EAS build receives it as an input.
+            NPM_TAG=canary
+            # The run number orders the canaries. The attempt number makes a
+            # re-run publish a new version rather than stop on npm's duplicate
+            # rejection, because a re-run keeps the run number.
+            VERSION=$(node -p 'const v = require("./packages/serve-sim/package.json").version.split("-")[0].split("."); v[0] + "." + v[1] + "." + (Number(v[2]) + 1) + "-canary." + process.env.GITHUB_RUN_NUMBER + "." + process.env.GITHUB_RUN_ATTEMPT')
+            # Unique per attempt, so this guard should never fire. It stays as a
+            # safety net, and it keeps the canary path parallel to the stable one.
             if on_npm "$VERSION"; then
               echo "@expo/serve-sim@$VERSION is already on npm from an earlier attempt of this run. Skipping the build and publish steps."
               PUBLISHED=true
             fi
-          elif [ "$(git rev-parse HEAD)" != "$DISPATCH_SHA" ]; then
-            echo "::error::expo moved after this release was started. Start a new release from the latest expo."
-            exit 1
           else
-            npm version "$BUMP" --no-git-tag-version --no-package-lock --no-workspaces-update --workspace packages/serve-sim
-            VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
-            # Refuse before the commit and tag exist. A version that is already
-            # on npm was published outside this workflow, and tagging this
-            # source for it would lie about what the package contains.
-            if on_npm "$VERSION"; then
-              git checkout -- packages/serve-sim/package.json
-              echo "::error::@expo/serve-sim@$VERSION is already on npm and was not published by this workflow. Nothing was committed or tagged. Choose a different bump or fix npm first."
+            NPM_TAG=latest
+            LAST_RUN_ID=$(git log -1 --format='%(trailers:key=Release-Run,valueonly)')
+            if [ "$LAST_RUN_ID" = "$RELEASE_RUN_ID" ] && [ "$(git rev-parse HEAD^)" = "$DISPATCH_SHA" ]; then
+              echo "Reusing the release commit created by this run."
+              REUSED=true
+              VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
+              if on_npm "$VERSION"; then
+                echo "@expo/serve-sim@$VERSION is already on npm from an earlier attempt of this run. Skipping the build and publish steps."
+                PUBLISHED=true
+              fi
+            elif [ "$(git rev-parse HEAD)" != "$DISPATCH_SHA" ]; then
+              echo "::error::expo moved after this release was started. Start a new release from the latest expo."
               exit 1
+            else
+              npm version "$BUMP" --no-git-tag-version --no-package-lock --no-workspaces-update --workspace packages/serve-sim
+              VERSION=$(node -p "require('./packages/serve-sim/package.json').version")
+              # Refuse before the commit and tag exist. A version that is already
+              # on npm was published outside this workflow, and tagging this
+              # source for it would lie about what the package contains.
+              if on_npm "$VERSION"; then
+                git checkout -- packages/serve-sim/package.json
+                echo "::error::@expo/serve-sim@$VERSION is already on npm and was not published by this workflow. Nothing was committed or tagged. Choose a different bump or fix npm first."
+                exit 1
+              fi
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add packages/serve-sim/package.json
+              git commit -m "Release @expo/serve-sim $VERSION" -m "Release-Run: $RELEASE_RUN_ID"
+              git tag "@expo/serve-sim@$VERSION"
+              git push --atomic origin HEAD:expo "refs/tags/@expo/serve-sim@$VERSION"
             fi
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add packages/serve-sim/package.json
-            git commit -m "Release @expo/serve-sim $VERSION" -m "Release-Run: $RELEASE_RUN_ID"
-            git tag "@expo/serve-sim@$VERSION"
-            git push --atomic origin HEAD:expo "refs/tags/@expo/serve-sim@$VERSION"
           fi
 
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "reused=$REUSED" >> "$GITHUB_OUTPUT"
-          echo "published=$PUBLISHED" >> "$GITHUB_OUTPUT"
+          echo "Publishing @expo/serve-sim@$VERSION to the $NPM_TAG tag."
+          {
+            echo "version=$VERSION"
+            echo "npm_tag=$NPM_TAG"
+            echo "sha=$(git rev-parse HEAD)"
+            echo "reused=$REUSED"
+            echo "published=$PUBLISHED"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build npm package with EAS
         if: steps.release.outputs.published != 'true'
@@ -114,6 +153,7 @@ jobs:
         run: |
           npx --yes eas-cli@latest workflow:run .eas/workflows/build-release.yml \
             --ref "${{ steps.release.outputs.sha }}" \
+            --input version="${{ steps.release.outputs.version }}" \
             --wait \
             --non-interactive \
             --json > /tmp/eas-workflow.json
@@ -133,11 +173,14 @@ jobs:
         if: steps.release.outputs.published != 'true'
         env:
           REUSED: ${{ steps.release.outputs.reused }}
+          # A canary version is never committed, so check the tarball against
+          # the version this run resolved rather than the one in the tree.
+          EXPECTED: ${{ steps.release.outputs.version }}
+          NPM_TAG: ${{ steps.release.outputs.npm_tag }}
         run: |
           VERSION=$(tar -xOf /tmp/serve-sim.tgz package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
-          EXPECTED=$(node -p "require('./packages/serve-sim/package.json').version")
           if [ "$VERSION" != "$EXPECTED" ]; then
-            echo "::error::tarball is $VERSION but the release commit is $EXPECTED"
+            echo "::error::tarball is $VERSION but this run resolved $EXPECTED"
             exit 1
           fi
 
@@ -160,14 +203,17 @@ jobs:
             fi
             echo "::notice::@expo/serve-sim@$VERSION was published by an earlier attempt of this run. Skipping publish."
           elif printf '%s' "$LOOKUP" | grep -q 'E404'; then
-            npm publish /tmp/serve-sim.tgz
+            npm publish /tmp/serve-sim.tgz --tag "$NPM_TAG"
           else
             echo "::error::Could not check npm for @expo/serve-sim@$VERSION. Re-run the job."
             printf '%s\n' "$LOOKUP"
             exit 1
           fi
 
+      # A canary is never committed or tagged, so there is no tag for a release
+      # to point at.
       - name: Create GitHub release
+        if: env.CANARY != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.release.outputs.sha }}

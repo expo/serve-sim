@@ -1,7 +1,13 @@
 name: Build @expo/serve-sim release
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to pack. Leave empty to pack the version in package.json.
+        type: string
+        required: false
+        default: ""
 
 defaults:
   tools:
@@ -17,6 +23,18 @@ jobs:
       - uses: eas/checkout
 
       - uses: eas/install_node_modules
+
+      # Canaries are not committed to git, so the release workflow passes the
+      # version here instead. This runs after the install, so that the install
+      # sees the same package.json that the lockfile was built from, and before
+      # the build, because build.ts stamps the version into the bundle.
+      - name: Set package version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$VERSION" ]; then
+            npm pkg set version="$VERSION" --workspace packages/serve-sim
+          fi
 
       - name: Build native helpers and package
         run: bun run --filter '@expo/serve-sim' build

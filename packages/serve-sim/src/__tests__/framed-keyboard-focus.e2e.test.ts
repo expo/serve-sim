@@ -15,7 +15,7 @@ const CHROME = process.env.SERVE_SIM_CHROME ?? "/Applications/Google Chrome.app/
 
 const udid = e2eDevice();
 const ready = udid !== null && existsSync(CLI_PATH) && existsSync(FIXTURE) && existsSync(CHROME);
-requireE2E("framed keyboard focus", ready);
+requireE2E(`framed keyboard focus (needs Chrome at ${CHROME}; set SERVE_SIM_CHROME to use another)`, ready);
 const describeWithSim = ready ? describe : describe.skip;
 
 function cli(...args: string[]): string {
@@ -29,11 +29,20 @@ function simctl(...args: string[]): string {
 class Cdp {
   private nextId = 0;
   private pending = new Map<number, (result: Record<string, unknown>) => void>();
+  readonly frameSessions: string[] = [];
 
   private constructor(private readonly ws: WebSocket) {
     ws.onmessage = (event) => {
-      const message = JSON.parse(String(event.data)) as { id?: number; result?: Record<string, unknown> };
+      const message = JSON.parse(String(event.data)) as {
+        id?: number;
+        method?: string;
+        params?: { sessionId?: string; targetInfo?: { type?: string } };
+        result?: Record<string, unknown>;
+      };
       if (message.id !== undefined) this.pending.get(message.id)?.(message.result ?? {});
+      if (message.method === "Target.attachedToTarget" && message.params?.targetInfo?.type === "iframe") {
+        this.frameSessions.push(message.params.sessionId!);
+      }
     };
   }
 
@@ -46,16 +55,16 @@ class Cdp {
     return new Cdp(ws);
   }
 
-  send(method: string, params: object = {}): Promise<Record<string, unknown>> {
+  send(method: string, params: object = {}, sessionId?: string): Promise<Record<string, unknown>> {
     const id = ++this.nextId;
     return new Promise((resolve) => {
       this.pending.set(id, resolve);
-      this.ws.send(JSON.stringify({ id, method, params }));
+      this.ws.send(JSON.stringify({ id, method, params, sessionId }));
     });
   }
 
-  async evaluate<T>(expression: string): Promise<T> {
-    const reply = await this.send("Runtime.evaluate", { expression, returnByValue: true });
+  async evaluate<T>(expression: string, sessionId?: string): Promise<T> {
+    const reply = await this.send("Runtime.evaluate", { expression, returnByValue: true }, sessionId);
     return (reply.result as { value: T }).value;
   }
 
@@ -63,6 +72,10 @@ class Cdp {
     this.ws.close();
   }
 }
+
+const STREAM_LAYER = `[...document.querySelectorAll("div")].find((d) => d.style.touchAction === "none" && d.getBoundingClientRect().width > 100)`;
+const HARDWARE_KEYBOARD_SWITCH = `document.querySelector('[role="switch"][aria-label="Hardware Keyboard"]')`;
+const TOOLS_BUTTON = `document.querySelector('[aria-label="Open tools panel"]')`;
 
 describeWithSim(`desktop keyboard focus (sim ${udid ?? "<skipped>"})`, () => {
   let state: ServeSimDeviceState;
@@ -99,26 +112,41 @@ describeWithSim(`desktop keyboard focus (sim ${udid ?? "<skipped>"})`, () => {
     return fixtureLines().slice(start).filter((line) => line.startsWith("text\t")).at(-1)?.split("\t")[2];
   }
 
-  async function load(url: string): Promise<void> {
+  async function load(url: string): Promise<string | undefined> {
+    const framesBefore = cdp.frameSessions.length;
     await cdp.send("Page.navigate", { url });
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       if (await cdp.evaluate<boolean>("document.readyState === 'complete'")) break;
       await Bun.sleep(200);
     }
+    return cdp.frameSessions.slice(framesBefore).at(-1);
   }
 
-  async function streamCenter(): Promise<{ x: number; y: number }> {
-    await load(simUrl);
+  async function elementCenter(expression: string, sessionId?: string, yFraction = 0.5): Promise<{ x: number; y: number } | null> {
+    const rect = await cdp.evaluate<{ x: number; y: number; width: number; height: number } | null>(
+      `(() => { const el = ${expression}; if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`,
+      sessionId,
+    );
+    return rect ? { x: rect.x + rect.width / 2, y: rect.y + rect.height * yFraction } : null;
+  }
+
+  async function waitForElement(expression: string, sessionId?: string, yFraction = 0.5): Promise<{ x: number; y: number }> {
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
-      const rect = await cdp.evaluate<{ x: number; y: number; width: number; height: number } | null>(
-        `(() => { const layer = [...document.querySelectorAll("div")].find((d) => d.style.touchAction === "none" && d.getBoundingClientRect().width > 100); if (!layer) return null; const r = layer.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`,
-      );
-      if (rect) return { x: rect.x + rect.width / 2, y: rect.y + rect.height * 0.75 };
+      const point = await elementCenter(expression, sessionId, yFraction);
+      if (point) return point;
       await Bun.sleep(200);
     }
-    throw new Error("The simulator stream did not render within 30s.");
+    throw new Error(`No element matched ${expression} within 30s.`);
+  }
+
+  async function openFramed(): Promise<string> {
+    const session = await load(`http://127.0.0.1:${parent.port}/`);
+    if (!session) throw new Error("Chrome did not attach to the cross-origin preview frame.");
+    await cdp.send("Runtime.enable", {}, session);
+    await cdp.send("Runtime.runIfWaitingForDebugger", {}, session);
+    return session;
   }
 
   async function clickOnce(point: { x: number; y: number }): Promise<void> {
@@ -177,12 +205,21 @@ describeWithSim(`desktop keyboard focus (sim ${udid ?? "<skipped>"})`, () => {
       });
       chrome.on("exit", (code) => reject(new Error(`Chrome exited before it opened a debugging port (exit=${code}).\n${output}`)));
     });
-    const targets = await (await fetch(`http://127.0.0.1:${new URL(browserUrl).port}/json/list`)).json() as Array<{ type: string; webSocketDebuggerUrl: string }>;
-    cdp = await Cdp.connect(targets.find((target) => target.type === "page")!.webSocketDebuggerUrl);
+    let pageUrl: string | undefined;
+    const deadline = Date.now() + 15_000;
+    while (!pageUrl && Date.now() < deadline) {
+      const targets = await (await fetch(`http://127.0.0.1:${new URL(browserUrl).port}/json/list`)).json() as Array<{ type: string; webSocketDebuggerUrl: string }>;
+      pageUrl = targets.find((target) => target.type === "page")?.webSocketDebuggerUrl;
+      if (!pageUrl) await Bun.sleep(100);
+    }
+    if (!pageUrl) throw new Error(`Chrome opened a debugging port but no page within 15s. Check that ${CHROME} starts headless on this machine.`);
+    cdp = await Cdp.connect(pageUrl);
     await cdp.send("Page.enable");
+    await cdp.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
   }, 180_000);
 
   afterAll(() => {
+    try { cli("ui", "hardware-keyboard", "on", "-d", udid!); } catch {}
     cdp?.close();
     chrome?.kill();
     parent?.stop(true);
@@ -193,20 +230,49 @@ describeWithSim(`desktop keyboard focus (sim ${udid ?? "<skipped>"})`, () => {
   }, 60_000);
 
   test("one click on the stream lets the keyboard type into the simulator", async () => {
-    const point = await streamCenter();
+    await load(simUrl);
+    const stream = await waitForElement(STREAM_LAYER, undefined, 0.75);
     const start = await launchTextField();
-    await clickOnce(point);
+    await clickOnce(stream);
     await typeKeys("zq");
     await waitFor(() => lastText(start), "zq");
   }, 90_000);
 
   test("one click on the stream lets the keyboard type when framed by another origin", async () => {
-    const point = await streamCenter();
-    await load(`http://127.0.0.1:${parent.port}/`);
-    await Bun.sleep(3000);
+    const frame = await openFramed();
+    const stream = await waitForElement(STREAM_LAYER, frame, 0.75);
     const start = await launchTextField();
-    await clickOnce(point);
+    await clickOnce(stream);
     await typeKeys("zq");
     await waitFor(() => lastText(start), "zq");
+  }, 90_000);
+
+  test("the keyboard still types after switching the hardware keyboard in the tools panel", async () => {
+    const frame = await openFramed();
+    const stream = await waitForElement(STREAM_LAYER, frame, 0.75);
+    const start = await launchTextField();
+    await clickOnce(stream);
+    await typeKeys("zq");
+    await waitFor(() => lastText(start), "zq");
+
+    if (!await elementCenter(HARDWARE_KEYBOARD_SWITCH, frame)) {
+      await clickOnce(await waitForElement(TOOLS_BUTTON, frame));
+    }
+    const hardwareKeyboard = await waitForElement(HARDWARE_KEYBOARD_SWITCH, frame);
+    await clickOnce(hardwareKeyboard);
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline && await cdp.evaluate<string>(`${HARDWARE_KEYBOARD_SWITCH}.getAttribute("aria-checked")`, frame) !== "false") {
+      await Bun.sleep(100);
+    }
+    expect(await cdp.evaluate<string>(`${HARDWARE_KEYBOARD_SWITCH}.getAttribute("aria-checked")`, frame)).toBe("false");
+
+    await clickOnce(stream);
+    await typeKeys("xy");
+    await waitFor(() => lastText(start), "zqxy");
+
+    await clickOnce(hardwareKeyboard);
+    await clickOnce(stream);
+    await typeKeys("w");
+    await waitFor(() => lastText(start), "zqxyw");
   }, 90_000);
 });

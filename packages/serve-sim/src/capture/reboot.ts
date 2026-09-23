@@ -40,16 +40,18 @@ export async function rebootWithCapture(
   const attempt = (async () => {
     // Reconnecting the preview during reboot must not start capture early.
     runtime.setDeviceCaptureEnabled(udid, false);
-    await runtime.disableForDevice(udid);
-    await shutdown(udid);
-    await boot(udid);
-    await rearm(udid);
-    if (!enabled) return runtime.metaFor(udid);
     try {
-      return await runtime.enableForDevice(udid);
-    } catch (error) {
-      if (error instanceof CaptureEnableError) return error.meta;
-      throw error;
+      await runtime.disableForDevice(udid);
+      await shutdown(udid);
+      await boot(udid);
+      await rearm(udid);
+      if (!enabled) return runtime.metaFor(udid);
+      try {
+        return await runtime.enableForDevice(udid);
+      } catch (error) {
+        if (error instanceof CaptureEnableError) return error.meta;
+        throw error;
+      }
     } finally {
       runtime.setDeviceCaptureEnabled(udid, enabled);
     }

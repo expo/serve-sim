@@ -25,7 +25,8 @@ const withoutLevels = (sdp: string): string[] =>
   sdp.split("\r\n").filter((line) => !line.includes("profile-level-id="));
 
 const raise = (value: string, level?: number) =>
-  raiseH264OfferLevel(`profile-level-id=${value}`, level).replace("profile-level-id=", "");
+  raiseH264OfferLevel(`a=fmtp:102 level-asymmetry-allowed=1;profile-level-id=${value}`, level)
+    .replace("a=fmtp:102 level-asymmetry-allowed=1;profile-level-id=", "");
 
 describe("raiseH264OfferLevel", () => {
   it("raises every H.264 payload in a real Chrome offer to Level 5.2", () => {
@@ -80,6 +81,21 @@ describe("raiseH264OfferLevel", () => {
     expect(raise("42001f34")).toBe("42001f34");
     expect(raise("42e0")).toBe("42e0");
     expect(raise("zzzzzz")).toBe("zzzzzz");
+  });
+
+  /// Without asymmetry both directions share one level, so the answer would exceed what the
+  /// browser's own offer allows. Only a payload that permits asymmetry can be raised.
+  it("leaves a payload that does not allow level asymmetry at its own level", () => {
+    const offer = [
+      "a=fmtp:102 packetization-mode=1;profile-level-id=42e01f",
+      "a=fmtp:108 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
+      "a=fmtp:118 packetization-mode=1;profile-level-id=64001f;level-asymmetry-allowed=0",
+    ].join("\r\n");
+    expect(raiseH264OfferLevel(offer).split("\r\n")).toEqual([
+      "a=fmtp:102 packetization-mode=1;profile-level-id=42e01f",
+      "a=fmtp:108 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e034",
+      "a=fmtp:118 packetization-mode=1;profile-level-id=64001f;level-asymmetry-allowed=0",
+    ]);
   });
 
   it("ignores SDP with no H.264 fmtp lines", () => {

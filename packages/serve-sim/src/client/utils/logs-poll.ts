@@ -22,16 +22,14 @@ export function parseLogSnapshot(payload: unknown): {
   latestSeq: number;
   firstSeq: number | null;
   lines: LogSnapshotLine[];
-} {
-  if (payload === null || typeof payload !== "object") {
-    return { latestSeq: 0, firstSeq: null, lines: [] };
-  }
+} | null {
+  if (payload === null || typeof payload !== "object") return null;
   const record = payload as { latestSeq?: unknown; lines?: unknown };
-  const latestSeq =
-    typeof record.latestSeq === "number" && Number.isSafeInteger(record.latestSeq)
-      ? record.latestSeq
-      : 0;
-  const rows = Array.isArray(record.lines) ? record.lines : [];
+  const latestSeq = record.latestSeq;
+  const rows = record.lines;
+  if (typeof latestSeq !== "number" || !Number.isSafeInteger(latestSeq) || !Array.isArray(rows)) {
+    return null;
+  }
   const lines: LogSnapshotLine[] = [];
   let firstSeq: number | null = null;
   for (const row of rows) {
@@ -93,6 +91,10 @@ export function startLogsPoll(
       }
       const parsed = parseLogSnapshot(await response.json());
       if (stopped) return;
+      if (!parsed) {
+        opts.onError?.(/* errored */ true);
+        return;
+      }
       opts.onError?.(/* errored */ false);
       if (parsed.latestSeq < since) {
         opts.setSince(0);

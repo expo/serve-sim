@@ -4,7 +4,7 @@ import { parseLogSnapshot } from "../client/utils/logs-poll";
 
 const batch = (count: number) => parseLogSnapshot({ latestSeq: count,
   lines: Array.from({ length: count }, (_, seq) => ({ seq, raw: JSON.stringify({eventMessage: String(seq)}) })),
-}).lines;
+})!.lines;
 
 test("paused rows are bounded and resume in order without replacing visible rows early", () => {
   let state = updateLogRows(EMPTY_LOG_ROWS, { type: "append", batch: batch(1) });

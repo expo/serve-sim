@@ -43,16 +43,19 @@ describe("parseLogSnapshot", () => {
         { seq: 4, raw: "not-json" },
         { seq: 5 },
       ],
-    });
+    })!;
     expect(parsed.latestSeq).toBe(4);
     expect(parsed.lines).toHaveLength(1);
     expect(parsed.lines[0]?.seq).toBe(3);
     expect(parsed.lines[0]?.fields.message).toBe("hello");
   });
 
-  test("treats a malformed payload as empty", () => {
-    expect(parseLogSnapshot(null)).toEqual({ latestSeq: 0, firstSeq: null, lines: [] });
-    expect(parseLogSnapshot("nope")).toEqual({ latestSeq: 0, firstSeq: null, lines: [] });
+  test("rejects a payload that is not a snapshot envelope", () => {
+    expect(parseLogSnapshot(null)).toBeNull();
+    expect(parseLogSnapshot("nope")).toBeNull();
+    expect(parseLogSnapshot({})).toBeNull();
+    expect(parseLogSnapshot({ latestSeq: 4 })).toBeNull();
+    expect(parseLogSnapshot({ lines: [] })).toBeNull();
   });
 
   test("reports the first seq the server sent, even for a row it could not parse", () => {
@@ -62,7 +65,7 @@ describe("parseLogSnapshot", () => {
         { seq: 7, raw: "not-json" },
         { seq: 8, raw },
       ],
-    });
+    })!;
     expect(parsed.firstSeq).toBe(7);
     expect(parsed.lines.map((line) => line.seq)).toEqual([8]);
   });
@@ -189,6 +192,34 @@ describe("startLogsPoll", () => {
 
     expect(errors).toContain(true);
     expect(since).toBe(3);
+  });
+
+  test("keeps its cursor and reports an error when a 200 reply is not a snapshot", async () => {
+    const restoreWindow = withPreviewWindow();
+    const original = globalThis.fetch;
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response("{}", { headers: { "Content-Type": "application/json" } })
+      )) as unknown as typeof fetch;
+
+    const errors: boolean[] = [];
+    let since = 500;
+    const stop = startLogsPoll("/logs", {
+      getSince: () => since,
+      setSince: (seq) => {
+        since = seq;
+      },
+      onBatch: () => {},
+      onError: (errored) => errors.push(errored),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stop();
+    globalThis.fetch = original;
+    restoreWindow();
+
+    expect(since).toBe(500);
+    expect(errors).toContain(true);
   });
 
   test("rewinds when the server hands back a fresh buffer", async () => {

@@ -256,7 +256,7 @@ describe("eventLogEventForHidMessage", () => {
 
   test("redacts printable key HID usages", () => {
     for (const usage of [23, 0x1e, 0x2d]) {
-      const event = eventLogEventForHidMessage("UDID", 0x06, { type: "up", usage });
+      const event = eventLogEventForHidMessage("UDID", 0x06, { type: "up", usage, key: "secret", shifted: true });
       expect(event).toMatchObject({
         device: "UDID",
         source: "hid",
@@ -266,6 +266,7 @@ describe("eventLogEventForHidMessage", () => {
         details: { key: "character", redacted: true },
       });
       expect("usage" in event!.details!).toBe(false);
+      expect(event!.details!.key).toBe("character");
     }
   });
 

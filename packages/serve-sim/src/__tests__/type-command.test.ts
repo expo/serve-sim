@@ -14,7 +14,7 @@ describe("textToKeyEvents", () => {
     // 'A' = shift + KeyA(0x04)
     expect(textToKeyEvents("A")).toEqual([
       { type: "down", usage: 0xe1 },
-      { type: "down", usage: 0x04 },
+      { type: "down", usage: 0x04, key: "A", shifted: true },
       { type: "up", usage: 0x04 },
       { type: "up", usage: 0xe1 },
     ]);
@@ -26,7 +26,7 @@ describe("textToKeyEvents", () => {
       { type: "down", usage: 0x1e },
       { type: "up", usage: 0x1e },
       { type: "down", usage: 0xe1 },
-      { type: "down", usage: 0x1e },
+      { type: "down", usage: 0x1e, key: "!", shifted: true },
       { type: "up", usage: 0x1e },
       { type: "up", usage: 0xe1 },
     ]);
@@ -52,7 +52,7 @@ describe("textToKeyEvents", () => {
     expect(textToKeyEvents(";")[0]).toEqual({ type: "down", usage: 0x33 });
     expect(textToKeyEvents(":")[0]).toEqual({ type: "down", usage: 0xe1 });
     expect(textToKeyEvents("/")[0]).toEqual({ type: "down", usage: 0x38 });
-    expect(textToKeyEvents("?")[1]).toEqual({ type: "down", usage: 0x38 });
+    expect(textToKeyEvents("?")[1]).toEqual({ type: "down", usage: 0x38, key: "?", shifted: true });
   });
 
   it("throws UnsupportedCharacterError for non-US-keyboard chars", () => {

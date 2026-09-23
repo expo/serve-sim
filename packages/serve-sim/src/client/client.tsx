@@ -1038,7 +1038,7 @@ function AppWithConfig({
   }, []);
 
   const keySender = useMemo(
-    () => createPacedKeySender((e) => sendWs(0x06, { type: e.type, usage: e.usage })),
+    () => createPacedKeySender((e) => sendWs(0x06, e)),
     [sendWs],
   );
   useEffect(() => () => keySender.dispose(), [keySender]);
@@ -1442,7 +1442,11 @@ function AppWithConfig({
       if (usage == null) return;
       e.preventDefault();
       pressedKeysRef.current.add(usage);
-      sendWs(0x06, { type, usage });
+      sendWs(0x06, {
+        type,
+        usage,
+        ...(e.shiftKey && e.key.length === 1 ? { key: e.key, shifted: true } : {}),
+      });
     };
     const down = (e: KeyboardEvent) => onKey(e, "down");
     const up = (e: KeyboardEvent) => onKey(e, "up");

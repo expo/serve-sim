@@ -19,6 +19,13 @@ let nativeHingeState: { hingeAngle?: number; physicalOrientation?: string; table
 let inputSetupError: Error | undefined;
 let touchError: Error | undefined;
 const inputCalls: string[] = [];
+const keyEvents: { type: string; usage: number }[] = [];
+const axCharacters: string[] = [];
+let axFailures = 0;
+let axDelay = 0;
+let hardwareKeyboard = "on";
+let hardwareKeyboardDelay = 0;
+const hardwareKeyboardUpdatesStarted: string[] = [];
 
 // Keep NativeHid's real error handling in the loop; only replace the addon.
 const addon = {
@@ -35,7 +42,10 @@ const addon = {
     async multiTouch() { inputCalls.push("multiTouch"); }
     async button() { inputCalls.push("button"); }
     async buttonHid() { inputCalls.push("buttonHid"); }
-    async key() { inputCalls.push("key"); }
+    async key(type: string, usage: number) {
+      inputCalls.push("key");
+      keyEvents.push({ type, usage });
+    }
     async scroll() { inputCalls.push("scroll"); }
     async digitalCrown() { inputCalls.push("digitalCrown"); }
     async orientation() { inputCalls.push("orientation"); return true; }
@@ -109,10 +119,24 @@ mock.module("../../native", () => ({
   Orientation: { portrait: 1, portraitUpsideDown: 2, landscapeRight: 3, landscapeLeft: 4 },
   axDescribeAsync: async () => "{}",
   axFrontmostAsync: async () => "{}",
+  axTypeKeyboardCharacterAsync: async (_udid: string, character: string) => {
+    axCharacters.push(character);
+    if (axDelay) await Bun.sleep(axDelay);
+    if (axFailures > 0) {
+      axFailures--;
+      return false;
+    }
+    return true;
+  },
 }));
 mock.module("../../ui-settings", () => ({
-  clearDeviceOptionState() {},
-  setUiOption: async () => {},
+  clearDeviceOptionState() { hardwareKeyboard = "on"; },
+  getUiOption: async () => hardwareKeyboard,
+  setUiOption: async (_udid: string, option: string, value: string) => {
+    if (option === "hardware-keyboard") hardwareKeyboardUpdatesStarted.push(value);
+    if (hardwareKeyboardDelay) await Bun.sleep(hardwareKeyboardDelay);
+    if (option === "hardware-keyboard") hardwareKeyboard = value;
+  },
 }));
 
 const { DeviceSession } = await import("../../device-session");
@@ -126,6 +150,13 @@ beforeEach(() => {
   inputSetupError = undefined;
   touchError = undefined;
   inputCalls.length = 0;
+  keyEvents.length = 0;
+  axCharacters.length = 0;
+  axFailures = 0;
+  axDelay = 0;
+  hardwareKeyboard = "on";
+  hardwareKeyboardDelay = 0;
+  hardwareKeyboardUpdatesStarted.length = 0;
   routedScreens.length = 0;
   hingeAngles.length = 0;
   hingePoses.length = 0;
@@ -248,6 +279,145 @@ describe("native input failure isolation", () => {
     expect(routedScreens).toEqual([1, 3]);
     expect(errorLog).toHaveBeenCalledTimes(1);
     expect(errorLog.mock.calls.flat().join(" ")).toContain("touch ignored bad input");
+  });
+});
+
+describe("shifted keyboard routing", () => {
+  const sendTo = (socket: WebSocket, tag: number, payload: object) => socket.send(Buffer.concat([
+    Buffer.from([tag]), Buffer.from(JSON.stringify(payload)),
+  ]));
+  const send = (tag: number, payload: object) => sendTo(ws!, tag, payload);
+
+  test("keeps HID input when the software keyboard is shown with hardware input connected", async () => {
+    await start({ width: 1170, height: 2532 });
+    inputCalls.length = 0;
+    send(0x0c, {});
+    send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
+    send(0x06, { type: "up", usage: 4 });
+    await waitUntil(() => inputCalls.filter((call) => call === "key").length === 2);
+    expect(axCharacters).toEqual([]);
+  });
+
+  test("retries AX and suppresses HID key-up when hardware input is disconnected", async () => {
+    await start({ width: 1170, height: 2532 });
+    inputCalls.length = 0;
+    hardwareKeyboardDelay = 30;
+    send(0x0e, { enabled: false });
+    axFailures = 1;
+    send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
+    send(0x06, { type: "up", usage: 4 });
+    await waitUntil(() => axCharacters.length === 2);
+    await Bun.sleep(20);
+    expect(axCharacters).toEqual(["A", "A"]);
+    expect(inputCalls).not.toContain("key");
+    hardwareKeyboardDelay = 0;
+  });
+
+  test("orders a hardware change before a shifted key from another client", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    const second = new WebSocket(url.replace("http:", "ws:"));
+    await new Promise<void>((resolve, reject) => {
+      second.once("open", resolve);
+      second.once("error", reject);
+    });
+    hardwareKeyboardDelay = 30;
+    send(0x0e, { enabled: false });
+    await waitUntil(() => hardwareKeyboardUpdatesStarted.includes("off"));
+    sendTo(second, 0x06, { type: "down", usage: 4, key: "A", shifted: true });
+    sendTo(second, 0x06, { type: "up", usage: 4 });
+    await waitUntil(() => axCharacters.length === 1);
+    expect(inputCalls).not.toContain("key");
+    hardwareKeyboardDelay = 0;
+    second.terminate();
+  });
+
+  test("restores hardware input after a desktop client reconnects during cleanup", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    send(0x0e, { enabled: false });
+    await waitUntil(() => hardwareKeyboard === "off");
+    axDelay = 100;
+    send(0x06, { type: "down", usage: 225 });
+    send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
+    const closed = new Promise<void>((resolve) => ws!.once("close", () => resolve()));
+    ws!.terminate();
+    await closed;
+    const second = new WebSocket(url.replace("http:", "ws:"));
+    await new Promise<void>((resolve, reject) => {
+      second.once("open", resolve);
+      second.once("error", reject);
+    });
+    ws = second;
+    send(0x06, { type: "down", usage: 5 });
+    send(0x06, { type: "up", usage: 5 });
+    await waitUntil(() => hardwareKeyboard === "on");
+    await waitUntil(() => keyEvents.some((event) => event.type === "down" && event.usage === 5));
+    const releasedShift = keyEvents.findIndex((event) => event.type === "up" && event.usage === 225);
+    const reconnectedKey = keyEvents.findIndex((event) => event.type === "down" && event.usage === 5);
+    expect(releasedShift).toBeGreaterThanOrEqual(0);
+    expect(releasedShift).toBeLessThan(reconnectedKey);
+  });
+
+  test("ignores a hardware change that resumes after its client disconnects", async () => {
+    await start({ width: 1170, height: 2532 });
+    let releaseCapture!: () => void;
+    const captureGate = new Promise<void>((resolve) => { releaseCapture = resolve; });
+    (session as unknown as { captureStart: Promise<void> }).captureStart = captureGate;
+    send(0x0e, { enabled: false });
+    await Bun.sleep(10);
+    const closed = new Promise<void>((resolve) => ws!.once("close", () => resolve()));
+    ws!.terminate();
+    await closed;
+    releaseCapture();
+    await Bun.sleep(20);
+    expect(hardwareKeyboard).toBe("on");
+  });
+
+  test("bounds messages waiting for capture startup", async () => {
+    await start({ width: 1170, height: 2532 });
+    let releaseCapture!: () => void;
+    const captureGate = new Promise<void>((resolve) => { releaseCapture = resolve; });
+    (session as unknown as { captureStart: Promise<void> }).captureStart = captureGate;
+    const closed = new Promise<void>((resolve) => ws!.once("close", () => resolve()));
+    for (let index = 0; index < 1030; index++) {
+      send(0x0e, { enabled: index % 2 === 0 });
+    }
+    await Promise.race([
+      closed,
+      Bun.sleep(1500).then(() => { throw new Error("Timed out waiting for the startup queue to close"); }),
+    ]);
+    releaseCapture();
+  });
+
+  test("accepts a long shifted sequence at the supported sender pace", async () => {
+    await start({ width: 1170, height: 2532 });
+    axDelay = 20;
+    send(0x0e, { enabled: false });
+    for (let index = 0; index < 40; index++) {
+      send(0x06, { type: "down", usage: 225 });
+      send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
+      send(0x06, { type: "up", usage: 4 });
+      send(0x06, { type: "up", usage: 225 });
+      await Bun.sleep(4);
+    }
+    await waitUntil(() => axCharacters.length === 40);
+    expect(ws!.readyState).toBe(WebSocket.OPEN);
+  });
+
+  test("closes a client whose keyboard operation queue exceeds the input bound", async () => {
+    await start({ width: 1170, height: 2532 });
+    hardwareKeyboardDelay = 100;
+    const closed = new Promise<void>((resolve) => ws!.once("close", () => resolve()));
+    send(0x06, { type: "down", usage: 225 });
+    for (let index = 0; index < 1030; index++) {
+      send(0x0e, { enabled: index % 2 === 0 });
+    }
+    await Promise.race([
+      closed,
+      Bun.sleep(1500).then(() => { throw new Error("Timed out waiting for the overloaded input socket to close"); }),
+    ]);
+    hardwareKeyboardDelay = 0;
+    await waitUntil(() => keyEvents.some((event) => event.type === "up" && event.usage === 225));
+    await waitUntil(() => hardwareKeyboard === "on");
   });
 });
 

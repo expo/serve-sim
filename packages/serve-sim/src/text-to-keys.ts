@@ -56,7 +56,7 @@ function buildMap(): Record<string, KeySpec> {
 
 export const US_KEYBOARD_MAP: Readonly<Record<string, KeySpec>> = buildMap();
 
-export type KeyEvent = { type: "down" | "up"; usage: number };
+export type KeyEvent = { type: "down" | "up"; usage: number; key?: string; shifted?: boolean };
 
 export class UnsupportedCharacterError extends Error {
   constructor(public readonly char: string) {
@@ -112,7 +112,11 @@ export function textToKeyEvents(text: string): KeyEvent[] {
     const spec = US_KEYBOARD_MAP[ch];
     if (!spec) throw new UnsupportedCharacterError(ch);
     if (spec.shift) events.push({ type: "down", usage: LEFT_SHIFT });
-    events.push({ type: "down", usage: spec.usage });
+    events.push({
+      type: "down",
+      usage: spec.usage,
+      ...(spec.shift ? { key: ch, shifted: true } : {}),
+    });
     events.push({ type: "up", usage: spec.usage });
     if (spec.shift) events.push({ type: "up", usage: LEFT_SHIFT });
   }
@@ -130,7 +134,11 @@ export function textToKeyEventsLenient(text: string): { events: KeyEvent[]; skip
       continue;
     }
     if (spec.shift) events.push({ type: "down", usage: LEFT_SHIFT });
-    events.push({ type: "down", usage: spec.usage });
+    events.push({
+      type: "down",
+      usage: spec.usage,
+      ...(spec.shift ? { key: ch, shifted: true } : {}),
+    });
     events.push({ type: "up", usage: spec.usage });
     if (spec.shift) events.push({ type: "up", usage: LEFT_SHIFT });
   }

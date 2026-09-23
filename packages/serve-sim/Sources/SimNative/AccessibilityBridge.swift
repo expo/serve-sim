@@ -255,6 +255,198 @@ final class AccessibilityBridge: NSObject {
         return result
     }
 
+    func typeKeyboardCharacter(udid: String, character: String) throws -> Bool {
+        try ensureLoaded()
+        guard let device = FrameCapture.findSimDevice(udid: udid),
+              let translator = translator else {
+            throw AccessibilityError.translatorUnavailable
+        }
+        guard character.count == 1 else { return false }
+
+        let token = UUID().uuidString
+        registerToken(token, device: device)
+        defer { unregisterToken(token) }
+
+        let frontmostSel = NSSelectorFromString("frontmostApplicationWithDisplayId:bridgeDelegateToken:")
+        typealias FrontmostFunc = @convention(c) (AnyObject, Selector, UInt32, NSString) -> AnyObject?
+        guard let frontmostIMP = translator.method(for: frontmostSel) else { return false }
+        let frontmost = unsafeBitCast(frontmostIMP, to: FrontmostFunc.self)
+        guard let rootTranslation = frontmost(translator, frontmostSel, 0, token as NSString) as? NSObject else {
+            return false
+        }
+        rootTranslation.setValue(token, forKey: "bridgeDelegateToken")
+
+        let macSel = NSSelectorFromString("macPlatformElementFromTranslation:")
+        typealias MacFunc = @convention(c) (AnyObject, Selector, AnyObject) -> AnyObject?
+        guard let macIMP = translator.method(for: macSel) else { return false }
+        let toMacElement = unsafeBitCast(macIMP, to: MacFunc.self)
+        guard let rootElement = toMacElement(translator, macSel, rootTranslation) as? NSObject,
+              let root = rootElement as? NSAccessibilityElement else {
+            return false
+        }
+        if let t = rootElement.value(forKey: "translation") as? NSObject {
+            t.setValue(token, forKey: "bridgeDelegateToken")
+        }
+
+        let pointSel = NSSelectorFromString("objectAtPoint:displayId:bridgeDelegateToken:")
+        typealias PointFunc = @convention(c) (AnyObject, Selector, CGPoint, UInt32, NSString) -> AnyObject?
+        guard let pointIMP = translator.method(for: pointSel) else { return false }
+        let objectAtPoint = unsafeBitCast(pointIMP, to: PointFunc.self)
+
+        let namedLabels = ["&": "ampersand"]
+        let wantedLabels = Set([character, character.lowercased(), namedLabels[character], "a", "A", "1"].compactMap { $0 })
+        let keyboardIds = Set(["delete", "shift", "space", "more", "dictation"])
+
+        enum KeyboardPlane {
+            case letters
+            case numbers
+            case symbols
+        }
+
+        func scan() -> [String: NSObject] {
+            let bounds = root.accessibilityFrame()
+            let step: CGFloat = 28
+            let minY = max(bounds.minY, bounds.maxY - 360)
+            var found: [String: NSObject] = [:]
+            var labelCandidates: [(String, NSObject, NSRect)] = []
+            var keyboardFrames: [NSRect] = []
+            var seenFrames = Set<String>()
+            var y = minY + step / 2
+            while y < bounds.maxY {
+                var x = bounds.minX + step / 2
+                while x < bounds.maxX {
+                    defer { x += step }
+                    guard let translation = objectAtPoint(
+                        translator, pointSel, CGPoint(x: x, y: y), 0, token as NSString
+                    ) as? NSObject else { continue }
+                    translation.setValue(token, forKey: "bridgeDelegateToken")
+                    guard let element = toMacElement(translator, macSel, translation) as? NSObject else { continue }
+                    if let t = element.value(forKey: "translation") as? NSObject {
+                        t.setValue(token, forKey: "bridgeDelegateToken")
+                    }
+                    guard stringValue(element, key: "accessibilityRole") == "AXButton" else { continue }
+                    let frame = (element as? NSAccessibilityElement)?.accessibilityFrame() ?? .zero
+                    let frameKey = "\(Int(frame.minX.rounded())),\(Int(frame.minY.rounded())),\(Int(frame.width.rounded())),\(Int(frame.height.rounded()))"
+                    guard seenFrames.insert(frameKey).inserted else { continue }
+                    if let label = stringValue(element, key: "accessibilityLabel"), wantedLabels.contains(label) {
+                        labelCandidates.append((label, element, frame))
+                    }
+                    if let id = stringValue(element, key: "accessibilityIdentifier"), keyboardIds.contains(id) {
+                        found["id:\(id)"] = element
+                        keyboardFrames.append(frame)
+                    }
+                }
+                y += step
+            }
+            guard keyboardFrames.count >= 2 else { return found }
+            let keyHeight = keyboardFrames.map(\.height).max() ?? 0
+            let minX = keyboardFrames.map(\.minX).min() ?? bounds.minX
+            let maxX = keyboardFrames.map(\.maxX).max() ?? bounds.maxX
+            let keyboardMinY = keyboardFrames.map(\.minY).min() ?? bounds.minY
+            let maxY = keyboardFrames.map(\.maxY).max() ?? bounds.maxY
+            let keyboardFrame = NSRect(
+                x: minX,
+                y: max(bounds.minY, keyboardMinY - keyHeight * 2.25),
+                width: maxX - minX,
+                height: maxY - max(bounds.minY, keyboardMinY - keyHeight * 2.25)
+            )
+            for (label, element, frame) in labelCandidates where keyboardFrame.contains(
+                NSPoint(x: frame.midX, y: frame.midY)
+            ) {
+                found["label:\(label)"] = element
+            }
+            return found
+        }
+
+        func isKeyboard(_ elements: [String: NSObject]) -> Bool {
+            keyboardIds.filter { elements["id:\($0)"] != nil }.count >= 2
+        }
+
+        func press(_ element: NSObject) {
+            element.perform(NSSelectorFromString("accessibilityPerformPress"))
+        }
+
+        func pressCharacter(_ element: NSObject) {
+            press(element)
+            Thread.sleep(forTimeInterval: 0.03)
+        }
+
+        func plane(_ elements: [String: NSObject]) -> KeyboardPlane {
+            if elements["label:a"] != nil || elements["label:A"] != nil { return .letters }
+            if elements["label:1"] != nil { return .numbers }
+            return .symbols
+        }
+
+        var elements = scan()
+        guard isKeyboard(elements) else { return false }
+        let initialPlane = plane(elements)
+
+        func switchPlane(to target: KeyboardPlane) -> Bool {
+            let actions: [String]
+            switch (plane(elements), target) {
+            case let (current, target) where current == target:
+                return true
+            case (.letters, .numbers), (.numbers, .letters), (.symbols, .letters):
+                actions = ["more"]
+            case (.letters, .symbols):
+                actions = ["more", "shift"]
+            case (.numbers, .symbols), (.symbols, .numbers):
+                actions = ["shift"]
+            default:
+                return false
+            }
+            for action in actions {
+                guard let key = elements["id:\(action)"] else { return false }
+                press(key)
+                Thread.sleep(forTimeInterval: 0.08)
+                elements = scan()
+                guard isKeyboard(elements) else { return false }
+            }
+            return plane(elements) == target
+        }
+
+        func restoreInitialPlane() {
+            if plane(elements) != initialPlane {
+                Thread.sleep(forTimeInterval: 0.08)
+            }
+            _ = switchPlane(to: initialPlane)
+        }
+
+        let targetLabel = namedLabels[character] ?? character
+        if let target = elements["label:\(targetLabel)"] {
+            pressCharacter(target)
+            return true
+        }
+        if character != character.lowercased(), switchPlane(to: .letters),
+           let shift = elements["id:shift"], elements["label:\(character.lowercased())"] != nil {
+            press(shift)
+            Thread.sleep(forTimeInterval: 0.08)
+            elements = scan()
+            guard isKeyboard(elements) else {
+                restoreInitialPlane()
+                return false
+            }
+            if let target = elements["label:\(targetLabel)"] ?? elements["label:\(character.lowercased())"] {
+                pressCharacter(target)
+                restoreInitialPlane()
+                return true
+            }
+            restoreInitialPlane()
+            return false
+        }
+
+        for targetPlane in [KeyboardPlane.letters, .numbers, .symbols] {
+            guard switchPlane(to: targetPlane) else { continue }
+            if let target = elements["label:\(targetLabel)"] {
+                pressCharacter(target)
+                restoreInitialPlane()
+                return true
+            }
+        }
+        restoreInitialPlane()
+        return false
+    }
+
     /// Resolve a pid to its bundle identifier by reading
     /// `<executable>.app/Info.plist`. Works for simulator app processes
     /// because `proc_pidpath` returns the host-side path to the

@@ -1,5 +1,5 @@
 import { e2eDevice, requireE2E } from "./e2e-preconditions";
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
@@ -12,6 +12,12 @@ import type { ServeSimDeviceState } from "../state";
 const CLI_PATH = join(import.meta.dir, "../../dist/serve-sim.js");
 const FIXTURE = join(import.meta.dir, "../../dist/capability-loader/ServeSimLaunchFixture.app");
 const APP = "dev.expo.serve-sim.launch-fixture";
+
+type AxNode = {
+  AXUniqueId: string | null;
+  frame: { x: number; y: number; width: number; height: number };
+  children: AxNode[];
+};
 
 const udid = e2eDevice();
 const ready = udid !== null && existsSync(CLI_PATH) && existsSync(FIXTURE);
@@ -74,6 +80,43 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
     }
   }
 
+  async function axRoots(): Promise<AxNode[]> {
+    const response = await fetch(state.streamUrl.replace(/\/stream\.mjpeg$/, "/ax"), {
+      headers: state.token ? { Authorization: `Bearer ${state.token}` } : undefined,
+    });
+    return response.json() as Promise<AxNode[]>;
+  }
+
+  function findAxNode(nodes: AxNode[], id: string): AxNode | undefined {
+    for (const node of nodes) {
+      if (node.AXUniqueId === id) return node;
+      const child = findAxNode(node.children ?? [], id);
+      if (child) return child;
+    }
+  }
+
+  async function waitForSoftwareKeyboard(): Promise<void> {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      if (findAxNode(await axRoots(), "more")) return;
+      await Bun.sleep(100);
+    }
+    expect(findAxNode(await axRoots(), "more")).toBeDefined();
+  }
+
+  async function pressSoftwareKey(socket: WebSocket, id: string): Promise<void> {
+    const roots = await axRoots();
+    const root = roots[0];
+    const key = findAxNode(roots, id);
+    expect(root).toBeDefined();
+    expect(key).toBeDefined();
+    const x = (key!.frame.x + key!.frame.width / 2 - root!.frame.x) / root!.frame.width;
+    const y = (key!.frame.y + key!.frame.height / 2 - root!.frame.y) / root!.frame.height;
+    send(socket, 0x03, { type: "begin", x, y });
+    send(socket, 0x03, { type: "end", x, y });
+    await Bun.sleep(300);
+  }
+
   async function launchTextField(): Promise<number> {
     const start = fixtureLines().length;
     try { simctl("terminate", udid!, APP); } catch {}
@@ -84,6 +127,15 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
 
   function lastText(start: number): string | undefined {
     return fixtureLines().slice(start).filter((line) => line.startsWith("text\t")).at(-1)?.split("\t")[2];
+  }
+
+  function textChanges(start: number): string[] {
+    return fixtureLines().slice(start).filter((line) => line.startsWith("text\t")).map((line) => line.split("\t")[2]!);
+  }
+
+  function expectEveryCharacterChange(start: number, text: string): void {
+    let prefix = "";
+    expect(textChanges(start)).toEqual([...text].map((character) => prefix += character));
   }
 
   beforeAll(async () => {
@@ -104,6 +156,10 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
     state = parseDetachState<ServeSimDeviceState>(detach.stdout);
   }, 180_000);
 
+  beforeEach(() => {
+    cli("ui", "hardware-keyboard", "on", "-d", udid!);
+  });
+
   afterEach(async () => {
     for (const socket of sockets.splice(0)) socket.close();
     try { cli("ui", "hardware-keyboard", "on", "-d", udid!); } catch {}
@@ -119,25 +175,35 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
   test("Shift reaches a field with the hardware keyboard on", async () => {
     const desktop = await openSocket();
     const start = await launchTextField();
-    await typeLikeDesktop(desktop, "Hi! 123");
-    await waitFor(() => lastText(start), "Hi! 123");
+    await typeLikeDesktop(desktop, "Hi! _ 123");
+    await waitFor(() => lastText(start), "Hi! _ 123");
+    expectEveryCharacterChange(start, "Hi! _ 123");
   }, 60_000);
 
   test("Shift reaches a field after a touch client joins the session", async () => {
     const touch = await openSocket();
     send(touch, 0x0e, { enabled: false });
     const desktop = await openSocket();
-    await Bun.sleep(1000);
     const start = await launchTextField();
-    await typeLikeDesktop(desktop, "Hi! 123");
-    await waitFor(() => lastText(start), "Hi! 123");
+    await waitForSoftwareKeyboard();
+    await typeLikeDesktop(desktop, "Hi! _ 123");
+    await waitFor(() => lastText(start), "Hi! _ 123");
+    expectEveryCharacterChange(start, "Hi! _ 123");
   }, 60_000);
 
   test("Shift reaches a field after the hardware keyboard is switched off", async () => {
     const desktop = await openSocket();
-    cli("ui", "hardware-keyboard", "off", "-d", udid!);
+    send(desktop, 0x0e, { enabled: false });
     const start = await launchTextField();
-    await typeLikeDesktop(desktop, "Hi! 123");
-    await waitFor(() => lastText(start), "Hi! 123");
+    await waitForSoftwareKeyboard();
+    await typeLikeDesktop(desktop, "Hi! ");
+    await waitFor(() => lastText(start), "Hi! ");
+    await pressSoftwareKey(desktop, "more");
+    await typeLikeDesktop(desktop, "_");
+    await waitFor(() => lastText(start), "Hi! _");
+    await pressSoftwareKey(desktop, "shift");
+    await typeLikeDesktop(desktop, "! 123");
+    await waitFor(() => lastText(start), "Hi! _! 123");
+    expectEveryCharacterChange(start, "Hi! _! 123");
   }, 60_000);
 });

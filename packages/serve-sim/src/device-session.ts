@@ -22,6 +22,7 @@ import {
   Orientation,
   axDescribeAsync,
   axFrontmostAsync,
+  axTypeKeyboardCharacterAsync,
   type MjpegFrame,
   type NativeScreenInfo,
   type NativeUnsubscribe,
@@ -31,7 +32,7 @@ import { debugKeyboard } from "./debug";
 import { isHingeAngle, type HingeAngleResult } from "./hinge-angle";
 import { validatePanelRoute } from "./panel-route";
 import { isHingeControlCommand, hingeControlState, hingePoseOrientation, isTableModeAvailable, type HingeControlCommand, type HingePose, type HingePhysicalOrientation } from "./hinge-control";
-import { clearDeviceOptionState, setUiOption } from "./ui-settings";
+import { clearDeviceOptionState, getUiOption, setUiOption } from "./ui-settings";
 import { eventLogEventForHidMessage, formatEventLogPoint, recordEventLogEvent, updateEventLogEvent } from "./event-log";
 import {
   MAX_WEBRTC_SIGNALING_BODY_BYTES,
@@ -64,6 +65,13 @@ export interface HidSocket {
   close(): void;
 }
 
+type KeyboardOperation = {
+  epoch: number;
+  run: () => Promise<void>;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+};
+
 // AVCC seed tag (StreamFormat.AVCCEnvelope.seedTag). description/keyframe/delta
 // envelopes are framed natively; only the on-connect JPEG seed is built here.
 const AVCC_SEED_TAG = 0x04;
@@ -73,6 +81,8 @@ const WS_MSG_CONFIG = 0x82;
 
 const MJPEG_TRAILER = Buffer.from("\r\n", "ascii");
 const TOUCH_TAP_MAX_DISTANCE = 0.004;
+const MAX_HID_SOCKETS = 8;
+const MAX_PENDING_KEYBOARD_OPERATIONS_PER_SOCKET = 1024;
 
 type TouchGestureLog = {
   eventId?: number;
@@ -251,6 +261,10 @@ export class DeviceSession {
   private latestJpegBuffer: Buffer | null = null;
   private latestJpegLength = 0;
   private readonly hidSockets = new Set<HidSocket>();
+  private readonly admittedHidSockets = new Set<HidSocket>();
+  private readonly detachedHidSockets = new WeakSet<HidSocket>();
+  private readonly cleanedUpHidSockets = new WeakSet<HidSocket>();
+  private readonly inFlightHidMessages = new WeakMap<HidSocket, number>();
   private touchGestureLog?: TouchGestureLog;
   private readonly transport: StreamPlaybackSettings["transport"];
   private encoderSettings: StreamEncoderSettings;
@@ -259,6 +273,16 @@ export class DeviceSession {
   private softwareKeyboardSync: Promise<void> = Promise.resolve();
   private softwareKeyboardSyncPending = false;
   private softwareKeyboardPendingVisible: boolean | undefined;
+  private readonly keyboardOperationQueues = new Map<HidSocket, KeyboardOperation[]>();
+  private readonly scheduledKeyboardSockets = new Set<HidSocket>();
+  private readonly keyboardSocketOrder: HidSocket[] = [];
+  private readonly keyboardStateWaiters = new Set<() => void>();
+  private keyboardQueueDraining = false;
+  private readonly keyboardEpochs = new WeakMap<HidSocket, number>();
+  private readonly activeHidKeyUsages = new WeakMap<HidSocket, Set<number>>();
+  private readonly axHandledKeyUsages = new WeakMap<HidSocket, Set<number>>();
+  private readonly overloadedHidSockets = new WeakSet<HidSocket>();
+  private restoreHardwareKeyboardWhenIdle = false;
 
   constructor(public readonly udid: string, initialStreamSettings?: StreamSettings) {
     const streamSettings = streamControlSettingsFrom(initialStreamSettings);
@@ -818,21 +842,48 @@ export class DeviceSession {
   // ── HID WebSocket ────────────────────────────────────────────────────────
 
   attachHidSocket(ws: HidSocket): void {
+    if (this.admittedHidSockets.size >= MAX_HID_SOCKETS) {
+      ws.close();
+      return;
+    }
     this.hidSockets.add(ws);
+    this.admittedHidSockets.add(ws);
+    this.keyboardEpochs.set(ws, 0);
+    this.inFlightHidMessages.set(ws, 0);
+    this.activeHidKeyUsages.set(ws, new Set());
+    this.axHandledKeyUsages.set(ws, new Set());
     const cfg = this.configFrame();
     if (cfg) ws.send(cfg); // seed dimensions/orientation, replacing the old poll
-    ws.on("message", (data: Buffer) => this.handleHidMessage(Buffer.isBuffer(data) ? data : Buffer.from(data), ws));
+    ws.on("message", (data: Buffer) => {
+      if (this.detachedHidSockets.has(ws)) return;
+      const inFlight = this.inFlightHidMessages.get(ws) ?? 0;
+      if (inFlight >= MAX_PENDING_KEYBOARD_OPERATIONS_PER_SOCKET) {
+        this.overloadHidSocket(ws);
+        return;
+      }
+      this.inFlightHidMessages.set(ws, inFlight + 1);
+      void this.handleHidMessage(Buffer.isBuffer(data) ? data : Buffer.from(data), ws)
+        .finally(() => {
+          const remaining = (this.inFlightHidMessages.get(ws) ?? 1) - 1;
+          this.inFlightHidMessages.set(ws, remaining);
+          if (remaining === 0 && this.detachedHidSockets.has(ws)) this.finishDetachedHidSocket(ws);
+          this.notifyKeyboardStateChanged();
+        })
+        .catch(() => {});
+    });
     ws.on("close", () => this.detachHidSocket(ws));
     ws.on("error", () => this.detachHidSocket(ws));
   }
 
   private detachHidSocket(ws: HidSocket): void {
+    if (this.detachedHidSockets.has(ws)) return;
+    this.detachedHidSockets.add(ws);
     this.hidSockets.delete(ws);
+    if ((this.inFlightHidMessages.get(ws) ?? 0) === 0) this.finishDetachedHidSocket(ws);
+    this.notifyKeyboardStateChanged();
     if (this.hidSockets.size === 0) {
+      this.restoreHardwareKeyboardWhenIdle = true;
       this.queueSoftwareKeyboardSync(true);
-      // Reconnect the hardware keyboard once no client needs the on-screen one,
-      // so the sim isn't left disconnected after everyone leaves.
-      void setUiOption(this.udid, "hardware-keyboard", "on").catch(() => {});
     }
   }
 
@@ -887,10 +938,29 @@ export class DeviceSession {
         break;
       }
       case 0x06: {
-        const m = json<{ type: string; usage: number }>();
+        const m = json<{ type: string; usage: number; key?: string; shifted?: boolean }>();
         if (m) {
           this.recordHidEvent(tag, m);
-          this.hid.key(m.type as "down" | "up", m.usage);
+          const operation = this.queueKeyboardOperation(ws, async () => {
+            const axHandledKeyUsages = this.axHandledKeyUsages.get(ws)!;
+            const supportsHingeAngle = this.supportsHingeAngle ?? await this.hid.supportsHingeAngle();
+            this.supportsHingeAngle ??= supportsHingeAngle;
+            if (m.type === "down" && !supportsHingeAngle && m.shifted === true &&
+              typeof m.key === "string" && m.key.length === 1) {
+              const hardwareKeyboard = await getUiOption(this.udid, "hardware-keyboard");
+              if (hardwareKeyboard === "off" &&
+                await this.typeSoftwareKeyboardCharacter(m.key)) {
+                axHandledKeyUsages.add(m.usage);
+                return;
+              }
+            }
+            if (m.type === "up" && axHandledKeyUsages.delete(m.usage)) return;
+            await this.hid.key(m.type as "down" | "up", m.usage);
+            const activeHidKeyUsages = this.activeHidKeyUsages.get(ws)!;
+            if (m.type === "down") activeHidKeyUsages.add(m.usage);
+            else if (m.type === "up") activeHidKeyUsages.delete(m.usage);
+          });
+          if (operation) await operation;
         }
         break;
       }
@@ -966,7 +1036,13 @@ export class DeviceSession {
         const m = json<{ enabled: boolean }>();
         if (m) {
           this.recordHidEvent(tag, m);
-          void setUiOption(this.udid, "hardware-keyboard", m.enabled ? "on" : "off").catch(() => {});
+          const operation = this.queueKeyboardOperation(ws, () =>
+            setUiOption(this.udid, "hardware-keyboard", m.enabled ? "on" : "off").catch(() => {}),
+          );
+          if (operation) {
+            this.restoreHardwareKeyboardWhenIdle = false;
+            await operation;
+          }
         }
         break;
       }
@@ -1055,6 +1131,151 @@ export class DeviceSession {
       .finally(() => {
         this.softwareKeyboardSyncPending = false;
       });
+  }
+
+  private async typeSoftwareKeyboardCharacter(character: string): Promise<boolean> {
+    const deadline = Date.now() + 750;
+    for (let attempt = 0; attempt < 10 && Date.now() < deadline; attempt++) {
+      if (await axTypeKeyboardCharacterAsync(this.udid, character).catch(() => false)) return true;
+      const delay = Math.min(50, deadline - Date.now());
+      if (attempt < 9 && delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    return false;
+  }
+
+  private queueKeyboardOperation(ws: HidSocket, run: () => Promise<void>): Promise<void> | null {
+    if (this.overloadedHidSockets.has(ws)) return null;
+    const queue = this.keyboardOperationQueues.get(ws) ?? [];
+    if (queue.length >= MAX_PENDING_KEYBOARD_OPERATIONS_PER_SOCKET) {
+      this.overloadHidSocket(ws);
+      return null;
+    }
+    const epoch = this.keyboardEpochs.get(ws) ?? 0;
+    const result = new Promise<void>((resolve, reject) => {
+      queue.push({ epoch, run, resolve, reject });
+    });
+    this.keyboardOperationQueues.set(ws, queue);
+    this.scheduleKeyboardSocket(ws);
+    return result;
+  }
+
+  private overloadHidSocket(ws: HidSocket): void {
+    if (this.overloadedHidSockets.has(ws)) return;
+    this.overloadedHidSockets.add(ws);
+    this.keyboardEpochs.set(ws, (this.keyboardEpochs.get(ws) ?? 0) + 1);
+    ws.close();
+    const queue = this.keyboardOperationQueues.get(ws) ?? [];
+    for (const operation of queue.splice(0)) operation.resolve();
+    this.keyboardOperationQueues.set(ws, queue);
+    this.queueKeyboardCleanup(ws);
+  }
+
+  private queueKeyboardCleanup(ws: HidSocket, priority = false): void {
+    const queue = this.keyboardOperationQueues.get(ws) ?? [];
+    queue.push({
+      epoch: this.keyboardEpochs.get(ws) ?? 0,
+      run: async () => {
+        const activeHidKeyUsages = this.activeHidKeyUsages.get(ws);
+        if (activeHidKeyUsages) {
+          for (const usage of activeHidKeyUsages) {
+            await this.hid.key("up", usage).catch(() => {});
+          }
+          activeHidKeyUsages.clear();
+        }
+        this.axHandledKeyUsages.get(ws)?.clear();
+        if (!this.hidSockets.has(ws) && (this.inFlightHidMessages.get(ws) ?? 0) === 0) {
+          this.admittedHidSockets.delete(ws);
+        }
+      },
+      resolve: () => {},
+      reject: () => {},
+    });
+    this.keyboardOperationQueues.set(ws, queue);
+    this.scheduleKeyboardSocket(ws, priority);
+  }
+
+  private finishDetachedHidSocket(ws: HidSocket): void {
+    if (this.cleanedUpHidSockets.has(ws)) return;
+    this.cleanedUpHidSockets.add(ws);
+    this.queueKeyboardCleanup(ws, true);
+  }
+
+  private scheduleKeyboardSocket(ws: HidSocket, priority = false): void {
+    if (!this.scheduledKeyboardSockets.has(ws)) {
+      this.scheduledKeyboardSockets.add(ws);
+      if (priority) this.keyboardSocketOrder.unshift(ws);
+      else this.keyboardSocketOrder.push(ws);
+    } else if (priority) {
+      const index = this.keyboardSocketOrder.indexOf(ws);
+      if (index >= 0) {
+        this.keyboardSocketOrder.splice(index, 1);
+        this.keyboardSocketOrder.unshift(ws);
+      }
+    }
+    this.notifyKeyboardStateChanged();
+    void this.drainKeyboardOperations();
+  }
+
+  private notifyKeyboardStateChanged(): void {
+    for (const resolve of this.keyboardStateWaiters) resolve();
+    this.keyboardStateWaiters.clear();
+  }
+
+  private waitForKeyboardStateChange(): Promise<void> {
+    return new Promise((resolve) => this.keyboardStateWaiters.add(resolve));
+  }
+
+  private hasDetachedMessagesInFlight(): boolean {
+    return [...this.admittedHidSockets].some((ws) =>
+      this.detachedHidSockets.has(ws) && (this.inFlightHidMessages.get(ws) ?? 0) > 0,
+    );
+  }
+
+  private async drainKeyboardOperations(): Promise<void> {
+    if (this.keyboardQueueDraining) return;
+    this.keyboardQueueDraining = true;
+    try {
+      while (this.keyboardSocketOrder.length > 0 || this.hasDetachedMessagesInFlight()) {
+        let index = 0;
+        if (this.hasDetachedMessagesInFlight()) {
+          index = this.keyboardSocketOrder.findIndex((ws) => this.detachedHidSockets.has(ws));
+          if (index < 0) {
+            await this.waitForKeyboardStateChange();
+            continue;
+          }
+        }
+        const ws = this.keyboardSocketOrder.splice(index, 1)[0]!;
+        const queue = this.keyboardOperationQueues.get(ws);
+        const operation = queue?.shift();
+        if (!queue || !operation) {
+          this.keyboardOperationQueues.delete(ws);
+          this.scheduledKeyboardSockets.delete(ws);
+          continue;
+        }
+        try {
+          if (this.keyboardEpochs.get(ws) === operation.epoch) await operation.run();
+          operation.resolve();
+        } catch (error) {
+          operation.reject(error);
+        }
+        if (queue.length > 0) {
+          this.keyboardSocketOrder.push(ws);
+        } else {
+          this.keyboardOperationQueues.delete(ws);
+          this.scheduledKeyboardSockets.delete(ws);
+        }
+        await Promise.resolve();
+      }
+      const detachedAdmissionPending = [...this.admittedHidSockets]
+        .some((ws) => this.detachedHidSockets.has(ws));
+      if (this.restoreHardwareKeyboardWhenIdle && !detachedAdmissionPending) {
+        this.restoreHardwareKeyboardWhenIdle = false;
+        await setUiOption(this.udid, "hardware-keyboard", "on").catch(() => {});
+      }
+    } finally {
+      this.keyboardQueueDraining = false;
+      if (this.keyboardSocketOrder.length > 0) void this.drainKeyboardOperations();
+    }
   }
 
   private async drainSoftwareKeyboardSync(): Promise<void> {

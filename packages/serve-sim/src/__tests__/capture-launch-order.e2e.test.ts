@@ -69,13 +69,14 @@ describeOrSkip("capture arms before launch", () => {
     await new Promise<void>((done) => origin!.listen(originPort, "127.0.0.1", done));
     originUrl = `http://127.0.0.1:${originPort}${PATH_MARKER}`;
 
-    simctl(["shutdown", udid!]);
     port = await freePortAsync();
     server = spawn(
       "node",
       [
         CLI,
         "--network-capture",
+        "--enable",
+        "networkCapture",
         "--quiet",
         "--port",
         String(port),

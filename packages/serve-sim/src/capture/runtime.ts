@@ -1,3 +1,4 @@
+import { isDeviceNotBooted } from "../device";
 import { locateProxyDylib, trustCaInSimulator, isDeviceInjected } from "./device";
 import { configureCapability } from "../launch-manager";
 import type { CapabilityDefinition, PreparedCapability } from "../capabilities";
@@ -313,12 +314,15 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
           try {
             live = await isInjected(udid, portFile);
           } catch (error) {
-            console.warn(
-              `Network capture: injection probe for ${udid} failed:`,
-              error instanceof Error ? error.message : error,
-            );
-            session.injectMisses = 0;
-            return session.meta;
+            if (!isDeviceNotBooted(error)) {
+              console.warn(
+                `Network capture: injection probe for ${udid} failed:`,
+                error instanceof Error ? error.message : error,
+              );
+              session.injectMisses = 0;
+              return session.meta;
+            }
+            live = false;
           }
           if (live) {
             session.injectMisses = 0;

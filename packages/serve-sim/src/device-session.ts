@@ -329,8 +329,12 @@ export class DeviceSession {
     this.screenRefreshTimer = undefined;
     void this.unsubscribeScreenChanges?.().catch(() => {});
     this.unsubscribeScreenChanges = undefined;
-    for (const ws of this.hidSockets) ws.close();
-    this.hidSockets.clear();
+    for (const ws of this.admittedHidSockets) {
+      this.discardQueuedInput(ws);
+      this.detachHidSocket(ws);
+      this.queueInputCleanup(ws, true);
+      ws.close();
+    }
     for (const res of this.panelRequests) res.destroy();
     for (const panel of this.panels.values()) this.stopPanel(panel);
     void this.capture.stop().catch(() => {});
@@ -844,7 +848,7 @@ export class DeviceSession {
   // ── HID WebSocket ────────────────────────────────────────────────────────
 
   attachHidSocket(ws: HidSocket): void {
-    if (this.admittedHidSockets.size >= MAX_HID_SOCKETS) {
+    if (this.phase !== "running" || this.admittedHidSockets.size >= MAX_HID_SOCKETS) {
       ws.close();
       return;
     }
@@ -858,7 +862,7 @@ export class DeviceSession {
     const cfg = this.configFrame();
     if (cfg) ws.send(cfg); // seed dimensions/orientation, replacing the old poll
     ws.on("message", (data: Buffer) => {
-      if (this.detachedHidSockets.has(ws)) return;
+      if (this.phase !== "running" || this.detachedHidSockets.has(ws)) return;
       const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
       const isOrderedMessage = buffer[0] === 0x03 || buffer[0] === 0x05 ||
         buffer[0] === 0x06 || buffer[0] === 0x0b || buffer[0] === 0x0e;
@@ -909,6 +913,7 @@ export class DeviceSession {
     } catch {
       return;
     }
+    if (this.phase !== "running") return;
     const tag = data[0];
     const body = data.length > 1 ? data.subarray(1) : null;
     const json = <T>(): T | null => {
@@ -973,6 +978,7 @@ export class DeviceSession {
                 return;
               }
             }
+            if (this.phase !== "running") return;
             if (m.type === "up" && axHandledKeyUsages.delete(m.usage)) return;
             if (m.type === "down") axHandledKeyUsages.delete(m.usage);
             if (m.type === "down" || m.type === "up") await this.updateHidKey(ws, m.type, m.usage);
@@ -1161,6 +1167,7 @@ export class DeviceSession {
   private async typeSoftwareKeyboardCharacter(character: string): Promise<boolean> {
     const deadline = Date.now() + 750;
     for (let attempt = 0; attempt < 10 && Date.now() < deadline; attempt++) {
+      if (this.phase !== "running") return false;
       if (await axTypeKeyboardCharacterAsync(this.udid, character).catch(() => false)) return true;
       const delay = Math.min(50, deadline - Date.now());
       if (attempt < 9 && delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
@@ -1192,7 +1199,7 @@ export class DeviceSession {
   }
 
   private queueInputOperation(ws: HidSocket, run: () => Promise<void>): Promise<void> | null {
-    if (this.overloadedHidSockets.has(ws)) return null;
+    if (this.phase !== "running" || this.overloadedHidSockets.has(ws)) return null;
     const queue = this.inputOperationQueues.get(ws) ?? [];
     if (queue.length >= MAX_PENDING_INPUT_OPERATIONS_PER_SOCKET) {
       this.overloadHidSocket(ws);
@@ -1210,12 +1217,16 @@ export class DeviceSession {
   private overloadHidSocket(ws: HidSocket): void {
     if (this.overloadedHidSockets.has(ws)) return;
     this.overloadedHidSockets.add(ws);
-    this.inputEpochs.set(ws, (this.inputEpochs.get(ws) ?? 0) + 1);
     ws.close();
+    this.discardQueuedInput(ws);
+    this.queueInputCleanup(ws);
+  }
+
+  private discardQueuedInput(ws: HidSocket): void {
+    this.inputEpochs.set(ws, (this.inputEpochs.get(ws) ?? 0) + 1);
     const queue = this.inputOperationQueues.get(ws) ?? [];
     for (const operation of queue.splice(0)) operation.resolve();
     this.inputOperationQueues.set(ws, queue);
-    this.queueInputCleanup(ws);
   }
 
   private queueInputCleanup(ws: HidSocket, priority = false): void {

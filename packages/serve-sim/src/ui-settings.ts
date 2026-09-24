@@ -333,8 +333,7 @@ export async function setUiOption(udid: string, option: string, value: string): 
   if (spec.via === "device") {
     return withDeviceOptionStateLock(udid, async () => {
       const bootSession = await deviceBootSession(udid, true);
-      await applyDeviceUiOption(udid, option, value);
-      return writeDeviceOptionState(udid, bootSession, option, value);
+      return applyAndSaveDeviceUiOption(udid, bootSession, option, value);
     });
   }
   if (spec.via === "ax") {
@@ -342,6 +341,27 @@ export async function setUiOption(udid: string, option: string, value: string): 
     return;
   }
   await simctlUi(udid, spec.via, spec.toggle ? fromToggle(value) : value);
+}
+
+async function applyAndSaveDeviceUiOption(
+  udid: string, bootSession: string, option: string, value: string,
+): Promise<string> {
+  const current = readDeviceOptionState(udid);
+  const previous = (current?.bootSession === bootSession ? current.values[option] : undefined)
+    ?? UI_OPTIONS[option]!.default ?? "off";
+  await applyDeviceUiOption(udid, option, value);
+  try {
+    return writeDeviceOptionState(udid, bootSession, option, value);
+  } catch (error) {
+    try {
+      await applyDeviceUiOption(udid, option, previous);
+    } catch (rollbackError) {
+      throw new AggregateError([error, rollbackError],
+        `Could not save or restore ${option} for simulator ${udid}. ` +
+        "Check that the state directory is writable, then explicitly set the option again.");
+    }
+    throw error;
+  }
 }
 
 export async function setUiOptionIfRevision(
@@ -357,8 +377,7 @@ export async function setUiOptionIfRevision(
     const bootSession = await deviceBootSession(udid, true);
     const current = readDeviceOptionState(udid);
     if (current?.bootSession !== bootSession || current.revision !== expectedRevision) return null;
-    await applyDeviceUiOption(udid, option, value);
-    return writeDeviceOptionState(udid, bootSession, option, value);
+    return applyAndSaveDeviceUiOption(udid, bootSession, option, value);
   });
 }
 

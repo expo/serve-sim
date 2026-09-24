@@ -24,6 +24,7 @@ const keyEvents: { type: string; usage: number }[] = [];
 const axCharacters: string[] = [];
 let axFailures = 0;
 let axDelay = 0;
+let axGate: Promise<void> | undefined;
 let hardwareKeyboard = "on";
 let hardwareKeyboardDelay = 0;
 const hardwareKeyboardUpdatesStarted: string[] = [];
@@ -124,6 +125,7 @@ mock.module("../../native", () => ({
   axFrontmostAsync: async () => "{}",
   axTypeKeyboardCharacterAsync: async (_udid: string, character: string) => {
     axCharacters.push(character);
+    await axGate;
     if (axDelay) await Bun.sleep(axDelay);
     if (axFailures > 0) {
       axFailures--;
@@ -166,6 +168,7 @@ beforeEach(() => {
   axCharacters.length = 0;
   axFailures = 0;
   axDelay = 0;
+  axGate = undefined;
   hardwareKeyboard = "on";
   hardwareKeyboardDelay = 0;
   hardwareKeyboardUpdatesStarted.length = 0;
@@ -396,6 +399,34 @@ describe("shifted keyboard routing", () => {
     await waitUntil(() => inputCalls.includes("touch"));
     expect(axCharacters).toEqual(["A"]);
     expect(inputCalls.indexOf("axCharacter")).toBeLessThan(inputCalls.indexOf("touch"));
+  });
+
+  test.each([0, 1])("shutdown discards input and preserves cleanup (AX failures: %s)", async (failures) => {
+    await start({ width: 1170, height: 2532 });
+    send(0x0e, { enabled: false });
+    send(0x06, { type: "down", usage: 225 });
+    await waitUntil(() => keyEvents.length === 1);
+    let releaseAx!: () => void;
+    axGate = new Promise<void>((resolve) => { releaseAx = resolve; });
+    axFailures = failures;
+    send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
+    await waitUntil(() => axCharacters.length === 1);
+    send(0x03, { type: "begin", x: 0.5, y: 0.5 });
+    send(0x06, { type: "down", usage: 5 });
+    send(0x0b, { dx: 0, dy: 0.1 });
+    const queues = (session as unknown as { inputOperationQueues: Map<unknown, unknown[]> }).inputOperationQueues;
+    try {
+      await waitUntil(() => [...queues.values()].some((queue) => queue.length === 3));
+      session!.close();
+    } finally {
+      releaseAx();
+    }
+    await waitUntil(() => hardwareKeyboard === "on");
+    expect(keyEvents).toEqual([{ type: "down", usage: 225 }, { type: "up", usage: 225 }]);
+    expect(inputCalls).not.toContain("touch");
+    expect(inputCalls).not.toContain("scroll");
+    expect(hardwareKeyboardUpdatesStarted).toEqual(["off", "on"]);
+    expect(axCharacters).toEqual(["A"]);
   });
 
   test("keeps a key held until every client releases it", async () => {

@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -67,6 +67,37 @@ afterAll(() => {
 });
 
 describe("device-backed UI option state", () => {
+  test.each([false, true])("rolls back a failed state write (conditional: %s)", async (conditional) => {
+    const udid = `FAILED-WRITE-${conditional}`;
+    const revision = await setHardwareKeyboard(udid, "off", "100");
+    const file = join(stateDirectory, `ui-${udid}.json`);
+    const previous = readFileSync(file, "utf8");
+    mkdirSync(`${file}.${process.pid}.tmp`);
+
+    const setting = conditional
+      ? setUiOptionIfRevision(udid, "hardware-keyboard", "on", revision)
+      : setUiOption(udid, "hardware-keyboard", "on");
+    await waitForBootRequests(1);
+    resolveBootRequest(0, "100");
+    await expect(setting).rejects.toThrow();
+
+    expect(hardwareKeyboardUpdates).toEqual([false, true, false]);
+    expect(readFileSync(file, "utf8")).toBe(previous);
+    expect(await getUiOption(udid, "hardware-keyboard")).toBe("off");
+  });
+
+  test("restores the default when the first state write fails", async () => {
+    const udid = "FAILED-FIRST-WRITE";
+    const file = join(stateDirectory, `ui-${udid}.json`);
+    mkdirSync(`${file}.${process.pid}.tmp`);
+    const setting = setUiOption(udid, "hardware-keyboard", "off");
+    await waitForBootRequests(1);
+    resolveBootRequest(0, "100");
+    await expect(setting).rejects.toThrow();
+    expect(hardwareKeyboardUpdates).toEqual([false, true]);
+    expect(await getUiOption(udid, "hardware-keyboard")).toBe("on");
+  });
+
   test("preserves a CLI setting when preview starts in the same boot", async () => {
     const udid = "SAME-BOOT";
     await setHardwareKeyboard(udid, "off", "100");

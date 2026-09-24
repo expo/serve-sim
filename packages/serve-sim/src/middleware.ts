@@ -1811,7 +1811,7 @@ export function handleNetworkCaptureRequest(
   runtime: CaptureRuntime = captureRuntime,
 ): void {
   if (!state) {
-    res.writeHead(404);
+    res.writeHead(404, NO_STORE);
     res.end("No serve-sim device");
     return;
   }

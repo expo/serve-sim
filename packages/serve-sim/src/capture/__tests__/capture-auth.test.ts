@@ -50,6 +50,7 @@ describe("network-capture auth", () => {
       });
       // No booted device in unit middleware → 404 after auth.
       expect(r.status).toBe(404);
+      expect(r.headers.get("cache-control")).toBe("no-store, private");
     });
   });
 

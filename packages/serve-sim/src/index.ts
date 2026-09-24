@@ -761,7 +761,7 @@ async function eventLog(
     process.exit(1);
   }
 
-  const url = new URL("/api/event-log", state.url);
+  const url = new URL(`${serverBaseUrl(state)}/api/event-log`);
   if (udid) url.searchParams.set("device", state.device);
   const limit = parseEventLogLimit(opts.limit);
   if (limit != null) url.searchParams.set("limit", String(limit));

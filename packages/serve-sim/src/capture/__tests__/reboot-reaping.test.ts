@@ -10,6 +10,7 @@ import { capabilityHarness } from "./capability-harness";
 import { rebootWithCapture } from "../reboot";
 
 const OTHER_UDID = "5C1E0B7A-3F2D-4E8A-9B61-7D0C2A4F9E13";
+const PEER_UDID = "9A3D51C2-6E0B-4F7A-8C14-2B5E9D07F6A1";
 
 let shims: ReturnType<typeof installShims>;
 let stateDir: ReturnType<typeof useTempStateDir>;
@@ -25,9 +26,9 @@ afterAll(() => {
   shims.restore();
 });
 
-function writeOwnState(udid: string): string {
+function writeOwnState(udid: string, pid = process.pid): string {
   const file = join(stateDir.dir, `server-${udid}.json`);
-  writeFileSync(file, JSON.stringify(inProcessServeSimState(udid, 3100)));
+  writeFileSync(file, JSON.stringify({ ...inProcessServeSimState(udid, 3100), pid }));
   return file;
 }
 
@@ -66,5 +67,21 @@ test("stops capture for a device that was shut down outside the preview", async 
     expect(existsSync(file)).toBe(false);
   } finally {
     captureRuntime.disableForDevice = disableForDevice;
+  }
+});
+
+test("leaves another serve-sim's preview running while that process reboots the device", async () => {
+  const peer = Bun.spawn(["sleep", "30"]);
+  try {
+    const file = writeOwnState(PEER_UDID, peer.pid);
+    writeFileSync(join(stateDir.dir, `reboot-${PEER_UDID}.json`), JSON.stringify({ pid: peer.pid }));
+
+    expect((await readServeSimStates()).map((state) => state.device)).toContain(PEER_UDID);
+    expect(existsSync(file)).toBe(true);
+    expect(await Promise.race([peer.exited.then(() => "exited"), Bun.sleep(200).then(() => "running")])).toBe(
+      "running",
+    );
+  } finally {
+    peer.kill();
   }
 });

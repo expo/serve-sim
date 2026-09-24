@@ -1,8 +1,8 @@
 import { dirname, join } from "node:path";
 
+import type { ServeSimDeviceState } from "../state";
 import { CaptureDiskAccumulator, NETWORK_CAPTURE_FILENAME } from "./disk";
 import { parseFinishedCaptureRequest } from "./har";
-import type { ServeSimDeviceState } from "../state";
 import type { CapturedBody } from "./store";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;

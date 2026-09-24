@@ -913,6 +913,17 @@ describe("native active screen config", () => {
       ws!.send(Buffer.concat([Buffer.from([0x03]), Buffer.from(JSON.stringify({ type: "begin", x: 0.5, y: 0.5 }))]));
       ws!.send(Buffer.concat([Buffer.from([0x06]), Buffer.from(JSON.stringify({ type: "down", usage: 4 }))]));
       ws!.send(Buffer.concat([Buffer.from([0x0f]), Buffer.from(JSON.stringify({ angle: 90 }))]));
+      const acknowledgement = new Promise<Buffer>((resolve) => {
+        const onMessage = (data: WebSocket.RawData) => {
+          const buffer = Buffer.from(data as Buffer);
+          if (buffer[0] !== 0x91) return;
+          ws!.off("message", onMessage);
+          resolve(buffer);
+        };
+        ws!.on("message", onMessage);
+      });
+      ws!.send(Buffer.from([0x11]));
+      expect([...await acknowledgement]).toEqual([0x91, 0]);
       await waitUntil(() => hingeResults.length === 1);
       expect(hingeResults[0]?.ok).toBe(false);
       expect(inputCalls).toEqual([]);

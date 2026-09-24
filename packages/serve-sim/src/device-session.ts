@@ -1140,7 +1140,7 @@ export class DeviceSession {
           await this.waitForInputStateChange();
         }
         if (this.phase === "running" && this.hidSockets.has(ws)) {
-          ws.send(Buffer.from([0x91, this.failedInputSockets.has(ws) ? 0 : 1]));
+          ws.send(Buffer.from([0x91, this.failedInputSockets.has(ws) || this.hid.inputUnavailable ? 0 : 1]));
         }
         break;
       }

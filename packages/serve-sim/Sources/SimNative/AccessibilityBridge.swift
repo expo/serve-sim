@@ -305,6 +305,8 @@ final class AccessibilityBridge: NSObject {
 
         func scan() -> [String: NSObject] {
             let bounds = root.accessibilityFrame()
+            guard bounds.width.isFinite, bounds.height.isFinite,
+                  bounds.width > 1, bounds.height > 1 else { return [:] }
             let step: CGFloat = min(24, bounds.width / 16)
             let minY = bounds.midY
             var found: [String: NSObject] = [:]

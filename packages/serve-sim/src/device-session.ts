@@ -1262,7 +1262,7 @@ export class DeviceSession {
         }
         const activeHidKeyUsages = this.activeHidKeyUsages.get(ws);
         if (activeHidKeyUsages) {
-          for (const usage of [...activeHidKeyUsages]) {
+          for (const usage of activeHidKeyUsages) {
             await this.updateHidKey(ws, "up", usage).catch(() => {});
           }
         }

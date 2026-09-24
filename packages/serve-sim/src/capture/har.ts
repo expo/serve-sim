@@ -49,6 +49,7 @@ export interface HarResponse {
   redirectURL: string;
   headersSize: number;
   bodySize: number;
+  _error?: string;
 }
 
 export interface HarTimings {
@@ -255,6 +256,7 @@ export function toHarEntry(
       redirectURL: location,
       headersSize: -1,
       bodySize: request.responseBytes,
+      ...(request.failure ? { _error: request.failure } : {}),
     },
     cache: {},
     timings,

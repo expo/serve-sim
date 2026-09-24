@@ -185,9 +185,9 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
               </button>
               <button
                 type="button"
-                aria-label="Download live window as HAR"
-                title="Download live window as HAR"
-                className="rounded p-1 text-white/40 hover:bg-white/10"
+                aria-label="Download session as HAR"
+                title="Download session as HAR"
+                className="rounded p-1 text-white/70 hover:bg-white/10"
                 onClick={() => {
                   void (async () => {
                     try {

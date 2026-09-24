@@ -39,10 +39,8 @@ export function useCaptureStream(
   const clear = useCallback(() => {
     const device = new URL(path, "http://local").searchParams.get("device");
     if (!device) return;
-    // Emptied only once the host confirms, so the panel cannot show a cleared list over a full store.
-    void runHostAction("capture.clear", { udid: device }).then((result) => {
-      if (result.exitCode === 0) setRequests([]);
-    });
+    // The host's cleared event empties the list, so a request recorded after the clear stays.
+    void runHostAction("capture.clear", { udid: device });
   }, [path]);
 
   useEffect(() => {

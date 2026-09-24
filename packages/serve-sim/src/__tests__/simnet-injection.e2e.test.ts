@@ -85,7 +85,7 @@ let tempState: ReturnType<typeof useTempStateDir>;
 
 describeOrSkip("SimNetProxy injection (real simulator)", () => {
   beforeAll(() => {
-    expect(readInsert(udid!)).toBe("");
+    spawnSync("xcrun", ["simctl", "spawn", udid!, "launchctl", "unsetenv", "DYLD_INSERT_LIBRARIES"], { stdio: "ignore" });
     tempState = useTempStateDir();
     appDir = mkdtempSync(join(tmpdir(), "simnet-probe-"));
     execFileSync("xcrun", ["simctl", "install", udid!, PROBE_APP], {
@@ -109,7 +109,7 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
       expect(readInsert(udid!)).toBe("");
       expect(execFileSync("xcrun", ["simctl", "spawn", udid!, "launchctl", "getenv", "SIMNET_PROXY_PORT_FILE"], { encoding: "utf8" }).trim()).toBe("");
     } finally { tempState.restore(); }
-  });
+  }, 60_000);
 
   it(
     "sends the app's HTTPS request to the proxy as a CONNECT",

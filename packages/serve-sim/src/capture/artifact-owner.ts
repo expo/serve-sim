@@ -13,10 +13,10 @@ function withArtifactLock<T>(dir: string, operation: () => T): T {
   return withLaunchStateLockSync(`capture-artifacts-${key}`, operation);
 }
 
-function ownerIsRunning(dir: string): boolean {
+function ownerIsRunning(dir: string, ownerFile = CAPTURE_OWNER_FILENAME): boolean {
   let pid: number;
   try {
-    pid = Number(readFileSync(join(dir, CAPTURE_OWNER_FILENAME), "utf8").trim().split("\n")[0]);
+    pid = Number(readFileSync(join(dir, ownerFile), "utf8").trim().split("\n")[0]);
   } catch {
     return false;
   }
@@ -29,31 +29,38 @@ function ownerIsRunning(dir: string): boolean {
   }
 }
 
-export function claimCaptureDirectory(dir: string): string {
-  return withArtifactLock(dir, () => {
-    if (ownerIsRunning(dir)) {
+export function claimCaptureDirectory(dir: string, ownerFile = CAPTURE_OWNER_FILENAME): string {
+  const ownerPath = join(dir, ownerFile);
+  return withArtifactLock(ownerPath, () => {
+    if (ownerIsRunning(dir, ownerFile)) {
       throw new Error(
-        `Network capture already owns ${dir}. Stop that recording before starting another for this device or output directory.`,
+        `Network capture already owns ${ownerPath}. Stop that recording before starting another for this device or output file.`,
       );
     }
     mkdirSync(dir, { recursive: true });
     const owner = `${process.pid}\n${randomUUID()}`;
-    writeFileSync(join(dir, CAPTURE_OWNER_FILENAME), owner);
+    writeFileSync(ownerPath, owner);
     return owner;
   });
 }
 
-export function releaseCaptureDirectory(dir: string, owner: string, removeDir: boolean): void {
-  withArtifactLock(dir, () => {
+export function releaseCaptureDirectory(
+  dir: string,
+  owner: string,
+  removeDir: boolean,
+  ownerFile = CAPTURE_OWNER_FILENAME,
+): void {
+  const ownerPath = join(dir, ownerFile);
+  withArtifactLock(ownerPath, () => {
     let current: string;
     try {
-      current = readFileSync(join(dir, CAPTURE_OWNER_FILENAME), "utf8");
+      current = readFileSync(ownerPath, "utf8");
     } catch {
       return;
     }
     if (current !== owner) return;
     if (removeDir) rmSync(dir, { recursive: true, force: true });
-    else unlinkSync(join(dir, CAPTURE_OWNER_FILENAME));
+    else unlinkSync(ownerPath);
   });
 }
 

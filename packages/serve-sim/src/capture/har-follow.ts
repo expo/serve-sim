@@ -1,6 +1,6 @@
-import { dirname, join } from "node:path";
+import { basename, dirname } from "node:path";
 
-import { CaptureDiskAccumulator, NETWORK_CAPTURE_FILENAME } from "./disk";
+import { CaptureDiskAccumulator } from "./disk";
 import { parseFinishedCaptureRequest } from "./har";
 import type { CapturedBody } from "./store";
 
@@ -26,8 +26,14 @@ export interface FollowCaptureHarResult {
   entriesPath: string;
 }
 
-function defaultEventsPath(harPath: string): string {
-  return join(dirname(harPath), NETWORK_CAPTURE_FILENAME);
+/** A recording's working files, named after its HAR so recordings can share a folder. */
+export function captureHarPaths(harPath: string): { eventsPath: string; entriesPath: string; ownerFile: string } {
+  const stem = harPath.replace(/\.har$/i, "");
+  return {
+    eventsPath: `${stem}.network-capture.json`,
+    entriesPath: `${stem}.entries.ndjson`,
+    ownerFile: `${basename(stem)}.owner.pid`,
+  };
 }
 
 function captureRoute(baseUrl: string, path: string, device: string): URL {
@@ -68,7 +74,8 @@ async function fetchBody(
 /** Follow /network-capture SSE into the same NDJSON → streamed HAR layout as the live session. */
 export async function followCaptureHar(opts: FollowCaptureHarOptions): Promise<FollowCaptureHarResult> {
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const eventsPath = opts.eventsPath ?? defaultEventsPath(opts.outPath);
+  const paths = captureHarPaths(opts.outPath);
+  const eventsPath = opts.eventsPath ?? paths.eventsPath;
   const version = opts.version ?? "0.0.0";
   const dir = dirname(opts.outPath);
 
@@ -76,6 +83,8 @@ export async function followCaptureHar(opts: FollowCaptureHarOptions): Promise<F
     dir,
     harPath: opts.outPath,
     networkCapturePath: eventsPath,
+    entriesPath: paths.entriesPath,
+    ownerFile: paths.ownerFile,
     creatorVersion: version,
     flushIntervalMs: opts.flushIntervalMs ?? 5_000,
   });

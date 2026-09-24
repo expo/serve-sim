@@ -6,7 +6,7 @@ export {
   CAPTURE_HAR_FILENAME,
   NETWORK_CAPTURE_FILENAME,
 } from "./disk";
-export { followCaptureHar } from "./har-follow";
+export { captureHarPaths, followCaptureHar } from "./har-follow";
 export {
   DEFAULT_MAX_CONTROL_BODY_BYTES,
   MAX_CONTROL_BODY_BYTES_ENV,

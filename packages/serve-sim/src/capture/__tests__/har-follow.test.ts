@@ -1,9 +1,9 @@
-import { describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { describe, expect, it, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { followCaptureHar } from "../har-follow";
+import { captureHarPaths, followCaptureHar } from "../har-follow";
 
 describe("followCaptureHar", () => {
   it("reports a failed flush even when the stream was aborted", async () => {
@@ -104,7 +104,8 @@ describe("followCaptureHar", () => {
       expect(har.log.entries).toHaveLength(1);
       expect(har.log.entries[0].response.content.text).toBe("ok");
 
-      const events = readFileSync(join(dir, "network-capture.json"), "utf8")
+      expect(result.eventsPath).toBe(outPath.replace(/\.har$/, ".network-capture.json"));
+      const events = readFileSync(result.eventsPath, "utf8")
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as { type?: string });
@@ -181,6 +182,69 @@ describe("followCaptureHar under an embedded mount", () => {
         "http://127.0.0.1:3200/.sim/network-capture?device=D",
         "http://127.0.0.1:3200/.sim/network-capture/r1?device=D",
       ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("capture har working files", () => {
+  const finished = (id: string) =>
+    `data: {"type":"finished","request":{"id":"${id}","method":"GET","url":"https://a.test/","status":200,"mimeType":"text/plain","requestBytes":0,"responseBytes":2,"startedAt":1,"ttfbMs":1,"durationMs":2,"failure":null}}\n\n`;
+
+  function follow(outPath: string, release: Promise<void>) {
+    return followCaptureHar({
+      baseUrl: "http://127.0.0.1:3999", device: "D", outPath, token: "test", flushIntervalMs: 50,
+      fetchImpl: async (input) => {
+        if (String(input).includes("/network-capture/")) return new Response("null");
+        return new Response(new ReadableStream<Uint8Array>({
+          async start(controller) {
+            controller.enqueue(new TextEncoder().encode(finished("r1")));
+            await release;
+            controller.close();
+          },
+        }));
+      },
+    });
+  }
+
+  test("names them after the HAR", () => {
+    expect(captureHarPaths("/out/morning.har")).toEqual({
+      eventsPath: "/out/morning.network-capture.json",
+      entriesPath: "/out/morning.entries.ndjson",
+      ownerFile: "morning.owner.pid",
+    });
+  });
+
+  test("lets two recordings share a folder at once and leaves other files alone", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-har-shared-"));
+    writeFileSync(join(dir, "network-capture.json"), "mine");
+    writeFileSync(join(dir, "owner.pid"), "mine");
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    try {
+      const both = Promise.all([follow(join(dir, "a.har"), gate), follow(join(dir, "b.har"), gate)]);
+      await Bun.sleep(100);
+      release();
+      const [a, b] = await both;
+      expect(a.size).toBe(1);
+      expect(b.size).toBe(1);
+      expect(readFileSync(join(dir, "network-capture.json"), "utf8")).toBe("mine");
+      expect(readFileSync(join(dir, "owner.pid"), "utf8")).toBe("mine");
+      expect(existsSync(join(dir, "a.owner.pid"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps an earlier recording's files when a later one starts in the same folder", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-har-later-"));
+    try {
+      const morning = await follow(join(dir, "morning.har"), Promise.resolve());
+      const logged = readFileSync(morning.eventsPath, "utf8");
+      expect(logged).toContain("finished");
+      await follow(join(dir, "afternoon.har"), Promise.resolve());
+      expect(readFileSync(morning.eventsPath, "utf8")).toBe(logged);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

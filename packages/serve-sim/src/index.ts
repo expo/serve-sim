@@ -66,7 +66,7 @@ import { parseIceUrlList, streamHelperArgs, streamSettingsEqual } from "./stream
 import { MAX_MJPEG_STREAM_FPS, MAX_VIDEO_STREAM_FPS } from "./stream-settings";
 import { parseHingeAngle } from "./hinge-angle";
 import { sendHingeAngleToWs } from "./hinge-command";
-import { followCaptureHar } from "./capture";
+import { captureHarPaths, followCaptureHar } from "./capture";
 
 // Budget for capture teardown and capability disarming together.
 const SHUTDOWN_TIMEOUT_MS = 20_000;
@@ -2494,9 +2494,9 @@ registerCapability(captureRuntime.capability);
   const capture = program.command("capture").description("Network capture helpers");
   capture
     .command("har")
-    .description("Follow the capture stream; write network-capture.json + HAR")
+    .description("Follow the capture stream; write a HAR and its event log")
     .requiredOption("-o, --out <path>", "HAR file to keep rewriting")
-    .option("--events <path>", "NDJSON event log (default: network-capture.json next to --out)")
+    .option("--events <path>", "NDJSON event log (default: <out>.network-capture.json next to --out)")
     .option(...deviceOpt)
     .option(
       "--flush-ms <ms>",
@@ -2523,7 +2523,7 @@ registerCapability(captureRuntime.capability);
       process.on("SIGINT", stop);
       process.on("SIGTERM", stop);
       console.error(
-        `Recording capture for ${state.device} → ${outPath} (+ network-capture.json) (Ctrl-C to stop)`,
+        `Recording capture for ${state.device} → ${outPath} (+ ${eventsPath ?? captureHarPaths(outPath).eventsPath}) (Ctrl-C to stop)`,
       );
       if (!state.token) {
         console.error(

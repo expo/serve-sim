@@ -40,6 +40,8 @@ export interface CaptureDiskAccumulatorOptions {
   dir: string;
   networkCapturePath?: string;
   harPath?: string;
+  entriesPath?: string;
+  ownerFile?: string;
   creatorVersion?: string;
   flushIntervalMs?: number;
   maxEntries?: number;
@@ -50,6 +52,7 @@ export class CaptureDiskAccumulator {
   readonly networkCapturePath: string;
   readonly harPath: string;
   readonly entriesPath: string;
+  private readonly ownerFile: string | undefined;
   private readonly creatorVersion: string;
   private readonly maxEntries: number;
   private readonly flushMs: number;
@@ -70,7 +73,8 @@ export class CaptureDiskAccumulator {
     this.networkCapturePath =
       opts.networkCapturePath ?? join(opts.dir, NETWORK_CAPTURE_FILENAME);
     this.harPath = opts.harPath ?? join(opts.dir, CAPTURE_HAR_FILENAME);
-    this.entriesPath = join(opts.dir, CAPTURE_ENTRIES_FILENAME);
+    this.entriesPath = opts.entriesPath ?? join(opts.dir, CAPTURE_ENTRIES_FILENAME);
+    this.ownerFile = opts.ownerFile;
     this.creatorVersion = opts.creatorVersion ?? "0.0.0";
     this.maxEntries = opts.maxEntries ?? MAX_HAR_ENTRIES;
     this.flushMs = opts.flushIntervalMs ?? 5_000;
@@ -82,14 +86,14 @@ export class CaptureDiskAccumulator {
 
   begin(): void {
     if (this.started) return;
-    const owner = claimCaptureDirectory(this.dir);
+    const owner = claimCaptureDirectory(this.dir, this.ownerFile);
     try {
       writeFileSync(this.networkCapturePath, "");
       writeFileSync(this.entriesPath, "");
       writeFileSync(this.harPath, emptyHarText(this.creatorVersion));
       this.owner = owner;
     } catch (error) {
-      releaseCaptureDirectory(this.dir, owner, false);
+      releaseCaptureDirectory(this.dir, owner, false, this.ownerFile);
       throw error;
     }
     this.ending = null;
@@ -171,7 +175,7 @@ export class CaptureDiskAccumulator {
       console.warn(`Network capture: flush before end (${this.dir}) failed:`, failure.message);
     }
     try {
-      if (this.owner) releaseCaptureDirectory(this.dir, this.owner, opts.removeDir ?? false);
+      if (this.owner) releaseCaptureDirectory(this.dir, this.owner, opts.removeDir ?? false, this.ownerFile);
     } catch (error) {
       console.warn(`Network capture: releasing ${this.dir} failed:`, error);
     }

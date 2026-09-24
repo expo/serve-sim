@@ -3,6 +3,21 @@ import { describe, expect, test } from "bun:test";
 import { MAX_CONTROL_BODY_BYTES_ENV, startMitmControl } from "../mitm-control";
 import { CaptureStore } from "../store";
 
+async function withControl(
+  run: (post: (path: string, body: unknown) => Promise<Response>, store: CaptureStore) => Promise<void>,
+  onOversizedBody?: (info: { bytesSeen: number; limit: number; path: string }) => void,
+): Promise<void> {
+  const store = new CaptureStore(() => 10);
+  const control = await startMitmControl({ store, token: "secret", fields: [], onOversizedBody });
+  const post = (path: string, body: unknown) =>
+    fetch(`http://127.0.0.1:${control.port}${path}?t=secret`, { method: "POST", body: JSON.stringify(body) });
+  try {
+    await run(post, store);
+  } finally {
+    await new Promise<void>((resolve) => control.server.close(() => resolve()));
+  }
+}
+
 describe("mitm control server", () => {
   test("authenticates the addon and records a completed exchange", async () => {
     const store = new CaptureStore(() => 10);
@@ -57,21 +72,6 @@ describe("mitm control server", () => {
     }
   });
 
-  async function withControl(
-    run: (post: (path: string, body: unknown) => Promise<Response>, store: CaptureStore) => Promise<void>,
-    onOversizedBody?: (info: { bytesSeen: number; limit: number; path: string }) => void,
-  ): Promise<void> {
-    const store = new CaptureStore(() => 10);
-    const control = await startMitmControl({ store, token: "secret", fields: [], onOversizedBody });
-    const post = (path: string, body: unknown) =>
-      fetch(`http://127.0.0.1:${control.port}${path}?t=secret`, { method: "POST", body: JSON.stringify(body) });
-    try {
-      await run(post, store);
-    } finally {
-      await new Promise<void>((resolve) => control.server.close(() => resolve()));
-    }
-  }
-
   test("answers 413 for a post over the body cap and reports it", async () => {
     const previous = process.env[MAX_CONTROL_BODY_BYTES_ENV];
     process.env[MAX_CONTROL_BODY_BYTES_ENV] = "1024";
@@ -96,8 +96,10 @@ describe("mitm control server", () => {
         await post("/request", { id: `flow-${i}`, method: "GET", url: `https://example.com/${i}` });
       }
       const oldest = await post("/response", { id: "flow-0", status: 200 });
+      const nextOldest = await post("/response", { id: "flow-1", status: 200 });
       const newest = await post("/response", { id: "flow-1000", status: 200 });
       expect(await oldest.json()).toEqual({ ok: false });
+      expect(await nextOldest.json()).toEqual({ ok: true });
       expect(await newest.json()).toEqual({ ok: true });
     });
   });

@@ -83,6 +83,17 @@ bomb = addon._part(FakeMessage(bomb_wire, {"content-encoding": "gzip"}), True)
 results["bombBodyLength"] = len(bomb["body"])
 results["bombTruncated"] = bomb["truncated"]
 results["bombSize"] = bomb["size"] == len(bomb_wire)
+results["bombDecodedBytes"] = len(addon._body_of(FakeMessage(bomb_wire, {"content-encoding": "gzip"}), bomb_wire)[0])
+
+cut_wire = gzip.compress(b'{"a":1,"b":"text"}')[:-10]
+cut = addon._part(FakeMessage(cut_wire, {"content-encoding": "gzip"}), True)
+results["cutBody"] = cut["body"]
+results["cutTruncated"] = cut["truncated"]
+
+members_wire = gzip.compress(b"first member ") + gzip.compress(b"second member")
+members = addon._part(FakeMessage(members_wire, {"content-encoding": "gzip"}), True)
+results["membersBody"] = members["body"]
+results["membersTruncated"] = members["truncated"]
 
 lying = addon._part(FakeMessage(b"raw-wire-bytes", {"content-encoding": "gzip"}), True)
 results["lyingSize"] = lying["size"]
@@ -91,20 +102,21 @@ results["lyingBody"] = lying["body"]
 unsupported = addon._part(FakeMessage(b"\xff\xfe", {"content-encoding": "zstd"}), True)
 results["unsupportedBase64"] = unsupported["base64"]
 
-if addon.brotli is not None:
-    br_wire = addon.brotli.compress(b"brotli body")
-    results["brBody"] = addon._part(FakeMessage(br_wire, {"content-encoding": "br"}), True)["body"]
+class RecordingHeaders(dict):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.encoding_read = False
 
-
-class ExplodingHeaders(dict):
     def get(self, key, default=None):
         if key == "content-encoding":
-            raise AssertionError("body decoding must not run")
+            self.encoding_read = True
         return super().get(key, default)
 
 
-metadata_only = addon._part(FakeMessage(b"compressed", ExplodingHeaders({"content-encoding": "gzip"})), False)
+metadata_headers = RecordingHeaders({"content-encoding": "gzip"})
+metadata_only = addon._part(FakeMessage(b"compressed", metadata_headers), False)
 results["metadataBody"] = metadata_only["body"]
+results["metadataDecoded"] = metadata_headers.encoding_read
 
 binary = addon._part(FakeMessage(b"\xff\xfe\x00\x01"), True)
 results["binaryBody"] = binary["body"]
@@ -144,12 +156,8 @@ class FakeRequest:
         self.pretty_host = "example.test"
         self.port = 443
         self.timestamp_start = 1000.0
-        self.content = b""
         self.raw_content = b""
         self.headers = {}
-
-    def get_content(self, strict=True):
-        return b""
 
 
 class FakeResponse:

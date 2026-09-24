@@ -149,26 +149,65 @@ def _safe_url(raw):
     return _clip(f"{head}?{'&'.join(parts)}", MAX_URL_CHARS)
 
 
-def _decoded_head(message, wire):
-    # Decode at most one byte past the cap, so a small compressed body cannot inflate without bound.
+DECODE_CHUNK_BYTES = 64 * 1024
+
+
+def _inflate(wire, wbits):
     limit = MAX_BODY_BYTES + 1
+    decoder = zlib.decompressobj(wbits)
+    view = memoryview(wire)
+    out = bytearray()
+    start = 0
+    for start in range(0, len(view), DECODE_CHUNK_BYTES):
+        data = view[start : start + DECODE_CHUNK_BYTES]
+        while data and len(out) < limit and not decoder.eof:
+            out += decoder.decompress(data, limit - len(out))
+            data = decoder.unconsumed_tail
+        if len(out) >= limit or decoder.eof:
+            break
+    more_input = bool(decoder.unused_data) or start + DECODE_CHUNK_BYTES < len(view)
+    return bytes(out), len(out) < limit and (not decoder.eof or more_input)
+
+
+def _unbrotli(wire):
+    limit = MAX_BODY_BYTES + 1
+    decoder = brotli.Decompressor()
+    view = memoryview(wire)
+    out = bytearray()
+    position = 0
+    while len(out) < limit and not decoder.is_finished():
+        if decoder.can_accept_more_data():
+            if position >= len(view):
+                break
+            data = view[position : position + DECODE_CHUNK_BYTES]
+            position += DECODE_CHUNK_BYTES
+        else:
+            data = b""
+        produced = decoder.process(data, output_buffer_limit=limit - len(out))
+        if not data and not produced:
+            break
+        out += produced
+    more_input = position < len(view)
+    return bytes(out[:limit]), len(out) < limit and (not decoder.is_finished() or more_input)
+
+
+def _body_of(message, wire):
+    # Decode at most one byte past the cap, a chunk at a time, so a small compressed body cannot
+    # inflate without bound and a large one is never copied whole. Returns (bytes, incomplete).
     encoding = (message.headers.get("content-encoding") or "").strip().lower()
-    if encoding in ("", "identity"):
-        return wire
-    if encoding in ("gzip", "x-gzip", "deflate"):
-        modes = (zlib.MAX_WBITS, -zlib.MAX_WBITS) if encoding == "deflate" else (zlib.MAX_WBITS | 32,)
-        for wbits in modes:
-            try:
-                return zlib.decompressobj(wbits).decompress(wire, limit)
-            except zlib.error:
-                continue
-        return wire
-    if encoding == "br" and brotli is not None:
-        try:
-            return brotli.Decompressor().process(wire, output_buffer_limit=limit)[:limit]
-        except brotli.error:
-            return wire
-    return wire
+    try:
+        if encoding in ("gzip", "x-gzip", "deflate"):
+            modes = (zlib.MAX_WBITS, -zlib.MAX_WBITS) if encoding == "deflate" else (zlib.MAX_WBITS | 32,)
+            for wbits in modes:
+                try:
+                    return _inflate(wire, wbits)
+                except zlib.error:
+                    continue
+        elif encoding == "br" and brotli is not None:
+            return _unbrotli(wire)
+    except Exception:
+        pass
+    return wire, False
 
 
 def _part(message, want_body):
@@ -182,9 +221,9 @@ def _part(message, want_body):
         "truncated": False,
     }
     if want_body and wire:
-        body = _decoded_head(message, wire)
+        body, incomplete = _body_of(message, wire)
         head = body[:MAX_BODY_BYTES]
-        part["truncated"] = len(body) > MAX_BODY_BYTES
+        part["truncated"] = incomplete or len(body) > MAX_BODY_BYTES
         try:
             part["body"] = head.decode("utf-8")
         except UnicodeDecodeError as error:

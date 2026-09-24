@@ -2539,7 +2539,13 @@ registerCapability(captureRuntime.capability);
           version: resolveVersion(),
           token: state.token,
         });
-        console.error(`Wrote ${result.size} entries to ${outPath}`);
+        console.error(
+          `The capture stream closed before you stopped the recording, so later requests are not in the HAR. ` +
+            `serve-sim stopped or the connection dropped. To keep recording, run \`serve-sim capture har\` ` +
+            `again with a new --out path. ` +
+            `Wrote ${result.size} entries to ${outPath}.`,
+        );
+        process.exit(1);
       } catch (err) {
         if ((err as { name?: string })?.name === "AbortError") {
           console.error(`Stopped. HAR at ${outPath}`);

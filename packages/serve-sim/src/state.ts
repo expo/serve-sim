@@ -78,6 +78,14 @@ export function inProcessServeSimState(
   };
 }
 
+/** The URL a device's routes live under: the origin, plus the mount prefix of an embedded server. */
+export function serverBaseUrl(state: Pick<ServeSimDeviceState, "url" | "streamUrl" | "device">): string {
+  const stream = new URL(state.streamUrl);
+  const helperPath = `/helper/${state.device}/stream.mjpeg`;
+  if (!stream.pathname.endsWith(helperPath)) return state.url;
+  return `${stream.origin}${stream.pathname.slice(0, -helperPath.length)}`;
+}
+
 /** Persist a device's state so other processes / the grid can enumerate it.
  *  Writes atomically (temp file + rename) so a concurrent reader never observes
  *  a truncated or partially-written file. */

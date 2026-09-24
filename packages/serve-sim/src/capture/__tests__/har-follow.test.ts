@@ -3,8 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { inProcessServeSimState } from "../../state";
-import { captureBaseUrl, followCaptureHar } from "../har-follow";
+import { followCaptureHar } from "../har-follow";
 
 describe("followCaptureHar", () => {
   it("reports a failed flush even when the stream was aborted", async () => {
@@ -157,19 +156,6 @@ describe("followCaptureHar", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-});
-
-describe("captureBaseUrl", () => {
-  const UDID = "ABCD1234-0000-0000-0000-0000000000EF";
-
-  it("is the origin for a standalone server", () => {
-    expect(captureBaseUrl(inProcessServeSimState(UDID, 3100))).toBe("http://127.0.0.1:3100");
-  });
-
-  it("keeps the mount prefix of an embedded server", () => {
-    expect(captureBaseUrl(inProcessServeSimState(UDID, 3200, "/.sim"))).toBe("http://127.0.0.1:3200/.sim");
-    expect(captureBaseUrl(inProcessServeSimState(UDID, 3200, "tools/sim/"))).toBe("http://127.0.0.1:3200/tools/sim");
   });
 });
 

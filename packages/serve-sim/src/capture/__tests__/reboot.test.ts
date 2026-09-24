@@ -165,6 +165,34 @@ describe("rebootWithCapture", () => {
     expect(calls.filter((call) => call === "boot-disable")).toHaveLength(1);
   });
 
+  test("lets a newer request win over a reboot queued before it", async () => {
+    const { deps, calls } = harness();
+    let releaseBoot = () => {};
+    const slowBoot = new Promise<void>((resolve) => {
+      releaseBoot = resolve;
+    });
+    const enableDeps = {
+      ...deps,
+      boot: async () => {
+        calls.push("boot-enable");
+        await slowBoot;
+      },
+    };
+
+    const first = rebootWithCapture(UDID, true, enableDeps);
+    const disable = rebootWithCapture(UDID, false, {
+      ...deps,
+      boot: async () => void calls.push("boot-disable"),
+    });
+    const latest = rebootWithCapture(UDID, true, enableDeps);
+    releaseBoot();
+    const [, disabledMeta, latestMeta] = await Promise.all([first, disable, latest]);
+
+    expect(latestMeta.attachment).toBe("capturing");
+    expect(disabledMeta.attachment).toBe("capturing");
+    expect(calls).not.toContain("boot-disable");
+  });
+
   test("reports a capture that could not start on the new boot", async () => {
     const { calls } = harness();
     const runtime = createCaptureRuntime({

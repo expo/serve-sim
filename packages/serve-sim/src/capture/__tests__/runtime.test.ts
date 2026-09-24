@@ -709,7 +709,7 @@ describe("capture runtime", () => {
     const stopping = first.runtime.disableForDevice(UDID);
     await clearing.promise;
     try {
-      await expect(second.runtime.enableForDevice(UDID)).rejects.toThrow("already owns");
+      await expect(second.runtime.enableForDevice(UDID)).rejects.toThrow("Another recording holds");
       expect(second.calls).toEqual([]);
     } finally {
       clear.release();

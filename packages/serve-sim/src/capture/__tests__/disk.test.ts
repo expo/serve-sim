@@ -57,7 +57,7 @@ describe("CaptureDiskAccumulator", () => {
         catch (error) { console.log(error.message); }
       `, dir]);
       expect(child.exitCode).toBe(0);
-      expect(child.stdout.toString()).toContain("already owns");
+      expect(child.stdout.toString()).toContain("Another recording holds");
       expect(readFileSync(disk.harPath, "utf8")).toBe(before);
       recordFinished(store, "https://still-first.test/");
       await disk.flush();
@@ -73,7 +73,7 @@ describe("CaptureDiskAccumulator", () => {
     first.begin();
     const second = new CaptureDiskAccumulator({ dir });
     try {
-      expect(() => second.begin()).toThrow("already owns");
+      expect(() => second.begin()).toThrow("Another recording holds");
       await first.end({ removeDir: true });
       second.begin();
       await first.end({ removeDir: true });

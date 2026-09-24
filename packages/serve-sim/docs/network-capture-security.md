@@ -93,10 +93,11 @@ limits; there is no age-based expiry. Clearing the panel clears the in-memory re
 session's recorded files.
 
 Normal session teardown removes the device's capture directory. A later capture start sweeps abandoned
-directories while preserving active recordings. Files can remain after a crash, a failed final write, or failed cleanup.
-`capture har --out <path>` writes a separate recording that is retained after the command stops: the
-HAR at `<path>`, with `<name>.network-capture.json` and `<name>.entries.ndjson` beside it. The files are
-named after the HAR, so several recordings can share a folder without touching each other's files.
+directories while preserving active recordings. Files can remain after a crash, a failed final write, or
+failed cleanup.
+`capture har --out <path>` writes a separate recording that is retained after the command stops. The
+files are named after the HAR, so several recordings can share a folder: for `morning.har`, the event
+log is `morning.network-capture.json` and the entry log is `morning.entries.ndjson`.
 
 On macOS, the default temporary directory is private to the user. Artifact code relies on its containing
 directory's permissions; a shared temporary directory or `SERVE_SIM_STATE_DIR` override needs equivalent

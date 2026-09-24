@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -94,6 +94,23 @@ describe("CaptureDiskAccumulator", () => {
       expect(existsSync(disk.harPath)).toBe(true);
     } finally {
       await disk.end({ removeDir: true });
+    }
+  });
+
+  it("keeps the recording when its final flush fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-flush-fails-"));
+    const store = new CaptureStore();
+    const disk = new CaptureDiskAccumulator({ dir, flushIntervalMs: 60_000 });
+    try {
+      const stop = disk.attach(store);
+      rmSync(disk.entriesPath);
+      mkdirSync(disk.entriesPath);
+      recordFinished(store, "https://a.test/");
+      expect(await disk.end({ removeDir: true })).toBeInstanceOf(Error);
+      expect(existsSync(disk.networkCapturePath)).toBe(true);
+      await stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

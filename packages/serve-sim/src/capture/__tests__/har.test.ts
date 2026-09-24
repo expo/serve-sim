@@ -143,6 +143,14 @@ describe("toHarEntry", () => {
     expect(toHarEntry({ ...req, responseBytes: 9000 }, { ...body, responseTruncated: true }).response.content.size).toBe(9000);
   });
 
+  it("keeps the failure reason of a failed request", () => {
+    const entry = toHarEntry({ ...req, status: null, failure: "The TLS connection failed" });
+    expect(entry.response.statusText).toBe("Error");
+    expect(entry.response._error).toBe("The TLS connection failed");
+    expect(toHarEntry(req).response).not.toHaveProperty("_error");
+    expect(isHarEntryCompliant(entry)).toBe(true);
+  });
+
   it("never emits negative required timings for in-flight rows", () => {
     const entry = toHarEntry(
       { ...req, status: null, ttfbMs: null, durationMs: null },

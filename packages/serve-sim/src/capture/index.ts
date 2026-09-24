@@ -11,7 +11,7 @@ export {
   formatOversizedControlBodyWarning,
   maxControlBodyBytes,
 } from "./mitm-engine";
-export { rebootWithCapture } from "./reboot";
+export { rebootedWithCaptureSince, rebootWithCapture } from "./reboot";
 export {
   captureRuntime,
   createCaptureRuntime,

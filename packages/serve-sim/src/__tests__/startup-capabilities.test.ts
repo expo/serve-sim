@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { capabilityConfigPath, managedStartupDylibs } from "../capability-config";
 import { configureCapability, enableCapabilities, disableCapability, releaseSessionSync, removeCapabilityLoaderSync, capabilityLoaderPath } from "../launch-manager";
 import { installShims, useTempStateDir } from "./helpers";
+import { readLaunchState } from "../launch-state";
 
 const UDID = "startup-capabilities-test";
 let state: ReturnType<typeof useTempStateDir>;
@@ -156,6 +157,41 @@ test("failed capability publication closes its prepared resources after rollback
   }, { enabled: true, relaunch: false })).rejects.toThrow();
   expect(stopped).toBe(true);
   expect(activated).toBe(false);
+});
+
+test("a capability that fails after publication is withdrawn before its resources stop", async () => {
+  let stopped = false;
+  await expect(configureCapability(UDID, {
+    name: "networkCapture", scope: "userApps", loadPhase: "startup", defaultEnabled: false,
+    async setEnabled({ enabled }) {
+      if (!enabled) return null;
+      return {
+        dylib,
+        committed() { throw new Error("proxy exited during publication"); },
+        async rollback() {
+          expect(env().DYLD_INSERT_LIBRARIES).not.toContain(dylib);
+          stopped = true;
+        },
+      };
+    },
+  }, { enabled: true, relaunch: false })).rejects.toThrow("proxy exited during publication");
+  expect(env().DYLD_INSERT_LIBRARIES).not.toContain(dylib);
+  expect(stopped).toBe(true);
+});
+
+test("a failed capability restores the owner it replaced", async () => {
+  const definition = (committed: () => void) => ({
+    name: "shared", scope: "userApps" as const, loadPhase: "startup" as const, defaultEnabled: false,
+    async setEnabled({ enabled }: { enabled: boolean }) {
+      return enabled ? { dylib, committed } : null;
+    },
+  });
+  await configureCapability(UDID, definition(() => {}), { enabled: true, relaunch: false, ownerPid: process.ppid });
+  await expect(configureCapability(UDID, definition(() => { throw new Error("proxy exited"); }), {
+    enabled: true, relaunch: false,
+  })).rejects.toThrow("proxy exited");
+  expect(readLaunchState(UDID)?.capabilities.shared?.ownerPid).toBe(process.ppid);
+  expect(env().DYLD_INSERT_LIBRARIES).toContain(dylib);
 });
 
 test("failed capability removal keeps resources alive for a retry", async () => {

@@ -2935,9 +2935,17 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     onActionResult: (action, params, result) => recordActionEvent(action, params, result),
     onSseRequest(path, websocketRequest) {
       const url = new URL(path, websocketRequest.url);
-      // The exec channel already authenticated, so its fan-out carries the token past the gate.
+      const origin = websocketRequest.headers.get("origin");
+      const site = websocketRequest.headers.get("sec-fetch-site");
+      // The exec channel already authenticated, so its fan-out carries the token past the gate. It
+      // keeps the socket's origin, so a same-origin-only route still sees who is asking.
       return fetchMiddleware(new Request(url, {
-        headers: { accept: "text/event-stream", authorization: `Bearer ${execToken}` },
+        headers: {
+          accept: "text/event-stream",
+          authorization: `Bearer ${execToken}`,
+          ...(origin ? { origin } : {}),
+          ...(site ? { "sec-fetch-site": site } : {}),
+        },
       }));
     },
   });

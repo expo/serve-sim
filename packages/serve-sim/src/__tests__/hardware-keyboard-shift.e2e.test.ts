@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import WebSocket from "ws";
 import { parseDetachState } from "./detach-state";
-import { freePortAsync } from "./helpers";
+import { freePortAsync, useTempStateDir } from "./helpers";
 import { textToKeyEvents } from "../text-to-keys";
 import type { ServeSimDeviceState } from "../state";
 
@@ -35,6 +35,7 @@ function simctl(...args: string[]): string {
 describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<skipped>"})`, () => {
   let state: ServeSimDeviceState;
   let fixtureLog: string;
+  let tempState: ReturnType<typeof useTempStateDir>;
   const sockets: WebSocket[] = [];
 
   function fixtureLines(): string[] {
@@ -133,17 +134,16 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
     return fixtureLines().slice(start).filter((line) => line.startsWith("text\t")).map((line) => line.split("\t")[2]!);
   }
 
+  function countEvents(start: number, kind: string): number {
+    return fixtureLines().slice(start).filter((line) => line.startsWith(`${kind}\t`)).length;
+  }
+
   function expectEveryCharacterChange(start: number, text: string): void {
     let prefix = "";
     expect(textChanges(start)).toEqual([...text].map((character) => prefix += character));
   }
 
-  beforeAll(async () => {
-    try { cli("--kill", udid!); } catch {}
-    try { simctl("uninstall", udid!, APP); } catch {}
-    simctl("install", udid!, FIXTURE);
-    fixtureLog = join(simctl("get_app_container", udid!, APP, "data").trim(), "Documents/launches.tsv");
-
+  async function startPreview(): Promise<ServeSimDeviceState> {
     const port = await freePortAsync();
     const detach = spawnSync("node", [CLI_PATH, "--detach", "-p", String(port), udid!], {
       encoding: "utf-8",
@@ -153,7 +153,17 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
     if (detach.status !== 0 || !detach.stdout) {
       throw new Error(`serve-sim --detach failed (exit=${detach.status} signal=${detach.signal})\nstdout: ${detach.stdout}`);
     }
-    state = parseDetachState<ServeSimDeviceState>(detach.stdout);
+    return parseDetachState<ServeSimDeviceState>(detach.stdout);
+  }
+
+  beforeAll(async () => {
+    tempState = useTempStateDir();
+    try { cli("--kill", udid!); } catch {}
+    try { simctl("uninstall", udid!, APP); } catch {}
+    simctl("install", udid!, FIXTURE);
+    fixtureLog = join(simctl("get_app_container", udid!, APP, "data").trim(), "Documents/launches.tsv");
+
+    state = await startPreview();
   }, 180_000);
 
   beforeEach(() => {
@@ -170,6 +180,7 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
     try { cli("--kill", udid!); } catch {}
     try { simctl("terminate", udid!, APP); } catch {}
     try { simctl("uninstall", udid!, APP); } catch {}
+    tempState.restore();
   }, 60_000);
 
   test("Shift reaches a field with the hardware keyboard on", async () => {
@@ -205,5 +216,49 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
     await typeLikeDesktop(desktop, "! 123");
     await waitFor(() => lastText(start), "Hi! _! 123");
     expectEveryCharacterChange(start, "Hi! _! 123");
+  }, 60_000);
+
+  test("Shift follows a hardware keyboard change from another process", async () => {
+    const desktop = await openSocket();
+    cli("ui", "hardware-keyboard", "off", "-d", udid!);
+    const start = await launchTextField();
+    await waitForSoftwareKeyboard();
+    await typeLikeDesktop(desktop, "Hi!");
+    await waitFor(() => lastText(start), "Hi!");
+    expectEveryCharacterChange(start, "Hi!");
+  }, 60_000);
+
+  test("Shift follows a hardware keyboard change made before preview starts", async () => {
+    cli("--kill", udid!);
+    cli("ui", "hardware-keyboard", "off", "-d", udid!);
+    state = await startPreview();
+    const desktop = await openSocket();
+    const start = await launchTextField();
+    await waitForSoftwareKeyboard();
+    await typeLikeDesktop(desktop, "Hi!");
+    await waitFor(() => lastText(start), "Hi!");
+    expectEveryCharacterChange(start, "Hi!");
+  }, 180_000);
+
+  test("tap, drag, and scroll still reach UIKit", async () => {
+    const socket = await openSocket();
+    const start = fixtureLines().length;
+    try { simctl("terminate", udid!, APP); } catch {}
+    simctl("launch", udid!, APP, "--input-test");
+    await waitFor(() => countEvents(start, "input-ready"), 1);
+
+    send(socket, 0x03, { type: "begin", x: 0.5, y: 0.5 });
+    send(socket, 0x03, { type: "end", x: 0.5, y: 0.5 });
+    await waitFor(() => countEvents(start, "touch-ended") >= 1, true);
+
+    send(socket, 0x03, { type: "begin", x: 0.5, y: 0.7 });
+    send(socket, 0x03, { type: "move", x: 0.5, y: 0.4 });
+    send(socket, 0x03, { type: "end", x: 0.5, y: 0.4 });
+    await waitFor(() => countEvents(start, "touch-moved") >= 1, true);
+    await waitFor(() => countEvents(start, "touch-ended") >= 2, true);
+
+    send(socket, 0x0b, { dx: 0, dy: 0.2, x: 0.5, y: 0.5 });
+    await waitFor(() => countEvents(start, "touch-moved") >= 2, true);
+    await waitFor(() => countEvents(start, "touch-ended") >= 3, true);
   }, 60_000);
 });

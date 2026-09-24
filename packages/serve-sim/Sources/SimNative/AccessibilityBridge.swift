@@ -362,13 +362,19 @@ final class AccessibilityBridge: NSObject {
             keyboardIds.filter { elements["id:\($0)"] != nil }.count >= 2
         }
 
-        func press(_ element: NSObject) {
-            element.perform(NSSelectorFromString("accessibilityPerformPress"))
+        func press(_ element: NSObject) -> Bool {
+            let selector = NSSelectorFromString("accessibilityPerformPress")
+            guard element.responds(to: selector), let implementation = element.method(for: selector) else {
+                return false
+            }
+            typealias Press = @convention(c) (AnyObject, Selector) -> Bool
+            return unsafeBitCast(implementation, to: Press.self)(element, selector)
         }
 
-        func pressCharacter(_ element: NSObject) {
-            press(element)
+        func pressCharacter(_ element: NSObject) -> Bool {
+            guard press(element) else { return false }
             Thread.sleep(forTimeInterval: 0.03)
+            return true
         }
 
         func plane(_ elements: [String: NSObject]) -> KeyboardPlane {
@@ -397,7 +403,7 @@ final class AccessibilityBridge: NSObject {
             }
             for action in actions {
                 guard let key = elements["id:\(action)"] else { return false }
-                press(key)
+                guard press(key) else { return false }
                 Thread.sleep(forTimeInterval: 0.08)
                 elements = scan()
                 guard isKeyboard(elements) else { return false }
@@ -414,12 +420,14 @@ final class AccessibilityBridge: NSObject {
 
         let targetLabel = namedLabels[character] ?? character
         if let target = elements["label:\(targetLabel)"] {
-            pressCharacter(target)
-            return true
+            return pressCharacter(target)
         }
         if character != character.lowercased(), switchPlane(to: .letters),
            let shift = elements["id:shift"], elements["label:\(character.lowercased())"] != nil {
-            press(shift)
+            guard press(shift) else {
+                restoreInitialPlane()
+                return false
+            }
             Thread.sleep(forTimeInterval: 0.08)
             elements = scan()
             guard isKeyboard(elements) else {
@@ -427,9 +435,9 @@ final class AccessibilityBridge: NSObject {
                 return false
             }
             if let target = elements["label:\(targetLabel)"] ?? elements["label:\(character.lowercased())"] {
-                pressCharacter(target)
+                let pressed = pressCharacter(target)
                 restoreInitialPlane()
-                return true
+                return pressed
             }
             restoreInitialPlane()
             return false
@@ -438,9 +446,9 @@ final class AccessibilityBridge: NSObject {
         for targetPlane in [KeyboardPlane.letters, .numbers, .symbols] {
             guard switchPlane(to: targetPlane) else { continue }
             if let target = elements["label:\(targetLabel)"] {
-                pressCharacter(target)
+                let pressed = pressCharacter(target)
                 restoreInitialPlane()
-                return true
+                if pressed { return true }
             }
         }
         restoreInitialPlane()

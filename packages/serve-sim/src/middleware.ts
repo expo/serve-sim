@@ -2800,7 +2800,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       try {
         id = decodeURIComponent(rawId);
       } catch {
-        res.writeHead(400, { "Content-Type": "application/json", "Cache-Control": "no-store, private" });
+        res.writeHead(400, { "Content-Type": "application/json", ...NO_STORE });
         res.end(
           JSON.stringify({
             error:

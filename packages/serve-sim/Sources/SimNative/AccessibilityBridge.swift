@@ -310,6 +310,7 @@ final class AccessibilityBridge: NSObject {
             var found: [String: NSObject] = [:]
             var labelCandidates: [(String, NSObject, NSRect)] = []
             var keyboardFrames: [NSRect] = []
+            var buttonFrames: [NSRect] = []
             var coverage = AccessibilityCoverage()
             var pointBudget = 400
             var y = bounds.maxY - step / 2
@@ -332,6 +333,7 @@ final class AccessibilityBridge: NSObject {
                     let frame = (element as? NSAccessibilityElement)?.accessibilityFrame() ?? .zero
                     guard !coverage.contains(frame) else { continue }
                     coverage.insertLeaf(frame)
+                    buttonFrames.append(frame)
                     if let label = stringValue(element, key: "accessibilityLabel"), wantedLabels.contains(label) {
                         labelCandidates.append((label, element, frame))
                     }
@@ -344,15 +346,23 @@ final class AccessibilityBridge: NSObject {
             }
             guard keyboardFrames.count >= 2 else { return found }
             let keyHeight = keyboardFrames.map(\.height).max() ?? 0
-            let minX = keyboardFrames.map(\.minX).min() ?? bounds.minX
-            let maxX = keyboardFrames.map(\.maxX).max() ?? bounds.maxX
-            let keyboardMinY = keyboardFrames.map(\.minY).min() ?? bounds.minY
+            var keyboardMinY = keyboardFrames.map(\.minY).min() ?? bounds.minY
+            while true {
+                let connected = buttonFrames.filter { frame in
+                    frame.minY < keyboardMinY &&
+                    frame.maxY >= keyboardMinY - keyHeight * 0.3 &&
+                    frame.height >= keyHeight * 0.6 && frame.height <= keyHeight * 1.6 &&
+                    frame.width >= keyHeight * 0.45
+                }
+                guard let upperRow = connected.map(\.minY).min() else { break }
+                keyboardMinY = upperRow
+            }
             let maxY = keyboardFrames.map(\.maxY).max() ?? bounds.maxY
             let keyboardFrame = NSRect(
-                x: minX,
-                y: max(bounds.minY, keyboardMinY - keyHeight * 2.25),
-                width: maxX - minX,
-                height: maxY - max(bounds.minY, keyboardMinY - keyHeight * 2.25)
+                x: bounds.minX,
+                y: keyboardMinY,
+                width: bounds.width,
+                height: maxY - keyboardMinY
             )
             for (label, element, frame) in labelCandidates where keyboardFrame.contains(
                 NSPoint(x: frame.midX, y: frame.midY)

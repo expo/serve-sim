@@ -28,8 +28,12 @@ let axDelay = 0;
 let axGate: Promise<void> | undefined;
 let hardwareKeyboard = "on";
 let hardwareKeyboardDelay = 0;
+let hardwareKeyboardReadGate: Promise<void> | undefined;
+let hardwareKeyboardReads = 0;
 const hardwareKeyboardUpdatesStarted: string[] = [];
 let hardwareKeyboardRevision = 0;
+let keyboardRestoreFailures = 0;
+let keyboardRestoreAttempts = 0;
 
 // Keep NativeHid's real error handling in the loop; only replace the addon.
 const addon = {
@@ -142,7 +146,11 @@ mock.module("../../native", () => ({
 }));
 mock.module("../../ui-settings", () => ({
   refreshDeviceOptionState: async () => {},
-  getUiOption: async () => hardwareKeyboard,
+  getUiOption: async () => {
+    hardwareKeyboardReads++;
+    await hardwareKeyboardReadGate;
+    return hardwareKeyboard;
+  },
   setUiOption: async (_udid: string, option: string, value: string) => {
     if (option === "hardware-keyboard") hardwareKeyboardUpdatesStarted.push(value);
     if (hardwareKeyboardDelay) await Bun.sleep(hardwareKeyboardDelay);
@@ -150,6 +158,11 @@ mock.module("../../ui-settings", () => ({
     return `revision-${++hardwareKeyboardRevision}`;
   },
   setUiOptionIfRevision: async (_udid: string, option: string, value: string, revision: string) => {
+    keyboardRestoreAttempts++;
+    if (keyboardRestoreFailures > 0) {
+      keyboardRestoreFailures--;
+      throw new Error("State lock unavailable");
+    }
     if (revision !== `revision-${hardwareKeyboardRevision}`) return null;
     if (option === "hardware-keyboard") hardwareKeyboardUpdatesStarted.push(value);
     if (hardwareKeyboardDelay) await Bun.sleep(hardwareKeyboardDelay);
@@ -177,8 +190,12 @@ beforeEach(() => {
   axGate = undefined;
   hardwareKeyboard = "on";
   hardwareKeyboardDelay = 0;
+  hardwareKeyboardReadGate = undefined;
+  hardwareKeyboardReads = 0;
   hardwareKeyboardUpdatesStarted.length = 0;
   hardwareKeyboardRevision = 0;
+  keyboardRestoreFailures = 0;
+  keyboardRestoreAttempts = 0;
   routedScreens.length = 0;
   hingeAngles.length = 0;
   hingePoses.length = 0;
@@ -412,6 +429,48 @@ describe("shifted keyboard routing", () => {
     expect(inputCalls.indexOf("axCharacter")).toBeLessThan(inputCalls.indexOf("touch"));
   });
 
+  test("discards input queued by a disconnected client", async () => {
+    hardwareKeyboard = "off";
+    await start({ width: 1170, height: 2532 });
+    let releaseAx!: () => void;
+    axGate = new Promise<void>((resolve) => { releaseAx = resolve; });
+    send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
+    await waitUntil(() => axCharacters.length === 1);
+    send(0x03, { type: "begin", x: 0.5, y: 0.5 });
+    send(0x06, { type: "down", usage: 5 });
+    const queues = (session as unknown as { inputOperationQueues: Map<unknown, unknown[]> }).inputOperationQueues;
+    try {
+      await waitUntil(() => [...queues.values()].some((queue) => queue.length === 2));
+      ws!.terminate();
+      await waitUntil(() => (session as unknown as { hidSockets: Set<unknown> }).hidSockets.size === 0);
+    } finally {
+      releaseAx();
+    }
+    await waitUntil(() => (session as unknown as { admittedHidSockets: Set<unknown> }).admittedHidSockets.size === 0);
+    expect(inputCalls).not.toContain("touch");
+    expect(keyEvents).toEqual([]);
+  });
+
+  test("does not enqueue input after disconnect while capture starts", async () => {
+    await start({ width: 1170, height: 2532 });
+    let releaseCapture!: () => void;
+    (session as unknown as { captureStart: Promise<void> }).captureStart = new Promise<void>((resolve) => { releaseCapture = resolve; });
+    send(0x03, { type: "begin", x: 0.5, y: 0.5 });
+    await Bun.sleep(10);
+    ws!.terminate();
+    await waitUntil(() => (session as unknown as { hidSockets: Set<unknown> }).hidSockets.size === 0);
+    releaseCapture();
+    await Bun.sleep(20);
+    expect(inputCalls).not.toContain("touch");
+  });
+
+  test.each([NaN, -1, 1.5, 256, "4", null])("rejects invalid keyboard usage %s", async (usage) => {
+    await start({ width: 1170, height: 2532 });
+    send(0x06, { type: "down", usage });
+    await Bun.sleep(20);
+    expect(keyEvents).toEqual([]);
+  });
+
   test.each([0, 1])("shutdown discards input and preserves cleanup (AX failures: %s)", async (failures) => {
     await start({ width: 1170, height: 2532 });
     send(0x0e, { enabled: false });
@@ -537,6 +596,7 @@ describe("shifted keyboard routing", () => {
     await waitUntil(() => hardwareKeyboard === "off");
     axDelay = 100;
     send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
+    await waitUntil(() => axCharacters.length === 1);
     const closed = new Promise<void>((resolve) => ws!.once("close", () => resolve()));
     ws!.terminate();
     await closed;
@@ -547,9 +607,9 @@ describe("shifted keyboard routing", () => {
     });
     ws = second;
     send(0x0e, { enabled: false });
-    await waitUntil(() => hardwareKeyboardUpdatesStarted.filter((value) => value === "off").length === 2);
-    await Bun.sleep(30);
-    expect(hardwareKeyboardUpdatesStarted).toEqual(["off", "off"]);
+    await waitUntil(() => inputCalls.includes("axCharacter"));
+    await waitUntil(() => !(session as unknown as { inputQueueDraining: boolean }).inputQueueDraining);
+    expect(hardwareKeyboardUpdatesStarted).toEqual(["off"]);
     expect(hardwareKeyboard).toBe("off");
   });
 
@@ -602,6 +662,71 @@ describe("shifted keyboard routing", () => {
     await Bun.sleep(30);
     expect(hardwareKeyboardUpdatesStarted).toEqual([]);
     expect(hardwareKeyboard).toBe("off");
+  });
+
+  test("does not claim a hardware keyboard already disabled by the CLI", async () => {
+    hardwareKeyboard = "off";
+    await start({ width: 1170, height: 2532 });
+    send(0x0e, { enabled: false });
+    await Bun.sleep(30);
+    ws!.terminate();
+    await waitUntil(() => (session as unknown as { admittedHidSockets: Set<unknown> }).admittedHidSockets.size === 0);
+    expect(hardwareKeyboardUpdatesStarted).toEqual([]);
+    expect(hardwareKeyboard).toBe("off");
+  });
+
+  test("does not cancel restoration when a disconnected client finishes reading the keyboard setting", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    send(0x0e, { enabled: false });
+    await waitUntil(() => hardwareKeyboard === "off");
+    const first = ws!;
+    let releaseRead!: () => void;
+    hardwareKeyboardReadGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const second = new WebSocket(url.replace("http:", "ws:"));
+    await new Promise<void>((resolve, reject) => {
+      second.once("open", resolve);
+      second.once("error", reject);
+    });
+    ws = second;
+    send(0x0e, { enabled: false });
+    await waitUntil(() => hardwareKeyboardReads === 2);
+    second.terminate();
+    await waitUntil(() => (session as unknown as { hidSockets: Set<unknown> }).hidSockets.size === 1);
+    releaseRead();
+    first.terminate();
+    await waitUntil(() => hardwareKeyboard === "on");
+    expect(hardwareKeyboardUpdatesStarted).toEqual(["off", "on"]);
+  });
+
+  test("retries a failed owned keyboard restoration", async () => {
+    await start({ width: 1170, height: 2532 });
+    send(0x0e, { enabled: false });
+    await waitUntil(() => hardwareKeyboard === "off");
+    keyboardRestoreFailures = 1;
+    ws!.terminate();
+    await waitUntil(() => hardwareKeyboard === "on");
+    expect(keyboardRestoreAttempts).toBe(2);
+  });
+
+  test("retains ownership after repeated restore failure for a later retry", async () => {
+    errorLog = spyOn(console, "error").mockImplementation(() => {});
+    const { url } = await start({ width: 1170, height: 2532 });
+    send(0x0e, { enabled: false });
+    await waitUntil(() => hardwareKeyboard === "off");
+    keyboardRestoreFailures = 3;
+    ws!.terminate();
+    await waitUntil(() => keyboardRestoreAttempts === 3);
+    expect(hardwareKeyboard).toBe("off");
+    expect(errorLog.mock.calls.flat().join(" ")).toContain("Could not restore the hardware keyboard");
+    const second = new WebSocket(url.replace("http:", "ws:"));
+    await new Promise<void>((resolve, reject) => {
+      second.once("open", resolve);
+      second.once("error", reject);
+    });
+    ws = second;
+    second.terminate();
+    await waitUntil(() => hardwareKeyboard === "on");
+    expect(keyboardRestoreAttempts).toBe(4);
   });
 
   test("does not overwrite a newer hardware-keyboard setting on disconnect", async () => {

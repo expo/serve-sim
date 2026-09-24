@@ -895,6 +895,7 @@ export class DeviceSession {
     if (this.detachedHidSockets.has(ws)) return;
     this.detachedHidSockets.add(ws);
     this.hidSockets.delete(ws);
+    this.discardQueuedInput(ws);
     if ((this.inFlightOrderedMessages.get(ws) ?? 0) === 0) this.finishDetachedHidSocket(ws);
     this.notifyInputStateChanged();
     if (this.hidSockets.size === 0) {
@@ -966,7 +967,8 @@ export class DeviceSession {
       }
       case 0x06: {
         const m = json<{ type: string; usage: number; key?: string; shifted?: boolean }>();
-        if (m) {
+        if (m && (m.type === "down" || m.type === "up") &&
+          Number.isInteger(m.usage) && m.usage >= 0 && m.usage <= 0xff) {
           this.recordHidEvent(tag, m);
           const operation = this.queueInputOperation(ws, async () => {
             const axHandledKeyUsages = this.axHandledKeyUsages.get(ws)!;
@@ -981,7 +983,7 @@ export class DeviceSession {
                 return;
               }
             }
-            if (this.phase !== "running") return;
+            if (this.phase !== "running" || this.detachedHidSockets.has(ws)) return;
             if (m.type === "up" && axHandledKeyUsages.delete(m.usage)) return;
             if (m.type === "down") axHandledKeyUsages.delete(m.usage);
             if (m.type === "down" || m.type === "up") await this.updateHidKey(ws, m.type, m.usage);
@@ -1067,6 +1069,14 @@ export class DeviceSession {
           this.recordHidEvent(tag, m);
           const operation = this.queueInputOperation(ws, async () => {
             if (!this.hidSockets.has(ws)) return;
+            const currentSetting = !m.enabled
+              ? await getUiOption(this.udid, "hardware-keyboard").catch(() => null)
+              : null;
+            if (!this.hidSockets.has(ws)) return;
+            if (currentSetting === "off") {
+              this.restoreHardwareKeyboardWhenIdle = false;
+              return;
+            }
             const revision = await setUiOption(
               this.udid,
               "hardware-keyboard",
@@ -1196,7 +1206,7 @@ export class DeviceSession {
   }
 
   private queueInputOperation(ws: HidSocket, run: () => Promise<void>): Promise<void> | null {
-    if (this.phase !== "running" || this.overloadedHidSockets.has(ws)) return null;
+    if (this.phase !== "running" || this.detachedHidSockets.has(ws) || this.overloadedHidSockets.has(ws)) return null;
     const queue = this.inputOperationQueues.get(ws) ?? [];
     if (queue.length >= MAX_PENDING_INPUT_OPERATIONS_PER_SOCKET) {
       this.overloadHidSocket(ws);
@@ -1328,9 +1338,20 @@ export class DeviceSession {
       if (this.restoreHardwareKeyboardWhenIdle && !detachedAdmissionPending) {
         this.restoreHardwareKeyboardWhenIdle = false;
         const revision = this.hardwareKeyboardRevision;
-        this.hardwareKeyboardRevision = undefined;
         if (revision) {
-          await setUiOptionIfRevision(this.udid, "hardware-keyboard", "on", revision).catch(() => null);
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              await setUiOptionIfRevision(this.udid, "hardware-keyboard", "on", revision);
+              if (this.hardwareKeyboardRevision === revision) this.hardwareKeyboardRevision = undefined;
+              break;
+            } catch (error) {
+              if (attempt === 2) {
+                console.error("[serve-sim] Could not restore the hardware keyboard. Reconnect or run `serve-sim ui hardware-keyboard on`:", error);
+              } else {
+                await new Promise((resolve) => setTimeout(resolve, 100));
+              }
+            }
+          }
         }
       }
     } finally {

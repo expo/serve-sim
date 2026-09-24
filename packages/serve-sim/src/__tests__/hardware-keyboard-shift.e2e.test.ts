@@ -204,6 +204,16 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
     expectEveryCharacterChange(start, "Hi! _ 123");
   }, 60_000);
 
+  test("presses shifted top-row letters and punctuation", async () => {
+    const desktop = await openSocket();
+    send(desktop, 0x0e, { enabled: false });
+    const start = await launchTextField();
+    await waitForSoftwareKeyboard();
+    await typeLikeDesktop(desktop, "Q!P");
+    await waitFor(() => lastText(start), "Q!P", 30_000);
+    expectEveryCharacterChange(start, "Q!P");
+  }, 60_000);
+
   test("Shift reaches a field after the hardware keyboard is switched off", async () => {
     const desktop = await openSocket();
     send(desktop, 0x0e, { enabled: false });

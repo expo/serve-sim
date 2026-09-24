@@ -473,6 +473,7 @@ async function publishPreparations(
   preparations: CapabilityPreparation[],
   ownerPid: number | null = process.pid,
 ): Promise<void> {
+  const previous = readLaunchState(udid);
   try {
     const capabilities = preparations.map(({ capability }) => capability);
     await enableCapabilitiesUnlocked(udid, bundleId, capabilities, { relaunch: false, ownerPid });
@@ -487,7 +488,21 @@ async function publishPreparations(
     await rollbackPreparations(udid, preparations, error, observerErrors);
     throw error;
   }
-  for (const { resources } of preparations) resources.committed?.();
+  try {
+    for (const { resources } of preparations) resources.committed?.();
+  } catch (error) {
+    const observerErrors = notifyPreparationFailure(preparations, error);
+    try {
+      await publishLaunchState(udid, previous ?? { launchArgs: [], capabilities: {} });
+    } catch (withdrawError) {
+      throw new CapabilityRollbackError(
+        [error, withdrawError, ...observerErrors],
+        `Could not withdraw a failed capability on ${udid}; its resources were kept. Retry cleanup before launching apps.`,
+      );
+    }
+    await rollbackPreparations(udid, preparations, error, observerErrors);
+    throw error;
+  }
 }
 
 export async function applyDefaultCapabilities(

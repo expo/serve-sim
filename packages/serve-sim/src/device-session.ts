@@ -974,6 +974,7 @@ export class DeviceSession {
               }
             }
             if (m.type === "up" && axHandledKeyUsages.delete(m.usage)) return;
+            if (m.type === "down") axHandledKeyUsages.delete(m.usage);
             if (m.type === "down" || m.type === "up") await this.updateHidKey(ws, m.type, m.usage);
           });
           if (operation) await operation;
@@ -1064,7 +1065,7 @@ export class DeviceSession {
             ).catch(() => undefined);
             if (!revision) return;
             this.hardwareKeyboardRevision = m.enabled ? undefined : revision;
-            if (!m.enabled && this.hidSockets.size === 0) this.restoreHardwareKeyboardWhenIdle = true;
+            this.restoreHardwareKeyboardWhenIdle = !m.enabled && this.hidSockets.size === 0;
           });
           if (operation) await operation;
         }

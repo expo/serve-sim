@@ -337,6 +337,22 @@ describe("shifted keyboard routing", () => {
     hardwareKeyboardDelay = 0;
   });
 
+  test("releases a repeated key that switches from AX to HID", async () => {
+    hardwareKeyboard = "off";
+    await start({ width: 1170, height: 2532 });
+    inputCalls.length = 0;
+    send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
+    await waitUntil(() => axCharacters.length === 1);
+    hardwareKeyboard = "on";
+    send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
+    send(0x06, { type: "up", usage: 4 });
+    await waitUntil(() => keyEvents.length === 2);
+    expect(keyEvents).toEqual([
+      { type: "down", usage: 4 },
+      { type: "up", usage: 4 },
+    ]);
+  });
+
   test("falls back to HID when AX rejects every character press", async () => {
     await start({ width: 1170, height: 2532 });
     inputCalls.length = 0;
@@ -471,6 +487,28 @@ describe("shifted keyboard routing", () => {
     const reconnectedKey = keyEvents.findIndex((event) => event.type === "down" && event.usage === 5);
     expect(releasedShift).toBeGreaterThanOrEqual(0);
     expect(releasedShift).toBeLessThan(reconnectedKey);
+  });
+
+  test("keeps hardware input off when a touch client reconnects during cleanup", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    send(0x0e, { enabled: false });
+    await waitUntil(() => hardwareKeyboard === "off");
+    axDelay = 100;
+    send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
+    const closed = new Promise<void>((resolve) => ws!.once("close", () => resolve()));
+    ws!.terminate();
+    await closed;
+    const second = new WebSocket(url.replace("http:", "ws:"));
+    await new Promise<void>((resolve, reject) => {
+      second.once("open", resolve);
+      second.once("error", reject);
+    });
+    ws = second;
+    send(0x0e, { enabled: false });
+    await waitUntil(() => hardwareKeyboardUpdatesStarted.filter((value) => value === "off").length === 2);
+    await Bun.sleep(30);
+    expect(hardwareKeyboardUpdatesStarted).toEqual(["off", "off"]);
+    expect(hardwareKeyboard).toBe("off");
   });
 
   test("ignores a hardware change that resumes after its client disconnects", async () => {

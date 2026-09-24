@@ -31,10 +31,10 @@ function ownerIsRunning(dir: string, ownerFile = CAPTURE_OWNER_FILENAME): boolea
 
 export function claimCaptureDirectory(dir: string, ownerFile = CAPTURE_OWNER_FILENAME): string {
   const ownerPath = join(dir, ownerFile);
-  return withArtifactLock(ownerPath, () => {
+  return withArtifactLock(dir, () => {
     if (ownerIsRunning(dir, ownerFile)) {
       throw new Error(
-        `Network capture already owns ${ownerPath}. Stop that recording before starting another for this device or output file.`,
+        `Another recording holds ${ownerPath}. Stop it before starting another for this device or HAR file.`,
       );
     }
     mkdirSync(dir, { recursive: true });
@@ -51,7 +51,7 @@ export function releaseCaptureDirectory(
   ownerFile = CAPTURE_OWNER_FILENAME,
 ): void {
   const ownerPath = join(dir, ownerFile);
-  withArtifactLock(ownerPath, () => {
+  withArtifactLock(dir, () => {
     let current: string;
     try {
       current = readFileSync(ownerPath, "utf8");

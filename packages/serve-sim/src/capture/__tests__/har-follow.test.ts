@@ -1,4 +1,4 @@
-import { describe, expect, it, test } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -208,7 +208,7 @@ describe("capture har working files", () => {
     });
   }
 
-  test("names them after the HAR", () => {
+  it("names them after the HAR", () => {
     expect(captureHarPaths("/out/morning.har")).toEqual({
       eventsPath: "/out/morning.network-capture.json",
       entriesPath: "/out/morning.entries.ndjson",
@@ -216,7 +216,7 @@ describe("capture har working files", () => {
     });
   });
 
-  test("lets two recordings share a folder at once and leaves other files alone", async () => {
+  it("lets two recordings share a folder at once and leaves other files alone", async () => {
     const dir = mkdtempSync(join(tmpdir(), "serve-sim-har-shared-"));
     writeFileSync(join(dir, "network-capture.json"), "mine");
     writeFileSync(join(dir, "owner.pid"), "mine");
@@ -237,7 +237,7 @@ describe("capture har working files", () => {
     }
   });
 
-  test("keeps an earlier recording's files when a later one starts in the same folder", async () => {
+  it("keeps an earlier recording's files when a later one starts in the same folder", async () => {
     const dir = mkdtempSync(join(tmpdir(), "serve-sim-har-later-"));
     try {
       const morning = await follow(join(dir, "morning.har"), Promise.resolve());

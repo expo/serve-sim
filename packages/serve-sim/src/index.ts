@@ -2496,7 +2496,7 @@ registerCapability(captureRuntime.capability);
     .command("har")
     .description("Follow the capture stream; write a HAR and its event log")
     .requiredOption("-o, --out <path>", "HAR file to keep rewriting")
-    .option("--events <path>", "NDJSON event log (default: <out>.network-capture.json next to --out)")
+    .option("--events <path>", "NDJSON event log (default: <name>.network-capture.json beside the HAR)")
     .option(...deviceOpt)
     .option(
       "--flush-ms <ms>",

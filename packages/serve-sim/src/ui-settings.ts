@@ -347,12 +347,15 @@ async function applyAndSaveDeviceUiOption(
   udid: string, bootSession: string, option: string, value: string,
 ): Promise<string> {
   const current = readDeviceOptionState(udid);
-  const previous = (current?.bootSession === bootSession ? current.values[option] : undefined)
-    ?? UI_OPTIONS[option]!.default ?? "off";
+  const previous = current?.bootSession === bootSession ? current.values[option] : undefined;
   await applyDeviceUiOption(udid, option, value);
   try {
     return writeDeviceOptionState(udid, bootSession, option, value);
   } catch (error) {
+    if (previous === undefined) {
+      throw new Error(`Could not save ${option} for simulator ${udid}; its previous value is unknown and cannot be restored. ` +
+        "Check that the state directory is writable, then explicitly set the option again.", { cause: error });
+    }
     try {
       await applyDeviceUiOption(udid, option, previous);
     } catch (rollbackError) {

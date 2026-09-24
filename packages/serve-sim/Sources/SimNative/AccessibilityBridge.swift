@@ -305,19 +305,23 @@ final class AccessibilityBridge: NSObject {
 
         func scan() -> [String: NSObject] {
             let bounds = root.accessibilityFrame()
-            let step: CGFloat = 28
-            let minY = max(bounds.minY, bounds.maxY - 360)
+            let step: CGFloat = min(24, bounds.width / 16)
+            let minY = bounds.midY
             var found: [String: NSObject] = [:]
             var labelCandidates: [(String, NSObject, NSRect)] = []
             var keyboardFrames: [NSRect] = []
-            var seenFrames = Set<String>()
-            var y = minY + step / 2
-            while y < bounds.maxY {
+            var coverage = AccessibilityCoverage()
+            var pointBudget = 400
+            var y = bounds.maxY - step / 2
+            while y > minY, pointBudget > 0 {
                 var x = bounds.minX + step / 2
-                while x < bounds.maxX {
+                while x < bounds.maxX, pointBudget > 0 {
                     defer { x += step }
+                    let point = CGPoint(x: x, y: y)
+                    if coverage.contains(point) { continue }
+                    pointBudget -= 1
                     guard let translation = objectAtPoint(
-                        translator, pointSel, CGPoint(x: x, y: y), 0, token as NSString
+                        translator, pointSel, point, 0, token as NSString
                     ) as? NSObject else { continue }
                     translation.setValue(token, forKey: "bridgeDelegateToken")
                     guard let element = toMacElement(translator, macSel, translation) as? NSObject else { continue }
@@ -326,8 +330,8 @@ final class AccessibilityBridge: NSObject {
                     }
                     guard stringValue(element, key: "accessibilityRole") == "AXButton" else { continue }
                     let frame = (element as? NSAccessibilityElement)?.accessibilityFrame() ?? .zero
-                    let frameKey = "\(Int(frame.minX.rounded())),\(Int(frame.minY.rounded())),\(Int(frame.width.rounded())),\(Int(frame.height.rounded()))"
-                    guard seenFrames.insert(frameKey).inserted else { continue }
+                    guard !coverage.contains(frame) else { continue }
+                    coverage.insertLeaf(frame)
                     if let label = stringValue(element, key: "accessibilityLabel"), wantedLabels.contains(label) {
                         labelCandidates.append((label, element, frame))
                     }
@@ -336,7 +340,7 @@ final class AccessibilityBridge: NSObject {
                         keyboardFrames.append(frame)
                     }
                 }
-                y += step
+                y -= step
             }
             guard keyboardFrames.count >= 2 else { return found }
             let keyHeight = keyboardFrames.map(\.height).max() ?? 0
@@ -412,15 +416,16 @@ final class AccessibilityBridge: NSObject {
         }
 
         func restoreInitialPlane() {
-            if plane(elements) != initialPlane {
-                Thread.sleep(forTimeInterval: 0.08)
-            }
+            elements = scan()
+            guard isKeyboard(elements) else { return }
             _ = switchPlane(to: initialPlane)
         }
 
         let targetLabel = namedLabels[character] ?? character
         if let target = elements["label:\(targetLabel)"] {
-            return pressCharacter(target)
+            let pressed = pressCharacter(target)
+            if initialPlane != .letters { restoreInitialPlane() }
+            return pressed
         }
         if character != character.lowercased(), switchPlane(to: .letters),
            let shift = elements["id:shift"], elements["label:\(character.lowercased())"] != nil {

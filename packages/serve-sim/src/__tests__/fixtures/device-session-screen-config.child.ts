@@ -21,6 +21,7 @@ let inputSetupError: Error | undefined;
 let touchError: Error | undefined;
 const inputCalls: string[] = [];
 const keyEvents: { type: string; usage: number }[] = [];
+const touchEvents: { kind: string; args: unknown[] }[] = [];
 const axCharacters: string[] = [];
 let axFailures = 0;
 let axDelay = 0;
@@ -38,11 +39,15 @@ const addon = {
       routedScreens.push(screenId);
       if (inputSetupError) throw inputSetupError;
     }
-    async touch() {
+    async touch(...args: unknown[]) {
       inputCalls.push("touch");
+      touchEvents.push({ kind: "touch", args });
       if (touchError) throw touchError;
     }
-    async multiTouch() { inputCalls.push("multiTouch"); }
+    async multiTouch(...args: unknown[]) {
+      inputCalls.push("multiTouch");
+      touchEvents.push({ kind: "multiTouch", args });
+    }
     async button() { inputCalls.push("button"); }
     async buttonHid() { inputCalls.push("buttonHid"); }
     async key(type: string, usage: number) {
@@ -167,6 +172,7 @@ beforeEach(() => {
   keyEvents.length = 0;
   axCharacters.length = 0;
   axFailures = 0;
+  touchEvents.length = 0;
   axDelay = 0;
   axGate = undefined;
   hardwareKeyboard = "on";
@@ -231,7 +237,7 @@ async function start(initialScreen: NativeScreenInfo, supportsHingeAngle = false
   return { configs, hingeResults, controlResults, url: `http://127.0.0.1:${address.port}` };
 }
 
-afterEach(() => {
+afterEach(async () => {
   ws?.terminate();
   session?.close();
   wsServer?.close();
@@ -239,6 +245,12 @@ afterEach(() => {
   server?.close();
   errorLog?.mockRestore();
   errorLog = undefined;
+  if (session) {
+    await waitUntil(() => {
+      const state = session as unknown as { admittedHidSockets: Set<unknown>; inputQueueDraining: boolean };
+      return state.admittedHidSockets.size === 0 && !state.inputQueueDraining;
+    });
+  }
 });
 
 describe("native input failure isolation", () => {
@@ -325,17 +337,16 @@ describe("shifted keyboard routing", () => {
     expect(inputCalls).not.toContain("key");
   });
 
-  test("retries AX and suppresses HID key-up when hardware input is disconnected", async () => {
+  test("suppresses HID key-up when AX delivers the character", async () => {
     await start({ width: 1170, height: 2532 });
     inputCalls.length = 0;
     hardwareKeyboardDelay = 30;
     send(0x0e, { enabled: false });
-    axFailures = 1;
     send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
     send(0x06, { type: "up", usage: 4 });
-    await waitUntil(() => axCharacters.length === 2);
+    await waitUntil(() => axCharacters.length === 1);
     await Bun.sleep(20);
-    expect(axCharacters).toEqual(["A", "A"]);
+    expect(axCharacters).toEqual(["A"]);
     expect(inputCalls).not.toContain("key");
     hardwareKeyboardDelay = 0;
   });
@@ -364,7 +375,7 @@ describe("shifted keyboard routing", () => {
     send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
     send(0x06, { type: "up", usage: 4 });
     await waitUntil(() => keyEvents.length === 2);
-    expect(axCharacters).toHaveLength(10);
+    expect(axCharacters).toHaveLength(1);
     expect(keyEvents).toEqual([
       { type: "down", usage: 4 },
       { type: "up", usage: 4 },
@@ -622,6 +633,34 @@ describe("shifted keyboard routing", () => {
     releaseCapture();
   });
 
+  test.each(["overload", "shutdown", "disconnect"])("releases active touch and multi-touch on %s", async (cause) => {
+    hardwareKeyboard = "off";
+    await start({ width: 1170, height: 2532 });
+    send(0x03, { type: "begin", x: 0.2, y: 0.3 });
+    send(0x05, { type: "begin", x1: 0.1, y1: 0.2, x2: 0.7, y2: 0.8 });
+    await waitUntil(() => touchEvents.length === 2);
+    let releaseAx!: () => void;
+    axGate = new Promise<void>((resolve) => { releaseAx = resolve; });
+    send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
+    await waitUntil(() => axCharacters.length === 1);
+    try {
+      if (cause === "overload") {
+        const closed = new Promise<number>((resolve) => ws!.once("close", resolve));
+        for (let index = 0; index < 1030; index++) send(0x06, { type: "up", usage: 4 });
+        expect(await closed).toBe(1013);
+      } else if (cause === "shutdown") session!.close();
+      else ws!.close();
+    } finally {
+      releaseAx();
+    }
+    await waitUntil(() => touchEvents.length === 4);
+    for (const kind of ["touch", "multiTouch"]) {
+      const events = touchEvents.filter((event) => event.kind === kind);
+      expect(events[0]!.args[0]).toBe("begin");
+      expect(events[1]!.args).toEqual(["end", ...events[0]!.args.slice(1)]);
+    }
+  });
+
   test("accepts a long shifted sequence at the supported sender pace", async () => {
     await start({ width: 1170, height: 2532 });
     axDelay = 20;
@@ -652,6 +691,35 @@ describe("shifted keyboard routing", () => {
     hardwareKeyboardDelay = 0;
     await waitUntil(() => keyEvents.some((event) => event.type === "up" && event.usage === 225));
     await waitUntil(() => hardwareKeyboard === "on");
+  });
+
+  test("reports the socket cap and admits a replacement after disconnect", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    const clients = [ws!];
+    const connect = async (): Promise<WebSocket> => {
+      const client = new WebSocket(url.replace("http:", "ws:"));
+      await new Promise<void>((resolve, reject) => {
+        client.once("open", resolve);
+        client.once("error", reject);
+      });
+      return client;
+    };
+    try {
+      for (let index = 1; index < 8; index++) clients.push(await connect());
+      const rejected = await connect();
+      const close = new Promise<{ code: number; reason: string }>((resolve) =>
+        rejected.once("close", (code, reason) => resolve({ code, reason: reason.toString() })));
+      expect(await close).toEqual({ code: 1013, reason: "Simulator input unavailable; retry after other clients disconnect" });
+      clients[1]!.terminate();
+      await waitUntil(() => (session as unknown as { hidSockets: Set<unknown> }).hidSockets.size === 7);
+      const replacement = await connect();
+      clients.push(replacement);
+      await Bun.sleep(20);
+      expect(replacement.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      for (const client of clients) client.terminate();
+      await waitUntil(() => (session as unknown as { admittedHidSockets: Set<unknown> }).admittedHidSockets.size === 0);
+    }
   });
 });
 

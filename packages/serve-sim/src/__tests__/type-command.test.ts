@@ -80,6 +80,7 @@ describe("sendKeyEventsToWs e2e", () => {
   let server: ReturnType<typeof Bun.serve>;
   let wsUrl: string;
   let received: Array<{ opcode: number; payload: unknown }>;
+  let rejection: { code: number; reason: string } | undefined;
 
   beforeAll(() => {
     received = [];
@@ -92,6 +93,10 @@ describe("sendKeyEventsToWs e2e", () => {
       },
       websocket: {
         message(_ws: ServerWebSocket<unknown>, data: string | Buffer) {
+          if (rejection) {
+            _ws.close(rejection.code, rejection.reason);
+            return;
+          }
           const buf = typeof data === "string" ? Buffer.from(data) : data;
           const opcode = buf[0]!;
           const json = buf.slice(1).toString("utf8");
@@ -137,5 +142,15 @@ describe("sendKeyEventsToWs e2e", () => {
     }
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toMatch(/WebSocket/);
+  });
+
+  it.each([0, 4])("reports overload instead of silent truncation (delay %s)", async (perEventDelayMs) => {
+    rejection = { code: 1013, reason: "Simulator input queue full" };
+    try {
+      await expect(sendKeyEventsToWs(wsUrl, textToKeyEvents("A".repeat(300)), { perEventDelayMs }))
+        .rejects.toThrow("1013: Simulator input queue full");
+    } finally {
+      rejection = undefined;
+    }
   });
 });

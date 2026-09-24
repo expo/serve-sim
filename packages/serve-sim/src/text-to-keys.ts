@@ -78,10 +78,17 @@ export async function sendKeyEventsToWs(
       token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
     );
     ws.binaryType = "arraybuffer";
+    let sentAll = false;
+
+    ws.onclose = ({ code, reason }) => {
+      if (sentAll && code === 1000) resolve();
+      else reject(new Error(`Keyboard input interrupted (${code}${reason ? `: ${reason}` : ""}). Some text may not have been delivered.`));
+    };
 
     ws.onopen = async () => {
       try {
         for (const ev of events) {
+          if (ws.readyState !== WebSocket.OPEN) return;
           const json = new TextEncoder().encode(JSON.stringify(ev));
           const msg = new Uint8Array(1 + json.length);
           msg[0] = 0x06; // WS_MSG_KEY
@@ -91,7 +98,11 @@ export async function sendKeyEventsToWs(
             await new Promise((r) => setTimeout(r, perEventDelayMs));
           }
         }
-        setTimeout(() => { ws.close(); resolve(); }, 50);
+        setTimeout(() => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          sentAll = true;
+          ws.close(1000);
+        }, 50);
       } catch (err) {
         ws.close();
         reject(err);

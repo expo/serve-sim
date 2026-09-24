@@ -62,11 +62,10 @@ export interface HidSocket {
   send(data: Buffer): void;
   on(event: "message", cb: (data: Buffer) => void): void;
   on(event: "close" | "error", cb: () => void): void;
-  close(): void;
+  close(code?: number, reason?: string): void;
 }
 
 type InputOperation = {
-  epoch: number;
   run: () => Promise<void>;
   resolve: () => void;
   reject: (error: unknown) => void;
@@ -279,7 +278,8 @@ export class DeviceSession {
   private readonly inputSocketOrder: HidSocket[] = [];
   private readonly inputStateWaiters = new Set<() => void>();
   private inputQueueDraining = false;
-  private readonly inputEpochs = new WeakMap<HidSocket, number>();
+  private readonly activeTouches = new WeakMap<HidSocket, () => Promise<void>>();
+  private readonly activeMultiTouches = new WeakMap<HidSocket, () => Promise<void>>();
   private readonly activeHidKeyUsages = new WeakMap<HidSocket, Set<number>>();
   private readonly activeHidKeyUsageCounts = new Map<number, number>();
   private readonly axHandledKeyUsages = new WeakMap<HidSocket, Set<number>>();
@@ -848,13 +848,12 @@ export class DeviceSession {
   // ── HID WebSocket ────────────────────────────────────────────────────────
 
   attachHidSocket(ws: HidSocket): void {
-    if (this.phase !== "running" || this.admittedHidSockets.size >= MAX_HID_SOCKETS) {
-      ws.close();
+    if (this.phase !== "running" || this.hidSockets.size >= MAX_HID_SOCKETS) {
+      ws.close(1013, "Simulator input unavailable; retry after other clients disconnect");
       return;
     }
     this.hidSockets.add(ws);
     this.admittedHidSockets.add(ws);
-    this.inputEpochs.set(ws, 0);
     this.inFlightHidMessages.set(ws, 0);
     this.inFlightOrderedMessages.set(ws, 0);
     this.activeHidKeyUsages.set(ws, new Set());
@@ -934,6 +933,8 @@ export class DeviceSession {
           const operation = this.queueInputOperation(ws, async () => {
             this.recordTouchEvent(m);
             await this.hid.touch(m.type as "begin" | "move" | "end", m.x, m.y, W, H, m.edge ?? 0);
+            if (m.type === "end") this.activeTouches.delete(ws);
+            else this.activeTouches.set(ws, () => this.hid.touch("end", m.x, m.y, W, H, m.edge ?? 0));
           });
           if (operation) await operation;
         }
@@ -956,6 +957,8 @@ export class DeviceSession {
           const operation = this.queueInputOperation(ws, async () => {
             this.recordHidEvent(tag, m);
             await this.hid.multiTouch(m.type as "begin" | "move" | "end", m.x1, m.y1, m.x2, m.y2, W, H);
+            if (m.type === "end") this.activeMultiTouches.delete(ws);
+            else this.activeMultiTouches.set(ws, () => this.hid.multiTouch("end", m.x1, m.y1, m.x2, m.y2, W, H));
           });
           if (operation) await operation;
         }
@@ -1165,14 +1168,8 @@ export class DeviceSession {
   }
 
   private async typeSoftwareKeyboardCharacter(character: string): Promise<boolean> {
-    const deadline = Date.now() + 750;
-    for (let attempt = 0; attempt < 10 && Date.now() < deadline; attempt++) {
-      if (this.phase !== "running") return false;
-      if (await axTypeKeyboardCharacterAsync(this.udid, character).catch(() => false)) return true;
-      const delay = Math.min(50, deadline - Date.now());
-      if (attempt < 9 && delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-    return false;
+    if (this.phase !== "running") return false;
+    return axTypeKeyboardCharacterAsync(this.udid, character).catch(() => false);
   }
 
   private async updateHidKey(ws: HidSocket, type: "down" | "up", usage: number): Promise<void> {
@@ -1205,9 +1202,8 @@ export class DeviceSession {
       this.overloadHidSocket(ws);
       return null;
     }
-    const epoch = this.inputEpochs.get(ws) ?? 0;
     const result = new Promise<void>((resolve, reject) => {
-      queue.push({ epoch, run, resolve, reject });
+      queue.push({ run, resolve, reject });
     });
     this.inputOperationQueues.set(ws, queue);
     this.scheduleInputSocket(ws);
@@ -1217,13 +1213,12 @@ export class DeviceSession {
   private overloadHidSocket(ws: HidSocket): void {
     if (this.overloadedHidSockets.has(ws)) return;
     this.overloadedHidSockets.add(ws);
-    ws.close();
+    ws.close(1013, "Simulator input queue full; send smaller batches or slow down");
     this.discardQueuedInput(ws);
     this.queueInputCleanup(ws);
   }
 
   private discardQueuedInput(ws: HidSocket): void {
-    this.inputEpochs.set(ws, (this.inputEpochs.get(ws) ?? 0) + 1);
     const queue = this.inputOperationQueues.get(ws) ?? [];
     for (const operation of queue.splice(0)) operation.resolve();
     this.inputOperationQueues.set(ws, queue);
@@ -1232,8 +1227,12 @@ export class DeviceSession {
   private queueInputCleanup(ws: HidSocket, priority = false): void {
     const queue = this.inputOperationQueues.get(ws) ?? [];
     queue.push({
-      epoch: this.inputEpochs.get(ws) ?? 0,
       run: async () => {
+        for (const touches of [this.activeTouches, this.activeMultiTouches]) {
+          const release = touches.get(ws);
+          touches.delete(ws);
+          await release?.().catch(() => {});
+        }
         const activeHidKeyUsages = this.activeHidKeyUsages.get(ws);
         if (activeHidKeyUsages) {
           for (const usage of [...activeHidKeyUsages]) {
@@ -1311,7 +1310,7 @@ export class DeviceSession {
           continue;
         }
         try {
-          if (this.inputEpochs.get(ws) === operation.epoch) await operation.run();
+          await operation.run();
           operation.resolve();
         } catch (error) {
           operation.reject(error);

@@ -86,15 +86,17 @@ describe("device-backed UI option state", () => {
     expect(await getUiOption(udid, "hardware-keyboard")).toBe("off");
   });
 
-  test("restores the default when the first state write fails", async () => {
-    const udid = "FAILED-FIRST-WRITE";
+  test.each([false, true])("does not guess rollback state (previous boot: %s)", async (previousBoot) => {
+    const udid = `FAILED-FIRST-WRITE-${previousBoot}`;
+    if (previousBoot) await setHardwareKeyboard(udid, "on", "99");
+    hardwareKeyboardUpdates.length = 0;
     const file = join(stateDirectory, `ui-${udid}.json`);
     mkdirSync(`${file}.${process.pid}.tmp`);
     const setting = setUiOption(udid, "hardware-keyboard", "off");
     await waitForBootRequests(1);
     resolveBootRequest(0, "100");
-    await expect(setting).rejects.toThrow();
-    expect(hardwareKeyboardUpdates).toEqual([false, true]);
+    await expect(setting).rejects.toThrow("previous value is unknown");
+    expect(hardwareKeyboardUpdates).toEqual([false]);
     expect(await getUiOption(udid, "hardware-keyboard")).toBe("on");
   });
 

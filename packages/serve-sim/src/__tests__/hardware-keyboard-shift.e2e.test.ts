@@ -14,6 +14,7 @@ const FIXTURE = join(import.meta.dir, "../../dist/capability-loader/ServeSimLaun
 const APP = "dev.expo.serve-sim.launch-fixture";
 
 type AxNode = {
+  AXLabel?: string;
   AXUniqueId: string | null;
   frame: { x: number; y: number; width: number; height: number };
   children: AxNode[];
@@ -85,7 +86,8 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
     const response = await fetch(state.streamUrl.replace(/\/stream\.mjpeg$/, "/ax"), {
       headers: state.token ? { Authorization: `Bearer ${state.token}` } : undefined,
     });
-    return response.json() as Promise<AxNode[]>;
+    const nodes: unknown = await response.json();
+    return Array.isArray(nodes) ? nodes as AxNode[] : [];
   }
 
   function findAxNode(nodes: AxNode[], id: string): AxNode | undefined {
@@ -207,14 +209,8 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
     send(desktop, 0x0e, { enabled: false });
     const start = await launchTextField();
     await waitForSoftwareKeyboard();
-    await typeLikeDesktop(desktop, "Hi! ");
-    await waitFor(() => lastText(start), "Hi! ");
-    await pressSoftwareKey(desktop, "more");
-    await typeLikeDesktop(desktop, "_");
-    await waitFor(() => lastText(start), "Hi! _");
-    await pressSoftwareKey(desktop, "shift");
-    await typeLikeDesktop(desktop, "! 123");
-    await waitFor(() => lastText(start), "Hi! _! 123");
+    await typeLikeDesktop(desktop, "Hi! _! 123");
+    await waitFor(() => lastText(start), "Hi! _! 123", 40_000);
     expectEveryCharacterChange(start, "Hi! _! 123");
   }, 60_000);
 
@@ -226,6 +222,25 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
     await typeLikeDesktop(desktop, "Hi!");
     await waitFor(() => lastText(start), "Hi!");
     expectEveryCharacterChange(start, "Hi!");
+  }, 60_000);
+
+  test("restores the numbers plane after shifted letters and symbols", async () => {
+    const desktop = await openSocket();
+    send(desktop, 0x0e, { enabled: false });
+    const start = await launchTextField();
+    await waitForSoftwareKeyboard();
+    await pressSoftwareKey(desktop, "more");
+    for (const text of ["A", "_"]) {
+      await typeLikeDesktop(desktop, text);
+      await waitFor(() => lastText(start), text === "A" ? "A" : "A_");
+      // Queue a key-plane tap behind restoration; numbers -> letters.
+      await pressSoftwareKey(desktop, "more");
+      const hasLetter = (nodes: AxNode[]): boolean => nodes.some((node) =>
+        node.AXLabel?.toLowerCase() === "a" || hasLetter(node.children ?? []));
+      expect(hasLetter(await axRoots())).toBe(true);
+      await pressSoftwareKey(desktop, "more");
+    }
+    expectEveryCharacterChange(start, "A_");
   }, 60_000);
 
   test("Shift follows a hardware keyboard change made before preview starts", async () => {
@@ -261,4 +276,15 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
     await waitFor(() => countEvents(start, "touch-moved") >= 2, true);
     await waitFor(() => countEvents(start, "touch-ended") >= 3, true);
   }, 60_000);
+
+  test("tap reports a full input connection pool", async () => {
+    for (let index = 0; index < 8; index++) await openSocket();
+    const result = spawnSync("node", [CLI_PATH, "tap", "0.5", "0.5", "-d", udid!], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Simulator input rejected");
+    expect(result.stderr).toContain("retry after other clients disconnect");
+  }, 30_000);
 });

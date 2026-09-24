@@ -172,10 +172,11 @@ export class CaptureDiskAccumulator {
       await this.flush();
     } catch (error) {
       failure = error instanceof Error ? error : new Error(String(error));
-      console.warn(`Network capture: flush before end (${this.dir}) failed:`, failure.message);
+      console.warn(`Network capture: flush before end (${this.dir}) failed, so its files were kept:`, failure.message);
     }
     try {
-      if (this.owner) releaseCaptureDirectory(this.dir, this.owner, opts.removeDir ?? false, this.ownerFile);
+      const removeDir = failure === null && (opts.removeDir ?? false);
+      if (this.owner) releaseCaptureDirectory(this.dir, this.owner, removeDir, this.ownerFile);
     } catch (error) {
       console.warn(`Network capture: releasing ${this.dir} failed:`, error);
     }

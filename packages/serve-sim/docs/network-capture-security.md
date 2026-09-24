@@ -93,7 +93,7 @@ limits; there is no age-based expiry. Clearing the panel clears the in-memory re
 session's recorded files.
 
 Normal session teardown removes the device's capture directory. A later capture start sweeps abandoned
-directories while preserving active recordings. Files can remain after a crash or failed cleanup.
+directories while preserving active recordings. Files can remain after a crash, a failed final write, or failed cleanup.
 `capture har --out <path>` writes a separate recording that is retained after the command stops: the
 HAR at `<path>`, with `<name>.network-capture.json` and `<name>.entries.ndjson` beside it. The files are
 named after the HAR, so several recordings can share a folder without touching each other's files.

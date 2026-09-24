@@ -1,11 +1,15 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
+import { locateMitmdump } from "../mitm-engine";
+
 const ADDON = resolve(import.meta.dir, "../mitm-addon/servesim_capture.py");
 const PROBE = resolve(import.meta.dir, "fixtures/servesim-capture-probe.py");
+const BROTLI_PROBE = resolve(import.meta.dir, "fixtures/servesim-capture-brotli-probe.py");
 
 function python(): string | null {
   for (const candidate of ["python3", "/usr/bin/python3"]) {
@@ -38,7 +42,11 @@ describeOrSkip("servesim_capture addon", () => {
   test("keeps the wire bytes of a body without a content-encoding", () => {
     expect(probe.plainSize).toBe(90);
     expect(probe.plainBody).toBe("gzipbytes".repeat(10));
+  });
+
+  test("never decodes a body it was not asked to keep", () => {
     expect(probe.metadataBody).toBe("");
+    expect(probe.metadataDecoded).toBe(false);
   });
 
   test("decodes gzip and deflate bodies so they read as text, and reports wire size", () => {
@@ -52,14 +60,21 @@ describeOrSkip("servesim_capture addon", () => {
     expect(probe.bombBodyLength).toBe(512 * 1024);
     expect(probe.bombTruncated).toBe(true);
     expect(probe.bombSize).toBe(true);
+    expect(probe.bombDecodedBytes).toBe(512 * 1024 + 1);
+  });
+
+  test("marks a compressed body that ends early as incomplete", () => {
+    expect(probe.cutBody).toBe('{"a":1,"b":"text"');
+    expect(probe.cutTruncated).toBe(true);
+  });
+
+  test("marks data after the first gzip member as not shown", () => {
+    expect(probe.membersBody).toBe("first member ");
+    expect(probe.membersTruncated).toBe(true);
   });
 
   test("falls back to the wire bytes for an encoding it does not decode", () => {
     expect(probe.unsupportedBase64).toBe("//4=");
-  });
-
-  test.skipIf(probe.brBody === undefined)("decodes brotli bodies when the proxy ships brotli", () => {
-    expect(probe.brBody).toBe("brotli body");
   });
 
   test("survives a body whose content-encoding does not match its bytes", () => {
@@ -177,4 +192,32 @@ describeOrSkip("servesim_capture addon", () => {
     expect(probe.errorWithoutResponseFrames).toBe(1);
     expect(probe.errorWithoutResponseMessage).toBe("connection reset");
   });
+});
+
+const MITMDUMP = locateMitmdump();
+const describeUnderMitmproxy = MITMDUMP && existsSync(ADDON) ? describe : describe.skip;
+if (!MITMDUMP) console.warn("[servesim_capture] skipping brotli: no mitmdump on this host");
+
+describeUnderMitmproxy("servesim_capture addon under mitmproxy's own Python", () => {
+  test("decodes brotli bodies and stops a brotli bomb at the cap", () => {
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-brotli-probe-"));
+    const out = join(dir, "result.json");
+    try {
+      const run = spawnSync(MITMDUMP!, ["-q", "--set", "server=false", "-s", BROTLI_PROBE], {
+        env: { ...process.env, SERVE_SIM_ADDON_PATH: ADDON, SERVE_SIM_BROTLI_PROBE_OUT: out },
+        encoding: "utf8",
+        timeout: 60_000,
+      });
+      expect(existsSync(out), run.stderr || run.stdout).toBe(true);
+      expect(JSON.parse(readFileSync(out, "utf8"))).toEqual({
+        textBody: '{"hello":"brotli"}',
+        textTruncated: false,
+        bombBodyLength: 512 * 1024,
+        bombTruncated: true,
+        garbageBase64: "//5ub3QtYnJvdGxp",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 90_000);
 });

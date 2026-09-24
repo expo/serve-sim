@@ -13,10 +13,19 @@ export interface RebootDeps {
 type InFlight = { enabled: boolean; promise: Promise<CaptureMeta> };
 const inFlight = new Map<string, InFlight>();
 const latestIntent = new Map<string, boolean>();
+const endedAt = new Map<string, number>();
 
 // launchctl values do not survive a reboot, so a device this process armed needs arming again.
 async function rearmCapabilities(udid: string): Promise<void> {
   if (devicesArmedHere().includes(udid)) await armCapabilityLoader(udid);
+}
+
+/**
+ * Whether a capture reboot was running at or after `since` (ms). The reboot shuts the device down
+ * on purpose, so a boot-state snapshot from that window must not be read as the device being gone.
+ */
+export function rebootedWithCaptureSince(udid: string, since: number): boolean {
+  return inFlight.has(udid) || (endedAt.get(udid) ?? -Infinity) >= since;
 }
 
 /** Tear down the old session first so injection cannot point the new boot at a dead port. */
@@ -66,5 +75,6 @@ export async function rebootWithCapture(
     return await attempt;
   } finally {
     if (inFlight.get(udid) === entry) inFlight.delete(udid);
+    endedAt.set(udid, Date.now());
   }
 }

@@ -15,7 +15,7 @@ import type { Socket } from "net";
 import { WebSocket } from "ws";
 import { createAxStreamerCache } from "./ax";
 import { readCameraStatus } from "./camera-helper";
-import { captureRuntime, startCaptureForDevice, type CaptureRuntime } from "./capture";
+import { captureRuntime, rebootedWithCaptureSince, startCaptureForDevice, type CaptureRuntime } from "./capture";
 import { createMetricsSamplerCache, MetricsSampler, type MetricsSamplerCache } from "./metrics-sampler";
 import { foregroundTracker, type ForegroundApp, type ForegroundTrackerCache } from "./foreground-tracker";
 import { corsAllowOriginHeaders, frameAncestorsPolicy } from "./middleware-utils";
@@ -383,6 +383,7 @@ export async function readServeSimStates(): Promise<ServeSimState[]> {
     return [];
   }
   const booted = await getBootedUdids();
+  const bootedAt = bootedSnapshot.at;
   const states: ServeSimState[] = [];
   for (const f of files) {
     const path = join(stateDir(), f);
@@ -400,6 +401,10 @@ export async function readServeSimStates(): Promise<ServeSimState[]> {
       // preview stuck on "Connecting...". Recycle the stale state so the
       // caller can spawn a fresh helper bound to whatever is booted.
       const action = classifyStaleState(state, booted, process.pid);
+      if (action === "recycle-self" && rebootedWithCaptureSince(state.device, bootedAt)) {
+        states.push(state);
+        continue;
+      }
       if (action !== "keep") {
         if (action === "recycle-self") {
           // This device is streamed in-process by *us* (the close button just
@@ -411,6 +416,7 @@ export async function readServeSimStates(): Promise<ServeSimState[]> {
             state.pid,
           );
           closeDeviceSession(state.device);
+          void disableNetworkCaptureForStoppedDevice(state.device);
         } else {
           debugMw(
             "recycling stale helper pid=%d (device %s no longer booted)",

@@ -86,15 +86,14 @@ export function DomainSection({
         <span className="flex-1 truncate text-[11px] text-white/80" title={group.host}>
           {group.host}
         </span>
-        {group.failed > 0 ? (
+        {group.failed > 0 && (
           <span className="shrink-0 rounded bg-red-500/15 px-1.5 text-[10px] tabular-nums text-red-300">
             {group.failed} failed
           </span>
-        ) : (
-          <span className="shrink-0 text-[10px] tabular-nums text-white/30">
-            {group.requests.length} req · {formatBytes(group.bytes)}
-          </span>
         )}
+        <span className="shrink-0 text-[10px] tabular-nums text-white/30">
+          {group.requests.length} req · {formatBytes(group.bytes)}
+        </span>
       </button>
       {open && (
         <div className="pl-3">

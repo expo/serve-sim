@@ -604,6 +604,25 @@ describe("capture runtime", () => {
     expect((await runtime.refreshForDevice(UDID)).attachment).toBe("capturing");
   });
 
+  test("reports a device that was shut down while capturing", async () => {
+    const { runtime } = harness({
+      checkIntervalMs: 0,
+      isInjected: async () => {
+        throw new Error(
+          "Command failed: xcrun simctl spawn X launchctl getenv SERVE_SIM_CAPABILITY_CONFIG\n" +
+            "An error was encountered processing the command (domain=com.apple.CoreSimulator.SimError, code=405):\n" +
+            "Process spawn via launchd failed because device is not booted.",
+        );
+      },
+    });
+    await runtime.enableForDevice(UDID);
+
+    expect((await runtime.refreshForDevice(UDID)).attachment).toBe("capturing");
+    const meta = await runtime.refreshForDevice(UDID);
+    expect(meta.attachment).toBe("failed");
+    expect(meta.attachError).toContain("shut down");
+  });
+
   test("does not join two misses across a probe error", async () => {
     const results: (boolean | Error)[] = [false, new Error("device not found"), false];
     const { runtime } = harness({

@@ -12,6 +12,7 @@ export interface RebootDeps {
 
 type InFlight = { enabled: boolean; promise: Promise<CaptureMeta> };
 const inFlight = new Map<string, InFlight>();
+const latestIntent = new Map<string, boolean>();
 
 // launchctl values do not survive a reboot, so a device this process armed needs arming again.
 async function rearmCapabilities(udid: string): Promise<void> {
@@ -24,15 +25,18 @@ export async function rebootWithCapture(
   enabled: boolean,
   deps: RebootDeps = {},
 ): Promise<CaptureMeta> {
-  // Serialize per device. Same intent joins; opposite intent waits then runs.
+  const runtime = deps.runtime ?? captureRuntime;
+  latestIntent.set(udid, enabled);
+  // Serialize per device. Same intent joins; opposite intent waits, then runs unless a newer
+  // request asked for the other state while it waited.
   for (;;) {
     const running = inFlight.get(udid);
     if (!running) break;
     if (running.enabled === enabled) return running.promise;
     await running.promise.catch(() => {});
+    if (latestIntent.get(udid) !== enabled) return runtime.metaFor(udid);
   }
 
-  const runtime = deps.runtime ?? captureRuntime;
   const shutdown = deps.shutdown ?? shutdownDevice;
   const boot = deps.boot ?? bootDevice;
   const rearm = deps.rearm ?? rearmCapabilities;

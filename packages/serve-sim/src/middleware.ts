@@ -401,7 +401,7 @@ export async function readServeSimStates(): Promise<ServeSimState[]> {
       // preview stuck on "Connecting...". Recycle the stale state so the
       // caller can spawn a fresh helper bound to whatever is booted.
       const action = classifyStaleState(state, booted, process.pid);
-      if (action === "recycle-self" && rebootedWithCaptureSince(state.device, bootedAt)) {
+      if (action !== "keep" && rebootedWithCaptureSince(state.device, bootedAt)) {
         states.push(state);
         continue;
       }

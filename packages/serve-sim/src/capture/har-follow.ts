@@ -1,6 +1,5 @@
 import { dirname, join } from "node:path";
 
-import type { ServeSimDeviceState } from "../state";
 import { CaptureDiskAccumulator, NETWORK_CAPTURE_FILENAME } from "./disk";
 import { parseFinishedCaptureRequest } from "./har";
 import type { CapturedBody } from "./store";
@@ -29,14 +28,6 @@ export interface FollowCaptureHarResult {
 
 function defaultEventsPath(harPath: string): string {
   return join(dirname(harPath), NETWORK_CAPTURE_FILENAME);
-}
-
-/** The URL the device's routes live under: the origin, plus the mount prefix of an embedded server. */
-export function captureBaseUrl(state: Pick<ServeSimDeviceState, "url" | "streamUrl" | "device">): string {
-  const stream = new URL(state.streamUrl);
-  const helperPath = `/helper/${state.device}/stream.mjpeg`;
-  if (!stream.pathname.endsWith(helperPath)) return state.url;
-  return `${stream.origin}${stream.pathname.slice(0, -helperPath.length)}`;
 }
 
 function captureRoute(baseUrl: string, path: string, device: string): URL {

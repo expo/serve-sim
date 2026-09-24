@@ -16,6 +16,7 @@ import {
   previewStartupPayload,
   writeServeSimState,
   clearServeSimState,
+  serverBaseUrl,
   type ServeSimDeviceState,
   type StreamSettings,
   type WebRtcIceServer,
@@ -65,7 +66,7 @@ import { parseIceUrlList, streamHelperArgs, streamSettingsEqual } from "./stream
 import { MAX_MJPEG_STREAM_FPS, MAX_VIDEO_STREAM_FPS } from "./stream-settings";
 import { parseHingeAngle } from "./hinge-angle";
 import { sendHingeAngleToWs } from "./hinge-command";
-import { captureBaseUrl, followCaptureHar } from "./capture";
+import { followCaptureHar } from "./capture";
 
 // Budget for capture teardown and capability disarming together.
 const SHUTDOWN_TIMEOUT_MS = 20_000;
@@ -2533,7 +2534,7 @@ registerCapability(captureRuntime.capability);
       }
       try {
         const result = await followCaptureHar({
-          baseUrl: captureBaseUrl(state),
+          baseUrl: serverBaseUrl(state),
           device: state.device,
           outPath,
           eventsPath,

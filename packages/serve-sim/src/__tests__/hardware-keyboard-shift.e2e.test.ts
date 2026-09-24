@@ -6,7 +6,7 @@ import { join } from "path";
 import WebSocket from "ws";
 import { parseDetachState } from "./detach-state";
 import { freePortAsync, useTempStateDir } from "./helpers";
-import { textToKeyEvents } from "../text-to-keys";
+import { sendKeyEventsToWs, textToKeyEvents } from "../text-to-keys";
 import type { ServeSimDeviceState } from "../state";
 
 const CLI_PATH = join(import.meta.dir, "../../dist/serve-sim.js");
@@ -214,6 +214,16 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
     expectEveryCharacterChange(start, "Q!P");
   }, 60_000);
 
+  test("CLI typing waits for queued shifted characters", async () => {
+    const touch = await openSocket();
+    send(touch, 0x0e, { enabled: false });
+    const start = await launchTextField();
+    await waitForSoftwareKeyboard();
+    await sendKeyEventsToWs(state.wsUrl, textToKeyEvents("ABCD"), { token: state.token, perEventDelayMs: 0 });
+    await waitFor(() => lastText(start), "ABCD", 30_000);
+    expectEveryCharacterChange(start, "ABCD");
+  }, 90_000);
+
   test("Shift reaches a field after the hardware keyboard is switched off", async () => {
     const desktop = await openSocket();
     send(desktop, 0x0e, { enabled: false });
@@ -247,7 +257,12 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
       await pressSoftwareKey(desktop, "more");
       const hasLetter = (nodes: AxNode[]): boolean => nodes.some((node) =>
         node.AXLabel?.toLowerCase() === "a" || hasLetter(node.children ?? []));
-      expect(hasLetter(await axRoots())).toBe(true);
+      let lettersVisible = false;
+      for (let attempt = 0; attempt < 50 && !lettersVisible; attempt++) {
+        lettersVisible = hasLetter(await axRoots());
+        if (!lettersVisible) await Bun.sleep(100);
+      }
+      expect(lettersVisible).toBe(true);
       await pressSoftwareKey(desktop, "more");
     }
     expectEveryCharacterChange(start, "A_");

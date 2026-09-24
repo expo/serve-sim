@@ -384,6 +384,21 @@ describe("shifted keyboard routing", () => {
     ]);
   });
 
+  test("releases a held HID key when a repeated press switches to AX", async () => {
+    await start({ width: 1170, height: 2532 });
+    send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
+    await waitUntil(() => keyEvents.length === 1);
+    hardwareKeyboard = "off";
+    send(0x06, { type: "down", usage: 4, key: "A", shifted: true });
+    send(0x06, { type: "up", usage: 4 });
+    await waitUntil(() => axCharacters.length === 1);
+    await waitUntil(() => keyEvents.length === 2);
+    expect(keyEvents).toEqual([
+      { type: "down", usage: 4 },
+      { type: "up", usage: 4 },
+    ]);
+  });
+
   test("falls back to HID when AX rejects every character press", async () => {
     await start({ width: 1170, height: 2532 });
     inputCalls.length = 0;
@@ -525,6 +540,26 @@ describe("shifted keyboard routing", () => {
       { type: "up", usage: 225 },
     ]);
     ws = second;
+  });
+
+  test("interleaves input from two clients with hardware typing enabled", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    const second = new WebSocket(url.replace("http:", "ws:"));
+    await new Promise<void>((resolve, reject) => {
+      second.once("open", resolve);
+      second.once("error", reject);
+    });
+    send(0x06, { type: "down", usage: 4 });
+    await waitUntil(() => keyEvents.length === 1);
+    sendTo(second, 0x03, { type: "begin", x: 0.5, y: 0.5 });
+    await waitUntil(() => touchEvents.length === 1);
+    send(0x06, { type: "up", usage: 4 });
+    sendTo(second, 0x03, { type: "end", x: 0.5, y: 0.5 });
+    await waitUntil(() => keyEvents.length === 2 && touchEvents.length === 2);
+    expect(inputCalls.filter((call) => call === "key" || call === "touch").slice(0, 2)).toEqual(["key", "touch"]);
+    expect(keyEvents).toEqual([{ type: "down", usage: 4 }, { type: "up", usage: 4 }]);
+    expect(touchEvents.map((event) => event.args[0])).toEqual(["begin", "end"]);
+    second.terminate();
   });
 
   test("forwards repeated key downs without adding owners", async () => {

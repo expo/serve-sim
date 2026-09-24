@@ -283,6 +283,7 @@ export class DeviceSession {
   private readonly activeHidKeyUsages = new WeakMap<HidSocket, Set<number>>();
   private readonly activeHidKeyUsageCounts = new Map<number, number>();
   private readonly axHandledKeyUsages = new WeakMap<HidSocket, Set<number>>();
+  private readonly failedInputSockets = new WeakSet<HidSocket>();
   private readonly overloadedHidSockets = new WeakSet<HidSocket>();
   private restoreHardwareKeyboardWhenIdle = false;
   private hardwareKeyboardRevision?: string;
@@ -875,6 +876,9 @@ export class DeviceSession {
         this.inFlightOrderedMessages.set(ws, (this.inFlightOrderedMessages.get(ws) ?? 0) + 1);
       }
       void this.handleHidMessage(buffer, ws)
+        .catch(() => {
+          if (isOrderedMessage) this.failedInputSockets.add(ws);
+        })
         .finally(() => {
           const remaining = (this.inFlightHidMessages.get(ws) ?? 1) - 1;
           this.inFlightHidMessages.set(ws, remaining);
@@ -979,6 +983,9 @@ export class DeviceSession {
               const hardwareKeyboard = await getUiOption(this.udid, "hardware-keyboard");
               if (hardwareKeyboard === "off" &&
                 await this.typeSoftwareKeyboardCharacter(m.key)) {
+                if (this.activeHidKeyUsages.get(ws)?.has(m.usage)) {
+                  await this.updateHidKey(ws, "up", m.usage);
+                }
                 axHandledKeyUsages.add(m.usage);
                 return;
               }
@@ -1125,6 +1132,16 @@ export class DeviceSession {
         }
         try { ws.send(Buffer.concat([Buffer.from([0x90]), Buffer.from(JSON.stringify({ requestId, ok, ...(error ? { error } : {}) }))])); }
         catch { /* The requester may disconnect during the native operation. */ }
+        break;
+      }
+      case 0x11: {
+        while (this.phase === "running" && this.hidSockets.has(ws) &&
+          (this.inFlightOrderedMessages.get(ws) ?? 0) > 0) {
+          await this.waitForInputStateChange();
+        }
+        if (this.phase === "running" && this.hidSockets.has(ws)) {
+          ws.send(Buffer.from([0x91, this.failedInputSockets.has(ws) ? 0 : 1]));
+        }
         break;
       }
     }

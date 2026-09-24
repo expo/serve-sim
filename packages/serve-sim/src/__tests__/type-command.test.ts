@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll, afterAll } from "bun:test";
+import { describe, expect, it, beforeAll, afterAll, afterEach } from "bun:test";
 import type { ServerWebSocket } from "bun";
 import { textToKeyEvents, UnsupportedCharacterError, sendKeyEventsToWs } from "../text-to-keys";
 
@@ -81,6 +81,9 @@ describe("sendKeyEventsToWs e2e", () => {
   let wsUrl: string;
   let received: Array<{ opcode: number; payload: unknown }>;
   let rejection: { code: number; reason: string } | undefined;
+  let acknowledgementGate: Promise<void> | undefined;
+  let acknowledgementSuccess = true;
+  let barrierReceived = false;
 
   beforeAll(() => {
     received = [];
@@ -99,6 +102,14 @@ describe("sendKeyEventsToWs e2e", () => {
           }
           const buf = typeof data === "string" ? Buffer.from(data) : data;
           const opcode = buf[0]!;
+          if (opcode === 0x11) {
+            barrierReceived = true;
+            void (async () => {
+              await acknowledgementGate;
+              _ws.send(Buffer.from([0x91, acknowledgementSuccess ? 1 : 0]));
+            })();
+            return;
+          }
           const json = buf.slice(1).toString("utf8");
           received.push({ opcode, payload: JSON.parse(json) });
         },
@@ -111,6 +122,12 @@ describe("sendKeyEventsToWs e2e", () => {
     server.stop(true);
   });
 
+  afterEach(() => {
+    acknowledgementGate = undefined;
+    acknowledgementSuccess = true;
+    barrierReceived = false;
+  });
+
   it("sends one 0x06 WS frame per key event with the JSON payload", async () => {
     received.length = 0;
     const events = textToKeyEvents("aB");
@@ -119,17 +136,35 @@ describe("sendKeyEventsToWs e2e", () => {
 
     await sendKeyEventsToWs(wsUrl, events, { perEventDelayMs: 0 });
 
-    // Wait briefly for the server to drain all frames before we assert. The
-    // WS client closes only after a 50ms tail in sendKeyEventsToWs, so frames
-    // should already be flushed by the time the promise resolves — but give
-    // the event loop one tick to deliver the final `message` callbacks.
-    await new Promise((r) => setTimeout(r, 20));
-
     expect(received.length).toBe(6);
+    expect(barrierReceived).toBe(true);
     for (const frame of received) {
       expect(frame.opcode).toBe(0x06);
     }
     expect(received.map((f) => f.payload)).toEqual(events);
+  });
+
+  it("waits for the server to finish queued input before reporting success", async () => {
+    let releaseAcknowledgement!: () => void;
+    acknowledgementGate = new Promise<void>((resolve) => { releaseAcknowledgement = resolve; });
+    let finished = false;
+    const sending = sendKeyEventsToWs(wsUrl, textToKeyEvents("AB"), { perEventDelayMs: 0 })
+      .then(() => { finished = true; });
+    try {
+      for (let attempt = 0; !barrierReceived && attempt < 100; attempt++) await Bun.sleep(10);
+      expect(barrierReceived).toBe(true);
+      expect(finished).toBe(false);
+    } finally {
+      releaseAcknowledgement();
+    }
+    await sending;
+    expect(finished).toBe(true);
+  });
+
+  it("rejects when the server reports an input failure", async () => {
+    acknowledgementSuccess = false;
+    await expect(sendKeyEventsToWs(wsUrl, textToKeyEvents("A"), { perEventDelayMs: 0 }))
+      .rejects.toThrow("Simulator keyboard input failed");
   });
 
   it("rejects when the WS endpoint is unreachable", async () => {

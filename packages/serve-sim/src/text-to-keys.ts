@@ -78,11 +78,28 @@ export async function sendKeyEventsToWs(
       token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
     );
     ws.binaryType = "arraybuffer";
-    let sentAll = false;
+    let acknowledged = false;
+    const timeout = setTimeout(() => {
+      reject(new Error("Simulator keyboard input did not finish. Retry with a shorter string."));
+      ws.close();
+    }, Math.max(30_000, events.length * 1_000));
 
     ws.onclose = ({ code, reason }) => {
-      if (sentAll && code === 1000) resolve();
+      clearTimeout(timeout);
+      if (acknowledged) resolve();
       else reject(new Error(`Keyboard input interrupted (${code}${reason ? `: ${reason}` : ""}). Some text may not have been delivered.`));
+    };
+
+    ws.onmessage = ({ data }) => {
+      const response = Buffer.from(data as ArrayBuffer);
+      if (response[0] !== 0x91) return;
+      if (response[1] === 1) {
+        acknowledged = true;
+        ws.close(1000);
+      } else {
+        reject(new Error("Simulator keyboard input failed. Check the preview logs and retry."));
+        ws.close();
+      }
     };
 
     ws.onopen = async () => {
@@ -98,11 +115,7 @@ export async function sendKeyEventsToWs(
             await new Promise((r) => setTimeout(r, perEventDelayMs));
           }
         }
-        setTimeout(() => {
-          if (ws.readyState !== WebSocket.OPEN) return;
-          sentAll = true;
-          ws.close(1000);
-        }, 50);
+        if (ws.readyState === WebSocket.OPEN) ws.send(Uint8Array.of(0x11));
       } catch (err) {
         ws.close();
         reject(err);

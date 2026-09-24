@@ -312,7 +312,7 @@ final class AccessibilityBridge: NSObject {
             var keyboardFrames: [NSRect] = []
             var buttonFrames: [NSRect] = []
             var coverage = AccessibilityCoverage()
-            var pointBudget = 400
+            var pointBudget = max(400, Int(ceil(bounds.width / step) * ceil(400 / step)))
             var y = bounds.maxY - step / 2
             while y > minY, pointBudget > 0 {
                 var x = bounds.minX + step / 2

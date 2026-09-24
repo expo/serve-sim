@@ -2264,11 +2264,10 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         // isn't streamed here). This frees the native session immediately
         // rather than waiting for the next poll's reaper to notice.
         closeDeviceSession(udid);
-        await disableNetworkCaptureForStoppedDevice(udid);
         // Drop the snapshot so the next status sample re-queries simctl
         // and prunes any helper bound to this now-shutdown device.
         bootedSnapshot = { at: 0, booted: null, names: new Map(), deviceTypes: new Map() };
-        execFile("xcrun", ["simctl", "shutdown", udid], { timeout: 30_000 }, (err, _stdout, stderr) => {
+        execFile("xcrun", ["simctl", "shutdown", udid], { timeout: 30_000 }, async (err, _stdout, stderr) => {
           if (err) {
             res.writeHead(500, { "Content-Type": "application/json" });
             res.end(JSON.stringify({
@@ -2277,6 +2276,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
             }));
             return;
           }
+          await disableNetworkCaptureForStoppedDevice(udid);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
         });

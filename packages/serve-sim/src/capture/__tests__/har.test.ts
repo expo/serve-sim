@@ -124,6 +124,25 @@ describe("toHarEntry", () => {
     expect(entry.response.content).toMatchObject({ text: "//4AAQ==", encoding: "base64" });
   });
 
+  it("reports the decoded length as content size and the wire length as body size", () => {
+    const body = {
+      requestHeaders: {},
+      responseHeaders: { "content-encoding": "gzip" },
+      requestBody: null,
+      responseBody: "x".repeat(2000),
+      requestTruncated: false,
+      responseTruncated: false,
+      requestBinary: false,
+      responseBinary: false,
+    };
+    const whole = toHarEntry({ ...req, responseBytes: 40 }, body);
+    expect(whole.response.content.size).toBe(2000);
+    expect(whole.response.bodySize).toBe(40);
+    const cut = toHarEntry({ ...req, responseBytes: 40 }, { ...body, responseTruncated: true });
+    expect(cut.response.content.size).toBe(2000);
+    expect(toHarEntry({ ...req, responseBytes: 9000 }, { ...body, responseTruncated: true }).response.content.size).toBe(9000);
+  });
+
   it("never emits negative required timings for in-flight rows", () => {
     const entry = toHarEntry(
       { ...req, status: null, ttfbMs: null, durationMs: null },

@@ -171,11 +171,13 @@ function contentFrom(
   mimeType: string | null | undefined,
   size: number,
   binary: boolean | undefined,
+  truncated: boolean | undefined,
 ): HarContent {
   const mime = mimeType || "application/octet-stream";
   if (text == null) return { size, mimeType: mime };
+  const shown = binary ? Buffer.from(text, "base64").length : Buffer.byteLength(text, "utf8");
   return {
-    size: size || Buffer.byteLength(text, "utf8"),
+    size: truncated ? Math.max(size, shown) : shown,
     mimeType: mime,
     text,
     ...(binary ? { encoding: "base64" } : {}),
@@ -248,6 +250,7 @@ export function toHarEntry(
         request.mimeType ?? headerValue(resHeaders, "content-type"),
         request.responseBytes,
         body?.responseBinary,
+        body?.responseTruncated,
       ),
       redirectURL: location,
       headersSize: -1,

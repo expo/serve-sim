@@ -45,9 +45,12 @@ Each body preview is capped at 512 KiB. The in-memory store retains at most 500 
 16 MiB for stored headers and bodies. Full transfer sizes are recorded even when previews are truncated
 or omitted.
 
-Bodies sent with `gzip`, `deflate`, or `br` content-encoding are decoded, and decoding stops at
-the 512 KiB cap, so a small compressed body cannot expand without limit. Other encodings keep their
-wire bytes and appear as base64.
+Request and response bodies sent with `gzip`, `deflate`, or `br` content-encoding are decoded, and
+decoding stops at the 512 KiB cap, so a small compressed body cannot expand without limit. `br` uses
+the brotli module that ships with mitmproxy. A compressed body that ends early, or that carries data
+after its first gzip member, is marked truncated. Other encodings, stacked encodings such as
+`gzip, br`, and bodies that fail to decode keep their wire bytes, which appear as base64 when they are
+not UTF-8 text.
 
 ## Redaction and its limits
 

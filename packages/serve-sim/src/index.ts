@@ -2499,7 +2499,7 @@ registerCapability(captureRuntime.capability);
     .option(...deviceOpt)
     .option(
       "--flush-ms <ms>",
-      "How often to rewrite the HAR",
+      "How often to rewrite the HAR, in milliseconds (250-3600000)",
       (value) => parseNumberInRange(value, "--flush-ms", 250, 3_600_000, true),
       5000,
     )

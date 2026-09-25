@@ -6,6 +6,27 @@ import { join } from "node:path";
 import { captureHarPaths, followCaptureHar } from "../har-follow";
 
 describe("followCaptureHar", () => {
+  it("fails promptly when the capture stream reports no active recording", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-har-disabled-"));
+    try {
+      for (const attachment of ["not-enabled", "failed"]) {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(
+              `data: ${JSON.stringify({ type: "meta", meta: { attachment, attachError: "Capture is unavailable" } })}\n\n`,
+            ));
+          },
+        });
+        await expect(followCaptureHar({
+          baseUrl: "http://127.0.0.1:3999", device: "D", outPath: join(dir, `${attachment}.har`), token: "test",
+          fetchImpl: async () => new Response(stream),
+        })).rejects.toThrow("Capture is unavailable");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reports a failed flush even when the stream was aborted", async () => {
     const dir = mkdtempSync(join(tmpdir(), "serve-sim-har-abort-"));
     let abortStream = () => {};

@@ -348,6 +348,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                     self.pendingOffer = nil
                     pending.session.close()
                     pending.completion(.failure(self.makeError("WebRTC session was cancelled")))
+                    self.refreshEncodeCanvas()
                 }
                 if let session = self.sessions.removeValue(forKey: sessionId) {
                     session.close()
@@ -743,9 +744,10 @@ final class WebRTCPublisher: @unchecked Sendable {
     }
 
     private func refreshEncodeCanvas() {
-        let level = sessions.values
+        let levels = sessions.values
             .filter { StreamCodecPolicy.isH264($0.codecName) }
             .compactMap(\.h264LevelIdc)
+        let level = (levels + [pendingOffer?.session.h264LevelIdc].compactMap { $0 })
             .min() ?? H264LevelPolicy.defaultLevelIdc
         let canvas = Self.canvasSize(for: rawEncodeCanvas, maxDimension: maxDimension,
                                      levelIdc: min(level, H264LevelPolicy.defaultLevelIdc))
@@ -955,6 +957,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                                     offer: request.sdp,
                                     answer: answer.sdp
                                 )
+                                self.refreshEncodeCanvas()
                                 self.applySenderParameters(to: session)
                                 session.waitForIceGathering { completed in
                                     self.queue.async {
@@ -1006,6 +1009,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             offerSession.close()
             if isPending(offerSession) {
                 pendingOffer = nil
+                refreshEncodeCanvas()
             }
         }
         completion(.failure(error))
@@ -1055,6 +1059,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         guard let pending = pendingOffer, pending.session.id == sessionId else { return }
         pendingOffer = nil
         pending.session.close()
+        refreshEncodeCanvas()
     }
 
     private func rememberCancelledSession(_ sessionId: String) {
@@ -1389,6 +1394,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                 self.pendingOffer = nil
                 pending.session.close()
                 pending.completion(.failure(self.makeError("WebRTC peer connection closed during signaling")))
+                self.refreshEncodeCanvas()
                 return
             }
             guard let entry = self.sessions.first(where: { $0.value.peerConnection === peerConnection }) else {

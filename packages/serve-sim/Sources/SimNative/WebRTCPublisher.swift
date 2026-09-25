@@ -744,7 +744,7 @@ final class WebRTCPublisher: @unchecked Sendable {
 
     private func refreshEncodeCanvas() {
         let level = sessions.values
-            .filter { $0.isConnected && StreamCodecPolicy.isH264($0.codecName) }
+            .filter { StreamCodecPolicy.isH264($0.codecName) }
             .compactMap(\.h264LevelIdc)
             .min() ?? H264LevelPolicy.defaultLevelIdc
         let canvas = Self.canvasSize(for: rawEncodeCanvas, maxDimension: maxDimension,
@@ -1029,6 +1029,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             offerSession.close()
             self.sessions.removeValue(forKey: offerSession.id)
             self.refreshFrameAcceptance()
+            self.refreshEncodeCanvas()
         }
         completion(.success(answer))
     }

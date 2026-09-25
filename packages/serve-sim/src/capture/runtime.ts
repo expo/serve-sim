@@ -68,7 +68,7 @@ export interface CaptureRuntimeOptions {
   trustCa?: (udid: string, caPem: string) => Promise<void>;
   configure?: typeof configureCapability;
   dylib?: () => string | null;
-  isInjected?: (udid: string, portFile: string) => Promise<boolean>;
+  isInjected?: (udid: string, portFile: string, proxyAddress: string) => Promise<boolean>;
   checkIntervalMs?: number;
 }
 
@@ -106,7 +106,8 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   const trustCa = options.trustCa ?? trustCaInSimulator;
   const configure = options.configure ?? configureCapability;
   const locateDylib = options.dylib ?? locateProxyDylib;
-  const isInjected = options.isInjected ?? isDeviceInjected;
+  const isInjected = options.isInjected ?? ((udid: string, portFile: string, proxyAddress: string) =>
+    isDeviceInjected(udid, portFile, { expectedPort: Number(new URL(`http://${proxyAddress}`).port) }));
   const checkIntervalMs = options.checkIntervalMs ?? CHECK_INTERVAL_MS;
   const byUdid = new Map<string, CaptureSession>();
   const deviceCapture = new Map<string, boolean>();
@@ -310,11 +311,12 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
       if (session.checkedAt !== undefined && now - session.checkedAt < checkIntervalMs) return session.meta;
 
       const portFile = session.proxy.portFile;
+      const proxyAddress = session.proxy.address;
       session.checking = (async () => {
         try {
           let live: boolean;
           try {
-            live = await isInjected(udid, portFile);
+            live = await isInjected(udid, portFile, proxyAddress);
           } catch (error) {
             if (!isDeviceNotBooted(error)) {
               console.warn(

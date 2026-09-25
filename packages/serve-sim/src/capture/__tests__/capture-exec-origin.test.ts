@@ -54,7 +54,7 @@ function subscribeToCapture(origin: string, headers: Record<string, string> = {}
   });
 }
 
-function readCaptureBody(origin: string, headers: Record<string, string> = {}): Promise<{
+function runCaptureAction(origin: string, action: string, params: Record<string, unknown>, headers: Record<string, string> = {}): Promise<{
   stdout?: string;
   exitCode?: number;
   error?: string;
@@ -76,7 +76,7 @@ function readCaptureBody(origin: string, headers: Record<string, string> = {}): 
         error?: string;
       };
       if (frame.ready) {
-        ws.send(JSON.stringify({ id: 1, action: "capture.body", params: { udid: UDID, id: "r1" } }));
+        ws.send(JSON.stringify({ id: 1, action, params }));
       } else if (frame.id === 1) {
         clearTimeout(timer);
         ws.close();
@@ -101,12 +101,19 @@ test("refuses a subscription the browser marked cross-site, whatever its origin 
 });
 
 test("reads capture bodies through the same-origin control socket", async () => {
-  expect(await readCaptureBody(`http://127.0.0.1:${port}`)).toMatchObject({
+  expect(await runCaptureAction(`http://127.0.0.1:${port}`, "capture.body", { udid: UDID, id: "r1" })).toMatchObject({
     stdout: "",
     exitCode: 0,
   });
 });
 
 test("refuses capture body reads from an allowed cross-origin page", async () => {
-  expect((await readCaptureBody("https://expo.dev")).error).toContain("same-origin");
+  expect((await runCaptureAction("https://expo.dev", "capture.body", { udid: UDID, id: "r1" })).error).toContain("same-origin");
+});
+
+test("refuses capture clear and reboot from an allowed cross-origin page", async () => {
+  for (const action of ["capture.clear", "capture.reboot"]) {
+    const reply = await runCaptureAction("https://expo.dev", action, { udid: UDID, enabled: true });
+    expect(reply.error).toContain("same-origin");
+  }
 });

@@ -246,7 +246,7 @@ function wireExecSocket(
       return;
     }
     const { id, action } = msg;
-    if (action === "capture.body" && !isSameOriginRequest(upgradeAuthHeaders(request))) {
+    if (action.startsWith("capture.") && !isSameOriginRequest(upgradeAuthHeaders(request))) {
       send({ id, error: "Network capture is same-origin only." });
       return;
     }

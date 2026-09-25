@@ -1,4 +1,6 @@
+import CoreImage
 import CoreVideo
+import Metal
 import StreamingPolicy
 import VideoToolbox
 
@@ -24,7 +26,10 @@ struct Photocopier {
     private var plainFormat: OSType = 0
     private var transfer: VTPixelTransferSession?
     private var transferUnavailable = false
+    private var nativeContext: CIContext?
+    private var nativeContextUnavailable = false
     private(set) var cpuFallbacks: UInt64 = 0
+    private(set) var poolDrops: UInt64 = 0
 
     init() {}
 
@@ -94,9 +99,18 @@ struct Photocopier {
     /// waiting for the compositor's writes to be made visible to the CPU, which is where
     /// this stalled for hundreds of milliseconds during full-screen transitions.
     mutating func copy(_ source: CVPixelBuffer, maxDimension: Int = 0) -> CVPixelBuffer? {
-        guard let pool = self.pool(dimensions: Self.target(for: source, maxDimension: maxDimension))
+        let target = Self.target(for: source, maxDimension: maxDimension)
+        let sourceSize = source.dimensions
+        if target != sourceSize,
+           maxDimension <= 0 || max(sourceSize.width, sourceSize.height) <= maxDimension {
+            return copyOddNative(source, target: target)
+        }
+        guard let pool = self.pool(dimensions: target)
         else { return nil }
-        guard let dst = Self.buffer(from: pool) else { return nil }
+        guard let dst = Self.buffer(from: pool) else {
+            poolDrops &+= 1
+            return nil
+        }
 
         if let session = transferSession(),
            VTPixelTransferSessionTransferImage(session, from: source, to: dst) == noErr {
@@ -106,11 +120,43 @@ struct Photocopier {
         // pipeline did before: a same-size copy in the framebuffer's own format, which the
         // consumers already know how to scale.
         let format = CVPixelBufferGetPixelFormatType(source)
-        guard let plain = plainPool(dimensions: source.dimensions, format: format),
-              let out = Self.buffer(from: plain),
-              Self.copyOnCPU(source, into: out) else { return nil }
+        guard let plain = plainPool(dimensions: source.dimensions, format: format) else { return nil }
+        guard let out = Self.buffer(from: plain) else {
+            poolDrops &+= 1
+            return nil
+        }
+        guard Self.copyOnCPU(source, into: out) else { return nil }
         cpuFallbacks += 1
         return out
+    }
+
+    private mutating func copyOddNative(_ source: CVPixelBuffer,
+                                        target: Dimensions) -> CVPixelBuffer? {
+        guard CVPixelBufferGetPixelFormatType(source) == kCVPixelFormatType_32BGRA else { return nil }
+        guard let pool = plainPool(dimensions: target, format: kCVPixelFormatType_32BGRA),
+              let output = Self.buffer(from: pool) else {
+            poolDrops &+= 1
+            return nil
+        }
+        if nativeContext == nil, !nativeContextUnavailable {
+            if let device = MTLCreateSystemDefaultDevice() {
+                nativeContext = CIContext(mtlDevice: device,
+                                          options: [.workingColorSpace: NSNull(),
+                                                    .outputColorSpace: NSNull()])
+            } else {
+                nativeContextUnavailable = true
+                print("[capture] Metal native-size copy unavailable; dropping odd-size frames")
+            }
+        }
+        guard let nativeContext else { return nil }
+        nativeContext.render(CIImage(cvPixelBuffer: source)
+                                 .transformed(by: CGAffineTransform(
+                                    translationX: 0,
+                                    y: CGFloat(target.height - source.dimensions.height))),
+                             to: output,
+                             bounds: CGRect(x: 0, y: 0, width: target.width,
+                                            height: target.height), colorSpace: nil)
+        return output
     }
 
     mutating func reset() {
@@ -122,6 +168,8 @@ struct Photocopier {
         _plainPool = nil
         plainDimensions = nil
         plainFormat = 0
+        nativeContext = nil
+        nativeContextUnavailable = false
     }
 
     private static func buffer(from pool: CVPixelBufferPool) -> CVPixelBuffer? {

@@ -3,7 +3,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { BodySection } from "../client/components/network-capture-requests";
 
-import { fetchCapturedBody } from "../client/hooks/use-capture-stream";
 import {
   CaptureState,
   DomainSection,
@@ -38,7 +37,7 @@ const UDID = "ABCD1234-0000-0000-0000-0000000000EF";
 
 const row = (overrides: Partial<CapturedRequest> = {}, slowestMs = 171) =>
   renderToStaticMarkup(
-    <RequestRow request={request(overrides)} bodyBase="/network-capture" udid={UDID} slowestMs={slowestMs} />,
+    <RequestRow request={request(overrides)} udid={UDID} slowestMs={slowestMs} />,
   );
 
 describe("RequestRow", () => {
@@ -92,7 +91,6 @@ describe("list separators", () => {
     const html = renderToStaticMarkup(
       <DomainSection
         group={{ host: "a.test", requests: [request()], bytes: 100, failed: 0 }}
-        bodyBase="/network-capture"
         udid={UDID}
         slowestMs={171}
       />,
@@ -168,7 +166,6 @@ describe("DomainSection", () => {
     const html = renderToStaticMarkup(
       <DomainSection
         group={{ host: "speed.cloudflare.com", requests: [request()], bytes: 48_000_000, failed: 0 }}
-        bodyBase="/network-capture"
         udid={UDID}
         slowestMs={171}
       />,
@@ -185,7 +182,6 @@ describe("DomainSection", () => {
     const html = renderToStaticMarkup(
       <DomainSection
         group={{ host: "api.example.com", requests: [request()], bytes: 0, failed: 3 }}
-        bodyBase="/network-capture"
         udid={UDID}
         slowestMs={171}
       />,
@@ -239,32 +235,6 @@ describe("OversizedBodiesNotice", () => {
     expect(html).toContain("Dropped 2 oversized capture posts");
     expect(html).toContain("SERVE_SIM_CAPTURE_MAX_CONTROL_BODY_BYTES");
     expect(html).toContain("[capture] Dropped oversized control body");
-  });
-});
-
-describe("body requests", () => {
-  test("carries the device, since request ids restart per simulator", async () => {
-    const seen: string[] = [];
-    const original = globalThis.fetch;
-    // simAuthHeaders reads window.__SIM_PREVIEW__; without a window it throws before fetching.
-    const hadWindow = "window" in globalThis;
-    if (!hadWindow) {
-      (globalThis as { window?: unknown }).window = { __SIM_PREVIEW__: { execToken: "t" } };
-    }
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
-      seen.push(String(input));
-      return new Response("null", { status: 404 });
-    }) as typeof fetch;
-    try {
-      await fetchCapturedBody("/network-capture", "r1", UDID);
-    } finally {
-      globalThis.fetch = original;
-      if (!hadWindow) delete (globalThis as { window?: unknown }).window;
-    }
-
-    // Without this, expanding a row can return another simulator's headers and body.
-    expect(seen[0]).toContain(`device=${encodeURIComponent(UDID)}`);
-    expect(seen[0]).toContain("/network-capture/r1");
   });
 });
 

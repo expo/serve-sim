@@ -54,6 +54,39 @@ function subscribeToCapture(origin: string, headers: Record<string, string> = {}
   });
 }
 
+function readCaptureBody(origin: string, headers: Record<string, string> = {}): Promise<{
+  stdout?: string;
+  exitCode?: number;
+  error?: string;
+}> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/exec-ws`, [`serve-sim.token.${TOKEN}`], {
+      headers: { Origin: origin, ...headers },
+    });
+    const timer = setTimeout(() => {
+      ws.terminate();
+      reject(new Error(`no capture body reply for ${origin}`));
+    }, 5_000);
+    ws.on("message", (raw) => {
+      const frame = JSON.parse(String(raw)) as {
+        ready?: boolean;
+        id?: number;
+        stdout?: string;
+        exitCode?: number;
+        error?: string;
+      };
+      if (frame.ready) {
+        ws.send(JSON.stringify({ id: 1, action: "capture.body", params: { udid: UDID, id: "r1" } }));
+      } else if (frame.id === 1) {
+        clearTimeout(timer);
+        ws.close();
+        resolve(frame);
+      }
+    });
+    ws.on("error", reject);
+  });
+}
+
 test("refuses a cross-origin page that reaches capture through the exec socket", async () => {
   expect(await subscribeToCapture("https://expo.dev")).toContain("same-origin only");
 });
@@ -65,4 +98,15 @@ test("still serves capture to the preview's own origin through the exec socket",
 test("refuses a subscription the browser marked cross-site, whatever its origin says", async () => {
   const data = await subscribeToCapture(`http://127.0.0.1:${port}`, { "Sec-Fetch-Site": "cross-site" });
   expect(data).toContain("same-origin only");
+});
+
+test("reads capture bodies through the same-origin control socket", async () => {
+  expect(await readCaptureBody(`http://127.0.0.1:${port}`)).toMatchObject({
+    stdout: "",
+    exitCode: 0,
+  });
+});
+
+test("refuses capture body reads from an allowed cross-origin page", async () => {
+  expect((await readCaptureBody("https://expo.dev")).error).toContain("same-origin");
 });

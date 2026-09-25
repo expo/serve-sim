@@ -9,7 +9,6 @@ import {
   type CapturedRequest,
 } from "../../capture/store";
 import { openHostEventStream, runHostAction } from "../utils/exec";
-import { simAuthHeaders } from "../utils/sim-endpoint";
 
 export type { CaptureMeta, CaptureAttachment, CapturedBody, CapturedRequest };
 
@@ -73,17 +72,14 @@ export function useCaptureStream(
 
 // Request IDs are per device; always include the device in body lookups.
 export async function fetchCapturedBody(
-  basePath: string,
   id: string,
   device: string,
 ): Promise<CapturedBody | null> {
   try {
-    const url = `${basePath}/${encodeURIComponent(id)}?device=${encodeURIComponent(device)}`;
-    const response = await fetch(url, {
-      headers: simAuthHeaders(),
-    });
-    if (!response.ok) return null;
-    return (await response.json()) as CapturedBody;
+    const result = await runHostAction("capture.body", { udid: device, id });
+    return result.exitCode === 0 && result.stdout
+      ? JSON.parse(result.stdout) as CapturedBody
+      : null;
   } catch {
     return null;
   }

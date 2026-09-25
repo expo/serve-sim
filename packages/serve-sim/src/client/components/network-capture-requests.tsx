@@ -60,12 +60,10 @@ export function groupByDomain(requests: CapturedRequest[]): DomainGroup[] {
 
 export function DomainSection({
   group,
-  bodyBase,
   udid,
   slowestMs,
 }: {
   group: DomainGroup;
-  bodyBase: string;
   udid: string;
   slowestMs: number;
 }) {
@@ -101,7 +99,6 @@ export function DomainSection({
             <RequestRow
               key={request.id}
               request={request}
-              bodyBase={bodyBase}
               udid={udid}
               slowestMs={slowestMs}
             />
@@ -188,12 +185,10 @@ function DetailSection({
 
 export function RequestRow({
   request,
-  bodyBase,
   udid,
   slowestMs,
 }: {
   request: CapturedRequest;
-  bodyBase: string;
   udid: string;
   slowestMs: number;
 }) {
@@ -210,13 +205,13 @@ export function RequestRow({
     let active = true;
     setBody(null);
     setLoading(true);
-    void fetchCapturedBody(bodyBase, request.id, udid).then((captured) => {
+    void fetchCapturedBody(request.id, udid).then((captured) => {
       if (!active) return;
       setBody(captured);
       setLoading(false);
     });
     return () => { active = false; };
-  }, [expanded, settled, bodyBase, request.id, udid]);
+  }, [expanded, settled, request.id, udid]);
 
   return (
     <div className="py-1.5 border-b border-white/5 last:border-b-0">

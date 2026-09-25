@@ -82,6 +82,15 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
     }
   }
 
+  async function clearRequests() {
+    setChangeError(null);
+    try {
+      await clear();
+    } catch (error) {
+      setChangeError(error instanceof Error ? error.message : "Requests could not be cleared.");
+    }
+  }
+
   return (
     <CollapsibleSection
       open={open}
@@ -172,7 +181,7 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
                 type="button"
                 aria-label="Clear the live request list"
                 title="Clear the live request list"
-                onClick={clear}
+                onClick={() => void clearRequests()}
                 className="rounded p-1 text-white/70 hover:bg-white/10"
               >
                 <Ban aria-hidden="true" className="w-3.5 h-3.5" />

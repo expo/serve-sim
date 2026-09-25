@@ -16,7 +16,8 @@ export interface CapabilityContext {
   enabled: boolean;
 }
 
-export type CapabilityLoadPhase = "startup" | "deferred";
+/** Startup plus deferred also attaches to apps that were running when enabled. */
+export type CapabilityLoadPhase = "startup" | "deferred" | "startupAndDeferred";
 
 export interface CapabilityDefinition {
   name: string;

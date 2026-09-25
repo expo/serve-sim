@@ -38,15 +38,17 @@ export function formatCapabilityConfig(
       })
       .join(";");
     const phase = capability.loadPhase ?? "deferred";
-    if (phase !== "startup" && phase !== "deferred") {
-      throw new Error(`Unknown load phase for ${capability.name}: ${phase}. Use startup or deferred.`);
+    if (phase !== "startup" && phase !== "deferred" && phase !== "startupAndDeferred") {
+      throw new Error(`Unknown load phase for ${capability.name}: ${phase}. Use startup, deferred, or startupAndDeferred.`);
     }
-    if (phase === "startup" && (!isAbsolute(capability.dylib) || capability.dylib.includes(":") || (capability.loadDelayMs ?? 0) !== 0)) {
+    if (phase !== "deferred" && (!isAbsolute(capability.dylib) || capability.dylib.includes(":") || (capability.loadDelayMs ?? 0) !== 0)) {
       throw new Error(`Startup capability ${capability.name} requires an absolute path without colons and no load delay.`);
     }
     const fields = [SCOPE_TOKEN[capability.scope], capability.dylib, env, capability.loadDelayMs ?? 0];
-    if (phase === "startup") fields.unshift("startup");
-    return fields.join("\t");
+    const deferred = fields.join("\t");
+    if (phase === "deferred") return deferred;
+    const startup = `startup\t${deferred}`;
+    return phase === "startup" ? startup : `${startup}\n${deferred}`;
   });
   return lines.length > 0 ? `${lines.join("\n")}\n` : "";
 }

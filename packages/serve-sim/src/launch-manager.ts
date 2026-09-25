@@ -177,7 +177,7 @@ async function readInsert(udid: string): Promise<string> {
 
 function startupDylibs(capabilities: Record<string, Capability>): string[] {
   return Object.values(capabilities)
-    .filter((capability) => capability.loadPhase === "startup")
+    .filter((capability) => capability.loadPhase === "startup" || capability.loadPhase === "startupAndDeferred")
     .map((capability) => capability.dylib);
 }
 

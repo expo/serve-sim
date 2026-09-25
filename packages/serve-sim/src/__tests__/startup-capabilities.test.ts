@@ -56,6 +56,18 @@ test("startup capture uses shared inserts and capability environment", async () 
   expect(managedStartupDylibs(UDID)).toEqual([]);
 });
 
+test("hybrid capture keeps its early insert and publishes a deferred load for running apps", async () => {
+  await enableCapabilities(UDID, null, [{
+    name: "networkCapture", scope: "userApps", loadPhase: "startupAndDeferred", dylib,
+    env: { SIMNET_PROXY_PORT_FILE: "/capture/port" },
+  }], { relaunch: false });
+  const line = `user\t${dylib}\tSIMNET_PROXY_PORT_FILE=/capture/port\t0`;
+  expect(readFileSync(capabilityConfigPath(UDID), "utf8")).toBe(`startup\t${line}\n${line}\n`);
+  expect(env().DYLD_INSERT_LIBRARIES?.split(":")).toEqual(["/other.dylib", capabilityLoaderPath(), dylib]);
+  await disableCapability(UDID, null, "networkCapture", { relaunch: false });
+  expect(env().DYLD_INSERT_LIBRARIES).not.toContain(dylib);
+});
+
 test("invalid startup paths are refused before publication", async () => {
   for (const path of ["relative.dylib", "/bad:path.dylib", "/missing/startup.dylib"]) {
     await expect(enable(path)).rejects.toThrow();

@@ -170,8 +170,17 @@ constructor. An absent loader or config leaves the startup image inert.
 
 The config record is `startup\t<scope>\t<dylib>\t<env>\t0`. Older loaders reject its
 unknown leading token instead of silently loading startup work later. The deferred path
-ignores these records, including config updates in already-running apps. Startup
-capabilities require an app relaunch; removing config cannot undo existing session state.
+ignores these records, including config updates in already-running apps. Capabilities
+with only a startup record require an app relaunch; removing config cannot undo
+existing session state.
+
+Network capture uses `startupAndDeferred`: the manager writes both the startup record
+and a deferred record for the same image. New apps receive the image at `exec`, so
+startup requests can be captured. An app that already carries the loader sees the
+new deferred record and `dlopen`s the image on its main queue. The image's startup
+callback then checks the startup record and installs the proxy hook. An image
+already inserted at `exec` is deduplicated by dyld. Sessions or configurations
+created before a late load remain unchanged, so those requests can be missed.
 
 The capability manager owns all insert-list updates. A separate insert ownership file
 retains startup paths until launchd cleanup succeeds, even when their capability owner

@@ -549,6 +549,21 @@ actor FrameCapture {
         return CapturedScreenInfo(width: capturedWidth, height: capturedHeight, display: capturedDisplay)
     }
 
+    func webRTCEncodeCanvasSize() -> Dimensions? {
+        let integrated = descriptors.filter { descriptor in
+            screenMetadata[ObjectIdentifier(descriptor)]?.screenType == 0
+        }
+        let sizes = integrated.compactMap { descriptor -> Dimensions? in
+            guard let surface = surface(for: descriptor) else { return nil }
+            return Dimensions(width: IOSurfaceGetWidth(surface), height: IOSurfaceGetHeight(surface))
+        }
+        if fixedScreenID == nil, integrated.count >= 2, sizes.count != integrated.count {
+            return nil
+        }
+        return sizes.max { $0.width * $0.height < $1.width * $1.height }
+            ?? getScreenSize().map { Dimensions(width: $0.width, height: $0.height) }
+    }
+
     deinit {
         surfacePollTimer?.cancel()
         displayInfoTask?.cancel()

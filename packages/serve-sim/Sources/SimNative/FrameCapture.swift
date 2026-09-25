@@ -128,7 +128,7 @@ actor FrameCapture {
         if fixedScreenID == nil, integratedIDs.count == 2 {
             // Only foldable main feeds use CoreDevice display election. Recreate
             // its boot-bound manager before reading the current active panel.
-            await CoreDeviceBridge.shared.resetForNewCapture()
+            await CoreDeviceBridge.shared.resetForNewCapture(udid: deviceUDID)
             let displays = try? await CoreDeviceDisplayInfo.read(udid: deviceUDID)
             guard generation == captureGeneration else { throw CancellationError() }
             if let displays {

@@ -8,10 +8,11 @@ import StreamingPolicy
 actor CoreDeviceBridge {
     static let shared = CoreDeviceBridge()
 
-    enum BridgeError: Error { case unavailable, deviceUnavailable, initializationTimedOut }
+    enum BridgeError: Error { case unavailable, deviceUnavailable, initializationTimedOut, resetDuringLookup }
 
     private var manager: CoreDeviceManagerObject?
     private var managerReadiness = SharedReadiness()
+    private var resetGeneration: UInt64 = 0
     private var capabilities: [String: CoreDeviceCapabilityObject] = [:]
     private var hingeSupport: [String: Bool] = [:]
     struct HingeState {
@@ -25,6 +26,7 @@ actor CoreDeviceBridge {
     /// boot. A new capture session must not reuse them after that device boots
     /// again in the same serve-sim process.
     func resetForNewCapture() {
+        resetGeneration &+= 1
         capabilities.removeAll()
         hingeSupport.removeAll()
         hingeStates.removeAll()
@@ -43,6 +45,7 @@ actor CoreDeviceBridge {
 
     func remoteDevice(udid: String) async throws -> CoreDeviceRemoteDevice {
         guard SSCoreDeviceInitialize() else { throw BridgeError.unavailable }
+        let generation = resetGeneration
         if manager == nil {
             // Initializes resilient class metadata and field offsets before
             // using the class metadata's allocating initializer.
@@ -71,6 +74,7 @@ actor CoreDeviceBridge {
         } catch SharedReadiness.Failure.timedOut {
             throw BridgeError.initializationTimedOut
         }
+        guard resetGeneration == generation else { throw BridgeError.resetDuringLookup }
         guard let device = manager.allDevices().first(where: { $0.identifier().uuidString.caseInsensitiveCompare(udid) == .orderedSame })
         else { throw BridgeError.deviceUnavailable }
         return device
@@ -90,7 +94,9 @@ actor CoreDeviceBridge {
     func capability(udid: String, metadataSymbol: String, witnessSymbol: String) async throws -> CoreDeviceCapabilityObject {
         let key = "\(udid):\(metadataSymbol)"
         if let existing = capabilities[key] { return existing }
+        let generation = resetGeneration
         let device = try await remoteDevice(udid: udid)
+        guard resetGeneration == generation else { throw BridgeError.resetDuringLookup }
         guard let metadata = SSCoreDeviceSymbol(metadataSymbol),
               let witness = SSCoreDeviceSymbol(witnessSymbol)
         else { throw BridgeError.unavailable }
@@ -101,6 +107,9 @@ actor CoreDeviceBridge {
         // method takes an address, actual T metadata, and its conformance.
         try await device.implementation(capability.storage, emptyStaticMember, metadata, witness)
         capability.initialized = true
+        // An old lookup may resume after a new capture clears the cache.
+        // Discard it instead of letting the next HID session reuse its handle.
+        guard resetGeneration == generation else { throw BridgeError.resetDuringLookup }
         capabilities[key] = capability
         return capability
     }

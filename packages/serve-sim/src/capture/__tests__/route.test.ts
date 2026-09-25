@@ -96,7 +96,7 @@ describe("handleNetworkCaptureRequest", () => {
     close();
   });
 
-  test("explains itself on a device that was not booted with capture", () => {
+  test("reports capture off without inventing a failure", () => {
     const { runtime } = stubRuntime();
     const { req, close } = createFakeReq();
     const { res, writes } = createFakeRes();
@@ -104,10 +104,10 @@ describe("handleNetworkCaptureRequest", () => {
 
     handleNetworkCaptureRequest(req, res, state, runtime);
 
-    // A reason rather than an empty stream, which would read as an idle app.
+    // The metadata distinguishes capture being off from an idle capture stream.
     const meta = metaFrom(writes);
     expect(meta.attachment).toBe("not-enabled");
-    expect(meta.attachError).toContain("reboot");
+    expect(meta.attachError).toBeNull();
     expect(dataFrames(writes)).toHaveLength(0);
 
     close();

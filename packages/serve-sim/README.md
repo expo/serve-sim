@@ -171,15 +171,20 @@ fallback cadence, not a capture FPS ceiling. The libwebrtc
 source adapter uses a 1,000 FPS safety ceiling and the RTP sender has no separate
 FPS cap, so neither can phase-collide with the publisher cadence.
 Multiple WebRTC viewers can use the same simulator simultaneously. They share
-one SimulatorKit capture source, while each viewer has an independent peer
-connection, encoder, congestion controller, and helper WebSocket. HTTP streams
+one SimulatorKit capture source and, for H.264, one shared VideoToolbox encoder.
+Each viewer retains its own peer connection, congestion controller, RTP stream,
+and helper WebSocket. VP8 fallback keeps per-peer encoders. HTTP streams
 continue to support multiple viewers as well.
 
-See [WebRTC architecture](docs/webrtc-architecture.md) for the current design,
-control-channel decision, known constraints, and planned direction.
+See [WebRTC architecture](docs/webrtc-architecture.md) for signaling and
+control, and [Video pipeline and recording](docs/video-pipeline.md) for capture,
+scaling, hardware encoding, the recording contract, and measured limits.
 
-See [API](docs/api.md) for the HTTP routes, authentication, CORS and the
-WebSocket endpoints.
+A token-gated session can record native-size H.264 with
+`serve-sim record-video --udid <udid> --output <empty-dir>`. Send SIGINT to
+finalize `recording.mp4` and `session.json`; serve-sim also finalizes on
+shutdown. See [API](docs/api.md) for the HTTP routes, authentication, CORS,
+and WebSocket endpoints.
 
 ### Examples
 

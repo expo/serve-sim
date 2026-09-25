@@ -43,6 +43,25 @@ function captureRoute(baseUrl: string, path: string, device: string): URL {
   return url;
 }
 
+function captureUnavailable(data: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const event = parsed as { type?: string; meta?: { attachment?: string; attachError?: string | null } };
+  if (event.type !== "meta") return null;
+  if (event.meta?.attachment === "not-enabled") {
+    return event.meta.attachError || "Network capture is not enabled on this device. Reboot with capture enabled.";
+  }
+  if (event.meta?.attachment === "failed") {
+    return event.meta.attachError || "Network capture failed on this device.";
+  }
+  return null;
+}
+
 async function fetchBody(
   baseUrl: string,
   device: string,
@@ -121,6 +140,8 @@ export async function followCaptureHar(opts: FollowCaptureHarOptions): Promise<F
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
         if (!data) continue;
+        const unavailable = captureUnavailable(data);
+        if (unavailable) throw new Error(unavailable);
         disk.recordEvent(data);
         const finished = parseFinishedCaptureRequest(data);
         if (!finished) continue;

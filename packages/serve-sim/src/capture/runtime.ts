@@ -91,9 +91,7 @@ function notEnabledMeta(udid: string, fields: readonly CaptureField[]): CaptureM
     udid,
     proxyAddress: null,
     attachment: "not-enabled",
-    attachError:
-      "Network capture is off. Enable it to record new requests. Apps that were already running " +
-      "may miss requests made before the capture hook loads or may keep using existing sessions.",
+    attachError: null,
     droppedOversizedBodies: 0,
     fields: [...fields],
   };

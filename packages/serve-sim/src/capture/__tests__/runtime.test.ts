@@ -196,7 +196,7 @@ describe("capture runtime", () => {
     const meta = runtime.metaFor(UDID);
 
     expect(meta.attachment).toBe("not-enabled");
-    expect(meta.attachError).toContain("Enable it");
+    expect(meta.attachError).toBeNull();
     expect(meta.fields).toEqual([]);
     expect(runtime.storeFor(UDID)).toBeNull();
     expect(runtime.throughputFor(UDID)).toBeNull();

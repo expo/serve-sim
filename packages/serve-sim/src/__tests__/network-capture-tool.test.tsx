@@ -200,6 +200,10 @@ describe("DomainSection", () => {
 });
 
 describe("CaptureState", () => {
+  test("omits a redundant off message when there is no error", () => {
+    expect(renderToStaticMarkup(<CaptureState attachment="not-enabled" attachError={null} />)).toBe("");
+  });
+
   test("explains that capture is off", () => {
     const html = renderToStaticMarkup(
       <CaptureState attachment="not-enabled" attachError="Needs a reboot with capture." />,
@@ -353,7 +357,7 @@ describe("captureControl", () => {
   test("offers the opposite of the device's current state", () => {
     expect(captureControl({ meta: meta("capturing"), errored: false, changing: false })).toEqual({
       disabled: false,
-      label: "Reboot without capture",
+      label: "Turn off (reboots)",
     });
     expect(captureControl({ meta: meta("not-enabled"), errored: false, changing: false })).toEqual({
       disabled: false,

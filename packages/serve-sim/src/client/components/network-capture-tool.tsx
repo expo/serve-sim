@@ -145,9 +145,9 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
         {changeError && (
           <span className="whitespace-pre-line text-[11px] leading-snug text-red-300">{changeError}</span>
         )}
-        {!captureOn && (
+        {meta?.attachment === "not-enabled" && (
           <span className="text-[11px] leading-snug text-white/40">
-            Apps already running may miss requests or need a relaunch if they keep using existing sessions.
+            Apps opened before enabling may miss requests.
           </span>
         )}
         <CaptureState attachment={meta?.attachment ?? "not-enabled"} attachError={meta?.attachError ?? null} />
@@ -264,7 +264,7 @@ export function captureControl({
   return {
     disabled: false,
     label: meta.attachment === "capturing"
-      ? "Reboot without capture"
+      ? "Turn off (reboots)"
       : meta.attachment === "failed"
         ? "Reboot with capture"
         : "Enable capture",
@@ -289,11 +289,9 @@ export function CaptureState({
   if (attachment === "starting") {
     return <span className="text-[11px] text-white/40">Starting capture on this device…</span>;
   }
-  return (
-    <span className="whitespace-pre-line text-[11px] leading-snug text-white/40">
-      {attachError ?? "This device is not capturing."}
-    </span>
-  );
+  return attachError ? (
+    <span className="whitespace-pre-line text-[11px] leading-snug text-white/40">{attachError}</span>
+  ) : null;
 }
 
 function responseBodiesEnabled(fields: string[] | undefined): boolean {

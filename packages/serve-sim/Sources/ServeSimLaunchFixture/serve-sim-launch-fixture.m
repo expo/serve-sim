@@ -145,6 +145,7 @@ static void RecordURLContexts(NSSet<UIOpenURLContext *> *contexts) {
 @property(nonatomic, strong) AVCaptureVideoDataOutput *queuedOutput;
 @property(nonatomic, strong) QueuedFrameRecorder *queuedRecorder;
 @property(nonatomic, strong) dispatch_queue_t queuedFrames;
+@property(nonatomic) BOOL changedGravity;
 @property(nonatomic, strong) RunningChangeCounter *runningChanges;
 @property(nonatomic, strong) AVCaptureVideoDataOutput *stopQueueOutput;
 @end
@@ -305,7 +306,8 @@ static void RecordURLContexts(NSSet<UIOpenURLContext *> *contexts) {
   // hooks the preview. layerWithSession: sets it without that.
   AVCaptureVideoPreviewLayer *preview = [[AVCaptureVideoPreviewLayer alloc] init];
   preview.session = session;
-  preview.videoGravity = AVLayerVideoGravityResizeAspectFill;
+  preview.videoGravity = [NSProcessInfo.processInfo.arguments containsObject:@"-ServeSimFixtureGravityAspect"]
+      ? AVLayerVideoGravityResizeAspect : AVLayerVideoGravityResizeAspectFill;
   preview.frame = view.bounds;
   [view.layer addSublayer:preview];
   self.session = session;
@@ -365,6 +367,14 @@ static void RecordURLContexts(NSSet<UIOpenURLContext *> *contexts) {
   NSString *value = [NSString stringWithFormat:@"%u,%u,%u", pixel[2], pixel[1], pixel[0]];
   if (![value isEqualToString:self.lastPixel]) {
     Record(@"frame", value);
+    Record(@"gravity", self.preview.contentsGravity ?: @"");
+    if (!self.changedGravity && [NSProcessInfo.processInfo.arguments containsObject:@"-ServeSimFixtureGravityChange"]) {
+      self.changedGravity = YES;
+      self.preview.videoGravity = AVLayerVideoGravityResize;
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC / 2)), dispatch_get_main_queue(), ^{
+        Record(@"gravity", self.preview.contentsGravity ?: @"");
+      });
+    }
     self.lastPixel = value;
   }
   CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);

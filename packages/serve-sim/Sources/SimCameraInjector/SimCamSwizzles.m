@@ -672,6 +672,10 @@ static BOOL SimCamSessionIsNative(AVCaptureSession *session) {
     SimCamMarkCameraInUse();
     [[SimCamRegistry shared] addPreviewLayer:self];
 }
+- (void)simcam_setVideoGravity:(AVLayerVideoGravity)gravity {
+    [self simcam_setVideoGravity:gravity];
+    [[SimCamRegistry shared] reapplyGravityToLayer:self];
+}
 @end
 
 #pragma mark - AVCaptureDeviceFormat private-accessor swizzle
@@ -1266,6 +1270,7 @@ void SimCamInstallSwizzles(void) {
 
     Class pl = [AVCaptureVideoPreviewLayer class];
     SwizzleInstanceMethod(pl, @selector(setSession:), @selector(simcam_setSession:));
+    SwizzleInstanceMethod(pl, @selector(setVideoGravity:), @selector(simcam_setVideoGravity:));
 
     Class fmtClass = [AVCaptureDeviceFormat class];
     SEL figFmtSel = NSSelectorFromString(@"figCaptureSourceVideoFormat");

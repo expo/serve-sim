@@ -271,6 +271,30 @@ describe.skipIf(!ready)("device-wide camera lifecycle", () => {
     expect(() => cli(["red.png"])).toThrow();
     expect(isCapabilityEnabled(udid!, "camera")).toBe(false);
   }, 60_000);
+  test("the preview fits the frame the way the app's videoGravity asks", async () => {
+    try { simctl(["terminate", udid!, APP]); } catch {}
+    cli(["enable", "--file", red]);
+    try {
+      const before = lines(APP, "gravity").length;
+      simctl(["launch", udid!, APP, "-ServeSimFixtureGravityAspect"]);
+      await waitFor(() => lines(APP, "gravity").length > before);
+      expect(lines(APP, "gravity").at(-1)).toEndWith("\tresizeAspect");
+    } finally {
+      cli(["disable"]);
+    }
+  }, 60_000);
+  test("the preview follows a videoGravity change after the camera connects", async () => {
+    try { simctl(["terminate", udid!, APP]); } catch {}
+    cli(["enable", "--file", red]);
+    try {
+      const before = lines(APP, "gravity").length;
+      simctl(["launch", udid!, APP, "-ServeSimFixtureGravityChange"]);
+      await waitFor(() => lines(APP, "gravity").length > before + 1);
+      expect(lines(APP, "gravity").at(-1)).toEndWith("\tresize");
+    } finally {
+      cli(["disable"]);
+    }
+  }, 60_000);
   test("queued cached frames do not arrive after disconnect", async () => {
     try { simctl(["terminate", udid!, APP]); } catch {}
     cli(["enable", "--file", red]);

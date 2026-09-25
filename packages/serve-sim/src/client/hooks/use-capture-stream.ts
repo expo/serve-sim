@@ -9,17 +9,9 @@ import {
   type CapturedRequest,
 } from "../../capture/store";
 import { openHostEventStream, runHostAction } from "../utils/exec";
+import { simAuthHeaders } from "../utils/sim-endpoint";
 
 export type { CaptureMeta, CaptureAttachment, CapturedBody, CapturedRequest };
-
-/** Bearer + optional JSON content-type for capture HTTP routes (same token as /exec). */
-export function captureAuthHeaders(opts?: { json?: boolean }): HeadersInit {
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${window.__SIM_PREVIEW__?.execToken ?? ""}`,
-  };
-  if (opts?.json) headers["Content-Type"] = "application/json";
-  return headers;
-}
 
 /** Subscribe to capture SSE; `streamKey` bumps after reboot to resubscribe. */
 export function useCaptureStream(
@@ -88,7 +80,7 @@ export async function fetchCapturedBody(
   try {
     const url = `${basePath}/${encodeURIComponent(id)}?device=${encodeURIComponent(device)}`;
     const response = await fetch(url, {
-      headers: captureAuthHeaders(),
+      headers: simAuthHeaders(),
     });
     if (!response.ok) return null;
     return (await response.json()) as CapturedBody;

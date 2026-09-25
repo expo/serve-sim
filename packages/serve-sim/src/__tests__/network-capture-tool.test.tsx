@@ -246,7 +246,7 @@ describe("body requests", () => {
   test("carries the device, since request ids restart per simulator", async () => {
     const seen: string[] = [];
     const original = globalThis.fetch;
-    // captureAuthHeaders reads window.__SIM_PREVIEW__; without it the helper throws before fetching.
+    // simAuthHeaders reads window.__SIM_PREVIEW__; without a window it throws before fetching.
     const hadWindow = "window" in globalThis;
     if (!hadWindow) {
       (globalThis as { window?: unknown }).window = { __SIM_PREVIEW__: { execToken: "t" } };

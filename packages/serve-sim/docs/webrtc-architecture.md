@@ -1,6 +1,6 @@
 # WebRTC architecture
 
-Status: current implementation and planned direction as of July 2026.
+Status: current implementation and planned direction as of September 2026.
 
 ## Scope
 
@@ -12,9 +12,9 @@ Status: current implementation and planned direction as of July 2026.
 - HID input, screen metadata, accessibility, DevTools, and simulator tools.
 
 The deployment environment is trusted. Authentication and authorization are
-outside this design. Recording is also outside the WebRTC transport: a recorder
-should consume captured frames alongside the live transports, not record an RTP
-stream or decoded browser output.
+outside this design. Recording is independent of the WebRTC transport and
+consumes owned captured frames alongside it. The capture and recording paths
+are documented in [Video pipeline and recording](video-pipeline.md).
 
 ## Decisions
 
@@ -74,6 +74,7 @@ CaptureEngine
   +-- MJPEG consumers
   +-- AVCC consumers
   +-- WebRTCPublisher consumer
+  +-- native-frame mailbox -> hardware H.264 recorder -> MP4 + manifest
           |
           v
 WebRTCPublisher (LiveKit WebRTC framework)
@@ -82,6 +83,7 @@ WebRTCPublisher (LiveKit WebRTC framework)
   +-- codec preference and H.264 capability probe
   +-- pre-encode resolution scaling and pixel-buffer conversion
   +-- latest-frame pacing at the configured frame rate
+  +-- one shared H.264 encoder behind per-peer proxies; VP8 remains per-peer
 ```
 
 The browser has three rendering paths:
@@ -95,16 +97,18 @@ The browser has three rendering paths:
 ### Capture and frame flow
 
 `FrameCapture` registers private SimulatorKit screen callbacks on every display
-descriptor and chooses the largest live IOSurface. A 60 Hz IOSurface seed poll
+descriptor and follows the authoritative active display on foldable devices.
+A 60 Hz IOSurface seed poll
 catches changes when virtualized SimulatorKit callbacks arrive below the display
 cadence, while seed checks avoid duplicating unchanged frames. The poll is not a
 capture-rate ceiling: callbacks still deliver prompt unique changes between poll
 ticks. Capture also maintains a fixed 5 fps idle floor. Every frame has a host
 monotonic capture timestamp.
 
-`CaptureEngine` fans frames out synchronously to consumers. Each encoder keeps a
-single newest pending frame, so a slow consumer cannot create latency by
-building a backlog. `WebRTCPublisher` retains the newest captured frame and uses
+`CaptureEngine` fans owned frames out to bounded consumers. Recording keeps
+one native-size snapshot in a latest-frame mailbox; viewers receive a separate
+scaled or letterboxed buffer. A slow encoder cannot build an unbounded capture
+backlog. `WebRTCPublisher` retains the newest captured frame and uses
 one absolute-cadence pump as the only configured FPS controller. After the first
 frame, it continuously resubmits that retained buffer with fresh presentation
 timestamps; new captures replace it without building a backlog. The libwebrtc
@@ -112,8 +116,12 @@ source adapter uses a 1,000 FPS safety ceiling and RTP senders have no additiona
 FPS cap, avoiding independently phased frame droppers. The publisher pre-scales
 accepted pixel buffers to the configured maximum dimension and only accepts
 frames while at least one peer is connected. Its shared video source fans each
-submission out to every peer connection; libwebrtc maintains an independent
-sender, encoder, bitrate estimate, and packet stream per viewer.
+submission out to every peer connection. H.264 proxies deduplicate by frame
+timestamp and use one VideoToolbox encoder; each peer retains its own sender,
+bitrate estimate, and packet stream. VP8 fallback retains per-peer encoders.
+The recording uses a separate hardware H.264 session at native resolution. See
+[Video pipeline and recording](video-pipeline.md) for why this encode is
+independent of viewer settings.
 
 The pump is hardened against hostile host timing, because a production trace
 showed it silently degrading to send-on-arrival on a virtualized macOS VM
@@ -218,8 +226,8 @@ the simulator's single synthetic touch surface.
 
 ## Current constraints
 
-- WebRTC capture work is shared, but software encode and outgoing bandwidth grow
-  with the number of connected peers.
+- H.264 capture and encoding are shared across viewers, but outgoing bandwidth
+  still grows with the number of peers. VP8 fallback retains per-peer encoders.
 - There is no configured WebRTC peer limit or cross-viewer control arbitration.
 - No automatic fallback from unreachable WebRTC media to HTTP video.
 - H.264 encode size is bounded by the negotiated level's frame size. A peer that
@@ -242,7 +250,8 @@ the simulator's single synthetic touch surface.
   simulators.
 - External `simctl shutdown` is detected by state/grid polling rather than a
   dedicated device lifecycle observer.
-- Runtime WebRTC metrics are logs, not a structured status surface.
+- WebRTC sender and capture counters are available through `/webrtc/stats`;
+  direct copy and scale latency are not yet reported separately.
 - The LiveKit framework is linked into the main native addon, so HTTP-only users
   also carry the framework.
 - The native publisher combines session state, SDP processing, ICE, codecs,
@@ -266,7 +275,7 @@ DeviceRegistry
               +-- MjpegTransport
               +-- AvccTransport
               +-- WebRtcSessionManager -> NativePeerSession[]
-              +-- Recorder (separate feature)
+              +-- NativeVideoRecorder
 
 MediaPolicy -> MediaCapabilities -> Browser VideoTransportController
 ```
@@ -344,8 +353,8 @@ to HTTP when the network cannot establish WebRTC media.
 - Extract a TypeScript `WebRtcSessionManager` from `DeviceSession`.
 - Report structured connection state.
 - Add a proactive simulator shutdown signal that closes every media transport.
-- Add a real macOS WebRTC integration test for VP8, two live viewers, and
-  independent peer cleanup.
+- Extend real macOS integration coverage for VP8 fallback, two live viewers,
+  recording under load, and independent peer cleanup.
 
 ### Later, when required
 

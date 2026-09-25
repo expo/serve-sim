@@ -32,6 +32,11 @@ const ready =
 requireE2E("network request fixture", ready);
 
 type ReceivedRequest = { method: string; url: string; bodyBytes: number; bodyStart: string };
+type AxNode = {
+  AXUniqueId: string | null;
+  frame: { x: number; y: number; width: number; height: number };
+  children: AxNode[];
+};
 
 async function waitForAsync(check: () => boolean | Promise<boolean>, timeoutMs = 90_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -211,6 +216,38 @@ describeOrSkip("network request fixture", () => {
     return existsSync(path) ? readFileSync(path, "utf-8") : "";
   }
 
+  async function tapButton(id: string): Promise<void> {
+    const state = JSON.parse(
+      readFileSync(join(tempState.dir, `server-${udid!}.json`), "utf-8"),
+    ) as { streamUrl: string; token?: string };
+    const axUrl = state.streamUrl.replace(/\/stream\.mjpeg$/, "/ax");
+    const find = (nodes: AxNode[]): AxNode | undefined => {
+      for (const node of nodes) {
+        if (node.AXUniqueId === id) return node;
+        const child = find(node.children ?? []);
+        if (child) return child;
+      }
+    };
+    let roots: AxNode[] = [];
+    await waitForAsync(async () => {
+      const response = await fetch(axUrl, {
+        headers: state.token ? { Authorization: `Bearer ${state.token}` } : undefined,
+      });
+      if (!response.ok) return false;
+      roots = await response.json() as AxNode[];
+      return !!roots[0] && !!find(roots);
+    }, 15_000);
+    const root = roots[0]!;
+    const button = find(roots)!;
+    const x = (button.frame.x + button.frame.width / 2 - root.frame.x) / root.frame.width;
+    const y = (button.frame.y + button.frame.height / 2 - root.frame.y) / root.frame.height;
+    execFileSync("node", [CLI, "tap", String(x), String(y), "-d", udid!], {
+      env: { ...process.env },
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+    });
+  }
+
   for (const phase of ["pre-main", "app-delegate"]) {
     test(`captures a request initiated in ${phase}`, async () => {
       const path = `/api/startup/${phase}`;
@@ -229,15 +266,9 @@ describeOrSkip("network request fixture", () => {
   }
 
   test("the two buttons send a small GET and large POST that appear in capture", async () => {
-    const tap = (y: string) => execFileSync("node", [CLI, "tap", "0.5", y, "-d", udid!], {
-      env: { ...process.env },
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 30_000,
-    });
-
-    tap("0.52");
+    await tapButton("get-profile");
     await waitForAsync(() => received.some((request) => request.url === PROFILE_PATH));
-    tap("0.61");
+    await tapButton("upload-three-megabytes");
     await waitForAsync(() => received.some((request) => request.url === UPLOAD_PATH));
     expect(received.filter((request) => [PROFILE_PATH, UPLOAD_PATH].includes(request.url))).toHaveLength(2);
     expect(received).toContainEqual({

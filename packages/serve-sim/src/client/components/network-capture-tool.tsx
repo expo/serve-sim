@@ -34,14 +34,14 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
   const [open, setOpen] = useState(true);
   const [grouped, setGrouped] = useState(false);
   const [filter, setFilter] = useState("");
-  const [rebooting, setRebooting] = useState(false);
-  const [rebootError, setRebootError] = useState<string | null>(null);
+  const [changing, setChanging] = useState(false);
+  const [changeError, setChangeError] = useState<string | null>(null);
   const [streamKey, setStreamKey] = useState(0);
   const { meta, requests, errored, clear, setMeta } = useCaptureStream(path, streamKey);
   const capturing = meta?.attachment === "capturing";
   const starting = meta?.attachment === "starting";
   const captureOn = capturing || starting;
-  const rebootButton = rebootControl({ meta, errored, rebooting });
+  const captureButton = captureControl({ meta, errored, changing });
 
   const rows = useMemo(() => {
     const needle = filter.trim().toLowerCase();
@@ -61,21 +61,24 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
   const slowestMs = useMemo(() => Math.max(1, ...rows.map((request) => request.durationMs ?? 0)), [rows]);
   const groups = useMemo(() => (grouped ? groupByDomain(rows) : []), [grouped, rows]);
 
-  async function reboot(enable: boolean) {
-    setRebooting(true);
-    setRebootError(null);
+  async function toggleCapture(enable: boolean) {
+    setChanging(true);
+    setChangeError(null);
     try {
-      const result = await runHostAction("capture.reboot", { udid, enabled: enable });
+      const liveEnable = enable && meta?.attachment === "not-enabled";
+      const result = liveEnable
+        ? await runHostAction("capture.enable", { udid })
+        : await runHostAction("capture.reboot", { udid, enabled: enable });
       if (result.exitCode !== 0) {
-        setRebootError(result.stderr || "The device could not be rebooted.");
+        setChangeError(result.stderr || (enable ? "Capture could not be enabled." : "The device could not be rebooted."));
         return;
       }
       setMeta(JSON.parse(result.stdout) as CaptureMeta);
       setStreamKey((key) => key + 1);
     } catch (error) {
-      setRebootError(error instanceof Error ? error.message : "The reboot request could not be sent.");
+      setChangeError(error instanceof Error ? error.message : "The capture request could not be sent.");
     } finally {
-      setRebooting(false);
+      setChanging(false);
     }
   }
 
@@ -126,16 +129,21 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
           </span>
           <button
             type="button"
-            disabled={rebootButton.disabled}
-            onClick={() => void reboot(!captureOn)}
+            disabled={captureButton.disabled}
+            onClick={() => void toggleCapture(!captureOn)}
             className="rounded px-2 py-1 text-[11px] text-white/60 hover:bg-white/10 disabled:opacity-50"
           >
-            {rebootButton.label}
+            {captureButton.label}
           </button>
         </div>
 
-        {rebootError && (
-          <span className="whitespace-pre-line text-[11px] leading-snug text-red-300">{rebootError}</span>
+        {changeError && (
+          <span className="whitespace-pre-line text-[11px] leading-snug text-red-300">{changeError}</span>
+        )}
+        {meta?.attachment === "not-enabled" && (
+          <span className="text-[11px] leading-snug text-white/40">
+            Apps opened before enabling may miss requests.
+          </span>
         )}
         <CaptureState attachment={meta?.attachment ?? "not-enabled"} attachError={meta?.attachError ?? null} />
         <OversizedBodiesNotice count={meta?.droppedOversizedBodies ?? 0} />
@@ -209,25 +217,29 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
   );
 }
 
-export function rebootControl({
+export function captureControl({
   meta,
   errored,
-  rebooting,
+  changing,
 }: {
   meta: CaptureMeta | null;
   errored: boolean;
-  rebooting: boolean;
+  changing: boolean;
 }): { disabled: boolean; label: string } {
-  if (rebooting) return { disabled: true, label: "Rebooting…" };
+  if (changing) return { disabled: true, label: "Working…" };
   if (meta === null) {
     return errored
       ? { disabled: false, label: "Reboot with capture" }
-      : { disabled: true, label: "Reboot with capture" };
+      : { disabled: true, label: "Enable capture" };
   }
   if (meta.attachment === "starting") return { disabled: true, label: "Starting…" };
   return {
     disabled: false,
-    label: meta.attachment === "capturing" ? "Reboot without capture" : "Reboot with capture",
+    label: meta.attachment === "capturing"
+      ? "Turn off (reboots)"
+      : meta.attachment === "failed"
+        ? "Reboot with capture"
+        : "Enable capture",
   };
 }
 
@@ -249,11 +261,9 @@ export function CaptureState({
   if (attachment === "starting") {
     return <span className="text-[11px] text-white/40">Starting capture on this device…</span>;
   }
-  return (
-    <span className="whitespace-pre-line text-[11px] leading-snug text-white/40">
-      {attachError ?? "This device is not capturing."}
-    </span>
-  );
+  return attachError ? (
+    <span className="whitespace-pre-line text-[11px] leading-snug text-white/40">{attachError}</span>
+  ) : null;
 }
 
 export function OversizedBodiesNotice({ count }: { count: number }) {

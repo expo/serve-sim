@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { captureRuntime } from "./capture/runtime";
+import { rebootedWithCaptureSince } from "./capture/reboot";
 import { Command, InvalidArgumentError } from "commander";
 import { execFileSync, execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
 import { existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unlinkSync, writeFileSync } from "fs";
@@ -166,6 +167,10 @@ function readStateFile(file: string): ServerState | null {
     // recycle here so --detach / --list always return a working stream.
     const booted = getBootedUdids();
     if (booted && !booted.has(state.device)) {
+      if (rebootedWithCaptureSince(state.device, bootedSnapshot.at)) {
+        debugState("keeping state for capture reboot on device %s", state.device);
+        return state;
+      }
       if (state.pid === process.pid) {
         // The state belongs to *this* process (an in-process/preview server
         // recorded its own pid via inProcessServeSimState). Never SIGTERM

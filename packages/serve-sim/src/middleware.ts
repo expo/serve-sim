@@ -1967,6 +1967,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         required: requirePreviewToken || url.startsWith(base + ALWAYS_GATED_PREFIX),
         basePath: base,
         htmlHeaders: framePolicyHeaders,
+        allowQueryToken: !url.startsWith(base + ALWAYS_GATED_PREFIX),
       })
     ) {
       return;

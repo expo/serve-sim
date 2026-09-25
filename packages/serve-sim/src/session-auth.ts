@@ -128,6 +128,18 @@ function isTopLevelNavigation(req: SessionAuthReq): boolean {
 }
 
 // Returns false when the request has been answered and must stop.
+export function assertBearerAccess(
+  req: SessionAuthReq,
+  res: SessionAuthRes,
+  sessionToken: string,
+): boolean {
+  const token = bearerToken(headerValue(req.headers.authorization));
+  if (token && safeEqualString(token, sessionToken)) return true;
+  res.writeHead(401, { "Content-Type": "text/plain", "Cache-Control": "no-store, private" });
+  res.end("Recording control requires the serve-sim session bearer token.\n");
+  return false;
+}
+
 export function assertPreviewAccess(
   req: SessionAuthReq & { url?: string },
   res: SessionAuthRes,

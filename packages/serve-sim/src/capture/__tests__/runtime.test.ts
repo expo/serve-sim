@@ -196,8 +196,8 @@ describe("capture runtime", () => {
     const meta = runtime.metaFor(UDID);
 
     expect(meta.attachment).toBe("not-enabled");
-    expect(meta.attachError).toContain("reboot");
     expect(meta.fields).toEqual([]);
+    expect(meta.attachError).toBeNull();
     expect(runtime.storeFor(UDID)).toBeNull();
     expect(runtime.throughputFor(UDID)).toBeNull();
   });

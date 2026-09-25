@@ -34,6 +34,13 @@ describe("network-capture auth", () => {
     });
   });
 
+  test("rejects a capture URL token even when it matches the session", async () => {
+    await withMiddleware(async (_origin, request) => {
+      expect((await request(`/network-capture?token=${TOKEN}`)).status).toBe(401);
+      expect((await request(`/network-capture/some-id?token=${TOKEN}`)).status).toBe(401);
+    });
+  });
+
   test("rejects cross-origin SSE even with bearer", async () => {
     await withMiddleware(async (_origin, request) => {
       const r = await request("/network-capture", {

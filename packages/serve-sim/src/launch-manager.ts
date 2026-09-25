@@ -184,7 +184,7 @@ async function readInsert(udid: string): Promise<string> {
 
 function startupDylibs(capabilities: Record<string, Capability>): string[] {
   return Object.values(capabilities)
-    .filter((capability) => capability.loadPhase === "startup")
+    .filter((capability) => capability.loadPhase === "startup" || capability.loadPhase === "startupAndDeferred")
     .map((capability) => capability.dylib);
 }
 
@@ -712,9 +712,10 @@ export async function isCapabilityArmed(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
-  const line = renderCapabilityConfig({ launchArgs: [], capabilities: { [name]: capability } }).trimEnd();
-  if (!config.split("\n").includes(line)) return false;
+  const lines = renderCapabilityConfig({ launchArgs: [], capabilities: { [name]: capability } }).trimEnd().split("\n");
+  const configuredLines = new Set(config.split("\n"));
+  if (!lines.every((line) => configuredLines.has(line))) return false;
   const inserts = (await read(["spawn", udid, "launchctl", "getenv", INSERT])).trim().split(":");
-  return inserts.includes(capabilityLoaderPath()) &&
-    (capability.loadPhase !== "startup" || inserts.includes(capability.dylib));
+  const needsStartupInsert = capability.loadPhase === "startup" || capability.loadPhase === "startupAndDeferred";
+  return inserts.includes(capabilityLoaderPath()) && (!needsStartupInsert || inserts.includes(capability.dylib));
 }

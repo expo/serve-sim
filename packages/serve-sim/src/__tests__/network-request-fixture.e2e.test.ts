@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync, spawn, type ChildProcess } from "child_process";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { createServer, type Server } from "http";
 import { join } from "path";
 import WebSocket from "ws";
@@ -18,6 +18,7 @@ const DYLIB = join(PKG_DIR, "dist/simnet/libSimNetProxy.dylib");
 const APP = "dev.expo.serve-sim.network-request-fixture";
 const ORIGIN_ENV = "SERVE_SIM_NETWORK_FIXTURE_ORIGIN";
 const PROFILE_PATH = "/api/profile?source=button";
+const TRIGGER_PROFILE_PATH = "/api/profile?source=trigger";
 const UPLOAD_PATH = "/api/upload";
 const UPLOAD_BYTES = 3 * 1024 * 1024;
 const CAPTURED_BODY_BYTES = 512 * 1024;
@@ -51,6 +52,7 @@ describeOrSkip("network request fixture", () => {
   let origin: Server | undefined;
   let server: ChildProcess | undefined;
   let serverPort = 0;
+  let originPort = 0;
   let stderr = "";
   const received: ReceivedRequest[] = [];
 
@@ -63,7 +65,7 @@ describeOrSkip("network request fixture", () => {
     } catch {}
     simctlSync(["install", udid!, FIXTURE], 60_000);
 
-    const originPort = await freePortAsync();
+    originPort = await freePortAsync();
     origin = createServer((req, res) => {
       const chunks: Buffer[] = [];
       req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -180,17 +182,17 @@ describeOrSkip("network request fixture", () => {
     expect(simctlSync(["spawn", udid!, "launchctl", "getenv", "SIMNET_PROXY_PORT_FILE"])).toBe("");
   }
 
-  async function rebootCapture(enabled: boolean): Promise<string> {
+  async function captureAction(action: "capture.reboot" | "capture.enable", enabled?: boolean): Promise<string> {
     const state = JSON.parse(readFileSync(join(tempState.dir, `server-${udid!}.json`), "utf-8")) as { token: string };
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${serverPort}/exec-ws`, {
         origin: `http://127.0.0.1:${serverPort}`,
       });
-      const timer = setTimeout(() => { ws.terminate(); reject(new Error("Capture reboot timed out")); }, 150_000);
+      const timer = setTimeout(() => { ws.terminate(); reject(new Error("Capture action timed out")); }, 150_000);
       ws.on("open", () => ws.send(JSON.stringify({ token: state.token })));
       ws.on("message", (data) => {
         const reply = JSON.parse(data.toString());
-        if (reply.ready) ws.send(JSON.stringify({ id: 1, action: "capture.reboot", params: { udid, enabled } }));
+        if (reply.ready) ws.send(JSON.stringify({ id: 1, action, params: action === "capture.enable" ? { udid } : { udid, enabled } }));
         if (reply.id !== 1) return;
         clearTimeout(timer);
         ws.close();
@@ -200,6 +202,9 @@ describeOrSkip("network request fixture", () => {
       ws.on("error", (error) => { clearTimeout(timer); ws.terminate(); reject(error); });
     });
   }
+
+  const rebootCapture = (enabled: boolean) => captureAction("capture.reboot", enabled);
+  const enableCapture = () => captureAction("capture.enable");
 
   async function capturedEntries(): Promise<HarEntry[]> {
     const state = JSON.parse(readFileSync(join(tempState.dir, `server-${udid!}.json`), "utf-8")) as { token: string };
@@ -326,15 +331,40 @@ describeOrSkip("network request fixture", () => {
   test("turns capture off and keeps it off after the preview reconnects", async () => {
     expect(await rebootCapture(false)).toBe("not-enabled");
     await expectCaptureOffAfterReconnect();
-    expect(await rebootCapture(true)).toBe("capturing");
+    expect(await enableCapture()).toBe("capturing");
     expect(readInsert(udid!)).toContain("libSimNetProxy");
   }, 360_000);
 
-  test("the startup flag neither captures an already booted device nor overrides an explicit off choice", async () => {
+  test("enables capture for a running fixture without rebooting or relaunching it", async () => {
+    expect(await rebootCapture(false)).toBe("not-enabled");
+    simctlSync(["spawn", udid!, "launchctl", "setenv", ORIGIN_ENV, `http://127.0.0.1:${originPort}/`]);
+    simctlSync(["launch", udid!, APP]);
+    await Bun.sleep(1_000);
+    const before = simctlSync(["spawn", udid!, "launchctl", "list"]);
+    const fixtureEntry = before.split("\n").find((line) => line.includes(`UIKitApplication:${APP}`));
+    expect(fixtureEntry).toBeDefined();
+    expect(await enableCapture()).toBe("capturing");
+    const after = simctlSync(["spawn", udid!, "launchctl", "list"]);
+    expect(after.split("\n").find((line) => line.includes(`UIKitApplication:${APP}`))).toBe(fixtureEntry);
+    const beforeRequests = received.filter((request) => request.url === TRIGGER_PROFILE_PATH).length;
+    const beforeResults = appResults().split("GET /api/profile").length;
+    const container = simctlSync(["get_app_container", udid!, APP, "data"]).trim();
+    writeFileSync(join(container, "Documents/trigger-profile"), "1");
+    await waitForAsync(() => appResults().split("GET /api/profile").length > beforeResults, 20_000);
+    expect(appResults()).toContain(`GET /api/profile → 200`);
+    await waitForAsync(() => received.filter((request) => request.url === TRIGGER_PROFILE_PATH).length > beforeRequests, 20_000);
+    let entries: HarEntry[] = [];
+    await waitForAsync(async () => {
+      entries = await capturedEntries();
+      return entries.some((entry) => entry.request.url.endsWith(TRIGGER_PROFILE_PATH) && entry.response.status === 200);
+    }, 30_000);
+  }, 180_000);
+
+  test("the startup flag captures an already booted device", async () => {
     await stopServer();
     await startServer(true);
-    await expectCaptureOffAfterReconnect();
-    expect(await rebootCapture(true)).toBe("capturing");
+    await capturedEntries();
+    expect(readInsert(udid!)).toContain("libSimNetProxy");
     expect(await rebootCapture(false)).toBe("not-enabled");
     await expectCaptureOffAfterReconnect();
   }, 360_000);

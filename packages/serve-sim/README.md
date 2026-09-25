@@ -28,6 +28,22 @@ https://github.com/user-attachments/assets/fbf890f4-c8c7-4684-82be-d677b8a188f8
 - Apple Watch, iPad, and iOS support.
 - Network capture: decrypt and inspect a simulator's HTTPS traffic (see [Network capture](#network-capture)).
 
+## Log scopes
+
+`/logs` (or the middleware's `/.sim/logs`) keeps its all-process default.
+Pass `scope=user-apps` to receive only unified-log records whose emitting
+executable lives in an installed app container, including app extensions.
+This includes background and subsequently installed apps, not just the foreground
+app. System messages merely mentioning an app are excluded.
+
+The filter applies to SSE, snapshots, and replay. The response header
+`X-Serve-Sim-Log-Scope` acknowledges the selected scope; callers requiring app-only
+logs should check it because older servers may ignore the parameter.
+Replay cursors belong to a device, scope, and server lifetime. Do not reuse an
+all-process cursor for a user-app stream. Each scope has a separate bounded
+buffer and log-stream process, started on demand and stopped when idle.
+This does not capture logs from before collection started or replace crash reports.
+
 ## Why?
 
 Hosted simulators can be hard to test, `serve-sim` enables you to test the hosted infra locally first for faster iteration. When you're ready to host a simulator remotely, simply tunnel the served URL and users can interact with the simulator as if it were running locally on their device.
@@ -99,7 +115,7 @@ Options:
   -q, --quiet         JSON-only output
       --no-preview    Skip the web UI; stream in foreground only
       --network-capture
-                      Record HTTP(S) for devices this process starts or boots
+                      Record HTTP(S) for selected devices, including already booted ones
                       (requires mitmproxy; see Network capture below)
       --network-capture-field <field>
                       What to keep beyond metadata: header | query |
@@ -248,7 +264,7 @@ Sources:
 
 ## Network capture
 
-Decrypts HTTPS from third-party apps on a simulator for the whole boot session (local mitmproxy + trusted CA). Apple system apps such as Safari are left unproxied. Certificate-pinned apps will fail while capture is on.
+Decrypts HTTPS from third-party apps on a simulator (local mitmproxy + trusted CA). Apple system apps such as Safari are left unproxied. Certificate-pinned apps will fail while capture is on. Apps already running when capture starts may miss requests or need a relaunch if they keep using existing network sessions.
 
 ```sh
 # Metadata only (default). Headers and bodies are opt-in.
@@ -263,11 +279,11 @@ serve-sim capture har -o ./capture.har
 
 | Flag / command | What it does |
 | --- | --- |
-| `--network-capture` | Default capture on for devices this process boots; explicit UI choices take precedence |
+| `--network-capture` | Start capture on selected devices, including already booted ones |
 | `--network-capture-field <field>` | Keep `header`, `query`, `request-body`, and/or `response-body` beyond metadata (repeatable or comma-separated). Default: none |
 | `serve-sim capture har -o <path>` | Follow the live stream into a HAR (and JSON next to it) |
 
-Use the tools panel’s reboot action to turn capture on or off for a device, with or without the flag. Connecting to an already booted device does not enable capture.
+Use **Enable capture** in the tools panel to start without rebooting. Turning capture off still reboots the device so existing sessions cannot remain pointed at a stopped proxy.
 
 While capturing, the tools panel lists requests. Session files live under `$TMPDIR/serve-sim/capture-<udid>/` and are removed when capture stops. Capture HTTP routes require the preview session Bearer token.
 

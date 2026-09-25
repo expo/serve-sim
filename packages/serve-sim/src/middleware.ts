@@ -918,8 +918,8 @@ export async function startDeviceInProcess(
   onBoot?: () => Promise<void>,
 ): Promise<string | null> {
   // `simctl boot` errors when already booted — ignore and let bootstatus confirm.
-  const newlyBooted = await new Promise<boolean>((resolve) =>
-    execFile("xcrun", ["simctl", "boot", udid], (error) => resolve(!error)),
+  await new Promise<void>((resolve) =>
+    execFile("xcrun", ["simctl", "boot", udid], () => resolve()),
   );
   const ready = await new Promise<boolean>((resolve) => {
     execFile("xcrun", ["simctl", "bootstatus", udid, "-b"], { timeout: 180_000 }, (err) => resolve(!err));
@@ -940,7 +940,7 @@ export async function startDeviceInProcess(
     });
     if (!booted) return `Device ${udid} failed to reach booted state`;
   }
-  if (newlyBooted) await onBoot?.();
+  await onBoot?.();
   writeServeSimState(gridDeviceState(udid, port, base, streamSettings, sessionToken));
   return null;
 }
@@ -965,7 +965,8 @@ export async function enableNetworkCaptureForStartedDevice(
     onStarted: (meta) =>
       log(
         `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from this device is ` +
-          "recorded for its whole boot session; HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
+          "recorded from now on. Apps already running may keep existing sessions; HTTPS is decrypted, " +
+          "so certificate-pinned apps will refuse to connect.",
       ),
     onFailed: (reason) => error(`Network capture could not start for ${udid}. ${reason}`),
   });
@@ -1675,6 +1676,13 @@ export function handleLogsRequest(
   }
 
   const params = new URL(rawUrl, "http://127.0.0.1").searchParams;
+  const scope = params.get("scope") ?? "all";
+  if (scope !== "all" && scope !== "user-apps") {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Invalid log scope. Use all or user-apps." }));
+    return;
+  }
+  res.setHeader("X-Serve-Sim-Log-Scope", scope);
   const intQuery = (name: string): number | undefined => {
     const raw = params.get(name)?.trim();
     const n = Number(raw);
@@ -1691,7 +1699,7 @@ export function handleLogsRequest(
   const wantsFollow = booleanParam(params, "follow");
 
   if (wantsJson) {
-    const buffer = wantsFollow ? cache.ensure(state.device) : cache.peek(state.device);
+    const buffer = wantsFollow ? cache.ensure(state.device, scope) : cache.peek(state.device, scope);
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     res.end(
       JSON.stringify({
@@ -1707,7 +1715,7 @@ export function handleLogsRequest(
     return;
   }
 
-  const buffer = cache.ensure(state.device);
+  const buffer = cache.ensure(state.device, scope);
   const stream = openSseStream(req, res);
 
   const frame = (line: LogLine): string =>
@@ -2040,6 +2048,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         required: requirePreviewToken || url.startsWith(base + ALWAYS_GATED_PREFIX),
         basePath: base,
         htmlHeaders: framePolicyHeaders,
+        allowQueryToken: !url.startsWith(base + ALWAYS_GATED_PREFIX),
       })
     ) {
       return;

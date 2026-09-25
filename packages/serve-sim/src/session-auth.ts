@@ -136,13 +136,14 @@ export function assertPreviewAccess(
     required: boolean;
     basePath: string;
     htmlHeaders?: Record<string, string>;
+    allowQueryToken?: boolean;
   },
 ): boolean {
   if (!opts.required) return true;
 
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const fromQuery = url.searchParams.get("token");
-  if (fromQuery && safeEqualString(fromQuery, sessionToken)) {
+  if (opts.allowQueryToken !== false && fromQuery && safeEqualString(fromQuery, sessionToken)) {
     // A page load trades the token for a cookie so it leaves the URL and the page's own requests
     // carry it. A cross-origin API/SSE caller can send neither header nor cookie, so it is served
     // the query token directly.

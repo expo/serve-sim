@@ -97,7 +97,7 @@ describeOrSkip("SimNetProxy injection (real simulator)", () => {
   afterEach(async () => {
     terminateProbeApp();
     await disableCapability(udid!, null, "networkCapture", { relaunch: false });
-  });
+  }, 60_000);
 
   afterAll(() => {
     // The fixture app is the only thing this test adds to the device, and it does not outlive the test.

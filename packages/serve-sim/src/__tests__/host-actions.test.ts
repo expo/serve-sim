@@ -264,6 +264,25 @@ describe("runHostActionAsync validation", () => {
 });
 
 describe("capture actions", () => {
+  it("enables capture on a running device without rebooting", async () => {
+    const capture = await import("../capture");
+    const meta = capture.captureRuntime.metaFor(UDID);
+    const enable = spyOn(capture.captureRuntime, "enableForDevice").mockResolvedValue(meta);
+    const setEnabled = spyOn(capture.captureRuntime, "setDeviceCaptureEnabled");
+    const reboot = spyOn(capture, "rebootWithCapture");
+    try {
+      const result = await runHostActionAsync({ action: "capture.enable", params: { udid: UDID } }, BIN);
+      expect(result.exitCode).toBe(0);
+      expect(enable).toHaveBeenCalledWith(UDID);
+      expect(setEnabled).toHaveBeenCalledWith(UDID, true);
+      expect(reboot).not.toHaveBeenCalled();
+    } finally {
+      enable.mockRestore();
+      setEnabled.mockRestore();
+      reboot.mockRestore();
+    }
+  });
+
   it("allows an explicit capture reboot without a startup flag", async () => {
     const capture = await import("../capture");
     const meta = capture.captureRuntime.metaFor(UDID);

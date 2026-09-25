@@ -20,18 +20,19 @@ export function useCaptureStream(
   meta: CaptureMeta | null;
   requests: CapturedRequest[];
   errored: boolean;
-  clear: () => void;
+  clear: () => Promise<void>;
   setMeta: (meta: CaptureMeta) => void;
 } {
   const [meta, setMeta] = useState<CaptureMeta | null>(null);
   const [requests, setRequests] = useState<CapturedRequest[]>([]);
   const [errored, setErrored] = useState(false);
 
-  const clear = useCallback(() => {
+  const clear = useCallback(async () => {
     const device = new URL(path, "http://local").searchParams.get("device");
     if (!device) return;
     // The host's cleared event empties the list, so a request recorded after the clear stays.
-    void runHostAction("capture.clear", { udid: device });
+    const result = await runHostAction("capture.clear", { udid: device });
+    if (result.exitCode !== 0) throw new Error(result.stderr || "Requests could not be cleared.");
   }, [path]);
 
   useEffect(() => {

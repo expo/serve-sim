@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { captureRuntime } from "./capture/runtime";
+import { rebootedWithCaptureSince } from "./capture/reboot";
 import { Command, InvalidArgumentError } from "commander";
 import { execFileSync, execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
 import { existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unlinkSync, writeFileSync } from "fs";
@@ -168,6 +169,10 @@ function readStateFile(file: string): ServerState | null {
     // recycle here so --detach / --list always return a working stream.
     const booted = getBootedUdids();
     if (booted && !booted.has(state.device)) {
+      if (rebootedWithCaptureSince(state.device, bootedSnapshot.at)) {
+        debugState("keeping state for capture reboot on device %s", state.device);
+        return state;
+      }
       if (state.pid === process.pid) {
         // The state belongs to *this* process (an in-process/preview server
         // recorded its own pid via inProcessServeSimState). Never SIGTERM
@@ -1725,7 +1730,8 @@ async function startNetworkCapture(
         if (quiet) return;
         console.log(
           `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from third-party apps on ` +
-            "this device is recorded for the whole boot session (Apple system apps like Safari are left unproxied); " +
+            "this device is recorded from now on (Apple system apps like Safari are left unproxied; " +
+            "apps already running may keep existing sessions); " +
             "HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
         );
         const artifacts = capture.captureRuntime.artifactPathsFor(udid);
@@ -1767,14 +1773,13 @@ async function serve(
   // Boot the target simulators; the preview server streams them in-process
   // (no spawned helper). Sessions are created lazily on the first stream request.
   let targetDevices: string[];
-  const newlyBootedDevices: string[] = [];
   try {
     targetDevices = resolveTargetDevices(devices);
     if (!quiet && devices.length === 0 && readAllStates().length === 0) {
       console.log("Starting simulator stream...");
     }
     for (const udid of targetDevices) {
-      if (await ensureBooted(udid)) newlyBootedDevices.push(udid);
+      await ensureBooted(udid);
     }
   } catch (err) {
     return failStartup(err instanceof Error ? err.message : String(err));
@@ -1782,7 +1787,7 @@ async function serve(
   const targetDevice = targetDevices[0];
 
   const capture = await import("./capture");
-  await startNetworkCapture(options.networkCapture ? newlyBootedDevices : [], options.networkCaptureFields, quiet);
+  await startNetworkCapture(options.networkCapture ? targetDevices : [], options.networkCaptureFields, quiet);
 
   const { simMiddleware } = await import("./middleware");
   // Standalone serve-sim owns its HTTP server and wires WebSocket upgrades, so
@@ -2317,9 +2322,8 @@ Examples:
             });
           }
         }
-        const newlyBootedDevices: string[] = [];
         for (const udid of targets) {
-          if (await ensureBooted(udid)) newlyBootedDevices.push(udid);
+          await ensureBooted(udid);
           if (sessionStopping) return;
         }
         const isStreamHelper = process.env[STREAM_HELPER_ENV] === "1";
@@ -2329,7 +2333,7 @@ Examples:
             if (sessionStopping) return;
           }
         }
-        await startNetworkCapture(opts.networkCapture ? newlyBootedDevices : [], opts.networkCaptureField, !!opts.quiet);
+        await startNetworkCapture(opts.networkCapture ? targets : [], opts.networkCaptureField, !!opts.quiet);
         if (sessionStopping) return;
         for (const udid of launchesBeforeStreaming && !isStreamHelper ? targets : []) {
           if (sessionStopping) return;

@@ -112,7 +112,7 @@ test("refuses capture body reads from an allowed cross-origin page", async () =>
 });
 
 test("refuses capture clear and reboot from an allowed cross-origin page", async () => {
-  for (const action of ["capture.clear", "capture.reboot"]) {
+  for (const action of ["capture.clear", "capture.reboot", "capture.enable"]) {
     const reply = await runCaptureAction("https://expo.dev", action, { udid: UDID, enabled: true });
     expect(reply.error).toContain("same-origin");
   }

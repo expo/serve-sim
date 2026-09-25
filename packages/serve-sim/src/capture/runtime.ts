@@ -388,9 +388,8 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
 
           session.meta.attachment = "failed";
           session.meta.attachError =
-            "This device stopped capturing. It was restarted, or shut down, since capture was applied — " +
-            "capture is set up when a device boots, so it does not survive a restart. Reboot with capture " +
-            "to start again.";
+            "This device stopped capturing. It may have restarted or shut down since capture was " +
+            "enabled. Enable capture again after it boots.";
           session.store.publishMeta(session.meta);
           return session.meta;
         } finally {

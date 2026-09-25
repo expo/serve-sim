@@ -54,7 +54,7 @@ function captureUnavailable(data: string): string | null {
   const event = parsed as { type?: string; meta?: { attachment?: string; attachError?: string | null } };
   if (event.type !== "meta") return null;
   if (event.meta?.attachment === "not-enabled") {
-    return event.meta.attachError || "Network capture is not enabled on this device. Reboot with capture enabled.";
+    return event.meta.attachError || "Network capture is not enabled on this device. Enable capture to record new requests.";
   }
   if (event.meta?.attachment === "failed") {
     return event.meta.attachError || "Network capture failed on this device.";

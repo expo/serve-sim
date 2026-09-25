@@ -115,7 +115,7 @@ Options:
   -q, --quiet         JSON-only output
       --no-preview    Skip the web UI; stream in foreground only
       --network-capture
-                      Record HTTP(S) for devices this process starts or boots
+                      Record HTTP(S) for selected devices, including already booted ones
                       (requires mitmproxy; see Network capture below)
       --network-capture-field <field>
                       What to keep beyond metadata: header | query |
@@ -264,7 +264,7 @@ Sources:
 
 ## Network capture
 
-Decrypts HTTPS from third-party apps on a simulator for the whole boot session (local mitmproxy + trusted CA). Apple system apps such as Safari are left unproxied. Certificate-pinned apps will fail while capture is on.
+Decrypts HTTPS from third-party apps on a simulator (local mitmproxy + trusted CA). Apple system apps such as Safari are left unproxied. Certificate-pinned apps will fail while capture is on. Apps already running when capture starts may miss requests or need a relaunch if they keep using existing network sessions.
 
 ```sh
 # Metadata only (default). Headers and bodies are opt-in.
@@ -279,11 +279,11 @@ serve-sim capture har -o ./capture.har
 
 | Flag / command | What it does |
 | --- | --- |
-| `--network-capture` | Default capture on for devices this process boots; explicit UI choices take precedence |
+| `--network-capture` | Start capture on selected devices, including already booted ones |
 | `--network-capture-field <field>` | Keep `header`, `query`, `request-body`, and/or `response-body` beyond metadata (repeatable or comma-separated). Default: none |
 | `serve-sim capture har -o <path>` | Follow the live stream into a HAR (and JSON next to it) |
 
-Use the tools panel’s reboot action to turn capture on or off for a device, with or without the flag. Connecting to an already booted device does not enable capture.
+Use **Enable capture** in the tools panel to start without rebooting. Turning capture off still reboots the device so existing sessions cannot remain pointed at a stopped proxy.
 
 While capturing, the tools panel lists requests. Session files live under `$TMPDIR/serve-sim/capture-<udid>/` and are removed when capture stops. Capture HTTP routes require the preview session Bearer token.
 

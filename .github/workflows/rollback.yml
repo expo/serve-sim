@@ -1,0 +1,99 @@
+name: Roll back @expo/serve-sim
+
+run-name: Roll back @expo/serve-sim latest to ${{ inputs.version }} by @${{ github.triggering_actor }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published version that npm `latest` should point to again, for example 0.3.0
+        required: true
+        type: string
+      deprecate:
+        description: Version to mark deprecated on npm, for example 0.3.1. Leave empty to skip.
+        required: false
+        type: string
+      reason:
+        description: One line for the deprecation message and the run log
+        required: false
+        type: string
+        default: Rolled back. Install the version that npm latest points to.
+
+# Same group as the release workflow, so a rollback and a release never race
+# on the dist-tag.
+concurrency:
+  group: release-expo-serve-sim
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: Retag latest
+    if: github.repository == 'expo/serve-sim' && github.ref == 'refs/heads/expo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm-release
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Verify the inputs against npm
+        env:
+          VERSION: ${{ inputs.version }}
+          BAD: ${{ inputs.deprecate }}
+        run: |
+          # Exact versions only. A range passed to `npm deprecate` could cover
+          # the version this run restores.
+          EXACT='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          if ! printf '%s' "$VERSION" | grep -Eq "$EXACT"; then
+            echo "::error::version must be one exact version like 0.3.0, got '$VERSION'. Nothing was changed."
+            exit 1
+          fi
+          PUBLISHED=$(npm view "@expo/serve-sim@$VERSION" version 2>/dev/null || true)
+          if [ "$PUBLISHED" != "$VERSION" ]; then
+            echo "::error::@expo/serve-sim@$VERSION is not on npm. Nothing was changed."
+            exit 1
+          fi
+          if [ -n "$BAD" ]; then
+            if ! printf '%s' "$BAD" | grep -Eq "$EXACT"; then
+              echo "::error::deprecate must be one exact version, got '$BAD'. Nothing was changed."
+              exit 1
+            fi
+            if [ "$BAD" = "$VERSION" ]; then
+              echo "::error::deprecate equals version. Refusing to deprecate the version being restored. Nothing was changed."
+              exit 1
+            fi
+            if [ "$(npm view "@expo/serve-sim@$BAD" version 2>/dev/null || true)" != "$BAD" ]; then
+              echo "::error::@expo/serve-sim@$BAD is not on npm. Nothing was changed."
+              exit 1
+            fi
+          fi
+          echo "latest before: $(npm view @expo/serve-sim dist-tags.latest)"
+
+      - name: Point latest at the target version
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ROLLBACK_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          npm dist-tag add "@expo/serve-sim@$VERSION" latest
+          echo "latest after: $(npm view @expo/serve-sim dist-tags.latest)"
+
+      - name: Deprecate the bad version
+        if: inputs.deprecate != ''
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ROLLBACK_TOKEN }}
+          BAD: ${{ inputs.deprecate }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          # `npm deprecate <pkg>@<v> ""` removes a deprecation. A cleared form
+          # field must never turn this step into an un-deprecate.
+          if [ -z "$REASON" ]; then
+            REASON="Rolled back. Install the version that npm latest points to."
+          fi
+          npm deprecate "@expo/serve-sim@$BAD" "$REASON"

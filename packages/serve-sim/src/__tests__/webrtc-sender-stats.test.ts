@@ -161,6 +161,7 @@ describe("capture counts", () => {
       idleFrames: 40,
       offeredFrames: null,
       forwardedFrames: null,
+      sharedEncodedFrames: null,
       pumpRestarts: null,
       cpuFallbacks: null,
       attempts: null,
@@ -191,6 +192,13 @@ describe("frame flow counts", () => {
 
     expect(stats.capture?.offeredFrames).toBe(880);
     expect(stats.capture?.forwardedFrames).toBe(300);
+  });
+
+  test("reports one shared H.264 encode counter for all viewers", () => {
+    const stats = readSenderStats({
+      sessions: [], capture: { screenFrames: 1, idleFrames: 10, sharedEncodedFrames: 400 },
+    });
+    expect(stats.capture?.sharedEncodedFrames).toBe(400);
   });
 });
 

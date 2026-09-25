@@ -89,6 +89,7 @@ actor CaptureEngine {
     private(set) var screenSize = Dimensions(width: 0, height: 0)
     private var consumers = [UUID: CaptureConsuming]()
     private var webRTCPublisher: WebRTCPublisher?
+    private var webRTCEncodeCanvas = Dimensions(width: 0, height: 0)
     private var frameContinuation: AsyncStream<Frame>.Continuation?
     private var cancelledWebRTCSessionIds = Set<String>()
     private var cancelledWebRTCSessionIdOrder: [String] = []
@@ -132,9 +133,11 @@ actor CaptureEngine {
             await frameCapture.stop()
             return
         }
+        webRTCEncodeCanvas = await frameCapture.webRTCEncodeCanvasSize()
+            ?? Dimensions(width: 0, height: 0)
         Task {
             for await frame in frames {
-                handleFrame(frame)
+                await handleFrame(frame)
             }
         }
         phase = .running
@@ -159,9 +162,14 @@ actor CaptureEngine {
         consumers.removeValue(forKey: id)
     }
 
-    private func handleFrame(_ frame: Frame) {
+    private func handleFrame(_ frame: Frame) async {
         guard phase == .running else { return }
         screenSize = frame.pixelBuffer.dimensions
+        if webRTCEncodeCanvas.width == 0 || webRTCEncodeCanvas.height == 0,
+           let canvas = await frameCapture.webRTCEncodeCanvasSize() {
+            webRTCEncodeCanvas = canvas
+            webRTCPublisher?.setEncodeCanvas(canvas)
+        }
         for consumer in consumers.values {
             consumer.handleFrame(frame)
         }
@@ -301,6 +309,7 @@ actor CaptureEngine {
                 idleFrames: counts.idle,
                 offeredFrames: flow?.offered,
                 forwardedFrames: flow?.forwarded,
+                sharedEncodedFrames: flow?.sharedEncoded,
                 pumpRestarts: flow?.pumpRestarts,
                 cpuFallbacks: timings.cpuFallbacks,
                 attempts: timings.attempts,
@@ -346,7 +355,8 @@ actor CaptureEngine {
         let publisher = WebRTCPublisher(
             maxFps: options.h264Fps,
             targetBitrate: options.h264Bitrate,
-            maxDimension: options.maxDimension
+            maxDimension: options.maxDimension,
+            encodeCanvas: webRTCEncodeCanvas
         )
         consumers[UUID()] = WebRTCConsumer(publisher: publisher)
         webRTCPublisher = publisher

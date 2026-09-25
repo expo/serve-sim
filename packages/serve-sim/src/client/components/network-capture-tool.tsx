@@ -31,7 +31,6 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
     () => captureEndpoint ?? `${simEndpoint("network-capture")}?device=${encodeURIComponent(udid)}`,
     [captureEndpoint, udid],
   );
-  const bodyBase = useMemo(() => path.split("?")[0]!, [path]);
   const [open, setOpen] = useState(true);
   const [grouped, setGrouped] = useState(false);
   const [filter, setFilter] = useState("");
@@ -182,7 +181,6 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
                   <DomainSection
                     key={group.host}
                     group={group}
-                    bodyBase={bodyBase}
                     udid={udid}
                     slowestMs={slowestMs}
                   />
@@ -192,7 +190,6 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
                   <RequestRow
                     key={request.id}
                     request={request}
-                    bodyBase={bodyBase}
                     udid={udid}
                     slowestMs={slowestMs}
                   />

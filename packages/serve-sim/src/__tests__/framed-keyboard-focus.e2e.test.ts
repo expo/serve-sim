@@ -149,10 +149,10 @@ describeWithSim(`desktop keyboard focus (sim ${udid ?? "<skipped>"})`, () => {
     return session;
   }
 
-  async function clickOnce(point: { x: number; y: number }): Promise<void> {
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
-    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", buttons: 1, clickCount: 1 });
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", buttons: 0, clickCount: 1 });
+  async function clickOnce(point: { x: number; y: number }, sessionId?: string): Promise<void> {
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point }, sessionId);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", buttons: 1, clickCount: 1 }, sessionId);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", buttons: 0, clickCount: 1 }, sessionId);
   }
 
   async function clickHardwareKeyboard(frame: string): Promise<void> {
@@ -160,13 +160,10 @@ describeWithSim(`desktop keyboard focus (sim ${udid ?? "<skipped>"})`, () => {
     while (Date.now() < deadline && await cdp.evaluate<boolean>(`${HARDWARE_KEYBOARD_SWITCH}.hasAttribute("disabled")`, frame)) {
       await Bun.sleep(100);
     }
-    const clicked = await cdp.evaluate<boolean>(`(() => {
-      const el = ${HARDWARE_KEYBOARD_SWITCH};
-      if (!el || el.disabled) return false;
-      el.click();
-      return true;
-    })()`, frame);
-    expect(clicked, "the hardware keyboard switch is not ready").toBe(true);
+    expect(await cdp.evaluate<boolean>(`${HARDWARE_KEYBOARD_SWITCH}.hasAttribute("disabled")`, frame)).toBe(false);
+    await cdp.evaluate(`(${HARDWARE_KEYBOARD_SWITCH}).scrollIntoView({ block: "center" })`, frame);
+    await Bun.sleep(300);
+    await clickOnce(await waitForElement(HARDWARE_KEYBOARD_SWITCH, frame), frame);
   }
 
   async function typeKeys(text: string): Promise<void> {

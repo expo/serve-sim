@@ -4,6 +4,15 @@
 
 ## Why
 
+## Authorship and LLM use
+
+<!-- Cover code, tests, documentation, and this PR description. A short, accurate account is enough; a session transcript is optional. Do not claim human review or testing that has not happened. -->
+
+- **LLM involvement:** None / assisted / primarily LLM-generated. Name the tool and the parts it produced or changed.
+- **Process and decisions:** What was the initial request? What approach was chosen, what alternatives or suggestions were rejected or corrected, and who made those decisions?
+- **Human involvement:** Who set the direction, edited the result, inspected the diff, or ran the tests? If a step had no human involvement, say "none."
+- **Review status:** Has a human reviewed the final diff? If not, say "human review pending." Who can answer questions and maintain this change?
+
 ## Evidence
 
 <!-- Match the evidence to the change. "Builds and typechecks" is not evidence. -->

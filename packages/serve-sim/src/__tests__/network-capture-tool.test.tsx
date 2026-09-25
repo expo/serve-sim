@@ -12,7 +12,7 @@ import {
   RequestRow,
   TimingBar,
   captureStatusLabel,
-  rebootControl,
+  captureControl,
   formatMs,
   groupByDomain,
 } from "../client/components/network-capture-tool";
@@ -200,7 +200,7 @@ describe("DomainSection", () => {
 });
 
 describe("CaptureState", () => {
-  test("explains a device that was not booted with capture", () => {
+  test("explains that capture is off", () => {
     const html = renderToStaticMarkup(
       <CaptureState attachment="not-enabled" attachError="Needs a reboot with capture." />,
     );
@@ -216,7 +216,7 @@ describe("CaptureState", () => {
     expect(html).toContain("mitmproxy is not installed");
   });
 
-  test("says it is starting while a device reboots into capture", () => {
+  test("says it is starting while capture is enabled", () => {
     const html = renderToStaticMarkup(
       <CaptureState attachment="starting" attachError={null} />,
     );
@@ -314,7 +314,7 @@ describe("formatMs", () => {
   });
 });
 
-describe("rebootControl", () => {
+describe("captureControl", () => {
   const meta = (attachment: CaptureMeta["attachment"]): CaptureMeta => ({
     schemaVersion: CAPTURE_SCHEMA_VERSION,
     udid: UDID,
@@ -325,38 +325,41 @@ describe("rebootControl", () => {
     fields: [],
   });
 
-  test("waits for the first frame rather than offering a reboot it cannot describe", () => {
-    expect(rebootControl({ meta: null, errored: false, rebooting: false })).toEqual({
+  test("waits for the first frame before offering capture", () => {
+    expect(captureControl({ meta: null, errored: false, changing: false })).toEqual({
       disabled: true,
-      label: "Reboot with capture",
+      label: "Enable capture",
     });
   });
 
-  test("stays clickable when the stream failed, since reboot is the only way out", () => {
-    // Disabling here reports a problem and takes away its remedy in the same breath.
-    expect(rebootControl({ meta: null, errored: true, rebooting: false })).toEqual({
+  test("stays clickable when the stream failed", () => {
+    expect(captureControl({ meta: null, errored: true, changing: false })).toEqual({
       disabled: false,
       label: "Reboot with capture",
     });
   });
 
-  test("holds still through both halves of a reboot", () => {
-    expect(rebootControl({ meta: meta("capturing"), errored: false, rebooting: true })).toEqual({
+  test("holds still while capture changes", () => {
+    expect(captureControl({ meta: meta("capturing"), errored: false, changing: true })).toEqual({
       disabled: true,
-      label: "Rebooting…",
+      label: "Working…",
     });
-    expect(rebootControl({ meta: meta("starting"), errored: false, rebooting: false })).toEqual({
+    expect(captureControl({ meta: meta("starting"), errored: false, changing: false })).toEqual({
       disabled: true,
       label: "Starting…",
     });
   });
 
   test("offers the opposite of the device's current state", () => {
-    expect(rebootControl({ meta: meta("capturing"), errored: false, rebooting: false })).toEqual({
+    expect(captureControl({ meta: meta("capturing"), errored: false, changing: false })).toEqual({
       disabled: false,
       label: "Reboot without capture",
     });
-    expect(rebootControl({ meta: meta("not-enabled"), errored: false, rebooting: false })).toEqual({
+    expect(captureControl({ meta: meta("not-enabled"), errored: false, changing: false })).toEqual({
+      disabled: false,
+      label: "Enable capture",
+    });
+    expect(captureControl({ meta: meta("failed"), errored: false, changing: false })).toEqual({
       disabled: false,
       label: "Reboot with capture",
     });

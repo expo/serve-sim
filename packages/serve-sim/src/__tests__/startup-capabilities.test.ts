@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { capabilityConfigPath, managedStartupDylibs } from "../capability-config";
-import { configureCapability, enableCapabilities, disableCapability, releaseSessionSync, removeCapabilityLoaderSync, capabilityLoaderPath } from "../launch-manager";
+import { configureCapability, enableCapabilities, disableCapability, releaseSessionSync, removeCapabilityLoaderSync, capabilityLoaderPath, isCapabilityArmed } from "../launch-manager";
 import { installShims, useTempStateDir } from "./helpers";
 import { readLaunchState } from "../launch-state";
 
@@ -69,6 +69,19 @@ test("startup capture uses shared inserts and capability environment", async () 
   await disableCapability(UDID, null, "capture", { relaunch: false });
   expect(env().DYLD_INSERT_LIBRARIES).not.toContain(dylib);
   expect(managedStartupDylibs(UDID)).toEqual([]);
+});
+
+test("hybrid capture keeps its early insert and publishes a deferred load for running apps", async () => {
+  await enableCapabilities(UDID, null, [{
+    name: "networkCapture", scope: "userApps", loadPhase: "startupAndDeferred", dylib,
+    env: { SIMNET_PROXY_PORT_FILE: "/capture/port" },
+  }], { relaunch: false });
+  const line = `user\t${dylib}\tSIMNET_PROXY_PORT_FILE=/capture/port\t0`;
+  expect(readFileSync(capabilityConfigPath(UDID), "utf8")).toBe(`startup\t${line}\n${line}\n`);
+  expect(env().DYLD_INSERT_LIBRARIES?.split(":")).toEqual(["/other.dylib", capabilityLoaderPath(), dylib]);
+  expect(await isCapabilityArmed(UDID, "networkCapture")).toBe(true);
+  await disableCapability(UDID, null, "networkCapture", { relaunch: false });
+  expect(env().DYLD_INSERT_LIBRARIES).not.toContain(dylib);
 });
 
 test("invalid startup paths are refused before publication", async () => {

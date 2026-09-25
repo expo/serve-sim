@@ -918,8 +918,8 @@ export async function startDeviceInProcess(
   onBoot?: () => Promise<void>,
 ): Promise<string | null> {
   // `simctl boot` errors when already booted — ignore and let bootstatus confirm.
-  const newlyBooted = await new Promise<boolean>((resolve) =>
-    execFile("xcrun", ["simctl", "boot", udid], (error) => resolve(!error)),
+  await new Promise<void>((resolve) =>
+    execFile("xcrun", ["simctl", "boot", udid], () => resolve()),
   );
   const ready = await new Promise<boolean>((resolve) => {
     execFile("xcrun", ["simctl", "bootstatus", udid, "-b"], { timeout: 180_000 }, (err) => resolve(!err));
@@ -940,7 +940,7 @@ export async function startDeviceInProcess(
     });
     if (!booted) return `Device ${udid} failed to reach booted state`;
   }
-  if (newlyBooted) await onBoot?.();
+  await onBoot?.();
   writeServeSimState(gridDeviceState(udid, port, base, streamSettings, sessionToken));
   return null;
 }
@@ -965,7 +965,8 @@ export async function enableNetworkCaptureForStartedDevice(
     onStarted: (meta) =>
       log(
         `Network capture on for ${udid} via ${meta.proxyAddress}. HTTP(S) from this device is ` +
-          "recorded for its whole boot session; HTTPS is decrypted, so certificate-pinned apps will refuse to connect.",
+          "recorded from now on. Apps already running may keep existing sessions; HTTPS is decrypted, " +
+          "so certificate-pinned apps will refuse to connect.",
       ),
     onFailed: (reason) => error(`Network capture could not start for ${udid}. ${reason}`),
   });

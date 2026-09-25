@@ -92,8 +92,8 @@ function notEnabledMeta(udid: string, fields: readonly CaptureField[]): CaptureM
     proxyAddress: null,
     attachment: "not-enabled",
     attachError:
-      "This device was not booted with network capture. Capture is applied when the device boots, so " +
-      "recording its traffic needs a reboot with capture enabled.",
+      "Network capture is off. Enable it to record new requests. Apps that were already running " +
+      "may miss requests made before the capture hook loads or may keep using existing sessions.",
     droppedOversizedBodies: 0,
     fields: [...fields],
   };
@@ -245,7 +245,7 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   }
 
   const capability: CapabilityDefinition = {
-    name: "networkCapture", exclusive: true, scope: "userApps", loadPhase: "startup", defaultEnabled: false,
+    name: "networkCapture", exclusive: true, scope: "userApps", loadPhase: "startupAndDeferred", defaultEnabled: false,
     async setEnabled({ udid, enabled }) {
       if (enabled) return prepareSession(udid);
       const session = byUdid.get(udid);
@@ -390,9 +390,8 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
 
           session.meta.attachment = "failed";
           session.meta.attachError =
-            "This device stopped capturing. It was restarted, or shut down, since capture was applied — " +
-            "capture is set up when a device boots, so it does not survive a restart. Reboot with capture " +
-            "to start again.";
+            "This device stopped capturing. It may have restarted or shut down since capture was " +
+            "enabled. Enable capture again after it boots.";
           session.store.publishMeta(session.meta);
           return session.meta;
         } finally {

@@ -11,7 +11,7 @@ actor CoreDeviceBridge {
     enum BridgeError: Error { case unavailable, deviceUnavailable, initializationTimedOut }
 
     private var manager: CoreDeviceManagerObject?
-    private let managerReadiness = SharedReadiness()
+    private var managerReadiness = SharedReadiness()
     private var capabilities: [String: CoreDeviceCapabilityObject] = [:]
     private var hingeSupport: [String: Bool] = [:]
     struct HingeState {
@@ -20,6 +20,17 @@ actor CoreDeviceBridge {
         var tableMode: Bool?
     }
     private var hingeStates: [String: HingeState] = [:]
+
+    /// CoreDevice's remote device and capability objects belong to a simulator
+    /// boot. A new capture session must not reuse them after that device boots
+    /// again in the same serve-sim process.
+    func resetForNewCapture() {
+        capabilities.removeAll()
+        hingeSupport.removeAll()
+        hingeStates.removeAll()
+        manager = nil
+        managerReadiness = SharedReadiness()
+    }
 
     func hingeState(udid: String) async -> HingeState {
         if let angle = await readHingeAngle(udid: udid) {

@@ -128,6 +128,7 @@ const ACTION_SCHEMAS = {
   }),
   "upload.remove": z.object({ uploadId: UploadId }),
   "capture.reboot": z.object({ udid: DeviceUdid, enabled: z.boolean() }),
+  "capture.enable": z.object({ udid: DeviceUdid }),
   "capture.clear": z.object({ udid: DeviceUdid }),
 } as const;
 
@@ -145,6 +146,7 @@ const PROCEDURE_ACTIONS = [
   "screenshot.capture",
   "screenshot.thumbnail",
   "capture.reboot",
+  "capture.enable",
   "capture.clear",
 ] as const satisfies readonly HostActionName[];
 
@@ -335,6 +337,21 @@ async function runProcedureAsync(action: ProcedureAction, raw: unknown): Promise
           stderr:
             `Could not reboot the device: ${error instanceof Error ? error.message : String(error)}. ` +
             "The device may now be shut down, so boot it from the sidebar and try again.",
+          exitCode: 1,
+        };
+      }
+    }
+    case "capture.enable": {
+      const p = parseParams(action, raw);
+      const { captureRuntime } = await import("./capture");
+      try {
+        const meta = await captureRuntime.enableForDevice(p.udid);
+        captureRuntime.setDeviceCaptureEnabled(p.udid, true);
+        return ok(JSON.stringify(meta));
+      } catch (error) {
+        return {
+          stdout: "",
+          stderr: `Could not enable network capture: ${error instanceof Error ? error.message : String(error)}`,
           exitCode: 1,
         };
       }

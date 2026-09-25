@@ -50,6 +50,21 @@ static void SendStartupRequest(NSString *phase) {
   SendRequest([NSURLRequest requestWithURL:[NSURL URLWithString:path relativeToURL:OriginURL()]], nil);
 }
 
+// The host can request a new session from an already-running fixture without
+// depending on simulator touch input or relaunching the app.
+static void WatchProfileTrigger(void) {
+  NSArray<NSString *> *directories =
+      NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+  NSString *path = [directories.firstObject stringByAppendingPathComponent:@"trigger-profile"];
+  [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(__unused NSTimer *timer) {
+    NSFileManager *files = NSFileManager.defaultManager;
+    if (![files fileExistsAtPath:path]) return;
+    [files removeItemAtPath:path error:NULL];
+    NSURL *url = [NSURL URLWithString:@"api/profile?source=trigger" relativeToURL:OriginURL()];
+    SendRequest([NSURLRequest requestWithURL:url], nil);
+  }];
+}
+
 __attribute__((constructor)) static void BeforeMain(void) {
   @autoreleasepool {
     SendStartupRequest(@"pre-main");
@@ -168,6 +183,7 @@ __attribute__((constructor)) static void BeforeMain(void) {
 @implementation FixtureAppDelegate
 
 - (BOOL)application:(UIApplication *)_application didFinishLaunchingWithOptions:(NSDictionary *)_options {
+  WatchProfileTrigger();
   SendStartupRequest(@"app-delegate");
   return YES;
 }

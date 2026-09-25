@@ -61,6 +61,7 @@ import { parseIceUrlList, streamHelperArgs, streamSettingsEqual } from "./stream
 import { MAX_MJPEG_STREAM_FPS, MAX_VIDEO_STREAM_FPS } from "./stream-settings";
 import { parseHingeAngle } from "./hinge-angle";
 import { sendHingeAngleToWs } from "./hinge-command";
+import { finishDeviceRecordingsForShutdown } from "./device-session";
 
 // `import.meta.dir` is Bun-only; resolve once via fileURLToPath so the bundled
 // CLI works under plain `node` too.
@@ -1846,11 +1847,15 @@ async function serve(
     console.log("");
   }
 
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     sessionStopping = true;
+    const recordingsFinished = await finishDeviceRecordingsForShutdown();
     await disarmDevicesArmedHereAsync();
     clearAll();
-    process.exit(0);
+    process.exit(recordingsFinished ? 0 : 1);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
@@ -2275,6 +2280,117 @@ Examples:
   });
 
 const deviceOpt = ["-d, --device <udid>", "Target a specific simulator (udid or name)"] as const;
+
+async function waitForRecordingManifest(path: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  return existsSync(path);
+}
+
+async function waitForServerExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try { process.kill(pid, 0); } catch { return true; }
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  try { process.kill(pid, 0); } catch { return true; }
+  return false;
+}
+
+async function recordVideo(udid: string, output: string): Promise<void> {
+  const state = readState(udid);
+  if (!state) throw new Error(`No running serve-sim session found for ${udid}; start serve-sim for this device and retry.`);
+  if (!state.token) throw new Error("The serve-sim session has no token; start it with --require-token before recording.");
+  const url = state.streamUrl.replace(/\/stream\.mjpeg$/, "/recording/video");
+  const outputDirectory = resolve(output);
+  const manifestPath = join(outputDirectory, "session.json");
+  if (existsSync(manifestPath)) {
+    throw new Error(`Recording manifest already exists at ${manifestPath}; choose an empty output directory.`);
+  }
+  const recordingId = randomBytes(16).toString("hex");
+  const headers = { Authorization: `Bearer ${state.token}`, "x-recording-id": recordingId };
+  let resolveStop: () => void = () => {};
+  const stopping = new Promise<void>((resolve) => { resolveStop = resolve; });
+  let stopRequested = false;
+  const onSignal = () => {
+    stopRequested = true;
+    resolveStop();
+  };
+  const keepAlive = setInterval(() => {}, 60_000);
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let rejectLease: (error: Error) => void = () => {};
+  const lostLease = new Promise<never>((_, reject) => { rejectLease = reject; });
+  let finished = false;
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  try {
+    try {
+      const start = await fetch(url, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ start: true, output: outputDirectory, recordingId }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!start.ok) throw new Error(`Recording start failed (${start.status}): ${await start.text()}`);
+    } catch (error) {
+      if (!stopRequested || !await waitForRecordingManifest(manifestPath, 120_000)) throw error;
+      finished = true;
+      console.log(manifestPath);
+      return;
+    }
+    console.error("serve-sim:recording-started");
+    heartbeat = setInterval(() => {
+      void fetch(url, { method: "PUT", headers, signal: AbortSignal.timeout(10_000) })
+        .then(async response => {
+          if (!response.ok) rejectLease(new Error(`Recording lease was lost (${response.status}): ${await response.text()}`));
+        })
+        .catch(error => rejectLease(error instanceof Error ? error : new Error(String(error))));
+    }, 5_000);
+    let stopError: unknown;
+    try {
+      await Promise.race([stopping, lostLease]);
+      const stop = await fetch(url, {
+        method: "DELETE",
+        headers,
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (!stop.ok) throw new Error(`Recording stop failed (${stop.status}): ${await stop.text()}`);
+      const result = await stop.json() as { manifest?: string };
+      if (result.manifest !== manifestPath) {
+        throw new Error("Recording stop returned an unexpected manifest path");
+      }
+    } catch (error) {
+      stopError = error;
+    }
+    if (!await waitForRecordingManifest(manifestPath, 120_000)) {
+      throw stopError ?? new Error("Recording stopped without a session.json manifest; inspect the serve-sim session log and retry.");
+    }
+    if (stopError && !stopRequested && !await waitForServerExit(state.pid, 5_000)) {
+      throw new Error(`Recording ended before a stop was requested: ${String(stopError)}. A partial video is available at ${manifestPath}.`);
+    }
+    finished = true;
+    console.log(manifestPath);
+  } finally {
+    if (heartbeat) clearInterval(heartbeat);
+    if (!finished) {
+      try {
+        await fetch(url, { method: "DELETE", headers, signal: AbortSignal.timeout(10_000) });
+      } catch {}
+    }
+    clearInterval(keepAlive);
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  }
+}
+
+program
+  .command("record-video")
+  .description("Record native-size hardware H.264 simulator video until SIGINT")
+  .requiredOption("--udid <udid>", "Simulator UDID")
+  .requiredOption("--output <dir>", "Output directory")
+  .action(async (opts: { udid: string; output: string }) => recordVideo(opts.udid, opts.output));
 
 program
   .command("gesture")

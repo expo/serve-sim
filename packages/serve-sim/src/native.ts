@@ -46,6 +46,8 @@ interface SimHIDHandle {
 
 interface SimCaptureHandle {
   start(): Promise<void>;
+  startRecording(outputDirectory: string): Promise<void>;
+  stopRecording(): Promise<string>;
   updateStreamSettings(
     mjpegFps: number,
     mjpegQuality: number,
@@ -303,6 +305,14 @@ export class NativeCapture {
   /** Begin capturing. Throws if the device isn't booted. */
   start(): Promise<void> {
     return this.handle.start();
+  }
+
+  startRecording(outputDirectory: string): Promise<void> {
+    return this.handle.startRecording(outputDirectory);
+  }
+
+  stopRecording(): Promise<string> {
+    return this.handle.stopRecording();
   }
 
   updateStreamSettings(options: NativeCaptureOptions): Promise<void> {

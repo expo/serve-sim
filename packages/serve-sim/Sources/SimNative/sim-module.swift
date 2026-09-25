@@ -214,6 +214,14 @@ private func u32(_ v: Int) -> UInt32 {
         await engine.stop()
     }
 
+    @NodeMethod func startRecording(_ outputDirectory: String) async throws {
+        try await engine.startRecording(outputDirectory: outputDirectory)
+    }
+
+    @NodeMethod func stopRecording() async throws -> String {
+        try await engine.stopRecording()
+    }
+
     @NodeMethod func updateStreamSettings(
         _ mjpegFps: Int,
         _ mjpegQuality: Double,

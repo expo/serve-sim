@@ -26,6 +26,7 @@ import {
 } from "./device-session";
 import {
   acceptedTokenSubprotocol,
+  assertBearerAccess,
   assertPreviewAccess,
   assertUpgradeAccess,
   upgradeAuthHeaders,
@@ -867,6 +868,7 @@ function serveHelperInProcess(
     case "/health": session.handleHealth(req, res); return true;
     case "/webrtc/offer": void session.handleWebRTCOffer(req, res); return true;
     case "/webrtc/close": void session.handleWebRTCClose(req, res); return true;
+    case "/recording/video": void session.handleVideoRecording(req, res); return true;
     case "/ax": session.handleAx(req, res); return true;
     case "/foreground": session.handleForeground(req, res); return true;
     default: return false;
@@ -1800,8 +1802,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // A preflight carries no cookie and no token, so it has to be answered before the gate.
     if (ownPath && req.method === "OPTIONS") {
       res.writeHead(204, {
-        "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
-        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        "Access-Control-Allow-Methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type, x-recording-id",
         "Access-Control-Max-Age": "600",
       });
       res.end();
@@ -1825,6 +1827,8 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     const helperTarget = helperProxyTarget(rawUrl, helperPrefix);
     if (helperTarget) {
+      if (helperTarget.upstreamPath.split("?")[0] === "/recording/video"
+        && !assertBearerAccess(req, res, execToken)) return;
       const device = helperTarget.device ?? selectedDevice;
       // The device's helper endpoints are served from an in-process
       // NativeCapture/NativeHid DeviceSession.

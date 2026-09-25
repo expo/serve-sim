@@ -82,6 +82,7 @@ const MJPEG_TRAILER = Buffer.from("\r\n", "ascii");
 const TOUCH_TAP_MAX_DISTANCE = 0.004;
 const MAX_HID_SOCKETS = 8;
 const MAX_PENDING_INPUT_OPERATIONS_PER_SOCKET = 1024;
+const RECORDING_LEASE_MS = 20_000;
 
 type TouchGestureLog = {
   eventId?: number;
@@ -277,6 +278,10 @@ export class DeviceSession {
   private readonly scheduledInputSockets = new Set<HidSocket>();
   private readonly inputSocketOrder: HidSocket[] = [];
   private readonly inputStateWaiters = new Set<() => void>();
+  private recordingLease?: { id: string; timer: ReturnType<typeof setTimeout> };
+  private recordingStarting = false;
+  private recordingStart?: Promise<void>;
+  private recordingFinishing?: Promise<string>;
   private inputQueueDraining = false;
   private readonly activeTouches = new WeakMap<HidSocket, () => Promise<void>>();
   private readonly activeMultiTouches = new WeakMap<HidSocket, () => Promise<void>>();
@@ -326,6 +331,8 @@ export class DeviceSession {
   close(): void {
     if (this.phase !== "running") return;
     this.phase = "stopped";
+    if (this.recordingLease) clearTimeout(this.recordingLease.timer);
+    this.recordingLease = undefined;
     clearTimeout(this.screenRefreshTimer);
     this.screenRefreshTimer = undefined;
     void this.unsubscribeScreenChanges?.().catch(() => {});
@@ -338,7 +345,16 @@ export class DeviceSession {
     }
     for (const res of this.panelRequests) res.destroy();
     for (const panel of this.panels.values()) this.stopPanel(panel);
-    void this.capture.stop().catch(() => {});
+    trackClosedSessionStop(this.capture.stop());
+  }
+
+  async finishRecordingForShutdown(): Promise<void> {
+    await this.recordingStart?.catch(() => {});
+    if (this.recordingFinishing) {
+      await this.recordingFinishing;
+    } else if (this.recordingLease) {
+      await this.finishRecording(this.recordingLease.id);
+    }
   }
 
   // ── Frame handling ───────────────────────────────────────────────────────
@@ -358,6 +374,95 @@ export class DeviceSession {
   private async waitForCapture(): Promise<void> {
     await this.captureStart;
     if (this.phase !== "running") throw new Error("Capture session is stopped");
+  }
+
+  async handleVideoRecording(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === "POST") {
+      try {
+        const body = parseJsonBody(await readRequestBody(req, 16_384), "invalid_recording_request");
+        if (recordingsShuttingDown) {
+          this.sendJson(res, 503, { error: "server_stopping", message: "serve-sim is stopping" });
+          return;
+        }
+        if (typeof body !== "object" || body === null || !("start" in body) || body.start !== true
+          || !("output" in body) || typeof body.output !== "string" || body.output.length === 0
+          || !("recordingId" in body) || typeof body.recordingId !== "string" || body.recordingId.length === 0) {
+          this.sendJson(res, 400, { error: "invalid_recording_request", message: "Pass start: true, output, and recordingId" });
+          return;
+        }
+        if (this.recordingLease || this.recordingStarting || this.recordingFinishing) {
+          this.sendJson(res, 409, { error: "recording_active", message: "A recording is already active; stop it or wait for its lease to expire" });
+          return;
+        }
+        this.recordingStarting = true;
+        const output = body.output;
+        const recordingId = body.recordingId;
+        const starting = this.waitForCapture().then(async () => {
+          await this.capture.startRecording(output);
+          this.refreshRecordingLease(recordingId);
+        });
+        this.recordingStart = starting;
+        await starting;
+        this.sendJson(res, 200, { recording: true });
+      } catch (error) {
+        const status = error instanceof WebRtcSignalingError ? error.status : 500;
+        const code = error instanceof WebRtcSignalingError ? error.code : "recording_start_failed";
+        this.sendJson(res, status, { error: code, message: String(error) });
+      } finally {
+        this.recordingStart = undefined;
+        this.recordingStarting = false;
+      }
+      return;
+    }
+    if (req.method === "PUT") {
+      const recordingId = req.headers["x-recording-id"];
+      if (typeof recordingId !== "string" || recordingId !== this.recordingLease?.id) {
+        this.sendJson(res, 409, { error: "recording_not_owned" });
+        return;
+      }
+      this.refreshRecordingLease(recordingId);
+      this.sendJson(res, 200, { recording: true });
+      return;
+    }
+    if (req.method === "DELETE") {
+      try {
+        const recordingId = req.headers["x-recording-id"];
+        if (typeof recordingId !== "string" || recordingId !== this.recordingLease?.id) {
+          this.sendJson(res, 409, { error: "recording_not_owned" });
+          return;
+        }
+        const manifest = await this.finishRecording(recordingId);
+        this.sendJson(res, 200, { manifest });
+      } catch (error) {
+        this.sendJson(res, 500, { error: "recording_stop_failed", message: String(error) });
+      }
+      return;
+    }
+    res.writeHead(405, { Allow: "POST, PUT, DELETE" });
+    res.end();
+  }
+
+  private refreshRecordingLease(id: string): void {
+    if (this.recordingLease) clearTimeout(this.recordingLease.timer);
+    const timer = setTimeout(() => {
+      void this.finishRecording(id).catch(error => {
+        console.warn(`Could not finish expired recording ${id}: ${String(error)}`);
+      });
+    }, RECORDING_LEASE_MS);
+    this.recordingLease = { id, timer };
+  }
+
+  private async finishRecording(id: string): Promise<string> {
+    if (this.recordingLease?.id !== id) throw new Error("Recording ownership changed");
+    clearTimeout(this.recordingLease.timer);
+    this.recordingLease = undefined;
+    const finishing = this.capture.stopRecording();
+    this.recordingFinishing = finishing;
+    try {
+      return await finishing;
+    } finally {
+      this.recordingFinishing = undefined;
+    }
   }
 
   private latestJpeg(): Buffer | null {
@@ -1651,6 +1756,19 @@ export class DeviceSession {
 // ── Registry ─────────────────────────────────────────────────────────────
 
 const sessions = new Map<string, DeviceSession>();
+const closedSessionStops = new Set<Promise<void>>();
+const closedSessionStopErrors: unknown[] = [];
+let recordingsShuttingDown = false;
+
+function trackClosedSessionStop(stopping: Promise<void>): void {
+  const tracked = stopping.catch(error => {
+    closedSessionStopErrors.push(error);
+    console.error(`Device session finalization failed: ${String(error)}`);
+  }).finally(() => {
+    closedSessionStops.delete(tracked);
+  });
+  closedSessionStops.add(tracked);
+}
 
 /** Existing session only. Reading stats must never be the thing that starts capture. */
 export function peekDeviceSession(udid: string): DeviceSession | undefined {
@@ -1689,4 +1807,22 @@ export function closeDeviceSession(udid: string): void {
     session.close();
     sessions.delete(udid);
   }
+}
+
+export async function finishDeviceRecordingsForShutdown(): Promise<boolean> {
+  recordingsShuttingDown = true;
+  const results = await Promise.allSettled(
+    [...sessions.values()].map(session => session.finishRecordingForShutdown())
+  );
+  while (closedSessionStops.size > 0) {
+    await Promise.all(closedSessionStops);
+  }
+  let succeeded = closedSessionStopErrors.length === 0;
+  for (const result of results) {
+    if (result.status === "rejected") {
+      succeeded = false;
+      console.error(`Recording finalization failed during serve-sim shutdown: ${String(result.reason)}`);
+    }
+  }
+  return succeeded;
 }

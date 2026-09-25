@@ -69,9 +69,7 @@ function notEnabledMeta(udid: string): CaptureMeta {
     udid,
     proxyAddress: null,
     attachment: "not-enabled",
-    attachError:
-      "This device was not booted with network capture. Capture is applied when the device boots, so " +
-      "recording its traffic needs a reboot with capture enabled.",
+    attachError: null,
     droppedOversizedBodies: 0,
   };
 }
@@ -190,7 +188,7 @@ export function createCaptureRuntime(options: CaptureRuntimeOptions = {}) {
   }
 
   const capability: CapabilityDefinition = {
-    name: "networkCapture", exclusive: true, scope: "userApps", loadPhase: "startup", defaultEnabled: false,
+    name: "networkCapture", exclusive: true, scope: "userApps", loadPhase: "startupAndDeferred", defaultEnabled: false,
     async setEnabled({ udid, enabled }) {
       if (enabled) return prepareSession(udid);
       const session = byUdid.get(udid);

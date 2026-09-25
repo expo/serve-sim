@@ -2,13 +2,12 @@ import { Ban, Download, Folder, Radio, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import {
-  captureAuthHeaders,
   useCaptureStream,
   type CaptureAttachment,
   type CaptureMeta,
 } from "../hooks/use-capture-stream";
 import { runHostAction } from "../utils/exec";
-import { simEndpoint } from "../utils/sim-endpoint";
+import { simAuthHeaders, simEndpoint } from "../utils/sim-endpoint";
 import { CollapsibleSection } from "./collapsible-section";
 import {
   DomainSection,
@@ -191,7 +190,7 @@ export function NetworkCaptureTool({ udid, captureEndpoint }: { udid: string; ca
                 onClick={() => {
                   void (async () => {
                     try {
-                      const response = await fetch(harUrl, { headers: captureAuthHeaders() });
+                      const response = await fetch(harUrl, { headers: simAuthHeaders() });
                       if (!response.ok) return;
                       const blob = await response.blob();
                       const objectUrl = URL.createObjectURL(blob);

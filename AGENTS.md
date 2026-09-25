@@ -102,6 +102,7 @@ A change is done when every point below holds. The evidence goes in the PR,
 following the template in `.github/PULL_REQUEST_TEMPLATE.md`.
 
 Complete the PR template's Authorship and LLM use section factually. Distinguish human direction from human inspection and approval; an agent-authored PR may say `human review pending`.
+Update the iteration record after each meaningful PR revision. A human review of an earlier diff does not count as review of the latest diff.
 
 - **The failing test came first** where a cheap test path exists. Prefer no
   new test over a bad one. A test encodes the intended behavior, not the

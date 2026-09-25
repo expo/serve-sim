@@ -260,6 +260,7 @@ describeWithSim(`desktop keyboard focus (sim ${udid ?? "<skipped>"})`, () => {
   }, 90_000);
 
   test("the keyboard still types after switching the hardware keyboard in the tools panel", async () => {
+    cli("ui", "hardware-keyboard", "on", "-d", udid!);
     const frame = await openFramed();
     const stream = await waitForElement(STREAM_LAYER, frame, 0.75);
     const start = await launchTextField();
@@ -271,6 +272,12 @@ describeWithSim(`desktop keyboard focus (sim ${udid ?? "<skipped>"})`, () => {
       await clickOnce(await waitForElement(TOOLS_BUTTON, frame));
     }
     const hardwareKeyboard = await waitForElement(HARDWARE_KEYBOARD_SWITCH, frame);
+    const enabledDeadline = Date.now() + 30_000;
+    while (Date.now() < enabledDeadline && await cdp.evaluate<boolean>(`${HARDWARE_KEYBOARD_SWITCH}.hasAttribute("disabled")`, frame)) {
+      await Bun.sleep(100);
+    }
+    expect(await cdp.evaluate<boolean>(`${HARDWARE_KEYBOARD_SWITCH}.hasAttribute("disabled")`, frame)).toBe(false);
+    expect(await cdp.evaluate<string>(`${HARDWARE_KEYBOARD_SWITCH}.getAttribute("aria-checked")`, frame)).toBe("true");
     await clickOnce(hardwareKeyboard);
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline && await cdp.evaluate<string>(`${HARDWARE_KEYBOARD_SWITCH}.getAttribute("aria-checked")`, frame) !== "false") {

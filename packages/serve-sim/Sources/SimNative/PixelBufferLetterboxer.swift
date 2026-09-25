@@ -5,6 +5,8 @@ import StreamingPolicy
 import VideoToolbox
 
 final class PixelBufferLetterboxer {
+    private let allowCPUFallback: Bool
+    private let maxBuffers: Int
     private var pool: CVPixelBufferPool?
     private var poolWidth = 0
     private var poolHeight = 0
@@ -14,6 +16,11 @@ final class PixelBufferLetterboxer {
     private(set) var transferFrames: UInt64 = 0
     private(set) var cpuFrames: UInt64 = 0
     private(set) var poolDrops: UInt64 = 0
+
+    init(allowCPUFallback: Bool = true, maxBuffers: Int = 8) {
+        self.allowCPUFallback = allowCPUFallback
+        self.maxBuffers = maxBuffers
+    }
 
     func place(_ source: CVPixelBuffer, width: Int, height: Int) -> CVPixelBuffer? {
         let format = CVPixelBufferGetPixelFormatType(source)
@@ -30,7 +37,7 @@ final class PixelBufferLetterboxer {
         )
         guard let pool = pixelBufferPool(width: width, height: height, format: format) else { return nil }
         var output: CVPixelBuffer?
-        let limit = [kCVPixelBufferPoolAllocationThresholdKey as String: 8] as CFDictionary
+        let limit = [kCVPixelBufferPoolAllocationThresholdKey as String: maxBuffers] as CFDictionary
         guard CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(kCFAllocatorDefault, pool,
                                                                    limit, &output) == kCVReturnSuccess,
               let output else {
@@ -47,8 +54,9 @@ final class PixelBufferLetterboxer {
             VTPixelTransferSessionInvalidate(transfer)
             self.transfer = nil
             transferUnavailable = true
-            print("[stream] VideoToolbox letterbox transfer failed; using CPU scaling")
+            print("[stream] VideoToolbox letterbox transfer failed; \(allowCPUFallback ? "using CPU scaling" : "dropping frame")")
         }
+        guard allowCPUFallback else { return nil }
         cpuFrames &+= 1
 
         CVPixelBufferLockBaseAddress(source, .readOnly)
@@ -87,14 +95,14 @@ final class PixelBufferLetterboxer {
                                            pixelTransferSessionOut: &next) == noErr,
               let next else {
             transferUnavailable = true
-            print("[stream] VideoToolbox letterbox unavailable; using CPU scaling")
+            print("[stream] VideoToolbox letterbox unavailable; \(allowCPUFallback ? "using CPU scaling" : "dropping frame")")
             return nil
         }
         guard VTSessionSetProperty(next, key: kVTPixelTransferPropertyKey_ScalingMode,
                                    value: kVTScalingMode_Letterbox) == noErr else {
             VTPixelTransferSessionInvalidate(next)
             transferUnavailable = true
-            print("[stream] VideoToolbox letterbox mode unavailable; using CPU scaling")
+            print("[stream] VideoToolbox letterbox mode unavailable; \(allowCPUFallback ? "using CPU scaling" : "dropping frame")")
             return nil
         }
         transfer = next

@@ -39,11 +39,11 @@ struct SnapshotSizePolicyTests {
         #expect(size.height == 2622)
     }
 
-    @Test("even-rounds full-size Duo inner frames for 4:2:0 encoding", arguments: [0, -1, 4096])
+    @Test("pads full-size Duo inner frames without losing edge pixels", arguments: [0, -1, 4096])
     func duoInnerOdd(maxDimension: Int) {
         let size = SnapshotSizePolicy(width: 2007, height: 2853, maxDimension: maxDimension)
-        #expect(size.width == 2006)
-        #expect(size.height == 2852)
+        #expect(size.width == 2008)
+        #expect(size.height == 2854)
     }
 
     @Test("keeps both dimensions usable when no scaling is requested", arguments: [0, -1, 1])

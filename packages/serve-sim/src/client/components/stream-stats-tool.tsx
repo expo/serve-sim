@@ -151,6 +151,7 @@ function Diagnostics({
           <Cell label="Capture interval" value={ms(capture.intervalMs, 1)} />
           <Cell label="Surface pick" value={ms(capture.pickMs, 2)} />
           <Cell label="CPU fallbacks" value={compact(capture.cpuFallbacks)} />
+          <Cell label="Capture pool drops" value={compact(capture.poolDrops)} />
           <Cell label="Pump restarts" value={compact(capture.pumpRestarts)} />
         </Group>
       )}

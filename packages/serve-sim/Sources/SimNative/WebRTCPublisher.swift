@@ -747,7 +747,10 @@ final class WebRTCPublisher: @unchecked Sendable {
         let levels = sessions.values
             .filter { StreamCodecPolicy.isH264($0.codecName) }
             .compactMap(\.h264LevelIdc)
-        let level = (levels + [pendingOffer?.session.h264LevelIdc].compactMap { $0 })
+        let pendingLevel = pendingOffer.flatMap { offer in
+            StreamCodecPolicy.isH264(offer.session.codecName) ? offer.session.h264LevelIdc : nil
+        }
+        let level = (levels + [pendingLevel].compactMap { $0 })
             .min() ?? H264LevelPolicy.defaultLevelIdc
         let canvas = Self.canvasSize(for: rawEncodeCanvas, maxDimension: maxDimension,
                                      levelIdc: min(level, H264LevelPolicy.defaultLevelIdc))
@@ -1026,6 +1029,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         }
         pendingOffer = nil
         sessions[offerSession.id] = offerSession
+        refreshEncodeCanvas()
         queue.asyncAfter(deadline: .now().advanced(by: .milliseconds(Self.connectionTimeoutMs))) {
             guard self.sessions[offerSession.id] === offerSession else { return }
             guard !offerSession.isConnected else { return }

@@ -387,7 +387,8 @@ actor CaptureEngine {
                 liveCodecs: sessions.filter(\.connected).compactMap(\.codec)
             ),
             viewerResize: webRTCPublisher?.viewerResizeCounters(),
-            sharedCanvas: webRTCPublisher?.sharedCanvasStatus()
+            sharedCanvas: webRTCPublisher?.sharedCanvasStatus(),
+            sharedEncoderPeers: webRTCPublisher?.sharedEncoderPeerStats()
         ))
         return String(decoding: data, as: UTF8.self)
     }

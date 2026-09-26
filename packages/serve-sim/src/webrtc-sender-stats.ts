@@ -88,6 +88,8 @@ export interface SenderStats {
   /** Cumulative viewer resize counters, passed through as reported. */
   viewerResize?: Record<string, unknown> | null;
   sharedCanvas?: SharedCanvas | null;
+  /** Per-proxy shared encoder counters, passed through as reported. */
+  sharedEncoderPeers?: Record<string, unknown>[] | null;
 }
 
 export function senderSessionForViewer(
@@ -187,6 +189,7 @@ export function readSenderStats(raw: unknown): SenderStats {
     encoder: readEncoderIdentity(raw.encoder),
     viewerResize: isRecord(raw.viewerResize) ? raw.viewerResize : null,
     sharedCanvas: readSharedCanvas(raw.sharedCanvas),
+    sharedEncoderPeers: Array.isArray(raw.sharedEncoderPeers) ? raw.sharedEncoderPeers.filter(isRecord) : null,
   };
 }
 

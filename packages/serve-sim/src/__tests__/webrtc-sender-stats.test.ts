@@ -231,6 +231,8 @@ describe("viewer resize and shared canvas", () => {
     expect(readSenderStats({ sessions: [] }).sharedCanvas).toBeNull();
     expect(readSenderStats({ sessions: [], sharedCanvas: { width: "640" } }).sharedCanvas).toBeNull();
     expect(readSenderStats({ sessions: [] }).viewerResize).toBeNull();
+    expect(readSenderStats({ sessions: [] }).sharedEncoderPeers).toBeNull();
+    expect(readSenderStats({ sessions: [], sharedEncoderPeers: [{ peer: 1, encodeCalls: 5 }] }).sharedEncoderPeers).toEqual([{ peer: 1, encodeCalls: 5 }]);
   });
 });
 

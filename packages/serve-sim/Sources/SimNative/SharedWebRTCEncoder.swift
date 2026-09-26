@@ -41,6 +41,19 @@ final class SharedWebRTCEncoderFactory: NSObject, LKRTCVideoEncoderFactory {
         shared.encodedFrameCount()
     }
 
+    func updateTargetBitrate(_ bitrate: Int) {
+        shared.updateTargetBitrate(bitrate)
+    }
+
+    /// The observer runs on the shared encoder queue when the resolution step changes.
+    func setScaleObserver(_ observer: @escaping (Double) -> Void) {
+        shared.setScaleObserver(observer)
+    }
+
+    func resolutionStatus() -> (scale: Double, step: Int, changes: UInt64) {
+        shared.resolutionStatus()
+    }
+
     func stop() {
         shared.stop()
     }
@@ -83,12 +96,15 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
     private var stopped = false
     private var encodedFrames: UInt64 = 0
     private var fps: Int
+    private var resolution: SharedResolutionPolicy
+    private var scaleObserver: ((Double) -> Void)?
 
     init(bitrate: Int, fps: Int) {
         self.fps = fps
         encoder = H264Encoder(fps: fps, bitrate: bitrate,
                               constrainedBaseline: true, dynamicBitrate: true)
         policy = SharedH264Policy(defaultBitrate: bitrate)
+        resolution = SharedResolutionPolicy(targetBitrate: bitrate)
         queue.setSpecific(key: queueKey, value: true)
     }
 
@@ -117,9 +133,32 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         onQueue { encodedFrames }
     }
 
+    func updateTargetBitrate(_ bitrate: Int) {
+        onQueue { resolution.setTargetBitrate(bitrate) }
+    }
+
+    func setScaleObserver(_ observer: @escaping (Double) -> Void) {
+        onQueue { scaleObserver = observer }
+    }
+
+    func resolutionStatus() -> (scale: Double, step: Int, changes: UInt64) {
+        onQueue { (resolution.scale, resolution.step, resolution.changes) }
+    }
+
+    /// Queue-confined. Feeds the slowest peer's bitrate to the resolution policy.
+    private func observeResolution() {
+        let now = DispatchTime.now().uptimeNanoseconds
+        if resolution.observe(bitrate: policy.bitrate, atNanoseconds: now) {
+            scaleObserver?(resolution.scale)
+        }
+    }
+
     func start(peer: Int, settings: LKRTCVideoEncoderSettings) {
         onQueue {
             policy.join(peer: peer, bitrate: Int(settings.startBitrate) * 1_000)
+            // libwebrtc also restarts a proxy when the frame size changes, so the
+            // hold covers a canvas step as well as a real join.
+            resolution.peerJoined(atNanoseconds: DispatchTime.now().uptimeNanoseconds)
         }
     }
 
@@ -165,7 +204,10 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
     }
 
     func setBitrate(_ bitrateKbit: UInt32, peer: Int) {
-        onQueue { policy.setBitrate(Int(bitrateKbit) * 1_000, peer: peer) }
+        onQueue {
+            policy.setBitrate(Int(bitrateKbit) * 1_000, peer: peer)
+            observeResolution()
+        }
     }
 
     func encode(_ frame: LKRTCVideoFrame, peer: Int, frameTypes: [NSNumber]) -> Int {
@@ -188,6 +230,7 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
             guard let forceIDR = policy.beginFrame(timestamp: timestamp, requestedIDR: requestedIDR) else {
                 return 0
             }
+            observeResolution()
             let submission = backlog.submit(timestamp)
             if submission == .stale { return 0 }
             let metadata = Pending(

@@ -92,6 +92,9 @@ struct WebRTCCaptureCounts: Codable {
     let pumpRestarts: UInt64?
     /// Paced frames whose size did not match the shared canvas, dropped at the pump.
     let canvasMismatchDrops: UInt64?
+    /// Pump slots that waited one tolerance for a late frame, and sends that repeated a frame.
+    let pumpDeferrals: UInt64?
+    let pumpRepeats: UInt64?
     let cpuFallbacks: UInt64
     let poolDrops: UInt64
     let attempts: UInt64
@@ -553,12 +556,31 @@ final class WebRTCPublisher: @unchecked Sendable {
         )
     }
 
-    func frameFlowCounts() -> (offered: UInt64, forwarded: UInt64, pumpRestarts: UInt64,
-                               sharedEncoded: UInt64, canvasMismatchDrops: UInt64) {
+    struct FrameFlowCounts {
+        let offered: UInt64
+        let forwarded: UInt64
+        let pumpRestarts: UInt64
+        let sharedEncoded: UInt64
+        let canvasMismatchDrops: UInt64
+        let pumpDeferrals: UInt64
+        let pumpRepeats: UInt64
+    }
+
+    func frameFlowCounts() -> FrameFlowCounts {
         frameLock.lock()
-        let counts = (offeredFrameCount, forwardedFrameCount, framePumpRestartCount, canvasMismatchDrops)
+        let counts = FrameFlowCounts(
+            offered: offeredFrameCount, forwarded: forwardedFrameCount,
+            pumpRestarts: framePumpRestartCount, sharedEncoded: 0,
+            canvasMismatchDrops: canvasMismatchDrops,
+            pumpDeferrals: framePacer.deferredTicks, pumpRepeats: framePacer.repeatedSends
+        )
         frameLock.unlock()
-        return (counts.0, counts.1, counts.2, sharedEncoderFactory.encodedFrameCount(), counts.3)
+        return FrameFlowCounts(
+            offered: counts.offered, forwarded: counts.forwarded, pumpRestarts: counts.pumpRestarts,
+            sharedEncoded: sharedEncoderFactory.encodedFrameCount(),
+            canvasMismatchDrops: counts.canvasMismatchDrops,
+            pumpDeferrals: counts.pumpDeferrals, pumpRepeats: counts.pumpRepeats
+        )
     }
 
     func viewerResizeCounters() -> ViewerResizeCounters {

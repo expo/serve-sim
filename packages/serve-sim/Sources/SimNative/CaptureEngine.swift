@@ -372,6 +372,8 @@ actor CaptureEngine {
                 sharedEncodedFrames: flow?.sharedEncoded,
                 pumpRestarts: flow?.pumpRestarts,
                 canvasMismatchDrops: flow?.canvasMismatchDrops,
+                pumpDeferrals: flow?.pumpDeferrals,
+                pumpRepeats: flow?.pumpRepeats,
                 cpuFallbacks: timings.cpuFallbacks,
                 poolDrops: timings.poolDrops,
                 attempts: timings.attempts,

@@ -9,9 +9,12 @@ This describes the H.264 WebRTC and session-recording paths. See
 ```text
 SimulatorKit active-panel IOSurface
   -> CVPixelBuffer view of the surface
-  -> one owned native-size snapshot while recording
-       |-> latest-frame mailbox -> hardware H.264 recorder -> MP4 + session.json
-       `-> viewer scale/letterbox -> shared H.264 encoder -> N WebRTC senders
+  -> one owned snapshot on the capture queue
+       native size while recording, else the largest size a consumer needs
+       |-> (recording) latest-frame mailbox -> hardware H.264 recorder
+       |     -> MP4 + session.json
+       `-> viewer resize queue: scale/letterbox to the shared canvas
+             -> frame pump -> shared H.264 encoder -> N WebRTC senders
 ```
 
 `FrameCapture` follows CoreDevice's authoritative active display on a foldable
@@ -22,9 +25,11 @@ checks avoid copying unchanged pixels except for the capture idle floor. A
 queue then makes an owned snapshot so encoders can retain a frame after the
 simulator reuses the surface.
 
-When recording is inactive, the snapshot uses the configured capture size.
-Starting recording changes it to native size and publishes the latest owned
-buffer to a one-slot mailbox. WebRTC, HTTP consumers, the recording clock, and
+The snapshot size follows the consumers (`CaptureSnapshotPolicy`): native
+while recording, the configured capture size while an MJPEG or AVCC subscriber
+is active, otherwise the shared H.264 canvas, so viewer frames need no further
+scaling. Starting recording changes it to native size and publishes the latest
+owned buffer to a one-slot mailbox. WebRTC, HTTP consumers, the recording clock, and
 disk work do not run on the capture queue. A slow consumer replaces or drops
 pending work instead of accumulating a frame backlog. Stopping recording
 restores the configured capture size.
@@ -40,13 +45,38 @@ need separate measurements.
 
 ## WebRTC viewers
 
-`WebRTCPublisher` paces the latest captured frame at the configured viewer
-rate and scales or letterboxes it to a fixed viewer canvas. A custom H.264
-encoder factory gives each peer a proxy over one `VTCompressionSession`.
+`ViewerFrameResizer` places each captured frame on the shared viewer canvas
+on its own queue, so the frame pump never waits on a resize. The default
+backend scales the Y and CbCr planes on the GPU with Metal Performance Shaders
+(bilinear) into a bounded pool; a frame that already matches the canvas passes
+through. The VideoToolbox transfer is the fallback, with its own vImage CPU
+path. A frame that arrives while one is in flight replaces the waiting frame.
+`SERVE_SIM_VIEWER_RESIZE=metal|videotoolbox|cpu` pins one backend for
+measurements.
+
+`WebRTCPublisher` paces the latest resized frame at the configured viewer rate.
+When a 60 Hz source lands a fraction of a millisecond after a slot, the pump
+waits one scheduling tolerance for it instead of repeating the previous frame;
+an idle screen has no cadence and repeats at the configured rate. A frame from
+before a canvas change is dropped at the pump rather than encoded at the wrong
+size. A custom H.264 encoder factory gives each peer a proxy over one
+`VTCompressionSession`.
 Proxies deduplicate submissions by frame timestamp and distribute the one
 compressed result to the peers. The shared target bitrate is the minimum of
 active peers' requests; a join or PLI requests an IDR. Each peer still owns
 its connection, congestion controller, and RTP packet stream.
+
+All viewers share one encode, so they share one resolution.
+`SharedResolutionPolicy` steps the canvas long edge to 0.75 and then 0.5 when
+the lowest peer bitrate stays under 40% of the target for 2 s, and steps back
+up after 10 s above 90%. It holds still for 5 s after a peer joins and for
+10 s after a step, because libwebrtc restarts the encoder proxies when the
+frame size changes. A step requests an IDR and changes the capture snapshot
+size. Peers keep `maintainResolution`, so libwebrtc adapts bitrate and frame
+rate only. One constrained viewer therefore lowers resolution for every viewer.
+`webrtc/stats` reports the canvas, scale, and step count under `sharedCanvas`,
+the resize counters under `viewerResize`, and the pump deferrals, repeats, and
+canvas-mismatch drops under `capture`.
 
 Viewer size, rate, bitrate, and negotiated H.264 level affect the live stream,
 not the recording. If the fixed H.264 canvas is not ready or an offered H.264 level cannot decode

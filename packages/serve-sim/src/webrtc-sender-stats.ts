@@ -43,6 +43,11 @@ export interface CaptureCounts {
   sharedEncodedFrames?: number | null;
   /** Frame-pump watchdog restarts; nonzero means the host starved or dropped pump timers. */
   pumpRestarts: number | null;
+  /** Paced frames dropped because their size did not match the shared canvas. */
+  canvasMismatchDrops?: number | null;
+  /** Pump slots that waited one tolerance for a late frame, and sends that repeated a frame. */
+  pumpDeferrals?: number | null;
+  pumpRepeats?: number | null;
   cpuFallbacks: number | null;
   poolDrops?: number | null;
   attempts: number | null;
@@ -64,10 +69,23 @@ export interface EncoderIdentity {
   probe: boolean;
 }
 
+/** The one canvas every H.264 viewer is encoded at, and the shared resolution step. */
+export interface SharedCanvas {
+  width: number;
+  height: number;
+  /** 1 is the full canvas; 0.75 and 0.5 are the steps down. */
+  scale: number;
+  step: number;
+  steps: number;
+}
+
 export interface SenderStats {
   capture?: CaptureCounts | null;
   sessions: SenderStreamStats[];
   encoder?: EncoderIdentity | null;
+  /** Cumulative viewer resize counters, passed through as reported. */
+  viewerResize?: Record<string, unknown> | null;
+  sharedCanvas?: SharedCanvas | null;
 }
 
 export function senderSessionForViewer(
@@ -165,7 +183,16 @@ export function readSenderStats(raw: unknown): SenderStats {
     sessions: raw.sessions.filter(isRecord).map(readSenderSession),
     capture: readCaptureCounts(raw.capture),
     encoder: readEncoderIdentity(raw.encoder),
+    viewerResize: isRecord(raw.viewerResize) ? raw.viewerResize : null,
+    sharedCanvas: readSharedCanvas(raw.sharedCanvas),
   };
+}
+
+function readSharedCanvas(raw: unknown): SharedCanvas | null {
+  if (!isRecord(raw)) return null;
+  const { width, height, scale, step, steps } = raw;
+  if ([width, height, scale, step, steps].some(value => typeof value !== "number")) return null;
+  return { width: width as number, height: height as number, scale: scale as number, step: step as number, steps: steps as number };
 }
 
 /**
@@ -189,6 +216,9 @@ function readCaptureCounts(raw: unknown): CaptureCounts | null {
     forwardedFrames: maybeNumber(raw.forwardedFrames),
     sharedEncodedFrames: maybeNumber(raw.sharedEncodedFrames),
     pumpRestarts: maybeNumber(raw.pumpRestarts),
+    canvasMismatchDrops: maybeNumber(raw.canvasMismatchDrops),
+    pumpDeferrals: maybeNumber(raw.pumpDeferrals),
+    pumpRepeats: maybeNumber(raw.pumpRepeats),
     cpuFallbacks: maybeNumber(raw.cpuFallbacks),
     poolDrops: maybeNumber(raw.poolDrops),
     attempts: maybeNumber(raw.attempts),

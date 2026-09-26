@@ -163,6 +163,9 @@ describe("capture counts", () => {
       forwardedFrames: null,
       sharedEncodedFrames: null,
       pumpRestarts: null,
+      canvasMismatchDrops: null,
+      pumpDeferrals: null,
+      pumpRepeats: null,
       cpuFallbacks: null,
       poolDrops: null,
       attempts: null,
@@ -200,6 +203,34 @@ describe("frame flow counts", () => {
       sessions: [], capture: { screenFrames: 1, idleFrames: 10, sharedEncodedFrames: 400 },
     });
     expect(stats.capture?.sharedEncodedFrames).toBe(400);
+  });
+
+  test("keeps the pump deferrals, repeats, and canvas mismatch drops", () => {
+    const stats = readSenderStats({
+      sessions: [],
+      capture: { screenFrames: 1, idleFrames: 1, pumpDeferrals: 12, pumpRepeats: 3, canvasMismatchDrops: 1 },
+    });
+    expect(stats.capture?.pumpDeferrals).toBe(12);
+    expect(stats.capture?.pumpRepeats).toBe(3);
+    expect(stats.capture?.canvasMismatchDrops).toBe(1);
+  });
+});
+
+describe("viewer resize and shared canvas", () => {
+  test("passes the resize counters through and reads the shared canvas", () => {
+    const stats = readSenderStats({
+      sessions: [],
+      viewerResize: { backend: "metal", submitted: 60, passedThrough: 60, scaled: 0 },
+      sharedCanvas: { width: 640, height: 1392, scale: 1, step: 0, steps: 0 },
+    });
+    expect(stats.viewerResize).toEqual({ backend: "metal", submitted: 60, passedThrough: 60, scaled: 0 });
+    expect(stats.sharedCanvas).toEqual({ width: 640, height: 1392, scale: 1, step: 0, steps: 0 });
+  });
+
+  test("reports null for an absent or malformed shared canvas", () => {
+    expect(readSenderStats({ sessions: [] }).sharedCanvas).toBeNull();
+    expect(readSenderStats({ sessions: [], sharedCanvas: { width: "640" } }).sharedCanvas).toBeNull();
+    expect(readSenderStats({ sessions: [] }).viewerResize).toBeNull();
   });
 });
 

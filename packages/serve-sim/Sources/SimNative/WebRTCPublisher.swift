@@ -228,6 +228,8 @@ final class WebRTCPublisher: @unchecked Sendable {
     private var canvasMismatchDrops: UInt64 = 0
     private var encodeCanvas: Dimensions
     private var rawEncodeCanvas: Dimensions
+    /// Queue-confined. Told the canvas size now and on every change.
+    private var canvasObserver: ((Dimensions) -> Void)?
     private let h264PixelBufferConverter = H264WebRTCPixelBufferConverter()
     private static let detectedH264Support = detectH264WebRTCSupport()
     private var h264WebRTCSupport: WebRTCH264Support { Self.detectedH264Support }
@@ -552,6 +554,14 @@ final class WebRTCPublisher: @unchecked Sendable {
         queue.sync { encodeCanvas }
     }
 
+    /// The observer runs on the publisher queue with the current canvas, then on each change.
+    func setCanvasObserver(_ observer: @escaping (Dimensions) -> Void) {
+        queue.async {
+            self.canvasObserver = observer
+            observer(self.encodeCanvas)
+        }
+    }
+
     func requestIDR() {
         sharedEncoderFactory.requestIDR()
     }
@@ -804,6 +814,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         if canvas != encodeCanvas {
             encodeCanvas = canvas
             sharedEncoderFactory.requestIDR()
+            canvasObserver?(canvas)
         }
         // Resize ahead of the pump only while an H.264 peer can use the canvas; the VP8
         // path keeps native frames and scales per peer.

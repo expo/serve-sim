@@ -217,6 +217,7 @@ final class LetterboxResizeBackend: ViewerResizeBackend {
 
 /// Bilinear scale of the Y and CbCr planes on the GPU. Bars, when the shapes
 /// differ, come from scaling a constant 2×2 plane over the whole output first.
+/// The bars are video-range black (Y 16), the range the capture copy uses.
 final class MetalResizeBackend: ViewerResizeBackend {
     let name = "metal"
     private(set) var poolDrops: UInt64 = 0

@@ -568,18 +568,14 @@ final class WebRTCPublisher: @unchecked Sendable {
 
     func frameFlowCounts() -> FrameFlowCounts {
         frameLock.lock()
-        let counts = FrameFlowCounts(
-            offered: offeredFrameCount, forwarded: forwardedFrameCount,
-            pumpRestarts: framePumpRestartCount, sharedEncoded: 0,
-            canvasMismatchDrops: canvasMismatchDrops,
-            pumpDeferrals: framePacer.deferredTicks, pumpRepeats: framePacer.repeatedSends
-        )
+        let (offered, forwarded, restarts, mismatches) =
+            (offeredFrameCount, forwardedFrameCount, framePumpRestartCount, canvasMismatchDrops)
+        let (deferrals, repeats) = (framePacer.deferredTicks, framePacer.repeatedSends)
         frameLock.unlock()
         return FrameFlowCounts(
-            offered: counts.offered, forwarded: counts.forwarded, pumpRestarts: counts.pumpRestarts,
+            offered: offered, forwarded: forwarded, pumpRestarts: restarts,
             sharedEncoded: sharedEncoderFactory.encodedFrameCount(),
-            canvasMismatchDrops: counts.canvasMismatchDrops,
-            pumpDeferrals: counts.pumpDeferrals, pumpRepeats: counts.pumpRepeats
+            canvasMismatchDrops: mismatches, pumpDeferrals: deferrals, pumpRepeats: repeats
         )
     }
 

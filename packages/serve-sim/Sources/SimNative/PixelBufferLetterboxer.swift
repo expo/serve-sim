@@ -17,17 +17,22 @@ final class PixelBufferLetterboxer {
     private(set) var cpuFrames: UInt64 = 0
     private(set) var poolDrops: UInt64 = 0
 
-    init(allowCPUFallback: Bool = true, maxBuffers: Int = 8) {
+    /// `preferCPU` skips the VideoToolbox transfer and scales with vImage from the start.
+    init(allowCPUFallback: Bool = true, maxBuffers: Int = 8, preferCPU: Bool = false) {
         self.allowCPUFallback = allowCPUFallback
         self.maxBuffers = maxBuffers
+        transferUnavailable = preferCPU && allowCPUFallback
+    }
+
+    static func supports(_ format: OSType) -> Bool {
+        [kCVPixelFormatType_32BGRA,
+         kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+         kCVPixelFormatType_420YpCbCr8BiPlanarFullRange].contains(format)
     }
 
     func place(_ source: CVPixelBuffer, width: Int, height: Int) -> CVPixelBuffer? {
         let format = CVPixelBufferGetPixelFormatType(source)
-        guard width > 0, height > 0,
-              [kCVPixelFormatType_32BGRA,
-               kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-               kCVPixelFormatType_420YpCbCr8BiPlanarFullRange].contains(format) else { return nil }
+        guard width > 0, height > 0, Self.supports(format) else { return nil }
         let sourceWidth = CVPixelBufferGetWidth(source)
         let sourceHeight = CVPixelBufferGetHeight(source)
         if sourceWidth == width, sourceHeight == height { return source }
@@ -155,6 +160,7 @@ final class PixelBufferLetterboxer {
             kCVPixelBufferWidthKey as String: width,
             kCVPixelBufferHeightKey as String: height,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+            kCVPixelBufferMetalCompatibilityKey as String: true,
         ]
         var next: CVPixelBufferPool?
         guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary,

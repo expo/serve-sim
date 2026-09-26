@@ -349,6 +349,7 @@ actor CaptureEngine {
                 forwardedFrames: flow?.forwarded,
                 sharedEncodedFrames: flow?.sharedEncoded,
                 pumpRestarts: flow?.pumpRestarts,
+                canvasMismatchDrops: flow?.canvasMismatchDrops,
                 cpuFallbacks: timings.cpuFallbacks,
                 poolDrops: timings.poolDrops,
                 attempts: timings.attempts,
@@ -360,7 +361,12 @@ actor CaptureEngine {
             ),
             encoder: webRTCPublisher?.encoderIdentity(
                 liveCodecs: sessions.filter(\.connected).compactMap(\.codec)
-            )
+            ),
+            viewerResize: webRTCPublisher?.viewerResizeCounters(),
+            sharedCanvas: webRTCPublisher.map { publisher in
+                let canvas = publisher.currentEncodeCanvas()
+                return WebRTCSharedCanvas(width: canvas.width, height: canvas.height)
+            }
         ))
         return String(decoding: data, as: UTF8.self)
     }

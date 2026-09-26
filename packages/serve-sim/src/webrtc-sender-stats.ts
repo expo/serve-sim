@@ -77,6 +77,8 @@ export interface SharedCanvas {
   scale: number;
   step: number;
   steps: number;
+  /** Peers that lagged the shared encoder's cache and were restarted with a keyframe. */
+  starvedRecoveries?: number | null;
 }
 
 export interface SenderStats {
@@ -192,7 +194,10 @@ function readSharedCanvas(raw: unknown): SharedCanvas | null {
   if (!isRecord(raw)) return null;
   const { width, height, scale, step, steps } = raw;
   if ([width, height, scale, step, steps].some(value => typeof value !== "number")) return null;
-  return { width: width as number, height: height as number, scale: scale as number, step: step as number, steps: steps as number };
+  return {
+    width: width as number, height: height as number, scale: scale as number, step: step as number, steps: steps as number,
+    starvedRecoveries: maybeNumber(raw.starvedRecoveries),
+  };
 }
 
 /**

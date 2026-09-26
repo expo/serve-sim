@@ -224,7 +224,7 @@ describe("viewer resize and shared canvas", () => {
       sharedCanvas: { width: 640, height: 1392, scale: 1, step: 0, steps: 0 },
     });
     expect(stats.viewerResize).toEqual({ backend: "metal", submitted: 60, passedThrough: 60, scaled: 0 });
-    expect(stats.sharedCanvas).toEqual({ width: 640, height: 1392, scale: 1, step: 0, steps: 0 });
+    expect(stats.sharedCanvas).toEqual({ width: 640, height: 1392, scale: 1, step: 0, steps: 0, starvedRecoveries: null });
   });
 
   test("reports null for an absent or malformed shared canvas", () => {

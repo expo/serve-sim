@@ -54,6 +54,10 @@ final class SharedWebRTCEncoderFactory: NSObject, LKRTCVideoEncoderFactory {
         shared.resolutionStatus()
     }
 
+    func starvedRecoveries() -> UInt64 {
+        shared.starvedRecoveries()
+    }
+
     func stop() {
         shared.stop()
     }
@@ -145,6 +149,10 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         onQueue { (resolution.scale, resolution.step, resolution.changes) }
     }
 
+    func starvedRecoveries() -> UInt64 {
+        onQueue { policy.starvedRecoveries }
+    }
+
     /// Queue-confined. Feeds the slowest peer's bitrate to the resolution policy.
     private func observeResolution() {
         let now = DispatchTime.now().uptimeNanoseconds
@@ -218,16 +226,24 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
             let requestedIDR = frameTypes.contains { $0.intValue == LKRTCFrameType.videoFrameKey.rawValue }
             if let cached = completed[timestamp] {
                 if requestedIDR, cached.encoded.kind != .keyframe { policy.requestIDR() }
+                policy.caughtUp(peer: peer)
                 deliver(cached, to: peer)
                 return 0
             }
             if pending[timestamp] != nil {
                 if requestedIDR { policy.requestIDR() }
+                policy.caughtUp(peer: peer)
                 pending[timestamp]?.peers.insert(peer)
                 return 0
             }
             if queuedFrame?.forceIDR == true { policy.requestIDR() }
             guard let forceIDR = policy.beginFrame(timestamp: timestamp, requestedIDR: requestedIDR) else {
+                // Older than the newest frame and out of the cache: this peer lags behind the
+                // others. Without help it would never get a frame again. The next keyframe is
+                // delivered to it as well (see `complete`).
+                if policy.frameWasStale(peer: peer) {
+                    print("[webrtc] Shared encoder peer \(peer) lags the cache; sending it the next keyframe")
+                }
                 return 0
             }
             observeResolution()
@@ -299,6 +315,11 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         }
         for peer in metadata.peers {
             deliver(packet, to: peer)
+        }
+        if output.kind == .keyframe, policy.isAnyPeerStarved {
+            for peer in policy.takeStarvedPeers(excluding: metadata.peers) {
+                deliver(packet, to: peer)
+            }
         }
     }
 

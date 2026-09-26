@@ -125,6 +125,8 @@ struct WebRTCSharedCanvas: Codable {
     let scale: Double
     let step: Int
     let steps: UInt64
+    /// Peers that lagged the shared encoder's cache and were restarted with a keyframe.
+    let starvedRecoveries: UInt64
 }
 
 struct WebRTCSenderStatsReport: Codable {
@@ -587,7 +589,8 @@ final class WebRTCPublisher: @unchecked Sendable {
         let canvas = queue.sync { encodeCanvas }
         let resolution = sharedEncoderFactory.resolutionStatus()
         return WebRTCSharedCanvas(width: canvas.width, height: canvas.height,
-                                  scale: resolution.scale, step: resolution.step, steps: resolution.changes)
+                                  scale: resolution.scale, step: resolution.step, steps: resolution.changes,
+                                  starvedRecoveries: sharedEncoderFactory.starvedRecoveries())
     }
 
     /// The observer runs on the publisher queue with the current canvas, then on each change.

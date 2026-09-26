@@ -194,18 +194,20 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
     func start(peer: Int, settings: LKRTCVideoEncoderSettings) {
         onQueue {
             policy.join(peer: peer, bitrate: Int(settings.startBitrate) * 1_000)
-            stat(peer) { $0.starts &+= 1 }
+            stat(peer) { $0.starts &+= 1; $0.live = true }
             // libwebrtc also restarts a proxy when the frame size changes, so the
             // hold covers a canvas step as well as a real join.
             resolution.peerJoined(atNanoseconds: DispatchTime.now().uptimeNanoseconds)
         }
     }
 
+    /// libwebrtc releases and re-initializes a proxy when it reconfigures the stream, for
+    /// example on a frame size change. The proxy keeps its packetization mode across that,
+    /// so the callback registered after the restart can deliver again.
     func release(peer: Int) {
         onQueue {
             stat(peer) { $0.releases &+= 1; $0.live = false }
             callbacks.removeValue(forKey: peer)
-            packetizationModes.removeValue(forKey: peer)
             policy.leave(peer: peer)
             for timestamp in pending.keys {
                 pending[timestamp]?.peers.remove(peer)

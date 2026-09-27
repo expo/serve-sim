@@ -231,3 +231,21 @@ describe("senderSessionForViewer", () => {
     expect(senderSessionForViewer(sessions, "33333333-3333-4333-8333-333333333333")).toBeNull();
   });
 });
+
+describe("shared canvas and encoder peers", () => {
+  test("reads the shared canvas and passes the per-proxy counters through", () => {
+    const stats = readSenderStats({
+      sessions: [],
+      sharedCanvas: { width: 640, height: 1392, scale: 1, step: 0, steps: 0 },
+      sharedEncoderPeers: [{ peer: 1, encodeCalls: 5 }],
+    });
+    expect(stats.sharedCanvas).toEqual({ width: 640, height: 1392, scale: 1, step: 0, steps: 0, starvedRecoveries: null });
+    expect(stats.sharedEncoderPeers).toEqual([{ peer: 1, encodeCalls: 5 }]);
+  });
+
+  test("reports null for an absent or malformed shared canvas", () => {
+    expect(readSenderStats({ sessions: [] }).sharedCanvas).toBeNull();
+    expect(readSenderStats({ sessions: [], sharedCanvas: { width: "640" } }).sharedCanvas).toBeNull();
+    expect(readSenderStats({ sessions: [] }).sharedEncoderPeers).toBeNull();
+  });
+});

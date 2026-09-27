@@ -3,6 +3,11 @@ public struct SharedH264Policy {
     private var newestTimestamp = Int64.min
     private var forceNextIDR = false
     private let defaultBitrate: Int
+    /// Peers whose encode calls only bring timestamps older than the newest frame. Such a
+    /// peer lags the others by more than the completed-frame cache and would otherwise never
+    /// receive a frame again. It gets the next keyframe instead.
+    private var starvedPeers = Set<Int>()
+    public private(set) var starvedRecoveries: UInt64 = 0
 
     public init(defaultBitrate: Int) {
         self.defaultBitrate = max(1, defaultBitrate)
@@ -19,7 +24,32 @@ public struct SharedH264Policy {
 
     public mutating func leave(peer: Int) {
         peerBitrates.removeValue(forKey: peer)
+        starvedPeers.remove(peer)
     }
+
+    /// A peer asked for a frame older than the newest and no longer cached. The next frame
+    /// is forced to a keyframe for it. Returns true the first time a peer is marked.
+    @discardableResult
+    public mutating func frameWasStale(peer: Int) -> Bool {
+        forceNextIDR = true
+        return starvedPeers.insert(peer).inserted
+    }
+
+    /// The peer received a frame through the normal path; it is no longer starved.
+    public mutating func caughtUp(peer: Int) {
+        starvedPeers.remove(peer)
+    }
+
+    /// The peers a completed keyframe must also go to, beyond the ones that asked for it.
+    /// Clears them: the keyframe restarts their stream.
+    public mutating func takeStarvedPeers(excluding served: Set<Int>) -> Set<Int> {
+        let extra = starvedPeers.subtracting(served)
+        starvedRecoveries &+= UInt64(extra.count)
+        starvedPeers.removeAll()
+        return extra
+    }
+
+    public var isAnyPeerStarved: Bool { !starvedPeers.isEmpty }
 
     public mutating func setBitrate(_ bitrate: Int, peer: Int) {
         guard peerBitrates[peer] != nil else { return }

@@ -63,10 +63,25 @@ export interface EncoderIdentity {
   probe: boolean;
 }
 
+/** The one canvas every H.264 viewer is encoded at, and the shared resolution step. */
+export interface SharedCanvas {
+  width: number;
+  height: number;
+  /** 1 is the full canvas; 0.75 and 0.5 are the steps down. */
+  scale: number;
+  step: number;
+  steps: number;
+  /** Peers that lagged the shared encoder's cache and were restarted with a keyframe. */
+  starvedRecoveries?: number | null;
+}
+
 export interface SenderStats {
   capture?: CaptureCounts | null;
   sessions: SenderStreamStats[];
   encoder?: EncoderIdentity | null;
+  sharedCanvas?: SharedCanvas | null;
+  /** Per-proxy shared encoder counters, passed through as reported. */
+  sharedEncoderPeers?: Record<string, unknown>[] | null;
 }
 
 export function senderSessionForViewer(
@@ -164,6 +179,18 @@ export function readSenderStats(raw: unknown): SenderStats {
     sessions: raw.sessions.filter(isRecord).map(readSenderSession),
     capture: readCaptureCounts(raw.capture),
     encoder: readEncoderIdentity(raw.encoder),
+    sharedCanvas: readSharedCanvas(raw.sharedCanvas),
+    sharedEncoderPeers: Array.isArray(raw.sharedEncoderPeers) ? raw.sharedEncoderPeers.filter(isRecord) : null,
+  };
+}
+
+function readSharedCanvas(raw: unknown): SharedCanvas | null {
+  if (!isRecord(raw)) return null;
+  const { width, height, scale, step, steps } = raw;
+  if ([width, height, scale, step, steps].some(value => typeof value !== "number")) return null;
+  return {
+    width: width as number, height: height as number, scale: scale as number, step: step as number, steps: steps as number,
+    starvedRecoveries: maybeNumber(raw.starvedRecoveries),
   };
 }
 

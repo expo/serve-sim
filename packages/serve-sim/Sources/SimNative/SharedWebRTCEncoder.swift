@@ -6,6 +6,20 @@ import StreamingPolicy
 
 private typealias EncoderCallback = (LKRTCEncodedImage, any LKRTCCodecSpecificInfo) -> Bool
 
+/// Per-proxy counters, so a peer that never sends video shows which step it is missing.
+struct SharedEncoderPeerStats: Codable {
+    let peer: Int
+    var starts: UInt64 = 0
+    var releases: UInt64 = 0
+    var callbackSets: UInt64 = 0
+    var callbackClears: UInt64 = 0
+    var encodeCalls: UInt64 = 0
+    var deliveries: UInt64 = 0
+    var missingCallback: UInt64 = 0
+    var rejectedByCallback: UInt64 = 0
+    var live: Bool = false
+}
+
 final class SharedWebRTCEncoderFactory: NSObject, LKRTCVideoEncoderFactory {
     private let fallback = LKRTCDefaultVideoEncoderFactory()
     private let shared: SharedWebRTCEncoder
@@ -39,6 +53,27 @@ final class SharedWebRTCEncoderFactory: NSObject, LKRTCVideoEncoderFactory {
 
     func encodedFrameCount() -> UInt64 {
         shared.encodedFrameCount()
+    }
+
+    func updateTargetBitrate(_ bitrate: Int) {
+        shared.updateTargetBitrate(bitrate)
+    }
+
+    /// The observer runs on the shared encoder queue when the resolution step changes.
+    func setScaleObserver(_ observer: @escaping (Double) -> Void) {
+        shared.setScaleObserver(observer)
+    }
+
+    func resolutionStatus() -> (scale: Double, step: Int, changes: UInt64) {
+        shared.resolutionStatus()
+    }
+
+    func starvedRecoveries() -> UInt64 {
+        shared.starvedRecoveries()
+    }
+
+    func peerStats() -> [SharedEncoderPeerStats] {
+        shared.peerStats()
     }
 
     func stop() {
@@ -83,12 +118,22 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
     private var stopped = false
     private var encodedFrames: UInt64 = 0
     private var fps: Int
+    private var resolution: SharedResolutionPolicy
+    private var scaleObserver: ((Double) -> Void)?
+    private var peers: [Int: SharedEncoderPeerStats] = [:]
+
+    private func stat(_ peer: Int, _ update: (inout SharedEncoderPeerStats) -> Void) {
+        var value = peers[peer] ?? SharedEncoderPeerStats(peer: peer)
+        update(&value)
+        peers[peer] = value
+    }
 
     init(bitrate: Int, fps: Int) {
         self.fps = fps
         encoder = H264Encoder(fps: fps, bitrate: bitrate,
                               constrainedBaseline: true, dynamicBitrate: true)
         policy = SharedH264Policy(defaultBitrate: bitrate)
+        resolution = SharedResolutionPolicy(targetBitrate: bitrate)
         queue.setSpecific(key: queueKey, value: true)
     }
 
@@ -101,6 +146,7 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         onQueue {
             nextPeer += 1
             packetizationModes[nextPeer] = packetizationMode
+            stat(nextPeer) { $0.live = true }
             return SharedWebRTCEncoderProxy(id: nextPeer, shared: self)
         }
     }
@@ -117,16 +163,51 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         onQueue { encodedFrames }
     }
 
-    func start(peer: Int, settings: LKRTCVideoEncoderSettings) {
-        onQueue {
-            policy.join(peer: peer, bitrate: Int(settings.startBitrate) * 1_000)
+    func updateTargetBitrate(_ bitrate: Int) {
+        onQueue { resolution.setTargetBitrate(bitrate) }
+    }
+
+    func setScaleObserver(_ observer: @escaping (Double) -> Void) {
+        onQueue { scaleObserver = observer }
+    }
+
+    func resolutionStatus() -> (scale: Double, step: Int, changes: UInt64) {
+        onQueue { (resolution.scale, resolution.step, resolution.changes) }
+    }
+
+    func starvedRecoveries() -> UInt64 {
+        onQueue { policy.starvedRecoveries }
+    }
+
+    func peerStats() -> [SharedEncoderPeerStats] {
+        onQueue { peers.values.sorted { $0.peer < $1.peer } }
+    }
+
+    /// Queue-confined. Feeds the slowest peer's bitrate to the resolution policy.
+    private func observeResolution() {
+        let now = DispatchTime.now().uptimeNanoseconds
+        if resolution.observe(bitrate: policy.bitrate, atNanoseconds: now) {
+            scaleObserver?(resolution.scale)
         }
     }
 
+    func start(peer: Int, settings: LKRTCVideoEncoderSettings) {
+        onQueue {
+            policy.join(peer: peer, bitrate: Int(settings.startBitrate) * 1_000)
+            stat(peer) { $0.starts &+= 1; $0.live = true }
+            // libwebrtc also restarts a proxy when the frame size changes, so the
+            // hold covers a canvas step as well as a real join.
+            resolution.peerJoined(atNanoseconds: DispatchTime.now().uptimeNanoseconds)
+        }
+    }
+
+    /// libwebrtc releases and re-initializes a proxy when it reconfigures the stream, for
+    /// example on a frame size change. The proxy keeps its packetization mode across that,
+    /// so the callback registered after the restart can deliver again.
     func release(peer: Int) {
         onQueue {
+            stat(peer) { $0.releases &+= 1; $0.live = false }
             callbacks.removeValue(forKey: peer)
-            packetizationModes.removeValue(forKey: peer)
             policy.leave(peer: peer)
             for timestamp in pending.keys {
                 pending[timestamp]?.peers.remove(peer)
@@ -160,34 +241,48 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
             callbacks[peer] = callback.flatMap { value in
                 packetizationModes[peer].map { (value, $0) }
             }
+            stat(peer) { if callback != nil { $0.callbackSets &+= 1 } else { $0.callbackClears &+= 1 } }
             if callback != nil { policy.requestIDR() }
         }
     }
 
     func setBitrate(_ bitrateKbit: UInt32, peer: Int) {
-        onQueue { policy.setBitrate(Int(bitrateKbit) * 1_000, peer: peer) }
+        onQueue {
+            policy.setBitrate(Int(bitrateKbit) * 1_000, peer: peer)
+            observeResolution()
+        }
     }
 
     func encode(_ frame: LKRTCVideoFrame, peer: Int, frameTypes: [NSNumber]) -> Int {
         guard let buffer = (frame.buffer as? LKRTCCVPixelBuffer)?.pixelBuffer else { return -1 }
         return onQueue {
             guard !stopped else { return -1 }
+            stat(peer) { $0.encodeCalls &+= 1 }
             let timestamp = frame.timeStampNs
             let requestedIDR = frameTypes.contains { $0.intValue == LKRTCFrameType.videoFrameKey.rawValue }
             if let cached = completed[timestamp] {
                 if requestedIDR, cached.encoded.kind != .keyframe { policy.requestIDR() }
+                policy.caughtUp(peer: peer)
                 deliver(cached, to: peer)
                 return 0
             }
             if pending[timestamp] != nil {
                 if requestedIDR { policy.requestIDR() }
+                policy.caughtUp(peer: peer)
                 pending[timestamp]?.peers.insert(peer)
                 return 0
             }
             if queuedFrame?.forceIDR == true { policy.requestIDR() }
             guard let forceIDR = policy.beginFrame(timestamp: timestamp, requestedIDR: requestedIDR) else {
+                // Older than the newest frame and out of the cache: this peer lags behind the
+                // others. Without help it would never get a frame again. The next keyframe is
+                // delivered to it as well (see `complete`).
+                if policy.frameWasStale(peer: peer) {
+                    print("[webrtc] Shared encoder peer \(peer) lags the cache; sending it the next keyframe")
+                }
                 return 0
             }
+            observeResolution()
             let submission = backlog.submit(timestamp)
             if submission == .stale { return 0 }
             let metadata = Pending(
@@ -257,10 +352,18 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         for peer in metadata.peers {
             deliver(packet, to: peer)
         }
+        if output.kind == .keyframe, policy.isAnyPeerStarved {
+            for peer in policy.takeStarvedPeers(excluding: metadata.peers) {
+                deliver(packet, to: peer)
+            }
+        }
     }
 
     private func deliver(_ packet: Completed, to peer: Int) {
-        guard let (callback, packetizationMode) = callbacks[peer] else { return }
+        guard let (callback, packetizationMode) = callbacks[peer] else {
+            stat(peer) { $0.missingCallback &+= 1 }
+            return
+        }
         let image = LKRTCEncodedImage()
         image.buffer = packet.annexB
         image.encodedWidth = packet.metadata.width
@@ -271,7 +374,8 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         image.rotation = ._0
         let info = LKRTCCodecSpecificInfoH264()
         info.packetizationMode = packetizationMode
-        _ = callback(image, info)
+        let accepted = callback(image, info)
+        stat(peer) { if accepted { $0.deliveries &+= 1 } else { $0.rejectedByCallback &+= 1 } }
     }
 
 }

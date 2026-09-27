@@ -112,10 +112,23 @@ struct WebRTCEncoderIdentity: Codable {
     let probe: Bool
 }
 
+struct WebRTCSharedCanvas: Codable {
+    let width: Int
+    let height: Int
+    /// The shared resolution step: 1.0 is the full canvas.
+    let scale: Double
+    let step: Int
+    let steps: UInt64
+    /// Peers that lagged the shared encoder's cache and were restarted with a keyframe.
+    let starvedRecoveries: UInt64
+}
+
 struct WebRTCSenderStatsReport: Codable {
     let sessions: [WebRTCSenderStatsPayload]
     let capture: WebRTCCaptureCounts?
     let encoder: WebRTCEncoderIdentity?
+    let sharedCanvas: WebRTCSharedCanvas?
+    let sharedEncoderPeers: [SharedEncoderPeerStats]?
 }
 
 private final class WebRTCSignalingCompletion: @unchecked Sendable {
@@ -213,6 +226,8 @@ final class WebRTCPublisher: @unchecked Sendable {
     private let pixelBufferLetterboxer = PixelBufferLetterboxer()
     private var encodeCanvas: Dimensions
     private var rawEncodeCanvas: Dimensions
+    /// Queue-confined. The shared resolution step from the encoder's bitrate policy.
+    private var canvasScale = 1.0
     private let h264PixelBufferConverter = H264WebRTCPixelBufferConverter()
     private static let detectedH264Support = detectH264WebRTCSupport()
     private var h264WebRTCSupport: WebRTCH264Support { Self.detectedH264Support }
@@ -250,6 +265,14 @@ final class WebRTCPublisher: @unchecked Sendable {
         videoTrack = factory.videoTrack(with: videoSource, trackId: "simulator-video")
         videoTrack.isEnabled = true
         capturer = LKRTCVideoCapturer(delegate: videoSource)
+        encoderFactory.setScaleObserver { [weak self] scale in
+            self?.queue.async {
+                guard let self else { return }
+                self.canvasScale = scale
+                self.refreshEncodeCanvas()
+                streamLog("[webrtc] Shared canvas scale \(scale): \(self.encodeCanvas.width)x\(self.encodeCanvas.height)")
+            }
+        }
         streamLog(
             "[webrtc] Publisher ready (shared H.264 encoder + screen-cast video source) " +
             "h264=\(h264SupportDescription()) h264FrameMode=\(h264FrameModeDescription()) " +
@@ -287,6 +310,7 @@ final class WebRTCPublisher: @unchecked Sendable {
                     )
                 }
                 self.targetBitrate = max(100_000, targetBitrate)
+                self.sharedEncoderFactory.updateTargetBitrate(self.targetBitrate)
                 self.maxDimension = max(0, maxDimension)
                 self.refreshEncodeCanvas()
                 if self.lastOutputWidth > 0, self.lastOutputHeight > 0 {
@@ -525,6 +549,18 @@ final class WebRTCPublisher: @unchecked Sendable {
         return (counts.0, counts.1, counts.2, sharedEncoderFactory.encodedFrameCount())
     }
 
+    func sharedEncoderPeerStats() -> [SharedEncoderPeerStats] {
+        sharedEncoderFactory.peerStats()
+    }
+
+    func sharedCanvasStatus() -> WebRTCSharedCanvas {
+        let canvas = queue.sync { encodeCanvas }
+        let resolution = sharedEncoderFactory.resolutionStatus()
+        return WebRTCSharedCanvas(width: canvas.width, height: canvas.height,
+                                  scale: resolution.scale, step: resolution.step, steps: resolution.changes,
+                                  starvedRecoveries: sharedEncoderFactory.starvedRecoveries())
+    }
+
     func requestIDR() {
         sharedEncoderFactory.requestIDR()
     }
@@ -728,7 +764,8 @@ final class WebRTCPublisher: @unchecked Sendable {
     }
 
     private static func canvasSize(for dimensions: Dimensions, maxDimension: Int,
-                                   levelIdc: Int = H264LevelPolicy.defaultLevelIdc) -> Dimensions {
+                                   levelIdc: Int = H264LevelPolicy.defaultLevelIdc,
+                                   scale: Double = 1.0) -> Dimensions {
         guard dimensions.width > 0, dimensions.height > 0 else {
             return Dimensions(width: 0, height: 0)
         }
@@ -737,8 +774,12 @@ final class WebRTCPublisher: @unchecked Sendable {
             levelIdc: levelIdc
         )
         let canvasLimit = [maxDimension, levelLimit].filter { $0 > 0 }.min() ?? 0
+        let scaledLimit = SharedResolutionPolicy.canvasLongEdge(
+            baseLimit: canvasLimit, sourceLongEdge: max(dimensions.width, dimensions.height),
+            scale: scale
+        )
         let size = SnapshotSizePolicy(
-            width: dimensions.width, height: dimensions.height, maxDimension: canvasLimit
+            width: dimensions.width, height: dimensions.height, maxDimension: scaledLimit
         )
         return Dimensions(width: size.width, height: size.height)
     }
@@ -753,7 +794,8 @@ final class WebRTCPublisher: @unchecked Sendable {
         let level = (levels + [pendingLevel].compactMap { $0 })
             .min() ?? H264LevelPolicy.defaultLevelIdc
         let canvas = Self.canvasSize(for: rawEncodeCanvas, maxDimension: maxDimension,
-                                     levelIdc: min(level, H264LevelPolicy.defaultLevelIdc))
+                                     levelIdc: min(level, H264LevelPolicy.defaultLevelIdc),
+                                     scale: canvasScale)
         if canvas != encodeCanvas {
             encodeCanvas = canvas
             sharedEncoderFactory.requestIDR()

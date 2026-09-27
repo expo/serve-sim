@@ -34,6 +34,38 @@ final class SharedH264PolicyTests: XCTestCase {
         XCTAssertEqual(policy.beginFrame(timestamp: 4, requestedIDR: false), true)
     }
 
+    func testStalePeerGetsTheNextKeyframe() {
+        var policy = SharedH264Policy(defaultBitrate: 6_000_000)
+        policy.join(peer: 1, bitrate: 6_000_000)
+        policy.join(peer: 2, bitrate: 6_000_000)
+        XCTAssertEqual(policy.beginFrame(timestamp: 10, requestedIDR: false), true)
+        XCTAssertEqual(policy.beginFrame(timestamp: 11, requestedIDR: false), false)
+        // Peer 2 lags: its call brings an older timestamp than the newest frame.
+        XCTAssertNil(policy.beginFrame(timestamp: 9, requestedIDR: false))
+        XCTAssertTrue(policy.frameWasStale(peer: 2))
+        XCTAssertFalse(policy.frameWasStale(peer: 2), "marked once")
+        XCTAssertTrue(policy.isAnyPeerStarved)
+        // The next frame is a keyframe, and it also goes to the starved peer.
+        XCTAssertEqual(policy.beginFrame(timestamp: 12, requestedIDR: false), true)
+        XCTAssertEqual(policy.takeStarvedPeers(excluding: [1]), [2])
+        XCTAssertFalse(policy.isAnyPeerStarved)
+        XCTAssertEqual(policy.starvedRecoveries, 1)
+        XCTAssertEqual(policy.beginFrame(timestamp: 13, requestedIDR: false), false)
+    }
+
+    func testCaughtUpAndLeftPeersAreNotStarved() {
+        var policy = SharedH264Policy(defaultBitrate: 6_000_000)
+        policy.join(peer: 1, bitrate: 6_000_000)
+        policy.join(peer: 2, bitrate: 6_000_000)
+        policy.frameWasStale(peer: 1)
+        policy.frameWasStale(peer: 2)
+        policy.caughtUp(peer: 1)
+        policy.leave(peer: 2)
+        XCTAssertFalse(policy.isAnyPeerStarved)
+        XCTAssertEqual(policy.takeStarvedPeers(excluding: []), [])
+        XCTAssertEqual(policy.starvedRecoveries, 0)
+    }
+
     func testLetterboxPreservesCanvasAndAspect() {
         let folded = LetterboxPlacement(sourceWidth: 500, sourceHeight: 1_000,
                                          canvasWidth: 1_200, canvasHeight: 800)

@@ -90,6 +90,11 @@ struct WebRTCCaptureCounts: Codable {
     /// Times the arrival-side watchdog replaced a frame pump that stopped
     /// ticking. Nonzero means the host starved or dropped pump timers.
     let pumpRestarts: UInt64?
+    /// Paced frames whose size did not match the shared canvas, dropped at the pump.
+    let canvasMismatchDrops: UInt64?
+    /// Pump slots that waited one tolerance for a late frame, and sends that repeated a frame.
+    let pumpDeferrals: UInt64?
+    let pumpRepeats: UInt64?
     let cpuFallbacks: UInt64
     let poolDrops: UInt64
     let attempts: UInt64
@@ -128,6 +133,7 @@ struct WebRTCSenderStatsReport: Codable {
     let sessions: [WebRTCSenderStatsPayload]
     let capture: WebRTCCaptureCounts?
     let encoder: WebRTCEncoderIdentity?
+    let viewerResize: ViewerResizeCounters?
     let sharedCanvas: WebRTCSharedCanvas?
     let sharedEncoderPeers: [SharedEncoderPeerStats]?
 }
@@ -224,9 +230,16 @@ final class WebRTCPublisher: @unchecked Sendable {
     private var lastInputPixelFormat: OSType?
     private var useNativePixelBufferFrames: Bool?
     private let pixelBufferScaler = PixelBufferScaler()
-    private let pixelBufferLetterboxer = PixelBufferLetterboxer()
+    /// Places captured frames on the shared H.264 canvas off this queue. Set once in init.
+    private var viewerResizer: ViewerFrameResizer!
+    /// Guarded by `frameLock`: the newest resizer sequence retained for the pump.
+    private var lastReadySequence: UInt64 = 0
+    /// Guarded by `frameLock`: frames the pump refused because their size did not match the canvas.
+    private var canvasMismatchDrops: UInt64 = 0
     private var encodeCanvas: Dimensions
     private var rawEncodeCanvas: Dimensions
+    /// Queue-confined. Told the canvas size now and on every change.
+    private var canvasObserver: ((Dimensions) -> Void)?
     /// Queue-confined. The shared resolution step from the encoder's bitrate policy.
     private var canvasScale = 1.0
     private let h264PixelBufferConverter = H264WebRTCPixelBufferConverter()
@@ -266,6 +279,9 @@ final class WebRTCPublisher: @unchecked Sendable {
         videoTrack = factory.videoTrack(with: videoSource, trackId: "simulator-video")
         videoTrack.isEnabled = true
         capturer = LKRTCVideoCapturer(delegate: videoSource)
+        viewerResizer = ViewerFrameResizer.makeDefault { [weak self] pixelBuffer, sequence in
+            self?.frameReady(pixelBuffer, sequence: sequence)
+        }
         encoderFactory.setScaleObserver { [weak self] scale in
             self?.queue.async {
                 guard let self else { return }
@@ -543,11 +559,31 @@ final class WebRTCPublisher: @unchecked Sendable {
         )
     }
 
-    func frameFlowCounts() -> (offered: UInt64, forwarded: UInt64, pumpRestarts: UInt64, sharedEncoded: UInt64) {
+    struct FrameFlowCounts {
+        let offered: UInt64
+        let forwarded: UInt64
+        let pumpRestarts: UInt64
+        let sharedEncoded: UInt64
+        let canvasMismatchDrops: UInt64
+        let pumpDeferrals: UInt64
+        let pumpRepeats: UInt64
+    }
+
+    func frameFlowCounts() -> FrameFlowCounts {
         frameLock.lock()
-        let counts = (offeredFrameCount, forwardedFrameCount, framePumpRestartCount)
+        let (offered, forwarded, restarts, mismatches) =
+            (offeredFrameCount, forwardedFrameCount, framePumpRestartCount, canvasMismatchDrops)
+        let (deferrals, repeats) = (framePacer.deferredTicks, framePacer.repeatedSends)
         frameLock.unlock()
-        return (counts.0, counts.1, counts.2, sharedEncoderFactory.encodedFrameCount())
+        return FrameFlowCounts(
+            offered: offered, forwarded: forwarded, pumpRestarts: restarts,
+            sharedEncoded: sharedEncoderFactory.encodedFrameCount(),
+            canvasMismatchDrops: mismatches, pumpDeferrals: deferrals, pumpRepeats: repeats
+        )
+    }
+
+    func viewerResizeCounters() -> ViewerResizeCounters {
+        viewerResizer.currentCounters()
     }
 
     func sharedEncoderPeerStats() -> [SharedEncoderPeerStats] {
@@ -562,18 +598,37 @@ final class WebRTCPublisher: @unchecked Sendable {
                                   starvedRecoveries: sharedEncoderFactory.starvedRecoveries())
     }
 
+    /// The observer runs on the publisher queue with the current canvas, then on each change.
+    func setCanvasObserver(_ observer: @escaping (Dimensions) -> Void) {
+        queue.async {
+            self.canvasObserver = observer
+            observer(self.encodeCanvas)
+        }
+    }
+
     func requestIDR() {
         sharedEncoderFactory.requestIDR()
     }
 
+    /// Capture delivery. The resizer hands the frame back through `frameReady`.
     func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp _: CMTime) {
-        let nowNs = DispatchTime.now().uptimeNanoseconds
         frameLock.lock()
         offeredFrameCount &+= 1
-        guard acceptsFrames else {
+        let accepts = acceptsFrames
+        frameLock.unlock()
+        guard accepts else { return }
+        viewerResizer.submit(pixelBuffer)
+    }
+
+    /// Resizer output, on the resizer queue: retain the frame for the pump and wake it.
+    private func frameReady(_ pixelBuffer: CVPixelBuffer, sequence: UInt64) {
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        frameLock.lock()
+        guard acceptsFrames, sequence > lastReadySequence else {
             frameLock.unlock()
             return
         }
+        lastReadySequence = sequence
         latestFrame = PendingWebRTCFrame(pixelBuffer: pixelBuffer)
         let generation = framePumpGeneration
         switch framePacer.latestFrameArrived(atNanoseconds: nowNs) {
@@ -617,10 +672,17 @@ final class WebRTCPublisher: @unchecked Sendable {
             $0.isConnected && StreamCodecPolicy.isH264($0.codecName)
         }
         let scaledPixelBuffer: CVPixelBuffer?
-        if sharedH264Active, encodeCanvas.width > 0, encodeCanvas.height > 0 {
-            scaledPixelBuffer = pixelBufferLetterboxer.place(
-                pixelBuffer, width: encodeCanvas.width, height: encodeCanvas.height
-            )
+        if sharedH264Active {
+            // The resizer already placed the frame on the canvas. A frame from before a
+            // canvas change is dropped here rather than handed to the shared encoder at
+            // the wrong size; the next frame arrives at the new size.
+            guard encodeCanvas.width > 0, pixelBuffer.dimensions == encodeCanvas else {
+                frameLock.lock()
+                canvasMismatchDrops &+= 1
+                frameLock.unlock()
+                return
+            }
+            scaledPixelBuffer = pixelBuffer
         } else {
             scaledPixelBuffer = pixelBufferScaler.scale(pixelBuffer, maxDimension: maxDimension)
         }
@@ -802,7 +864,15 @@ final class WebRTCPublisher: @unchecked Sendable {
         if canvas != encodeCanvas {
             encodeCanvas = canvas
             sharedEncoderFactory.requestIDR()
+            canvasObserver?(canvas)
         }
+        // Resize ahead of the pump only while an H.264 peer can use the canvas; the VP8
+        // path keeps native frames and scales per peer.
+        let sharedH264Wanted = h264WebRTCSupport.allowed && (
+            sessions.values.contains { StreamCodecPolicy.isH264($0.codecName) }
+                || pendingOffer.map { StreamCodecPolicy.isH264($0.session.codecName) } == true
+        )
+        viewerResizer.setTarget(sharedH264Wanted ? encodeCanvas : nil)
     }
 
     func setEncodeCanvas(_ dimensions: Dimensions) {

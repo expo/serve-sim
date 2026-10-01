@@ -276,6 +276,23 @@ if (helperBuild.status !== 0) {
 }
 console.log("dist/simcam/serve-sim-camera-helper");
 
+// ─── 6b. SimMicInjector dylib + SimMicHelper host CLI ────────────────────
+// Both ship in dist/simmic/ for the CLI's `mic` verb.
+
+for (const [source, artifact] of [
+  ["Sources/SimMicInjector/build.sh", "dist/simmic/libSimMicInjector.dylib"],
+  ["Sources/SimMicHelper/build.sh", "dist/simmic/serve-sim-mic-helper"],
+] as const) {
+  const micBuild = spawnSync("bash", [resolve(root, source), resolve(distDir, "simmic")], {
+    stdio: "inherit",
+  });
+  if (micBuild.status !== 0) {
+    console.error(`${source} failed.`);
+    process.exit(micBuild.status ?? 1);
+  }
+  console.log(artifact);
+}
+
 // ─── 7. sim-ax-settings in-sim CLI (simulator-wide UI settings) ──────────
 
 const axSettingsBuild = spawnSync(

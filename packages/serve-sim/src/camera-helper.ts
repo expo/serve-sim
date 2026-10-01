@@ -1,12 +1,12 @@
 import { createHash } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { sendHelperSocketCommand } from "./helper-socket";
 import { stateDir } from "./state";
 
 export function cameraStateDir(): string {
   return join(stateDir(), "simcam");
 }
-const HELPER_TIMEOUT_MS = 3000;
 
 interface InjectedBundlesState {
   helperPid: number;
@@ -61,54 +61,13 @@ function readCameraHelperPid(udid: string): number | null {
   }
 }
 
-function parseCameraHelperReply(value: unknown): CameraHelperReply {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("invalid camera helper reply");
-  }
-  return value as CameraHelperReply;
-}
-
 export async function sendCameraHelperCommand(
   udid: string,
   command: object,
 ): Promise<CameraHelperReply> {
   const socketPath = cameraHelperSocketFile(udid);
   if (!existsSync(socketPath)) throw new Error("camera helper socket not found");
-  const net = await import("net");
-  return new Promise((resolve, reject) => {
-    const socket = net.createConnection(socketPath);
-    socket.setEncoding("utf8");
-    let buffer = "";
-    let settled = false;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-
-    const settle = (error?: unknown, reply?: CameraHelperReply) => {
-      if (settled) return;
-      settled = true;
-      if (timeout) clearTimeout(timeout);
-      if (error) reject(error);
-      else resolve(reply ?? {});
-    };
-
-    socket.on("data", (chunk) => {
-      buffer += chunk;
-      const newline = buffer.indexOf("\n");
-      if (newline < 0) return;
-      try {
-        settle(undefined, parseCameraHelperReply(JSON.parse(buffer.slice(0, newline)) as unknown));
-      } catch (error) {
-        settle(error);
-      }
-      socket.end();
-    });
-    socket.on("error", settle);
-    socket.on("close", () => settle(new Error("socket closed")));
-    timeout = setTimeout(() => {
-      socket.destroy();
-      settle(new Error("helper timeout"));
-    }, HELPER_TIMEOUT_MS);
-    socket.write(JSON.stringify(command) + "\n");
-  });
+  return sendHelperSocketCommand(socketPath, command);
 }
 
 export function isCameraHelperAlive(udid: string): boolean {

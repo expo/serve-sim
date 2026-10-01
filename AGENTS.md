@@ -6,7 +6,7 @@
 ## Native build notes
 
 - Build native changes with `bun run packages/serve-sim/build.ts`. This rebuilds
-  the bundled JS, compiled CLI, camera dylib/helper, AX settings helper, and the
+  the bundled JS, compiled CLI, camera and mic dylibs/helpers, AX settings helper, and the
   N-API addon at `packages/serve-sim/dist/native/serve-sim-native.node`.
 - After changing Swift/ObjC++ native code, restart any running `serve-sim`
   process. The `.node` addon is loaded once per process, so rebuilding alone
@@ -81,6 +81,8 @@ through `serve-sim` subcommands against a running server:
   that need explicit `begin`/`move`/`end` events.
 - `serve-sim button [home|lock|…] [-d udid]` — hardware button.
 - `serve-sim camera …` — inject the dylib, hot-swap source, toggle mirror.
+- `serve-sim mic …` — inject the mic dylib, then `say` or `play` audio into the
+  app. Add `--wait` before you check the result.
 - `serve-sim ui <option> [value] [-d udid]` — simulator-wide UI options
   (appearance, liquid-glass, color-filter, text-size, reduce-motion,
   increase-contrast, show-borders, reduce-transparency, voiceover,

@@ -252,6 +252,20 @@ Sources:
 - **file** — image (PNG/JPEG/HEIC/…) or video (mp4/mov/m4v/webm/…). The CLI sniffs the kind from the extension and falls back to magic bytes for files without an extension.
 - **webcam** — live `AVCaptureDevice` (built-in, Continuity, external).
 
+### Microphone
+
+`serve-sim mic <bundle-id>` replaces the simulator's microphone input for a single app. A host helper streams 48 kHz PCM into a POSIX shared-memory ring; an injected dylib (`DYLD_INSERT_LIBRARIES`) wraps the app's CoreAudio HAL IOProc and writes that audio over the real input. Every recording API in the simulator ends in that IOProc, so AVAudioEngine, AVAudioRecorder, AudioQueue, the RemoteIO and VoiceProcessingIO units, and speech recognition all hear it.
+
+```sh
+serve-sim mic com.acme.MyApp                         # relaunch with the mic injected
+serve-sim mic say "Add milk to my list" --wait       # macOS text to speech
+serve-sim mic play ~/Desktop/command.mp3 --wait      # mp3, wav, m4a, aiff, caf, ...
+serve-sim mic idle passthrough                       # hear the Mac's mic between clips
+serve-sim mic off                                    # stop the helper
+```
+
+Between clips the app hears silence, so tests do not depend on room noise. `--pre-roll <ms>` delays a clip; `mic status` prints JSON.
+
 ## Connectors
 
 `serve-sim` can be used with dev servers, browser, and AI editors for more seamless integration.

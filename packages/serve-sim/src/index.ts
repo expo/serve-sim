@@ -43,6 +43,7 @@ import { findBootedDevice, resolveDevice } from "./device";
 import { openSimulatorHost } from "./simulator-host";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
 import { permissions } from "./permissions";
+import { mic } from "./mic";
 import { uiSettings } from "./ui-settings";
 import { debugCli, debugHelper, debugState } from "./debug";
 import type { EventLogEntry } from "./event-log";
@@ -2355,9 +2356,9 @@ program
   .option("-n, --limit <count>", "Maximum number of events")
   .action((opts) => eventLog(opts.device, { json: opts.json, limit: opts.limit }));
 
-// `camera` and `permissions` keep their own dedicated argument parsers (the
-// camera verb has nested sub-verbs and source flags; permissions has a
-// unit-tested parser module). Register them as passthrough commands so they
+// `camera`, `mic` and `permissions` keep their own dedicated argument parsers
+// (camera and mic have nested sub-verbs and source flags; mic and permissions
+// have unit-tested parser modules). Register them as passthrough commands so they
 // still appear in `--help` and route to those parsers verbatim.
 program
   .command("camera")
@@ -2366,6 +2367,16 @@ program
   .helpOption(false)
   .argument("[args...]")
   .action((args: string[]) => camera(args));
+
+program
+  .command("mic")
+  .description("Inject a synthetic microphone feed into an app (see `mic --help`)")
+  .allowUnknownOption(true)
+  .helpOption(false)
+  .argument("[args...]")
+  // The root program owns -q/--quiet, so commander consumes it before `mic`.
+  .action((args: string[], _opts: unknown, command: Command) =>
+    mic(args, { quiet: Boolean(command.parent?.opts().quiet) }));
 
 program
   .command("permissions")

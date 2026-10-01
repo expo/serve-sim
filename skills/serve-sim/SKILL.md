@@ -1,6 +1,6 @@
 ---
 name: serve-sim
-description: Control and stream a running iOS, iPad, or Apple Watch Simulator with npx @expo/serve-sim. Use for simulator preview, taps, gestures, hardware buttons, rotation, camera injection, permissions, accessibility, and CoreAnimation debug.
+description: Control and stream a running iOS, iPad, or Apple Watch Simulator with npx @expo/serve-sim. Use for simulator preview, taps, gestures, hardware buttons, rotation, camera injection, microphone injection, permissions, accessibility, and CoreAnimation debug.
 license: Apache-2.0
 ---
 
@@ -13,6 +13,7 @@ Drive an Apple Simulator (iOS, iPad, Apple Watch) from an agent using the [serve
 - The user wants an agent to **tap, swipe, drag, pinch, or send hardware buttons** to a running Apple Simulator.
 - The user wants to **stream a simulator** to a browser (local, LAN, or tunneled) for review or remote control.
 - The user wants to **inject a synthetic camera feed** (file, webcam, or animated placeholder) into a specific app on the simulator.
+- The user wants to **feed microphone input** (text to speech or an audio file) into a specific app on the simulator, for example to test voice input with no one at the Mac.
 - The user wants to **toggle CoreAnimation debug overlays** (off-screen rendering, blended layers, slow animations) for performance work.
 - The user wants to **simulate a memory warning** or **rotate the device** programmatically.
 - The user wants to **read the simulator's accessibility tree** to find UI elements without pixel hunting.
@@ -78,6 +79,8 @@ Key invariants the agent must respect:
 | CoreAnimation debug | `npx @expo/serve-sim ca-debug <option> <on\|off>` | Options: `blended`, `copies`, `misaligned`, `offscreen`, `slow-animations`. See [references/ca-debug.md](references/ca-debug.md). |
 | Inject camera feed | `npx @expo/serve-sim camera <bundle-id> [--file <path>\|--webcam [name]]` | (Re)launches the app with the camera dylib attached. macOS 14+ only. See [references/camera.md](references/camera.md). |
 | Hot-swap camera source | `npx @expo/serve-sim camera switch <placeholder\|webcam\|file> [arg]` | No app relaunch. |
+| Inject microphone | `npx @expo/serve-sim mic <bundle-id>` | (Re)launches the app with the mic dylib attached. Idle input is silence. See [references/mic.md](references/mic.md). |
+| Speak or play into the mic | `npx @expo/serve-sim mic say "<text>" --wait` / `mic play <file> --wait` | No app relaunch. `--wait` returns after the clip has played. |
 | Manage app permissions | `npx @expo/serve-sim permissions <grant\|revoke\|reset\|list> <permission> <bundle-id>` | Camera, photos, location, **push notifications**, contacts, etc. See [references/permissions.md](references/permissions.md). |
 | Read accessibility tree | Derive `/ax` from the helper base in `streamUrl` | Returns axe-style JSON. See [references/endpoints.md](references/endpoints.md). |
 
@@ -163,6 +166,7 @@ Orphan servers occupy their recorded ports and prevent fresh starts.
 - **Do not invent button names.** Only these six are valid: `home`, `swipe_home`, `app_switcher`, `lock`, `siri`, `side_button`. See [references/buttons-rotation.md](references/buttons-rotation.md) for the source-of-truth list.
 - **Do not parse the non-quiet human output.** Use `-q` for JSON.
 - **Do not leave camera helpers running** across unrelated tasks. Stop them with `npx @expo/serve-sim camera --stop-webcam` when done.
+- **Do not leave mic helpers running** across unrelated tasks. Stop them with `npx @expo/serve-sim mic off` when done.
 - **Do not guess coordinates when an accessibility lookup returns no match.** If you fetched the AX tree (e.g. `GET /ax`) to find a target element and the query returned no result, fail loudly — tapping a guessed spot is almost always worse than reporting "target not found" back to the user. See [references/workflows.md](references/workflows.md) workflow 1 for the guard pattern.
 
 ## Reference index
@@ -170,6 +174,7 @@ Orphan servers occupy their recorded ports and prevent fresh starts.
 - [references/gestures.md](references/gestures.md) — exact gesture JSON shapes, edge values, multi-touch, drag/swipe recipes.
 - [references/buttons-rotation.md](references/buttons-rotation.md) — the six valid buttons and the four orientations, with behavioral notes.
 - [references/camera.md](references/camera.md) — synthetic camera injection: placeholder, file, webcam, mirror modes, hot-swap.
+- [references/mic.md](references/mic.md) — synthetic microphone input: text to speech, audio files, timing, idle modes.
 - [references/permissions.md](references/permissions.md) — granting/revoking app privacy permissions, including push notifications.
 - [references/ca-debug.md](references/ca-debug.md) — the five CoreAnimation debug flags and when each one helps.
 - [references/endpoints.md](references/endpoints.md) — HTTP and WebSocket endpoints for agents that bypass the CLI.
